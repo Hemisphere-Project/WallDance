@@ -1,0 +1,6 @@
+tensorflow>=2.15
+tensorflow-hub
+opencv-python
+numpy
+nvidia-cudnn-cu12
+nvidia-cublas-cu12
