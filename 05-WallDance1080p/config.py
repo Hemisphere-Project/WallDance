@@ -6,6 +6,13 @@ All parameters are tunable - adjust based on your specific setup.
 """
 
 # =============================================================================
+# PATHS
+# =============================================================================
+# Shared models directory at workspace root (used by all workflows)
+import os
+MODELS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models")
+
+# =============================================================================
 # CAMERA & INPUT
 # =============================================================================
 CAMERA_INDEX = 0                    # Camera device index (0 = default webcam/capture card)
@@ -14,12 +21,12 @@ CAMERA_HEIGHT = 1080                # Input resolution height
 CAMERA_FPS = 30                     # Target camera FPS
 
 # =============================================================================
-# IMAGE PROCESSING - UPSCALING
+# IMAGE PROCESSING - UPSCALING (DEPRECATED - use YOLO imgsz instead)
 # =============================================================================
-# At 50m scene width on 1080p, a 1.7m person is only ~65 pixels tall
-# Upscaling dramatically improves detection of small figures
-UPSCALE_FACTOR = 2.0                # 1.0 = native, 2.0 = 4K equivalent, 3.0 = 6K
-                                    # RTX 3090 can handle 2.0-3.0 at 15-25 FPS
+# NOTE: YOLO's imgsz parameter is more efficient than pre-upscaling
+# Set to 1.0 and use YOLO_IMGSZ for small figure detection
+UPSCALE_FACTOR = 1.0                # 1.0 = native (recommended)
+                                    # Use YOLO_IMGSZ=1280 instead of upscaling
 
 # =============================================================================
 # IMAGE PROCESSING - LOW LIGHT ENHANCEMENT
@@ -42,10 +49,31 @@ BRIGHTNESS_THRESHOLD = 60           # Below this (0-255), apply enhancement
 # YOLO MODEL
 # =============================================================================
 YOLO_MODEL = "yolo11m-pose.pt"      # Options: yolo11n/s/m/l/x-pose.pt
+                                    #          yolov8n/s/m/l/x-pose.pt
                                     # n=fastest, x=most accurate
+                                    # v8 models are older but well-tested
 YOLO_CONFIDENCE = 0.25              # Detection confidence threshold (0.1-0.9)
 YOLO_IOU_THRESHOLD = 0.45           # NMS IoU threshold
+YOLO_IMGSZ = 1280                   # YOLO input size (640, 960, 1280, 1920, 2560)
+                                    # IMPORTANT: Should be ≤ camera resolution for best results
+                                    # - 640-960: Fast, good for close-up / webcam
+                                    # - 1280: Balanced, good for 1080p cameras at medium distance
+                                    # - 1920-2560: Only useful with 4K cameras for distant subjects
+                                    # Values > camera resolution cause padding and reduced accuracy
 MAX_PERSONS = 6                     # Maximum dancers to track
+
+# =============================================================================
+# PERSON SIZE CALIBRATION
+# =============================================================================
+# Expected height of a person in pixels (at camera resolution)
+# Use the calibration slider in GUI to adjust based on your scene
+# This helps filter false detections and scale tracking thresholds
+PERSON_HEIGHT_PX = 200              # Expected person height in pixels (50-800)
+                                    # Small figures at 50m: ~100-150px
+                                    # Medium distance: ~200-400px
+                                    # Close up (webcam): ~500-800px
+PERSON_HEIGHT_MIN_RATIO = 0.3       # Min detection height as ratio of expected
+PERSON_HEIGHT_MAX_RATIO = 2.5       # Max detection height as ratio of expected
 
 # =============================================================================
 # KEYPOINT DETECTION
@@ -71,9 +99,10 @@ SKELETON = [
 # =============================================================================
 # TRACKER
 # =============================================================================
-TRACKER_MAX_AGE = 20                # Frames to keep lost track
+TRACKER_MAX_AGE = 45                # Frames to keep lost track (~3 sec at 15 FPS)
 TRACKER_MIN_HITS = 2                # Hits to confirm track
-TRACKER_DISTANCE_THRESHOLD = 300    # Max match distance (pixels, in upscaled space)
+TRACKER_DISTANCE_THRESHOLD = 500    # Max match distance (pixels, at 1280 imgsz)
+                                    # Increase for fast-moving dancers or camera far away
 TRACKER_VELOCITY_WEIGHT = 0.6       # Trust in velocity prediction (0-1)
 TRACKER_PROCESS_NOISE = 2.5         # Kalman Q - velocity adaptation
 TRACKER_MEASUREMENT_NOISE = 2.0     # Kalman R - smoothing
@@ -96,6 +125,7 @@ OSC_PORT = 9000                     # Target port
 # VISUALIZATION
 # =============================================================================
 DISPLAY_ENABLED = True              # Show visualization window
+PREVIEW_ENABLED = True              # Push video to GUI (disable to measure FPS impact)
 DISPLAY_SCALE = 0.75                # Scale display for large resolutions
 SHOW_SKELETON = True                # Draw skeleton
 SHOW_KEYPOINTS = True               # Draw keypoints

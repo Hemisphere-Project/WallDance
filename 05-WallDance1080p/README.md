@@ -4,6 +4,7 @@ Multi-person pose detection system optimized for **vertical wall dancers** in **
 
 ## Features
 
+- **DearPyGui Control Panel**: Modern GUI with sliders, buttons, and real-time video
 - **Small figure detection**: 2-3x upscaling for 50m wide scenes
 - **Low-light enhancement**: Adaptive CLAHE + gamma correction
 - **Multi-person tracking**: Kalman filter + Hungarian algorithm
@@ -25,16 +26,56 @@ chmod +x install.sh run.sh
 
 ---
 
-## Controls
+## GUI Controls
+
+The application features a modern DearPyGui control panel with:
+
+### Detection Settings
+- **YOLO Model**: Select model variant (n=fastest, s, m, l, x=most accurate)
+- **FP16 Half Precision**: Enable half-precision inference (~20-30% faster on CUDA)
+- **Frame Skip**: Skip N frames between YOLO inference (0=none, higher=faster)
+- **Confidence slider**: Adjust YOLO detection threshold (0.1-0.9)
+- **Max Persons**: Limit tracked dancers (1-12)
+
+### Enhancement Settings
+- **Enable Enhancement**: Toggle CLAHE + gamma
+- **CLAHE Clip Limit**: Adjust contrast boost (1.0-6.0)
+- **Gamma Correction**: Adjust brightness (0.5-2.5)
+
+### Upscaling
+- **Upscale Factor**: Slider + quick buttons (1x, 1.5x, 2x, 2.5x, 3x)
+
+### Visualization
+- **Skeleton**: Toggle skeleton lines
+- **Keypoints**: Toggle joint circles
+- **Bounding Box**: Toggle person boxes
+- **Motion Trails**: Toggle movement history
+- **Dancer IDs**: Toggle ID labels
+
+### Tracker
+- **Distance Threshold**: Match distance in pixels
+- **Max Age**: Frames before lost track deletion
+- **Reset Tracker**: Clear all track IDs
+
+### OSC Output
+- **Enable OSC**: Toggle OSC sending
+- **Target IP/Port**: Configure destination
+
+---
+
+## Keyboard Shortcuts
 
 | Key | Action |
 |-----|--------|
-| `q` | Quit |
-| `e` | Toggle low-light enhancement |
-| `t` | Toggle motion trails |
-| `r` | Reset tracker (clear all IDs) |
-| `+` | Increase upscale factor |
-| `-` | Decrease upscale factor |
+| `Q` | Quit |
+| `E` | Toggle enhancement |
+| `S` | Toggle skeleton |
+| `K` | Toggle keypoints |
+| `B` | Toggle bounding box |
+| `T` | Toggle motion trails |
+| `I` | Toggle dancer IDs |
+| `R` | Reset tracker |
+| `+/-` | Adjust upscale factor |
 
 ---
 
@@ -60,6 +101,14 @@ YOLO_MODEL = "yolo11m-pose.pt"  # n/s/m/l/x variants available
 YOLO_CONFIDENCE = 0.25          # Detection threshold
 MAX_PERSONS = 6                 # Maximum dancers
 ```
+
+### Performance Options (runtime adjustable)
+
+| Option | Values | Effect |
+|--------|--------|--------|
+| Model | yolo11n/s/m/l/x-pose | Smaller = faster, larger = more accurate |
+| FP16 | ON/OFF | ~20-30% faster on CUDA GPUs |
+| Frame Skip | 0-4 | 0=process all, 1=every 2nd, 2=every 3rd... |
 
 ### Tracking
 
@@ -176,8 +225,8 @@ TRACKER_MEASUREMENT_NOISE = 5.0
          ┌────────────────┴────────────────┐
          ▼                                 ▼
 ┌─────────────────┐               ┌─────────────────┐
-│  Visualization  │               │   OSC Output    │
-│    (OpenCV)     │               │  (python-osc)   │
+│ DearPyGui Panel │               │   OSC Output    │
+│  (Video + GUI)  │               │  (python-osc)   │
 └─────────────────┘               └─────────────────┘
 ```
 
@@ -189,6 +238,7 @@ TRACKER_MEASUREMENT_NOISE = 5.0
 05-WallDance1080p/
 ├── config.py         # All tunable parameters
 ├── main.py           # Main application
+├── gui.py            # DearPyGui control panel
 ├── enhancer.py       # Low-light image enhancement
 ├── tracker.py        # Kalman + Hungarian tracking
 ├── osc_output.py     # OSC message sender
@@ -204,12 +254,21 @@ TRACKER_MEASUREMENT_NOISE = 5.0
 
 Expected FPS on RTX 3090 with 1080p input:
 
-| Upscale | Resolution | FPS (est.) |
-|---------|------------|------------|
-| 1.0x    | 1920×1080  | 40-50      |
-| 1.5x    | 2880×1620  | 30-40      |
-| 2.0x    | 3840×2160  | 20-30      |
-| 3.0x    | 5760×3240  | 12-18      |
+| Upscale | Resolution | FPS (yolo11m) | FPS (yolo11n) |
+|---------|------------|---------------|---------------|
+| 1.0x    | 1920×1080  | 40-50         | 60-80         |
+| 1.5x    | 2880×1620  | 30-40         | 50-60         |
+| 2.0x    | 3840×2160  | 20-30         | 35-45         |
+| 3.0x    | 5760×3240  | 12-18         | 20-28         |
+
+### Performance Boost Options
+
+| Optimization | Speedup | Trade-off |
+|--------------|---------|----------|
+| FP16 enabled | +20-30% | Minimal accuracy loss |
+| Frame skip 1 | +50-100% | Tracks interpolated |
+| Frame skip 2 | +100-200% | More interpolation |
+| yolo11n instead of m | +80-100% | Lower accuracy |
 
 ---
 
@@ -231,6 +290,7 @@ Expected FPS on RTX 3090 with 1080p input:
 - Check if lighting causes detection gaps
 
 ### Too slow
+- Enable **FP16** in Detection panel (~20-30% faster)
+- Increase **Frame Skip** to 1 or 2 (skip frames between YOLO inference)
+- Switch to faster model: **yolo11n-pose** or **yolo11s-pose**
 - Reduce `UPSCALE_FACTOR`
-- Use smaller model: `yolo11s-pose.pt`
-- Disable `DISPLAY_ENABLED` if not needed

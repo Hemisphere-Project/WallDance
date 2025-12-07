@@ -111,6 +111,10 @@ WallDance is a real-time computer vision system designed to detect and track mul
 | F6 | Real-time visualization | Medium | ✅ Implemented |
 | F7 | Configurable parameters | Medium | ✅ Implemented |
 | F8 | Resolution upscaling | High | ✅ Implemented |
+| F9 | DearPyGui control panel | Medium | ✅ Implemented |
+| F10 | Runtime model switching | Medium | ✅ Implemented |
+| F11 | FP16 half-precision inference | Medium | ✅ Implemented |
+| F12 | Frame skip option | Low | ✅ Implemented |
 
 ### 4.2 Detection Requirements
 
@@ -177,7 +181,8 @@ WallDance is a real-time computer vision system designed to detect and track mul
 | ML Framework | PyTorch | 2.4.1+cu121 | GPU inference |
 | Detection | Ultralytics YOLO11 | Latest | Pose estimation |
 | Tracking | FilterPy + SciPy | Latest | Kalman filter, Hungarian algorithm |
-| Image Processing | OpenCV | 4.x | Enhancement, visualization |
+| Image Processing | OpenCV | 4.x | Enhancement, upscaling |
+| GUI | DearPyGui | 2.1+ | GPU-accelerated control panel |
 | OSC | python-osc | Latest | Network output |
 | Package Manager | uv | Latest | Fast dependency management |
 
@@ -186,6 +191,7 @@ WallDance is a real-time computer vision system designed to detect and track mul
 ```
 05-WallDance1080p/
 ├── main.py              # Application entry point, main loop
+├── gui.py               # DearPyGui control panel
 ├── config.py            # All tunable parameters
 ├── enhancer.py          # Low-light image enhancement (CLAHE + gamma)
 ├── tracker.py           # Kalman filter + Hungarian algorithm tracker
@@ -241,13 +247,23 @@ OSC Output + Visualization
 
 ### 6.2 YOLO Model Options
 
+All models are selectable at runtime via the GUI dropdown.
+
 | Model | Size | Speed (RTX 3090) | Accuracy | Recommended For |
 |-------|------|------------------|----------|-----------------|
-| yolo11n-pose | 2.5M | 45+ FPS | Good | Testing, low-power |
-| yolo11s-pose | 9M | 35+ FPS | Better | Balanced |
-| **yolo11m-pose** | 25M | 25+ FPS | **Best** | **Production** |
+| yolo11n-pose | 2.5M | 45+ FPS | Good | Testing, low-power, max FPS |
+| yolo11s-pose | 9M | 35+ FPS | Better | Balanced, good starting point |
+| **yolo11m-pose** | 25M | 25+ FPS | **Best** | **Production default** |
 | yolo11l-pose | 50M | 15+ FPS | Excellent | High accuracy needs |
 | yolo11x-pose | 100M | 10+ FPS | Maximum | Offline processing |
+
+### 6.2.1 Performance Optimization Options
+
+| Option | Speedup | Notes |
+|--------|---------|-------|
+| **FP16 Half Precision** | +20-30% | Toggle in GUI, minimal accuracy loss |
+| **Frame Skip** | N+1× fewer inferences | Reuses last tracking result for skipped frames |
+| **Smaller Model** | 2-4× faster | yolo11n vs yolo11m |
 
 ### 6.3 Keypoint Schema (COCO 17-point)
 
@@ -534,6 +550,14 @@ TRACKER_DISTANCE_THRESHOLD = 300  # Generous for fast movement
 TRACKER_MAX_AGE = 20              # Robust to brief occlusions
 TRACKER_VELOCITY_WEIGHT = 0.6     # Trust motion prediction
 ```
+
+### 11.2.1 Runtime Performance Options (GUI)
+
+| Setting | Default | Range | Effect |
+|---------|---------|-------|--------|
+| Model | yolo11m-pose | n/s/m/l/x | Speed vs accuracy |
+| FP16 | OFF | ON/OFF | +20-30% FPS |
+| Frame Skip | 0 | 0-4 | Skip N frames between inference |
 
 ### 11.3 Known Limitations
 

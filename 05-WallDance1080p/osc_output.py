@@ -66,9 +66,14 @@ class OSCSender:
         ])
         
         # Velocity (normalized per frame) - use attribute directly
+        # Clamp to reasonable range to avoid OSC overflow errors
         vel = track.velocity
+        vel_x = float(np.clip(vel[0], -1e6, 1e6))
+        vel_y = float(np.clip(vel[1], -1e6, 1e6))
+        if not (np.isfinite(vel_x) and np.isfinite(vel_y)):
+            vel_x, vel_y = 0.0, 0.0
         self.client.send_message(f"{prefix}/velocity",
-                                  [norm_x(vel[0]), norm_y(vel[1])])
+                                  [norm_x(vel_x), norm_y(vel_y)])
         
         # All keypoints as flat list: [x0, y0, c0, x1, y1, c1, ...]
         keypoints_flat = []

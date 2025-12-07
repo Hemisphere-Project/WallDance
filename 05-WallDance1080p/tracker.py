@@ -13,6 +13,9 @@ from config import (
     KEYPOINT_CONFIDENCE
 )
 
+# Set to True for detailed tracking debug output
+TRACKER_DEBUG = False
+
 
 class DancerTrack:
     """Single dancer track with Kalman filter for position smoothing."""
@@ -91,6 +94,17 @@ class DancerTrack:
         self.kf.predict()
         self.age += 1
         self.time_since_update += 1
+        
+        # Clamp velocity to prevent runaway predictions
+        # Max reasonable velocity: ~100 pixels/frame (fast dancer movement)
+        MAX_VELOCITY = 100.0
+        vel = self.kf.x[2:4].flatten()
+        speed = np.linalg.norm(vel)
+        if speed > MAX_VELOCITY:
+            scale = MAX_VELOCITY / speed
+            self.kf.x[2:4] *= scale
+            self.kf.x[4:6] *= scale  # Also clamp acceleration
+        
         return self.kf.x[:2].flatten()
     
     def update(self, keypoints, confidence, bbox):
@@ -108,6 +122,12 @@ class DancerTrack:
     def get_centroid(self):
         """Get current estimated centroid."""
         return self.kf.x[:2].flatten()
+    
+    def get_last_known_position(self):
+        """Get last measured position (not predicted)."""
+        if len(self.history) > 0:
+            return self.history[-1]
+        return self.get_centroid()
     
     def get_velocity(self):
         """Get current velocity."""
@@ -156,14 +176,19 @@ class DancerTracker:
             
             for t, track in enumerate(tracks):
                 predicted_pos = track.get_centroid()
+                last_known_pos = track.get_last_known_position()
                 velocity = track.get_velocity()
+                
+                # Velocity-adjusted position (where we expect them to be)
                 velocity_adjusted = predicted_pos + velocity * self.velocity_weight
                 
+                # Calculate distances to different reference points
                 dist_pred = np.linalg.norm(det_centroid - predicted_pos)
                 dist_vel = np.linalg.norm(det_centroid - velocity_adjusted)
+                dist_last = np.linalg.norm(det_centroid - last_known_pos)
                 
-                time_factor = 1.0 + track.time_since_update * 0.1
-                cost_matrix[d, t] = min(dist_pred, dist_vel) * time_factor
+                # Use the smallest distance - helps when prediction drifts
+                cost_matrix[d, t] = min(dist_pred, dist_vel, dist_last)
         
         return cost_matrix
     
@@ -193,30 +218,81 @@ class DancerTracker:
             row_idx, col_idx = linear_sum_assignment(cost_matrix)
             
             for row, col in zip(row_idx, col_idx):
-                track_speed = self.tracks[col].get_speed()
-                dynamic_thresh = self.distance_threshold + track_speed * 2.0
+                track = self.tracks[col]
+                track_speed = track.get_speed()
+                
+                # Dynamic threshold: base + velocity bonus + time bonus
+                # As time since update increases, we're more lenient about matching
+                time_bonus = track.time_since_update * 15.0  # 15 px per frame missed
+                dynamic_thresh = self.distance_threshold + track_speed * 2.0 + time_bonus
                 
                 if cost_matrix[row, col] < dynamic_thresh:
                     matched_det.add(row)
                     matched_trk.add(col)
                     kpts, conf, bbox = detections[row]
-                    self.tracks[col].update(kpts, conf, bbox)
+                    track.update(kpts, conf, bbox)
+                else:
+                    # Debug: print why match failed
+                    if TRACKER_DEBUG:
+                        print(f"[TRACKER] Match rejected: cost={cost_matrix[row, col]:.1f} > thresh={dynamic_thresh:.1f} (t_miss={track.time_since_update})")
         
-        # Create new tracks
+        # Create new tracks - but be more careful
         for d, (kpts, conf, bbox) in enumerate(detections):
             if d not in matched_det:
                 det_centroid = self._compute_centroid(kpts, conf, bbox)
-                is_new = True
                 
-                for track in self.tracks:
-                    if np.linalg.norm(det_centroid - track.get_centroid()) < self.distance_threshold * 0.5:
-                        is_new = False
-                        break
+                # Check distance to ALL tracks
+                min_dist = float('inf')
+                closest_track = None
+                closest_track_idx = None
+                for idx, track in enumerate(self.tracks):
+                    # Use last known position for matching unmatched detections
+                    last_pos = track.get_last_known_position()
+                    dist = np.linalg.norm(det_centroid - last_pos)
+                    if dist < min_dist:
+                        min_dist = dist
+                        closest_track = track
+                        closest_track_idx = idx
                 
-                if is_new:
+                # Only create new track if REALLY far from all existing tracks
+                if min_dist > self.distance_threshold:
+                    if TRACKER_DEBUG:
+                        print(f"[TRACKER] New track #{DancerTrack._id_counter + 1}: min_dist={min_dist:.1f} > thresh={self.distance_threshold}")
                     self.tracks.append(DancerTrack(kpts, conf, bbox))
+                elif closest_track is not None and closest_track_idx not in matched_trk:
+                    # This detection is close to an unmatched track - force update it
+                    if TRACKER_DEBUG:
+                        print(f"[TRACKER] Force update track #{closest_track.track_id}: dist={min_dist:.1f}")
+                    closest_track.update(kpts, conf, bbox)
+                    matched_trk.add(closest_track_idx)  # Mark as matched now
+                elif closest_track is not None and min_dist < self.distance_threshold * 0.3:
+                    # Detection is VERY close to an already-matched track (< 30% threshold)
+                    # This is definitely a duplicate (same person detected twice)
+                    if TRACKER_DEBUG:
+                        print(f"[TRACKER] Ignoring close duplicate near track #{closest_track.track_id}: dist={min_dist:.1f}")
+                else:
+                    # Detection is moderately close to a matched track
+                    # Could be a different person or a duplicate - log but don't ignore
+                    # Actually update the closest unmatched track if there is one
+                    for idx, track in enumerate(self.tracks):
+                        if idx not in matched_trk:
+                            last_pos = track.get_last_known_position()
+                            dist = np.linalg.norm(det_centroid - last_pos)
+                            if dist < self.distance_threshold:
+                                if TRACKER_DEBUG:
+                                    print(f"[TRACKER] Fallback update track #{track.track_id}: dist={dist:.1f}")
+                                track.update(kpts, conf, bbox)
+                                matched_trk.add(idx)
+                                break
+                    else:
+                        # No unmatched track close enough - ignore as duplicate
+                        if TRACKER_DEBUG:
+                            print(f"[TRACKER] Ignoring duplicate det near track #{closest_track.track_id if closest_track else 'None'}: dist={min_dist:.1f}")
         
         # Remove old tracks
+        removed = [t for t in self.tracks if t.time_since_update >= self.max_age]
+        if removed and TRACKER_DEBUG:
+            print(f"[TRACKER] Removed tracks: {[t.track_id for t in removed]}")
         self.tracks = [t for t in self.tracks if t.time_since_update < self.max_age]
         
         # Return confirmed tracks
