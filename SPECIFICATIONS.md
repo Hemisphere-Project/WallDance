@@ -43,41 +43,13 @@ WallDance is a real-time computer vision system designed to detect and track mul
 
 ### 2.1 Performance Environment
 
-Parameter
-
-Value
-
-Notes
-
-Scene Width
-
-50 meters
-
-Horizontal span of performance wall
-
-Scene Height
-
-~20-30 meters
-
-Vertical climbing area
-
-Number of Dancers
-
-Up to 6
-
-Simultaneous performers
-
-Lighting Conditions
-
-Dark / Night
-
-Outdoor, minimal ambient light
-
-Performance Type
-
-Wall climbing/dancing
-
-Vertical surface, rotated body orientations
+| Parameter | Value | Notes |
+|---|---|---|
+| Scene Width | 50 meters | Horizontal span of performance wall |
+| Scene Height | ~20-30 meters | Vertical climbing area |
+| Number of Dancers | Up to 6 | Simultaneous performers |
+| Lighting Conditions | Dark / Night | Outdoor, minimal ambient light |
+| Performance Type | Wall climbing/dancing | Vertical surface, rotated body orientations |
 
 ### 2.2 Use Cases
 
@@ -93,47 +65,14 @@ Vertical surface, rotated body orientations
 
 ### 3.1 Camera System
 
-Component
-
-Specification
-
-Rationale
-
-Camera
-
-Sony Alpha 7 (or equivalent)
-
-Low-light sensitivity, clean 1080p output
-
-Resolution
-
-1920×1080 (Full HD)
-
-Balance of coverage and detail
-
-Frame Rate
-
-30 FPS
-
-Standard capture rate
-
-Output
-
-Clean HDMI / SDI
-
-Via capture card to PC
-
-Lens
-
-Wide-angle (24-35mm equiv.)
-
-Cover 50m scene from safe distance
-
-Mounting
-
-Fixed tripod/rigging
-
-Stable, unobstructed view
+| Component | Specification | Rationale |
+|---|---|---|
+| Camera | Sony Alpha 7 (or equivalent) | Low-light sensitivity, clean 1080p output |
+| Resolution | 1920×1080 (Full HD) | Balance of coverage and detail |
+| Frame Rate | 30 FPS | Standard capture rate |
+| Output | Clean HDMI / SDI | Via capture card to PC |
+| Lens | Wide-angle (24-35mm equiv.) | Cover 50m scene from safe distance |
+| Mounting | Fixed tripod/rigging | Stable, unobstructed view |
 
 **Calculated Figure Size:**
 
@@ -143,87 +82,22 @@ Stable, unobstructed view
 
 ### 3.2 Processing Hardware
 
-Component
-
-Minimum
-
-Recommended
-
-Notes
-
-GPU
-
-RTX 3070
-
-RTX 3090 / RTX 4080
-
-CUDA compute for inference
-
-VRAM
-
-8 GB
-
-24 GB
-
-Model + upscaled frames
-
-CPU
-
-8-core
-
-16-core
-
-Pre/post processing
-
-RAM
-
-16 GB
-
-32 GB
-
-Frame buffers
-
-Storage
-
-SSD
-
-NVMe SSD
-
-Fast model loading
+| Component | Minimum | Recommended | Notes |
+|---|---|---|---|
+| GPU | RTX 3070 | RTX 3090 / RTX 4080 | CUDA compute for inference |
+| VRAM | 8 GB | 24 GB | Model + upscaled frames |
+| CPU | 8-core | 16-core | Pre/post processing |
+| RAM | 16 GB | 32 GB | Frame buffers |
+| Storage | SSD | NVMe SSD | Fast model loading |
 
 ### 3.3 Capture Interface
 
-Option
-
-Latency
-
-Quality
-
-Cost
-
-Elgato Cam Link 4K
-
-~100ms
-
-Good
-
-$130
-
-Blackmagic DeckLink
-
-~30ms
-
-Excellent
-
-$200+
-
-AVerMedia Live Gamer
-
-~50ms
-
-Good
-
-$150
+| Option | Latency | Quality | Cost | Pros | Cons |
+|---|---|---|---|---|---|
+| Elgato Cam Link 4K | ~100ms | Good | $130 | USB plug-and-play, portable, widely available | Higher latency, USB bandwidth limits, occasional driver issues |
+| Blackmagic DeckLink | ~30ms | Excellent | $200+ | Lowest latency, professional SDI/HDMI, rock-solid drivers | Requires PCIe slot, higher cost, fixed installation |
+| AVerMedia Live Gamer | ~50ms | Good | $150 | Good balance, PCIe reliability, gamer-focused features | Middle-ground on all specs, less pro features than Blackmagic |
+| Magewell Pro Capture | ~20ms | Excellent | $300+ | Ultra-low latency, SDK support, multi-input options, Linux drivers | Premium price, overkill for simple setups |
 
 ---
 
@@ -231,173 +105,38 @@ $150
 
 ### 4.1 Core Features
 
-ID
-
-Feature
-
-Priority
-
-Status
-
-F1
-
-Multi-person detection (up to 6)
-
-Critical
-
-✅ Implemented
-
-F2
-
-17-keypoint skeleton extraction
-
-Critical
-
-✅ Implemented
-
-F3
-
-Persistent ID tracking across frames
-
-Critical
-
-✅ Implemented
-
-F4
-
-Low-light image enhancement
-
-High
-
-✅ Implemented
-
-F5
-
-OSC output protocol
-
-High
-
-✅ Implemented
-
-F6
-
-Real-time visualization
-
-Medium
-
-✅ Implemented
-
-F7
-
-Configurable parameters
-
-Medium
-
-✅ Implemented
-
-F8
-
-Resolution upscaling
-
-High
-
-✅ Implemented
-
-F9
-
-DearPyGui control panel
-
-Medium
-
-✅ Implemented
-
-F10
-
-Runtime model switching
-
-Medium
-
-✅ Implemented
-
-F11
-
-FP16 half-precision inference
-
-Medium
-
-✅ Implemented
-
-F12
-
-Frame skip option
-
-Low
-
-✅ Implemented
+| ID | Feature | Priority | Status |
+|---|---|---|---|
+| F1 | Multi-person detection (up to 6) | Critical | ✅ Implemented |
+| F2 | 17-keypoint skeleton extraction | Critical | ✅ Implemented |
+| F3 | Persistent ID tracking across frames | Critical | ✅ Implemented |
+| F4 | Low-light image enhancement | High | ✅ Implemented |
+| F5 | OSC output protocol | High | ✅ Implemented |
+| F6 | Real-time visualization | Medium | ✅ Implemented |
+| F7 | Configurable parameters | Medium | ✅ Implemented |
+| F8 | Resolution upscaling | High | ✅ Implemented |
+| F9 | DearPyGui control panel | Medium | ✅ Implemented |
+| F10 | Runtime model switching | Medium | ✅ Implemented |
+| F11 | FP16 half-precision inference | Medium | ✅ Implemented |
+| F12 | Frame skip option | Low | ✅ Implemented |
 
 ### 4.2 Detection Requirements
 
-Requirement
-
-Target
-
-Notes
-
-Minimum figure size
-
-50px height
-
-After upscaling
-
-Keypoint confidence
-
->0.3
-
-Filter low-confidence points
-
-Detection confidence
-
->0.25
-
-YOLO threshold
-
-Orientation support
-
-Any
-
-Dancers may be upside-down, sideways
+| Requirement | Target | Notes |
+|---|---|---|
+| Minimum figure size | 50px height | After upscaling |
+| Keypoint confidence | >0.3 | Filter low-confidence points |
+| Detection confidence | >0.25 | YOLO threshold |
+| Orientation support | Any | Dancers may be upside-down, sideways |
 
 ### 4.3 Tracking Requirements
 
-Requirement
-
-Target
-
-Notes
-
-ID persistence
-
->95%
-
-Across occlusions <1 sec
-
-Track handoff
-
-Seamless
-
-No ID swaps between dancers
-
-Lost track recovery
-
-20 frames
-
-Before track deletion
-
-Fast motion handling
-
-Up to 300px/frame
-
-In upscaled space
+| Requirement | Target | Notes |
+|---|---|---|
+| ID persistence | >95% | Across occlusions <1 sec |
+| Track handoff | Seamless | No ID swaps between dancers |
+| Lost track recovery | 20 frames | Before track deletion |
+| Fast motion handling | Up to 300px/frame | In upscaled space |
 
 ---
 
@@ -406,87 +145,65 @@ In upscaled space
 ### 5.1 System Overview
 
 ```
-┌─────────────┐     ┌──────────────┐     ┌─────────────────┐│   Camera    │────▶│ Capture Card │────▶│   WallDance     ││ (Sony A7)   │     │  (HDMI/SDI)  │     │   Application   │└─────────────┘     └──────────────┘     └────────┬────────┘                                                   │                    ┌──────────────────────────────┼──────────────────────────────┐                    │                              ▼                              │                    │  ┌─────────────┐    ┌──────────────┐    ┌──────────────┐   │                    │  │  Enhancer   │───▶│   Detector   │───▶│   Tracker    │   │                    │  │ (CLAHE+γ)   │    │  (YOLO11m)   │    │(Kalman+Hung) │   │                    │  └─────────────┘    └──────────────┘    └──────┬───────┘   │                    │                                                 │           │                    │  ┌─────────────────────────────────────────────┼───────┐   │                    │  │                                             ▼       │   │                    │  │  ┌──────────────┐              ┌──────────────────┐ │   │                    │  │  │    OSC       │◀─────────────│  Visualization   │ │   │                    │  │  │   Output     │              │     Display      │ │   │                    │  │  └──────┬───────┘              └──────────────────┘ │   │                    │  │         │                                           │   │                    │  └─────────┼───────────────────────────────────────────┘   │                    │            │                   WallDance Application        │                    └────────────┼────────────────────────────────────────────────┘                                 │                                 ▼                    ┌─────────────────────────┐                    │   OSC Receivers         │                    │  - VJ Software          │                    │  - Lighting DMX         │                    │  - Projection Mapping   │                    └─────────────────────────┘
+┌─────────────┐     ┌──────────────┐     ┌─────────────────┐
+│   Camera    │────▶│ Capture Card │────▶│   WallDance     │
+│ (Sony A7)   │     │  (HDMI/SDI)  │     │   Application   │
+└─────────────┘     └──────────────┘     └────────┬────────┘
+                                                  │
+                    ┌─────────────────────────────┴─────────────────────────────┐
+                    │                             ▼                             │
+                    │  ┌─────────────┐    ┌──────────────┐    ┌──────────────┐  │
+                    │  │  Enhancer   │───▶│   Detector   │───▶│   Tracker    │  │
+                    │  │ (CLAHE+γ)   │    │  (YOLO11m)   │    │(Kalman+Hung) │  │
+                    │  └─────────────┘    └──────────────┘    └──────┬───────┘  │
+                    │                                                │          │
+                    │  ┌─────────────────────────────────────────────┼───────┐  │
+                    │  │                                             ▼       │  │
+                    │  │  ┌──────────────┐              ┌──────────────────┐ │  │
+                    │  │  │    OSC       │◀─────────────│  Visualization   │ │  │
+                    │  │  │   Output     │              │     Display      │ │  │
+                    │  │  └──────┬───────┘              └──────────────────┘ │  │
+                    │  │         │                                           │  │
+                    │  └─────────┼───────────────────────────────────────────┘  │
+                    │            │                   WallDance Application      │
+                    └────────────┼──────────────────────────────────────────────┘
+                                 │
+                                 ▼
+                    ┌─────────────────────────┐
+                    │   OSC Receivers         │
+                    │  - VJ Software          │
+                    │  - Lighting DMX         │
+                    │  - Projection Mapping   │
+                    └─────────────────────────┘
 ```
 
 ### 5.2 Software Stack
 
-Layer
-
-Technology
-
-Version
-
-Purpose
-
-Runtime
-
-Python
-
-3.10+
-
-Main application
-
-ML Framework
-
-PyTorch
-
-2.4.1+cu121
-
-GPU inference
-
-Detection
-
-Ultralytics YOLO11
-
-Latest
-
-Pose estimation
-
-Tracking
-
-FilterPy + SciPy
-
-Latest
-
-Kalman filter, Hungarian algorithm
-
-Image Processing
-
-OpenCV
-
-4.x
-
-Enhancement, upscaling
-
-GUI
-
-DearPyGui
-
-2.1+
-
-GPU-accelerated control panel
-
-OSC
-
-python-osc
-
-Latest
-
-Network output
-
-Package Manager
-
-uv
-
-Latest
-
-Fast dependency management
+| Layer | Technology | Version | Purpose |
+|---|---|---|---|
+| Runtime | Python | 3.10+ | Main application |
+| ML Framework | PyTorch | 2.4.1+cu121 | GPU inference |
+| Detection | Ultralytics YOLO11 | Latest | Pose estimation |
+| Tracking | FilterPy + SciPy | Latest | Kalman filter, Hungarian algorithm |
+| Image Processing | OpenCV | 4.x | Enhancement, upscaling |
+| GUI | DearPyGui | 2.1+ | GPU-accelerated control panel |
+| OSC | python-osc | Latest | Network output |
+| Package Manager | uv | Latest | Fast dependency management |
 
 ### 5.3 Module Structure
 
 ```
-05-WallDance1080p/├── main.py              # Application entry point, main loop├── gui.py               # DearPyGui control panel├── config.py            # All tunable parameters├── enhancer.py          # Low-light image enhancement (CLAHE + gamma)├── tracker.py           # Kalman filter + Hungarian algorithm tracker├── osc_output.py        # OSC message formatting and sending├── visualization.py     # Drawing helpers, overlays├── install.sh           # Dependency installation├── run.sh               # Launch script└── README.md            # Usage documentation
+05-WallDance1080p/
+├── main.py              # Application entry point, main loop
+├── gui.py               # DearPyGui control panel
+├── config.py            # All tunable parameters
+├── enhancer.py          # Low-light image enhancement (CLAHE + gamma)
+├── tracker.py           # Kalman filter + Hungarian algorithm tracker
+├── osc_output.py        # OSC message formatting and sending
+├── visualization.py     # Drawing helpers, overlays
+├── install.sh           # Dependency installation
+├── run.sh               # Launch script
+└── README.md            # Usage documentation
 ```
 
 ---
@@ -496,103 +213,82 @@ Fast dependency management
 ### 6.1 Pipeline Stages
 
 ```
-Frame Input (1920×1080)        │        ▼┌───────────────────┐│ 1. Enhancement    │  CLAHE (clip=3.0, tile=8×8) + Gamma (1.2)│    (if dark)      │  Auto-detect brightness < 60└───────┬───────────┘        │        ▼┌───────────────────┐│ 2. Upscale        │  2.0× → 3840×2160 (4K equivalent)│    (configurable) │  Improves small figure detection└───────┬───────────┘        │        ▼┌───────────────────┐│ 3. YOLO Inference │  yolo11m-pose.pt│                   │  Outputs: bboxes, 17 keypoints per person└───────┬───────────┘        │        ▼┌───────────────────┐│ 4. Tracking       │  Associate detections with existing tracks│    (Kalman+Hung)  │  Predict, update, handle lost tracks└───────┬───────────┘        │        ▼┌───────────────────┐│ 5. Scale Back     │  Convert coordinates to original resolution│                   │  Create output copies (don't modify tracker state)└───────┬───────────┘        │        ▼OSC Output + Visualization
+Frame Input (1920×1080)
+       │
+       ▼
+┌───────────────────┐
+│ 1. Enhancement    │  CLAHE (clip=3.0, tile=8×8) + Gamma (1.2)
+│    (if dark)      │  Auto-detect brightness < 60
+└───────┬───────────┘
+       │
+       ▼
+┌───────────────────┐
+│ 2. Upscale        │  2.0× → 3840×2160 (4K equivalent)
+│    (configurable) │  Improves small figure detection
+└───────┬───────────┘
+       │
+       ▼
+┌───────────────────┐
+│ 3. YOLO Inference │  yolo11m-pose.pt
+│                   │  Outputs: bboxes, 17 keypoints per person
+└───────┬───────────┘
+       │
+       ▼
+┌───────────────────┐
+│ 4. Tracking       │  Associate detections with existing tracks
+│    (Kalman+Hung)  │  Predict, update, handle lost tracks
+└───────┬───────────┘
+       │
+       ▼
+┌───────────────────┐
+│ 5. Scale Back     │  Convert coordinates to original resolution
+│                   │  Create output copies (don't modify tracker state)
+└───────┬───────────┘
+       │
+       ▼
+OSC Output + Visualization
 ```
 
 ### 6.2 YOLO Model Options
 
 All models are selectable at runtime via the GUI dropdown.
 
-Model
-
-Size
-
-Speed (RTX 3090)
-
-Accuracy
-
-Recommended For
-
-yolo11n-pose
-
-2.5M
-
-45+ FPS
-
-Good
-
-Testing, low-power, max FPS
-
-yolo11s-pose
-
-9M
-
-35+ FPS
-
-Better
-
-Balanced, good starting point
-
-**yolo11m-pose**
-
-25M
-
-25+ FPS
-
-**Best**
-
-**Production default**
-
-yolo11l-pose
-
-50M
-
-15+ FPS
-
-Excellent
-
-High accuracy needs
-
-yolo11x-pose
-
-100M
-
-10+ FPS
-
-Maximum
-
-Offline processing
+| Model | Size | Speed (RTX 3090) | Accuracy | Recommended For |
+|---|---|---|---|---|
+| yolo11n-pose | 2.5M | 45+ FPS | Good | Testing, low-power, max FPS |
+| yolo11s-pose | 9M | 35+ FPS | Better | Balanced, good starting point |
+| **yolo11m-pose** | 25M | 25+ FPS | **Best** | **Production default** |
+| yolo11l-pose | 50M | 15+ FPS | Excellent | High accuracy needs |
+| yolo11x-pose | 100M | 10+ FPS | Maximum | Offline processing |
 
 ### 6.2.1 Performance Optimization Options
 
-Option
-
-Speedup
-
-Notes
-
-**FP16 Half Precision**
-
-+20-30%
-
-Toggle in GUI, minimal accuracy loss
-
-**Frame Skip**
-
-N+1× fewer inferences
-
-Reuses last tracking result for skipped frames
-
-**Smaller Model**
-
-2-4× faster
-
-yolo11n vs yolo11m
+| Option | Speedup | Notes |
+|---|---|---|
+| **FP16 Half Precision** | +20-30% | Toggle in GUI, minimal accuracy loss |
+| **Frame Skip** | N+1× fewer inferences | Reuses last tracking result for skipped frames |
+| **Smaller Model** | 2-4× faster | yolo11n vs yolo11m |
 
 ### 6.3 Keypoint Schema (COCO 17-point)
 
 ```
-        0: Nose       /       1   2  (L/R Eye)     /         3       4  (L/R Ear)        5───────6  (L/R Shoulder)    │       │    7       8  (L/R Elbow)    │       │    9      10  (L/R Wrist)       11──────12  (L/R Hip)    │       │   13      14  (L/R Knee)    │       │   15      16  (L/R Ankle)
+        0: Nose
+       /       \
+     1   2  (L/R Eye)
+     /         \
+   3       4  (L/R Ear)
+
+    5───────6  (L/R Shoulder)
+    │       │
+    7       8  (L/R Elbow)
+    │       │
+    9      10  (L/R Wrist)
+
+   11──────12  (L/R Hip)
+    │       │
+   13      14  (L/R Knee)
+    │       │
+   15      16  (L/R Ankle)
 ```
 
 ### 6.4 Kalman Filter Design
@@ -600,13 +296,24 @@ yolo11n vs yolo11m
 **State Vector (6 dimensions):**
 
 ```
-x = [x, y, vx, vy, ax, ay]ᵀ     │  │   │   │   │   └── Y acceleration     │  │   │   │   └────── X acceleration       │  │   │   └────────── Y velocity     │  │   └────────────── X velocity     │  └──────────────────  Y position (centroid)     └─────────────────────  X position (centroid)
+x = [x, y, vx, vy, ax, ay]ᵀ
+     │  │   │   │   │   └── Y acceleration
+     │  │   │   │   └────── X acceleration  
+     │  │   │   └────────── Y velocity
+     │  │   └────────────── X velocity
+     │  └──────────────────  Y position (centroid)
+     └─────────────────────  X position (centroid)
 ```
 
 **Motion Model:** Constant acceleration
 
 ```
-F = [1  0  dt  0   0.5dt²   0     ]    [0  1  0   dt  0        0.5dt²]    [0  0  1   0   dt       0     ]    [0  0  0   1   0        dt    ]    [0  0  0   0   1        0     ]    [0  0  0   0   0        1     ]
+F = [1  0  dt  0   0.5dt²   0     ]
+    [0  1  0   dt  0        0.5dt²]
+    [0  0  1   0   dt       0     ]
+    [0  0  0   1   0        dt    ]
+    [0  0  0   0   1        0     ]
+    [0  0  0   0   0        1     ]
 ```
 
 ### 6.5 Hungarian Algorithm Assignment
@@ -631,61 +338,14 @@ F = [1  0  dt  0   0.5dt²   0     ]    [0  1  0   dt  0        0.5dt²]    [0  
 
 **Base Address:** `/walldance/`
 
-Address
-
-Arguments
-
-Type
-
-Description
-
-`/walldance/count`
-
-`[n]`
-
-int
-
-Number of active dancers
-
-`/walldance/dancer/<id>/centroid`
-
-`[x, y]`
-
-float
-
-Normalized 0-1
-
-`/walldance/dancer/<id>/bbox`
-
-`[x, y, w, h]`
-
-float
-
-Normalized 0-1
-
-`/walldance/dancer/<id>/velocity`
-
-`[vx, vy]`
-
-float
-
-Normalized per frame
-
-`/walldance/dancer/<id>/keypoints`
-
-`[x0,y0,c0, ...]`
-
-float
-
-51 values (17×3)
-
-`/walldance/clear`
-
-`[1]`
-
-int
-
-Reset signal
+| Address | Arguments | Type | Description |
+|---|---|---|---|
+| `/walldance/count` | `[n]` | int | Number of active dancers |
+| `/walldance/dancer/<id>/centroid` | `[x, y]` | float | Normalized 0-1 |
+| `/walldance/dancer/<id>/bbox` | `[x, y, w, h]` | float | Normalized 0-1 |
+| `/walldance/dancer/<id>/velocity` | `[vx, vy]` | float | Normalized per frame |
+| `/walldance/dancer/<id>/keypoints` | `[x0,y0,c0, ...]` | float | 51 values (17×3) |
+| `/walldance/clear` | `[1]` | int | Reset signal |
 
 **Coordinate System:**
 
@@ -695,67 +355,21 @@ Reset signal
 
 ### 7.2 OSC Configuration
 
-Parameter
-
-Default
-
-Notes
-
-IP Address
-
-127.0.0.1
-
-Target receiver
-
-Port
-
-9000
-
-Standard OSC port
-
-Protocol
-
-UDP
-
-Low latency
+| Parameter | Default | Notes |
+|---|---|---|
+| IP Address | 127.0.0.1 | Target receiver |
+| Port | 9000 | Standard OSC port |
+| Protocol | UDP | Low latency |
 
 ### 7.3 Future Protocol Options
 
-Protocol
-
-Use Case
-
-Complexity
-
-**OSC**
-
-VJ/Audio software
-
-✅ Implemented
-
-MQTT
-
-IoT, distributed systems
-
-Medium
-
-WebSocket
-
-Web-based visualizers
-
-Medium
-
-DMX/ArtNet
-
-Direct lighting control
-
-High
-
-NDI
-
-Video streaming with metadata
-
-High
+| Protocol | Use Case | Complexity |
+|---|---|---|
+| **OSC** | VJ/Audio software | ✅ Implemented |
+| MQTT | IoT, distributed systems | Medium |
+| WebSocket | Web-based visualizers | Medium |
+| DMX/ArtNet | Direct lighting control | High |
+| NDI | Video streaming with metadata | High |
 
 ---
 
@@ -763,151 +377,34 @@ High
 
 ### 8.1 Latency Budget
 
-Stage
-
-Target
-
-Measured
-
-Notes
-
-Capture
-
-<50ms
-
-~30-100ms
-
-Depends on capture card
-
-Enhancement
-
-<5ms
-
-~3ms
-
-GPU accelerated CLAHE
-
-Upscale
-
-<5ms
-
-~2ms
-
-GPU resize
-
-YOLO Inference
-
-<40ms
-
-~30-50ms
-
-RTX 3090, 2× upscale
-
-Tracking
-
-<2ms
-
-~1ms
-
-CPU, lightweight
-
-OSC Send
-
-<1ms
-
-<1ms
-
-UDP, no confirmation
-
-**Total**
-
-**<100ms**
-
-**~70-150ms**
-
-Glass-to-glass
+| Stage | Target | Measured | Notes |
+|---|---|---|---|
+| Capture | <50ms | ~30-100ms | Depends on capture card |
+| Enhancement | <5ms | ~3ms | GPU accelerated CLAHE |
+| Upscale | <5ms | ~2ms | GPU resize |
+| YOLO Inference | <40ms | ~30-50ms | RTX 3090, 2× upscale |
+| Tracking | <2ms | ~1ms | CPU, lightweight |
+| OSC Send | <1ms | <1ms | UDP, no confirmation |
+| **Total** | **<100ms** | **~70-150ms** | Glass-to-glass |
 
 ### 8.2 Frame Rate Targets
 
-Upscale
-
-Resolution
-
-Target FPS
-
-Achieved FPS
-
-1.0×
-
-1920×1080
-
-30+
-
-~35
-
-1.5×
-
-2880×1620
-
-25+
-
-~28
-
-**2.0×**
-
-3840×2160
-
-20+
-
-**~22**
-
-2.5×
-
-4800×2700
-
-15+
-
-~16
-
-3.0×
-
-5760×3240
-
-12+
-
-~12
+| Upscale | Resolution | Target FPS | Achieved FPS |
+|---|---|---|---|
+| 1.0× | 1920×1080 | 30+ | ~35 |
+| 1.5× | 2880×1620 | 25+ | ~28 |
+| **2.0×** | 3840×2160 | 20+ | **~22** |
+| 2.5× | 4800×2700 | 15+ | ~16 |
+| 3.0× | 5760×3240 | 12+ | ~12 |
 
 ### 8.3 Resource Utilization (RTX 3090)
 
-Resource
-
-Typical Usage
-
-Peak
-
-GPU Compute
-
-60-80%
-
-95%
-
-VRAM
-
-4-6 GB
-
-8 GB
-
-CPU
-
-15-25%
-
-40%
-
-RAM
-
-2-3 GB
-
-4 GB
+| Resource | Typical Usage | Peak |
+|---|---|---|
+| GPU Compute | 60-80% | 95% |
+| VRAM | 4-6 GB | 8 GB |
+| CPU | 15-25% | 40% |
+| RAM | 2-3 GB | 4 GB |
 
 ---
 
@@ -915,199 +412,44 @@ RAM
 
 ### Phase 1: Prototyping ✅ COMPLETE
 
-Task
-
-Status
-
-Notes
-
-Basic MoveNet skeleton detection
-
-✅
-
-01-MoveNet
-
-MMPose integration
-
-✅
-
-02-MMPose (torch 2.4.x compatibility)
-
-YOLO11-pose multi-person
-
-✅
-
-03-Yolo11m
-
-Kalman+Hungarian tracking
-
-✅
-
-04-RTMPose
-
-Integrated solution
-
-✅
-
-05-WallDance1080p
+| Task | Status | Notes |
+|---|---|---|
+| Basic MoveNet skeleton detection | ✅ | 01-MoveNet |
+| MMPose integration | ✅ | 02-MMPose (torch 2.4.x compatibility) |
+| YOLO11-pose multi-person | ✅ | 03-Yolo11m |
+| Kalman+Hungarian tracking | ✅ | 04-RTMPose |
+| Integrated solution | ✅ | 05-WallDance1080p |
 
 ### Phase 2: Optimization (Current)
 
-Task
-
-Priority
-
-Status
-
-Est. Effort
-
-Fine-tune detection confidence
-
-High
-
-🔄
-
-2h
-
-Tune tracker for real scene
-
-High
-
-🔄
-
-4h
-
-Test with actual camera setup
-
-High
-
-⬜
-
-4h
-
-Profile and optimize bottlenecks
-
-Medium
-
-⬜
-
-8h
-
-Add recording/playback mode
-
-Medium
-
-⬜
-
-4h
+| Task | Priority | Status | Est. Effort |
+|---|---|---|---|
+| Fine-tune detection confidence | High | 🔄 | 2h |
+| Tune tracker for real scene | High | 🔄 | 4h |
+| Test with actual camera setup | High | ⬜ | 4h |
+| Profile and optimize bottlenecks | Medium | ⬜ | 8h |
+| Add recording/playback mode | Medium | ⬜ | 4h |
 
 ### Phase 3: Production Hardening
 
-Task
-
-Priority
-
-Status
-
-Est. Effort
-
-Robust error handling
-
-High
-
-⬜
-
-4h
-
-Auto-reconnect camera
-
-High
-
-⬜
-
-2h
-
-Configuration file (YAML)
-
-Medium
-
-⬜
-
-2h
-
-Logging system
-
-Medium
-
-⬜
-
-2h
-
-Systemd service integration
-
-Low
-
-⬜
-
-2h
-
-Health monitoring endpoint
-
-Low
-
-⬜
-
-4h
+| Task | Priority | Status | Est. Effort |
+|---|---|---|---|
+| Robust error handling | High | ⬜ | 4h |
+| Auto-reconnect camera | High | ⬜ | 2h |
+| Configuration file (YAML) | Medium | ⬜ | 2h |
+| Logging system | Medium | ⬜ | 2h |
+| Systemd service integration | Low | ⬜ | 2h |
+| Health monitoring endpoint | Low | ⬜ | 4h |
 
 ### Phase 4: Advanced Features
 
-Task
-
-Priority
-
-Status
-
-Est. Effort
-
-4K input support
-
-Medium
-
-⬜
-
-4h
-
-Multi-camera stitching
-
-Low
-
-⬜
-
-16h
-
-3D pose estimation
-
-Low
-
-⬜
-
-24h
-
-Gesture recognition
-
-Low
-
-⬜
-
-16h
-
-Web dashboard
-
-Low
-
-⬜
-
-12h
+| Task | Priority | Status | Est. Effort |
+|---|---|---|---|
+| 4K input support | Medium | ⬜ | 4h |
+| Multi-camera stitching | Low | ⬜ | 16h |
+| 3D pose estimation | Low | ⬜ | 24h |
+| Gesture recognition | Low | ⬜ | 16h |
+| Web dashboard | Low | ⬜ | 12h |
 
 ---
 
@@ -1125,35 +467,12 @@ Low
 
 **Alternative approaches considered:**
 
-Approach
-
-Pros
-
-Cons
-
-Higher resolution camera
-
-Native quality
-
-Bandwidth, cost
-
-**Upscaling**
-
-Flexible, cheap
-
-GPU load
-
-Tiled detection
-
-Full resolution
-
-Complexity, boundary issues
-
-Custom trained model
-
-Optimized for small
-
-Training data needed
+| Approach | Pros | Cons |
+|---|---|---|
+| Higher resolution camera | Native quality | Bandwidth, cost |
+| **Upscaling** | Flexible, cheap | GPU load |
+| Tiled detection | Full resolution | Complexity, boundary issues |
+| Custom trained model | Optimized for small | Training data needed |
 
 ### 10.2 Low-Light Performance
 
@@ -1169,7 +488,10 @@ Training data needed
 **Parameters:**
 
 ```python
-CLAHE_CLIP_LIMIT = 3.0      # Contrast boost (1.0-5.0)CLAHE_TILE_SIZE = 8         # Local adaptationGAMMA_CORRECTION = 1.2      # Brightness boostBRIGHTNESS_THRESHOLD = 60   # Auto-detect threshold
+CLAHE_CLIP_LIMIT = 3.0      # Contrast boost (1.0-5.0)
+CLAHE_TILE_SIZE = 8         # Local adaptation
+GAMMA_CORRECTION = 1.2      # Brightness boost
+BRIGHTNESS_THRESHOLD = 60   # Auto-detect threshold
 ```
 
 ### 10.3 ID Persistence During Fast Movement
@@ -1186,7 +508,10 @@ CLAHE_CLIP_LIMIT = 3.0      # Contrast boost (1.0-5.0)CLAHE_TILE_SIZE = 8       
 **Parameters:**
 
 ```python
-TRACKER_DISTANCE_THRESHOLD = 300    # Pixels (in upscaled space)TRACKER_VELOCITY_WEIGHT = 0.6       # Trust in velocity predictionTRACKER_MAX_AGE = 20                # Frames before track deletionTRACKER_PROCESS_NOISE = 2.5         # Allow velocity changes
+TRACKER_DISTANCE_THRESHOLD = 300    # Pixels (in upscaled space)
+TRACKER_VELOCITY_WEIGHT = 0.6       # Trust in velocity prediction
+TRACKER_MAX_AGE = 20                # Frames before track deletion
+TRACKER_PROCESS_NOISE = 2.5         # Allow velocity changes
 ```
 
 ### 10.4 Rotated Body Orientations
@@ -1206,7 +531,8 @@ TRACKER_DISTANCE_THRESHOLD = 300    # Pixels (in upscaled space)TRACKER_VELOCITY
 **Solution:** Pin to torch 2.4.1+cu121.
 
 ```toml
-[dependencies]torch = { version = "2.4.1+cu121", source = "pytorch" }
+[dependencies]
+torch = { version = "2.4.1+cu121", source = "pytorch" }
 ```
 
 ---
@@ -1215,131 +541,48 @@ TRACKER_DISTANCE_THRESHOLD = 300    # Pixels (in upscaled space)TRACKER_VELOCITY
 
 ### 11.1 Implemented Prototypes
 
-Prototype
-
-Purpose
-
-Status
-
-Key Learning
-
-**01-MoveNet**
-
-Single-person baseline
-
-✅ Working
-
-Simple but limited to 1 person
-
-**02-MMPose**
-
-MMPose ecosystem test
-
-✅ Working
-
-Complex deps, two-stage slower
-
-**03-Yolo11m**
-
-Multi-person detection
-
-✅ Working
-
-Best single-shot performance
-
-**04-RTMPose**
-
-Tracking integration
-
-✅ Working
-
-Kalman filter essential
-
-**05-WallDance1080p**
-
-Production prototype
-
-✅ Working
-
-Integrated solution
+| Prototype | Purpose | Status | Key Learning |
+|---|---|---|---|
+| **01-MoveNet** | Single-person baseline | ✅ Working | Simple but limited to 1 person |
+| **02-MMPose** | MMPose ecosystem test | ✅ Working | Complex deps, two-stage slower |
+| **03-Yolo11m** | Multi-person detection | ✅ Working | Best single-shot performance |
+| **04-RTMPose** | Tracking integration | ✅ Working | Kalman filter essential |
+| **05-WallDance1080p** | Production prototype | ✅ Working | Integrated solution |
 
 ### 11.2 Current Best Configuration
 
 ```python
-# 05-WallDance1080p/config.pyUPSCALE_FACTOR = 2.0              # 4K equivalent processingYOLO_MODEL = "yolo11m-pose.pt"    # Best accuracy/speed balanceYOLO_CONFIDENCE = 0.25            # Permissive detectionMAX_PERSONS = 6                   # Target dancer countENHANCE_ENABLED = True            # Auto low-light enhancementCLAHE_CLIP_LIMIT = 3.0GAMMA_CORRECTION = 1.2TRACKER_DISTANCE_THRESHOLD = 300  # Generous for fast movementTRACKER_MAX_AGE = 20              # Robust to brief occlusionsTRACKER_VELOCITY_WEIGHT = 0.6     # Trust motion prediction
+# 05-WallDance1080p/config.py
+UPSCALE_FACTOR = 2.0              # 4K equivalent processing
+YOLO_MODEL = "yolo11m-pose.pt"    # Best accuracy/speed balance
+YOLO_CONFIDENCE = 0.25            # Permissive detection
+MAX_PERSONS = 6                   # Target dancer count
+ENHANCE_ENABLED = True            # Auto low-light enhancement
+CLAHE_CLIP_LIMIT = 3.0
+GAMMA_CORRECTION = 1.2
+TRACKER_DISTANCE_THRESHOLD = 300  # Generous for fast movement
+TRACKER_MAX_AGE = 20              # Robust to brief occlusions
+TRACKER_VELOCITY_WEIGHT = 0.6     # Trust motion prediction
 ```
 
 ### 11.2.1 Runtime Performance Options (GUI)
 
-Setting
-
-Default
-
-Range
-
-Effect
-
-Model
-
-yolo11m-pose
-
-n/s/m/l/x
-
-Speed vs accuracy
-
-FP16
-
-OFF
-
-ON/OFF
-
-+20-30% FPS
-
-Frame Skip
-
-0
-
-0-4
-
-Skip N frames between inference
+| Setting | Default | Range | Effect |
+|---|---|---|---|
+| Model | yolo11m-pose | n/s/m/l/x | Speed vs accuracy |
+| FP16 | OFF | ON/OFF | +20-30% FPS |
+| Frame Skip | 0 | 0-4 | Skip N frames between inference |
 
 ### 11.3 Known Limitations
 
-Limitation
-
-Impact
-
-Mitigation
-
-1080p input only
-
-Fixed
-
-Support 4K in Phase 4
-
-Single camera
-
-Limited coverage
-
-Multi-cam in Phase 4
-
-2D pose only
-
-No depth
-
-3D estimation in Phase 4
-
-UDP OSC
-
-No delivery guarantee
-
-Add TCP option
-
-Fixed scene
-
-No auto-calibration
-
-Manual config
+| Limitation | Impact | Mitigation |
+|---|---|---|
+| 1080p input only | Fixed | Support 4K in Phase 4 |
+| Single camera | Limited coverage | Multi-cam in Phase 4 |
+| 2D pose only | No depth | 3D estimation in Phase 4 |
+| UDP OSC | No delivery guarantee | Add TCP option |
+| Fixed scene | No auto-calibration | Manual config |
+| CPU frame copy | Extra latency | V4L2 DMA-BUF zero-copy |
 
 ---
 
@@ -1347,99 +590,67 @@ Manual config
 
 ### 12.1 Near-Term (1-3 months)
 
-Enhancement
-
-Description
-
-Benefit
-
-4K input
-
-Support 3840×2160 capture
-
-Better native resolution
-
-Recording mode
-
-Save raw + pose data
-
-Replay, analysis
-
-Config file
-
-YAML/JSON settings
-
-No code changes
-
-OSC bundles
-
-Batch messages per frame
-
-Reduced network overhead
+| Enhancement | Description | Benefit |
+|---|---|---|
+| 4K input | Support 3840×2160 capture | Better native resolution |
+| Recording mode | Save raw + pose data | Replay, analysis |
+| Config file | YAML/JSON settings | No code changes |
+| OSC bundles | Batch messages per frame | Reduced network overhead |
+| V4L2 DMA-BUF | Zero-copy GPU capture | 5-15ms latency reduction |
 
 ### 12.2 Medium-Term (3-6 months)
 
-Enhancement
-
-Description
-
-Benefit
-
-Multi-camera
-
-Stitch 2-3 cameras
-
-Wider/taller coverage
-
-Depth estimation
-
-Monocular depth
-
-Z-axis movement
-
-Gesture recognition
-
-Classify poses/actions
-
-Higher-level events
-
-Web dashboard
-
-Browser-based config/monitor
-
-Remote management
+| Enhancement | Description | Benefit |
+|---|---|---|
+| Multi-camera | Stitch 2-3 cameras | Wider/taller coverage |
+| Depth estimation | Monocular depth | Z-axis movement |
+| Gesture recognition | Classify poses/actions | Higher-level events |
+| Web dashboard | Browser-based config/monitor | Remote management |
+| GStreamer NVMM | Hardware-accelerated pipeline | Lower CPU, better throughput |
 
 ### 12.3 Long-Term (6-12 months)
 
-Enhancement
+| Enhancement | Description | Benefit |
+|---|---|---|
+| 3D pose estimation | Multi-view triangulation | True 3D positions |
+| Action recognition | Temporal pose analysis | Dance move detection |
+| Edge deployment | Jetson Orin / similar | Standalone unit |
+| ML-based tracking | DeepSORT / ByteTrack | Better re-ID |
 
-Description
+### 12.4 V4L2 DMA-BUF Zero-Copy Capture
 
-Benefit
+**Current Architecture:**
+- OpenCV `VideoCapture` → CPU memory → NumPy → GPU upload
+- 2-3 memory copies per frame
+- ~10-20ms overhead
 
-3D pose estimation
+**Proposed Architecture:**
+- V4L2 DMA-BUF → Direct GPU memory (CUDA/NVMM)
+- Zero CPU copies
+- ~5-15ms latency savings
 
-Multi-view triangulation
+**Implementation Options:**
 
-True 3D positions
+| Option | Complexity | Performance | Notes |
+|---|---|---|---|
+| GStreamer + nvv4l2camerasrc | Medium | Excellent | NVIDIA-optimized, well-documented |
+| PyV4L2 + CuPy DMA-BUF | High | Excellent | Maximum control, complex integration |
+| pycuda + V4L2 direct | High | Excellent | Low-level, requires CUDA expertise |
 
-Action recognition
+**GStreamer Pipeline Example:**
+```
+v4l2src device=/dev/video0 !
+video/x-raw,format=UYVY,width=1920,height=1080,framerate=30/1 !
+nvvidconv !
+video/x-raw(memory:NVMM),format=BGRx !
+appsink
+```
 
-Temporal pose analysis
-
-Dance move detection
-
-Edge deployment
-
-Jetson Orin / similar
-
-Standalone unit
-
-ML-based tracking
-
-DeepSORT / ByteTrack
-
-Better re-ID
+**Requirements:**
+- NVIDIA GPU with NVMM support
+- GStreamer 1.x with nvvidconv plugin
+- Capture card with V4L2 DMA-BUF export (Magewell, Blackmagic)
+- Linux kernel 4.x+ with DMA-BUF subsystem
 
 ---
 
@@ -1482,7 +693,15 @@ Better re-ID
 ### Python Packages
 
 ```toml
-[dependencies]torch = "2.4.1+cu121"torchvision = "0.19.1+cu121"ultralytics = ">=8.0"opencv-python = ">=4.8"python-osc = ">=1.8"filterpy = ">=1.4"scipy = ">=1.10"numpy = ">=1.24"
+[dependencies]
+torch = "2.4.1+cu121"
+torchvision = "0.19.1+cu121"
+ultralytics = ">=8.0"
+opencv-python = ">=4.8"
+python-osc = ">=1.8"
+filterpy = ">=1.4"
+scipy = ">=1.10"
+numpy = ">=1.24"
 ```
 
 ### System Requirements
@@ -1497,134 +716,78 @@ Better re-ID
 ## Appendix B: Quick Start
 
 ```bash
-# Clone repositorygit clone https://github.com/Hemisphere-Project/WallDance.gitcd WallDance/05-WallDance1080p# Install dependencies./install.sh# Configure (edit as needed)nano config.py# Run./run.sh
+# Clone repository
+git clone https://github.com/Hemisphere-Project/WallDance.git
+cd WallDance/05-WallDance1080p
+
+# Install dependencies
+./install.sh
+
+# Configure (edit as needed)
+nano config.py
+
+# Run
+./run.sh
 ```
 
 ### Keyboard Controls
 
-Key
-
-Action
-
-Q
-
-Quit
-
-H
-
-Toggle help overlay
-
-E
-
-Toggle enhancement
-
-+/-
-
-Adjust upscale factor
-
-T
-
-Toggle motion trails
-
-S
-
-Toggle skeleton
-
-K
-
-Toggle keypoints
-
-B
-
-Toggle bounding box
-
-I
-
-Toggle dancer IDs
-
-R
-
-Reset tracker
+| Key | Action |
+|---|---|
+| Q | Quit |
+| H | Toggle help overlay |
+| E | Toggle enhancement |
+| +/- | Adjust upscale factor |
+| T | Toggle motion trails |
+| S | Toggle skeleton |
+| K | Toggle keypoints |
+| B | Toggle bounding box |
+| I | Toggle dancer IDs |
+| R | Reset tracker |
 
 ---
 
 ## Appendix C: OSC Testing
 
 ```bash
-# Install oscdump (liblo-tools)sudo apt install liblo-tools# Listen for WallDance messagesoscdump 9000
+# Install oscdump (liblo-tools)
+sudo apt install liblo-tools
+
+# Listen for WallDance messages
+oscdump 9000
 ```
 
 Expected output:
 
 ```
-/walldance/count i 2/walldance/dancer/1/centroid ff 0.350000 0.450000/walldance/dancer/1/bbox ffff 0.300000 0.400000 0.100000 0.200000/walldance/dancer/1/velocity ff 0.005000 -0.002000/walldance/dancer/1/keypoints fff... (51 values)
+/walldance/count i 2
+/walldance/dancer/1/centroid ff 0.350000 0.450000
+/walldance/dancer/1/bbox ffff 0.300000 0.400000 0.100000 0.200000
+/walldance/dancer/1/velocity ff 0.005000 -0.002000
+/walldance/dancer/1/keypoints fff... (51 values)
 ```
 
 ---
 
 ## Appendix D: Troubleshooting
 
-Issue
-
-Cause
-
-Solution
-
-No camera found
-
-Wrong index
-
-Try CAMERA_INDEX = 1, 2, ...
-
-Low FPS (<10)
-
-High upscale
-
-Reduce UPSCALE_FACTOR
-
-Missing detections
-
-Dark scene
-
-Increase CLAHE_CLIP_LIMIT
-
-ID swaps
-
-Fast movement
-
-Increase TRACKER_DISTANCE_THRESHOLD
-
-Ghost tracks
-
-False detections
-
-Increase YOLO_CONFIDENCE
-
-CUDA OOM
-
-Large upscale
-
-Reduce UPSCALE_FACTOR or use smaller model
+| Issue | Cause | Solution |
+|---|---|---|
+| No camera found | Wrong index | Try CAMERA_INDEX = 1, 2, ... |
+| Low FPS (<10) | High upscale | Reduce UPSCALE_FACTOR |
+| Missing detections | Dark scene | Increase CLAHE_CLIP_LIMIT |
+| ID swaps | Fast movement | Increase TRACKER_DISTANCE_THRESHOLD |
+| Ghost tracks | False detections | Increase YOLO_CONFIDENCE |
+| CUDA OOM | Large upscale | Reduce UPSCALE_FACTOR or use smaller model |
 
 ---
 
 ## Document History
 
-Version
-
-Date
-
-Author
-
-Changes
-
-1.0
-
-2025-12-06
-
-AI/Human collaboration
-
-Initial specification
+| Version | Date | Author | Changes |
+|---|---|---|---|
+| 1.0 | 2025-12-06 | AI/Human collaboration | Initial specification |
+| 1.1 | 2025-12-08 | AI/Human collaboration | Video recording system, UI improvements |
 
 ---
 
