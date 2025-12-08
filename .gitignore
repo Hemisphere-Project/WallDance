@@ -1,2 +1,18 @@
 *.pt
 models/
+
+# Python 
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+env/
+venv/
+ENV/
+.venv/
+build/
+develop-eggs/
+dist/
+
+# projects folder
+projects/

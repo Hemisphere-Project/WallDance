@@ -1,0 +1,1079 @@
+"""
+High-level application orchestration for WallDance.
+This module keeps the runtime glue small by delegating to:
+- CameraManager (camera lifecycle)
+- FrameProcessor (enhance → YOLO → tracking → OSC)
+- ConfigStore (save/load presets)
+- WallDanceGUI (DearPyGui front-end)
+"""
+
+from __future__ import annotations
+
+import os
+import time
+from dataclasses import dataclass
+from typing import Dict, List, Optional
+
+import cv2
+import dearpygui.dearpygui as dpg
+import numpy as np
+from ultralytics import YOLO
+
+from camera_manager import CameraManager
+from config import (
+    BRIGHTNESS_THRESHOLD,
+    CAMERA_FPS,
+    CAMERA_HEIGHT,
+    CAMERA_INDEX,
+    CAMERA_WIDTH,
+    CLAHE_CLIP_LIMIT,
+    ENHANCE_ENABLED,
+    GAMMA_CORRECTION,
+    KEYPOINT_CONFIDENCE,
+    MAX_PERSONS,
+    MODELS_DIR,
+    OSC_ENABLED,
+    OSC_IP,
+    OSC_PORT,
+    PERSON_HEIGHT_MAX_RATIO,
+    PERSON_HEIGHT_MIN_RATIO,
+    PERSON_HEIGHT_PX,
+    PREVIEW_DISPLAY_SCALE,
+    PREVIEW_ENABLED,
+    PREVIEW_RENDER_SCALE,
+    SHOW_BBOX,
+    SHOW_ID,
+    SHOW_KEYPOINTS,
+    SHOW_SKELETON,
+    SHOW_TRAILS,
+    TRACKER_DISTANCE_THRESHOLD,
+    TRACKER_MAX_AGE,
+    UPSCALE_FACTOR,
+    YOLO_CONFIDENCE,
+    YOLO_IMGSZ,
+    YOLO_MODEL,
+)
+from config_store import ConfigStore, format_config_display, sanitize_project_name
+from osc_output import OSCSender
+from pipeline import FrameProcessor, ProcessingSettings, ScaledTrack
+from visualization import draw_dancer
+from gui import WallDanceGUI
+from enhancer import ImageEnhancer
+from tracker import DancerTracker
+from video_recorder import VideoRecorder, RecorderState
+
+
+@dataclass
+class PreviewGeometry:
+    display_scale: float = PREVIEW_DISPLAY_SCALE
+    render_scale: float = PREVIEW_RENDER_SCALE
+    width: int = int(CAMERA_WIDTH * PREVIEW_RENDER_SCALE)
+    height: int = int(CAMERA_HEIGHT * PREVIEW_RENDER_SCALE)
+
+
+class WallDanceApp:
+    """Main application orchestrator."""
+
+    def __init__(self):
+        print("=" * 60)
+        print("WallDance 1080p - Multi-Person Pose Detection")
+        print("=" * 60)
+
+        os.makedirs(MODELS_DIR, exist_ok=True)
+        model_path = os.path.join(MODELS_DIR, YOLO_MODEL)
+        print(f"Loading {YOLO_MODEL} from {MODELS_DIR}...")
+        self.model = YOLO(model_path)
+        print("Model loaded!")
+
+        self.current_model = YOLO_MODEL
+        self.current_model_name = YOLO_MODEL.replace(".pt", "")
+
+        self.settings = ProcessingSettings(
+            confidence=YOLO_CONFIDENCE,
+            imgsz=YOLO_IMGSZ,
+            max_persons=MAX_PERSONS,
+            use_fp16=False,
+            upscale_factor=UPSCALE_FACTOR,
+            enhance_enabled=ENHANCE_ENABLED,
+            enhance_lite=False,
+            person_height_px=PERSON_HEIGHT_PX,
+            person_height_min_ratio=PERSON_HEIGHT_MIN_RATIO,
+            person_height_max_ratio=PERSON_HEIGHT_MAX_RATIO,
+            osc_enabled=OSC_ENABLED,
+        )
+
+        self.camera = CameraManager()
+        self.osc: Optional[OSCSender] = None
+        self.osc_ip = OSC_IP
+        self.osc_port = OSC_PORT
+        self.osc_enabled = OSC_ENABLED
+
+        self.enhancer = ImageEnhancer()
+        self.tracker = DancerTracker()
+        self.processor = FrameProcessor(
+            model=self.model,
+            settings=self.settings,
+            enhancer=self.enhancer,
+            tracker=self.tracker,
+            osc_sender=self.osc,
+        )
+        if self.osc_enabled:
+            self._init_osc()
+
+        self.gui: Optional[WallDanceGUI] = None
+        self.config_store = ConfigStore()
+        self._current_project = "default"
+
+        # Video recording
+        self.recorder = VideoRecorder()
+        self._pending_rec_slot: Optional[int] = None  # Slot being recorded to
+        self._rec_armed: bool = False  # True when REC clicked, waiting for slot selection
+
+        # Preview/display state
+        self.preview_enabled = PREVIEW_ENABLED
+        self.preview_fps_cap = True  # Limit preview to 10 FPS to save resources
+        self.preview_stride = 2
+        self.preview = PreviewGeometry(
+            display_scale=PREVIEW_DISPLAY_SCALE,
+            render_scale=PREVIEW_RENDER_SCALE,
+            width=int(CAMERA_WIDTH * PREVIEW_RENDER_SCALE),
+            height=int(CAMERA_HEIGHT * PREVIEW_RENDER_SCALE),
+        )
+        self._pending_preview_resize = False
+        self._last_preview_upload_time = 0.0
+
+        # Visualization flags
+        self.show_trails = SHOW_TRAILS
+        self.show_skeleton = SHOW_SKELETON
+        self.show_keypoints = SHOW_KEYPOINTS
+        self.show_bbox = SHOW_BBOX
+        self.show_ids = SHOW_ID
+
+        # State for metrics
+        self.frame_skip = 0
+        self.frame_skip_counter = 0
+        self.frame_count = 0
+        self.last_fps_time = time.time()
+        self.fps = 0.0
+        self.timing: Dict[str, float] = {}
+        self.latency_ms = 0.0
+        self.running = False
+        self.last_tracked: List[ScaledTrack] = []
+
+    # ------------------------------------------------------------------
+    # OSC
+    # ------------------------------------------------------------------
+    def _init_osc(self):
+        try:
+            self.osc = OSCSender(self.osc_ip, self.osc_port)
+            self.processor.attach_osc(self.osc)
+        except Exception as exc:
+            print(f"OSC init failed: {exc}")
+            self.osc = None
+            self.processor.attach_osc(None)
+
+    # ------------------------------------------------------------------
+    # GUI integration helpers
+    # ------------------------------------------------------------------
+    def _get_gui_config(self) -> Dict:
+        state = self.camera.state
+        all_sources = list(set(state.available + state.unavailable))
+        all_sources.sort(key=lambda x: (x not in state.available, x))
+        return {
+            "video_width": int(CAMERA_WIDTH * PREVIEW_DISPLAY_SCALE),
+            "video_height": int(CAMERA_HEIGHT * PREVIEW_DISPLAY_SCALE),
+            "camera_width": state.width,
+            "camera_height": state.height,
+            "camera_source": state.source,
+            "camera_sources": all_sources if all_sources else ["0"],
+            "model": self.current_model_name,
+            "confidence": self.settings.confidence,
+            "max_persons": self.settings.max_persons,
+            "fp16": self.settings.use_fp16,
+            "frame_skip": self.frame_skip,
+            "yolo_imgsz": self.settings.imgsz,
+            "person_height_px": self.settings.person_height_px,
+            "enhance_enabled": self.settings.enhance_enabled,
+            "enhance_lite": self.settings.enhance_lite,
+            "clahe_clip": CLAHE_CLIP_LIMIT,
+            "gamma": GAMMA_CORRECTION,
+            "upscale_factor": self.settings.upscale_factor,
+            "show_skeleton": self.show_skeleton,
+            "show_keypoints": self.show_keypoints,
+            "show_bbox": self.show_bbox,
+            "show_trails": self.show_trails,
+            "show_ids": self.show_ids,
+            "tracker_distance": TRACKER_DISTANCE_THRESHOLD,
+            "tracker_max_age": TRACKER_MAX_AGE,
+            "osc_enabled": self.osc_enabled,
+            "osc_ip": self.osc_ip,
+            "osc_port": self.osc_port,
+            "preview_enabled": self.preview_enabled,
+            "preview_fps_cap": self.preview_fps_cap,
+            "preview_scale": self.preview.render_scale,
+            "texture_width": self.preview.width,
+            "texture_height": self.preview.height,
+            "display_width": int(CAMERA_WIDTH * self.preview.display_scale),
+            "display_height": int(CAMERA_HEIGHT * self.preview.display_scale),
+            "camera_running": self.camera.state.is_open,
+        }
+
+    def _get_gui_callbacks(self) -> Dict:
+        return {
+            "on_enhance_toggle": self._cb_enhance_toggle,
+            "on_enhance_lite_toggle": self._cb_enhance_lite_toggle,
+            "on_upscale_change": self._cb_upscale_change,
+            "on_clahe_change": self._cb_clahe_change,
+            "on_gamma_change": self._cb_gamma_change,
+            "on_confidence_change": self._cb_confidence_change,
+            "on_max_persons_change": self._cb_max_persons_change,
+            "on_model_change": self._cb_model_change,
+            "on_fp16_toggle": self._cb_fp16_toggle,
+            "on_frame_skip_change": self._cb_frame_skip_change,
+            "on_camera_change": self._cb_camera_change,
+            "on_camera_toggle": self._cb_camera_toggle,
+            "on_imgsz_change": self._cb_imgsz_change,
+            "on_person_height_change": self._cb_person_height_change,
+            "on_visualization_toggle": self._cb_visualization_toggle,
+            "on_tracker_distance_change": self._cb_tracker_distance_change,
+            "on_tracker_age_change": self._cb_tracker_age_change,
+            "on_tracker_reset": self._cb_tracker_reset,
+            "on_osc_toggle": self._cb_osc_toggle,
+            "on_osc_config": self._cb_osc_config,
+            "on_preview_toggle": self._cb_preview_toggle,
+            "on_preview_cap_toggle": self._cb_preview_cap_toggle,
+            "on_preview_scale_change": self._cb_preview_scale_change,
+            "on_save_config": self._cb_save_config,
+            "on_save_as_config": self._cb_save_as_config,
+            "on_load_config": self._cb_load_config,
+            "on_do_save_config": self._cb_do_save_config,
+            "on_do_load_config": self._cb_do_load_config,
+            "on_project_select": self._cb_project_select,
+            "on_config_select": self._cb_config_select,
+            "on_rec_live": self._cb_rec_live,
+            "on_rec_toggle": self._cb_rec_toggle,
+            "on_rec_slot_click": self._cb_rec_slot_click,
+            "on_quit": self._cb_quit,
+        }
+
+    # ------------------------------------------------------------------
+    # Config persistence
+    # ------------------------------------------------------------------
+    def _get_saveable_config(self) -> Dict:
+        return {
+            "camera_source": self.camera.state.source,
+            "model": self.current_model_name,
+            "confidence": self.settings.confidence,
+            "yolo_imgsz": self.settings.imgsz,
+            "max_persons": self.settings.max_persons,
+            "fp16": self.settings.use_fp16,
+            "frame_skip": self.frame_skip,
+            "upscale_factor": self.settings.upscale_factor,
+            "person_height_px": self.settings.person_height_px,
+            "enhance_enabled": self.settings.enhance_enabled,
+            "enhance_lite": self.settings.enhance_lite,
+            "clahe_clip": self.enhancer.clahe_clip,
+            "gamma": self.enhancer.gamma,
+            "show_skeleton": self.show_skeleton,
+            "show_keypoints": self.show_keypoints,
+            "show_bbox": self.show_bbox,
+            "show_trails": self.show_trails,
+            "show_ids": self.show_ids,
+            "tracker_distance": self.tracker.distance_threshold,
+            "tracker_max_age": self.tracker.max_age,
+            "osc_enabled": self.osc_enabled,
+            "osc_ip": self.osc_ip,
+            "osc_port": self.osc_port,
+            "preview_enabled": self.preview_enabled,
+            "preview_fps_cap": self.preview_fps_cap,
+            "preview_scale": self.preview.render_scale,
+        }
+
+    def _apply_config(self, config: Dict):
+        # Camera
+        if "camera_source" in config and config["camera_source"] != self.camera.state.source:
+            saved_source = config["camera_source"]
+            if CameraManager.check_camera_available(saved_source):
+                self._open_camera(saved_source)
+            else:
+                self.camera.state.source = saved_source
+                if saved_source not in self.camera.state.unavailable:
+                    self.camera.state.unavailable.append(saved_source)
+                if self.gui:
+                    all_sources = list(set(self.camera.state.available + self.camera.state.unavailable))
+                    all_sources.sort()
+                    self.gui.update_camera_sources(all_sources, saved_source, self.camera.state.unavailable)
+                print(f"Saved camera {saved_source} not available")
+
+        # Model
+        if "model" in config and config["model"] != self.current_model_name:
+            self._cb_model_change(config["model"])
+            if self.gui:
+                self.gui.sync_combo("model", config["model"])
+
+        # YOLO
+        if "confidence" in config:
+            self.settings.confidence = config["confidence"]
+            self.gui and self.gui.sync_slider("confidence", config["confidence"])
+        if "yolo_imgsz" in config:
+            self.settings.imgsz = config["yolo_imgsz"]
+            self.gui and self.gui.sync_combo("imgsz", str(config["yolo_imgsz"]))
+        if "max_persons" in config:
+            self.settings.max_persons = config["max_persons"]
+            self.gui and self.gui.sync_slider("max_persons", config["max_persons"])
+        if "fp16" in config:
+            self.settings.use_fp16 = config["fp16"]
+            self.gui and self.gui.sync_checkbox("fp16", config["fp16"])
+        if "frame_skip" in config:
+            self.frame_skip = config["frame_skip"]
+            self.gui and self.gui.sync_slider("frame_skip", config["frame_skip"])
+        if "upscale_factor" in config:
+            self._cb_upscale_change(config["upscale_factor"])
+            self.gui and self.gui.sync_slider("upscale", config["upscale_factor"])
+        if "person_height_px" in config:
+            self.settings.person_height_px = config["person_height_px"]
+            self.gui and self.gui.sync_slider("person_height", config["person_height_px"])
+
+        # Enhancement
+        if "enhance_enabled" in config:
+            self.settings.enhance_enabled = config["enhance_enabled"]
+            self.gui and self.gui.sync_checkbox("enhance", config["enhance_enabled"])
+        if "enhance_lite" in config:
+            self.settings.enhance_lite = config["enhance_lite"]
+            self.gui and self.gui.sync_checkbox("enhance_lite", config["enhance_lite"])
+        if "clahe_clip" in config:
+            self.enhancer.clahe_clip = config["clahe_clip"]
+            self.enhancer._update_clahe()
+            self.gui and self.gui.sync_slider("clahe", config["clahe_clip"])
+        if "gamma" in config:
+            self.enhancer.gamma = config["gamma"]
+            self.enhancer._update_gamma_lut()
+            self.gui and self.gui.sync_slider("gamma", config["gamma"])
+
+        # Visualization
+        if "show_skeleton" in config:
+            self.show_skeleton = config["show_skeleton"]
+            self.gui and self.gui.sync_checkbox("skeleton", config["show_skeleton"])
+        if "show_keypoints" in config:
+            self.show_keypoints = config["show_keypoints"]
+            self.gui and self.gui.sync_checkbox("keypoints", config["show_keypoints"])
+        if "show_bbox" in config:
+            self.show_bbox = config["show_bbox"]
+            self.gui and self.gui.sync_checkbox("bbox", config["show_bbox"])
+        if "show_trails" in config:
+            self.show_trails = config["show_trails"]
+            self.gui and self.gui.sync_checkbox("trails", config["show_trails"])
+        if "show_ids" in config:
+            self.show_ids = config["show_ids"]
+            self.gui and self.gui.sync_checkbox("ids", config["show_ids"])
+
+        # Tracker
+        if "tracker_distance" in config:
+            self.tracker.distance_threshold = config["tracker_distance"]
+            self.gui and self.gui.sync_slider("tracker_distance", config["tracker_distance"])
+        if "tracker_max_age" in config:
+            self.tracker.max_age = config["tracker_max_age"]
+            self.gui and self.gui.sync_slider("tracker_max_age", config["tracker_max_age"])
+
+        # OSC
+        if "osc_enabled" in config:
+            self.osc_enabled = config["osc_enabled"]
+            self.settings.osc_enabled = config["osc_enabled"]
+            self.gui and self.gui.sync_checkbox("osc", config["osc_enabled"])
+        if "osc_ip" in config:
+            self.osc_ip = config["osc_ip"]
+            self.gui and self.gui.sync_input("osc_ip", config["osc_ip"])
+        if "osc_port" in config:
+            self.osc_port = config["osc_port"]
+            self.gui and self.gui.sync_input("osc_port", config["osc_port"])
+        if self.osc_enabled and (config.get("osc_ip") or config.get("osc_port")):
+            self._init_osc()
+
+        # Preview
+        if "preview_enabled" in config:
+            self.preview_enabled = config["preview_enabled"]
+            self.gui and self.gui.sync_checkbox("preview", config["preview_enabled"])
+        if "preview_fps_cap" in config:
+            self.preview_fps_cap = config["preview_fps_cap"]
+            self.gui and self.gui.sync_checkbox("preview_cap", config["preview_fps_cap"])
+        if "preview_scale" in config:
+            print(f"[Config] Applying preview_scale={config['preview_scale']} (camera: {self.camera.state.width}x{self.camera.state.height})")
+            # Force apply to recompute texture size even if the scale matches the current value
+            self._apply_preview_scale(config["preview_scale"], force=True)
+            self.gui and self.gui.sync_slider("preview_scale", config["preview_scale"])
+
+        print("Config applied successfully")
+
+    def _update_topbar_state(self, selected_filepath: Optional[str] = None):
+        projects = self.config_store.list_projects()
+        if self.gui:
+            self.gui.update_project_list(projects, self._current_project)
+
+        history = self.config_store.project_history(self._current_project)
+
+        current_display = ""
+        if selected_filepath:
+            selected_abs = os.path.abspath(selected_filepath)
+            for display, path in history.configs:
+                if os.path.abspath(path) == selected_abs:
+                    current_display = display
+                    break
+            if not current_display:
+                current_display = format_config_display(os.path.basename(selected_filepath))
+
+        if not current_display and history.configs:
+            current_display = history.configs[0][0]
+
+        if self.gui:
+            self.gui.update_config_list(history.configs, current_display)
+            if current_display:
+                self.gui.set_current_config(current_display)
+
+    def _autoload_config(self):
+        last_project = self.config_store.read_last_project()
+        if not last_project:
+            print("No last project found, starting fresh")
+            self._update_topbar_state()
+            return
+        latest = self.config_store.latest_for_project(last_project)
+        if latest:
+            config = self.config_store.load(latest)
+            self._apply_config(config)
+            self._current_project = last_project
+            print(f"Auto-loaded project '{last_project}': {os.path.basename(latest)}")
+        else:
+            print(f"No configs found for project '{last_project}'")
+        self._update_topbar_state()
+
+    # ------------------------------------------------------------------
+    # GUI callbacks
+    # ------------------------------------------------------------------
+    def _cb_enhance_toggle(self, enabled: bool):
+        self.settings.enhance_enabled = enabled
+        print(f"Enhancement: {'ON' if enabled else 'OFF'}")
+
+    def _cb_enhance_lite_toggle(self, enabled: bool):
+        self.settings.enhance_lite = enabled
+        print(f"Enhancement Lite Mode: {'ON (gamma only)' if enabled else 'OFF (full CLAHE)'}")
+
+    def _cb_upscale_change(self, factor: float):
+        self.settings.upscale_factor = factor
+        print(f"Upscale: {factor:.1f}x")
+
+    def _cb_clahe_change(self, value: float):
+        self.enhancer.clahe_clip = value
+        self.enhancer._update_clahe()
+        print(f"CLAHE clip: {value:.1f}")
+
+    def _cb_gamma_change(self, value: float):
+        self.enhancer.gamma = value
+        self.enhancer._update_gamma_lut()
+        print(f"Gamma: {value:.2f}")
+
+    def _cb_confidence_change(self, value: float):
+        self.settings.confidence = value
+        print(f"Confidence: {value:.2f}")
+
+    def _cb_max_persons_change(self, value: int):
+        self.settings.max_persons = value
+        print(f"Max persons: {value}")
+
+    def _cb_camera_change(self, value: str):
+        source = value.replace(" (unavailable)", "").strip()
+        if source == self.camera.state.source:
+            return
+        print(f"Switching camera to: {source}")
+        self._open_camera(source)
+
+    def _cb_camera_toggle(self):
+        if self.camera.state.is_open:
+            print(f"Stopping camera {self.camera.state.source}...")
+            self.camera.close()
+            self.camera.state.is_open = False
+            if self.gui:
+                all_sources = list(set(self.camera.state.available + self.camera.state.unavailable))
+                all_sources.sort()
+                self.gui.update_camera_sources(all_sources, self.camera.state.source, self.camera.state.unavailable)
+                self.gui.update_camera_status(False, self.camera.state.source)
+        else:
+            print(f"Starting camera {self.camera.state.source}...")
+            opened = self._open_camera(self.camera.state.source)
+            if self.gui:
+                self.gui.update_camera_status(opened, self.camera.state.source)
+
+    def _open_camera(self, source: str) -> bool:
+        opened = self.camera.open(source)
+        state = self.camera.state
+        if opened:
+            if self.gui:
+                all_sources = list(set(state.available + [source]))
+                all_sources.sort()
+                self.gui.update_camera_sources(all_sources, source, state.unavailable)
+                self.gui.update_camera_status(True, source)
+            # Update preview geometry to match actual camera size
+            self.preview.width = int(state.width * self.preview.render_scale)
+            self.preview.height = int(state.height * self.preview.render_scale)
+            self._pending_preview_resize = True
+            print(f"Camera {source} opened: {state.width}x{state.height}")
+        else:
+            if self.gui:
+                all_sources = list(set(state.available + state.unavailable))
+                all_sources.sort()
+                self.gui.update_camera_sources(all_sources, source, state.unavailable)
+                self.gui.update_camera_status(False, source)
+            print(f"Camera {source} unavailable")
+        return opened
+
+    def _cb_imgsz_change(self, value: int):
+        self.settings.imgsz = int(value)
+        max_cam_dim = max(self.camera.state.width, self.camera.state.height)
+        if self.settings.imgsz > max_cam_dim:
+            print(f"⚠️  YOLO imgsz {self.settings.imgsz} > camera {max_cam_dim}px - may reduce accuracy (padding)")
+        else:
+            print(f"YOLO imgsz: {self.settings.imgsz}")
+
+    def _cb_person_height_change(self, value: int):
+        self.settings.person_height_px = int(value)
+        self.tracker.distance_threshold = max(200, int(self.settings.person_height_px * 1.5))
+
+    def _cb_visualization_toggle(self, name: str, enabled: bool):
+        if name == "skeleton":
+            self.show_skeleton = enabled
+        elif name == "keypoints":
+            self.show_keypoints = enabled
+        elif name == "bbox":
+            self.show_bbox = enabled
+        elif name == "trails":
+            self.show_trails = enabled
+        elif name == "ids":
+            self.show_ids = enabled
+        print(f"{name.capitalize()}: {'ON' if enabled else 'OFF'}")
+
+    def _cb_tracker_distance_change(self, value: int):
+        self.tracker.distance_threshold = value
+        print(f"Tracker distance: {value}px")
+
+    def _cb_tracker_age_change(self, value: int):
+        self.tracker.max_age = value
+        print(f"Tracker max age: {value} frames")
+
+    def _cb_tracker_reset(self):
+        self.tracker.reset()
+        if self.osc:
+            self.osc.send_clear()
+        print("Tracker reset")
+
+    def _cb_osc_toggle(self, enabled: bool):
+        self.osc_enabled = enabled
+        self.settings.osc_enabled = enabled
+        if enabled and not self.osc:
+            self._init_osc()
+        print(f"OSC: {'ON' if enabled else 'OFF'}")
+
+    def _cb_osc_config(self, ip: str, port: int):
+        if ip != self.osc_ip or port != self.osc_port:
+            self.osc_ip = ip
+            self.osc_port = port
+            if self.osc_enabled:
+                self._init_osc()
+            print(f"OSC target: {ip}:{port}")
+
+    def _cb_save_config(self):
+        self._cb_do_save_config(self._current_project)
+
+    def _cb_save_as_config(self):
+        if self.gui:
+            self.gui.show_save_config_dialog(self._current_project)
+
+    def _cb_load_config(self):
+        if self.gui:
+            self.gui.show_load_config_dialog(self.config_store.config_dir, self._current_project)
+
+    def _cb_do_save_config(self, project_name: str):
+        filepath = self.config_store.save(project_name, self._get_saveable_config())
+        self._current_project = sanitize_project_name(project_name)
+        self._update_topbar_state()
+        if self.gui:
+            self.gui.show_save_indicator("Saved!")
+        print(f"Config saved: {filepath}")
+
+    def _cb_do_load_config(self, filepath: str):
+        try:
+            config = self.config_store.load(filepath)
+            self._apply_config(config)
+            self._current_project = self.config_store.infer_project_from_config(config, filepath)
+            self.config_store.remember_last_project(self._current_project)
+            self._update_topbar_state(selected_filepath=filepath)
+            print(f"Config loaded: {filepath} (project: {self._current_project})")
+        except Exception as exc:
+            print(f"Failed to load config: {exc}")
+
+    def _cb_project_select(self, project_name: str):
+        latest = self.config_store.latest_for_project(project_name)
+        if latest:
+            self._cb_do_load_config(latest)
+            print(f"Loaded latest config for project: {project_name}")
+        else:
+            print(f"No configs found for project: {project_name}")
+
+    def _cb_config_select(self, project_name: str, config_display: str):
+        history = self.config_store.project_history(project_name)
+        for display, filepath in history.configs:
+            if display == config_display:
+                self._cb_do_load_config(filepath)
+                return
+        print(f"Config not found: {config_display}")
+
+    def _cb_model_change(self, model_name: str):
+        full_model_name = f"{model_name}.pt"
+        if full_model_name == self.current_model:
+            return
+        model_path = os.path.join(MODELS_DIR, full_model_name)
+        print(f"Loading model: {full_model_name} from {MODELS_DIR}...")
+        try:
+            self.model = YOLO(model_path)
+            self.processor.model = self.model
+            self.current_model = full_model_name
+            self.current_model_name = model_name
+            print(f"Model loaded: {full_model_name}")
+        except Exception as exc:
+            print(f"Failed to load model {full_model_name}: {exc}")
+
+    def _cb_fp16_toggle(self, enabled: bool):
+        self.settings.use_fp16 = enabled
+        print(f"FP16 inference: {'ON' if enabled else 'OFF'}")
+
+    def _cb_frame_skip_change(self, value: int):
+        self.frame_skip = max(0, int(value))
+        if self.frame_skip == 0:
+            print("Frame skip: OFF (process every frame)")
+        else:
+            print(f"Frame skip: {self.frame_skip} (process every {self.frame_skip + 1} frames)")
+
+    def _cb_quit(self):
+        self.running = False
+        self.recorder.close()
+
+    def _cb_preview_toggle(self, enabled: bool):
+        self.preview_enabled = enabled
+        if enabled:
+            print("Preview: ON (video pushed to GUI)")
+        else:
+            print("Preview: OFF (no video output - measure raw FPS)")
+
+    def _cb_preview_cap_toggle(self, enabled: bool):
+        self.preview_fps_cap = enabled
+        if enabled:
+            print("Preview FPS cap: ON (10 FPS limit)")
+        else:
+            print("Preview FPS cap: OFF (uncapped)")
+
+    def _apply_preview_scale(self, value: float, force: bool = False):
+        value = max(0.25, min(1.0, float(value)))
+        if not force and abs(value - self.preview.render_scale) < 1e-3:
+            return
+        self.preview.render_scale = value
+        self.preview.width = int(self.camera.state.width * self.preview.render_scale)
+        self.preview.height = int(self.camera.state.height * self.preview.render_scale)
+        self._pending_preview_resize = True
+        print(
+            f"Preview render scale set: {self.preview.render_scale:.2f}x -> tex {self.preview.width}x{self.preview.height} (will resize)"
+        )
+
+    def _cb_preview_scale_change(self, value: float):
+        print(f"[GUI] Preview scale slider changed to {value} (camera: {self.camera.state.width}x{self.camera.state.height})")
+        self._apply_preview_scale(value, force=False)
+
+    # ------------------------------------------------------------------
+    # Recording callbacks
+    # ------------------------------------------------------------------
+    def _cb_rec_live(self):
+        """Switch to live camera mode."""
+        self.recorder.go_live()
+        self._pending_rec_slot = None
+        self._rec_armed = False
+        self._update_recording_ui()
+        print("Switched to LIVE input")
+
+    def _cb_rec_toggle(self):
+        """Toggle recording mode."""
+        if self.recorder.is_recording:
+            # Stop recording
+            filepath = self.recorder.stop_recording()
+            self._pending_rec_slot = None
+            self._rec_armed = False
+            self._update_recording_ui()
+            print(f"Recording stopped: {filepath}")
+        elif self.recorder.is_live:
+            if self._rec_armed:
+                # Cancel armed state
+                self._rec_armed = False
+                self._update_recording_ui()
+                print("REC cancelled")
+            else:
+                # Arm for recording - waiting for slot selection
+                self._rec_armed = True
+                self._update_recording_ui()
+                print("REC armed. Select a slot to start recording.")
+        else:
+            # Playing - ignore REC
+            print("REC: Switch to LIVE mode first.")
+
+    def _cb_rec_slot_click(self, slot: int, ctrl_held: bool):
+        """Handle slot button click."""
+        if ctrl_held:
+            # Show history menu
+            slot_info = self.recorder.get_slot_info(slot)
+            if slot_info.has_recordings:
+                self.gui.show_slot_history_menu(
+                    slot, 
+                    slot_info.recordings, 
+                    lambda fp: self._play_recording(slot, fp)
+                )
+            else:
+                print(f"Slot {slot} is empty")
+            return
+
+        if self.recorder.is_recording:
+            # Already recording - stop and switch?
+            print(f"Recording in progress. Stop first.")
+            return
+
+        slot_info = self.recorder.get_slot_info(slot)
+        
+        # If REC is armed, clicking any slot starts recording to it
+        if self._rec_armed and self.recorder.is_live:
+            fps = CAMERA_FPS
+            size = (self.camera.state.width, self.camera.state.height)
+            if self.recorder.start_recording(slot, fps, size):
+                self._rec_armed = False
+                self._pending_rec_slot = slot
+                self._update_recording_ui()
+                print(f"Recording to slot {slot}...")
+            else:
+                print(f"Failed to start recording to slot {slot}")
+                self._rec_armed = False
+                self._update_recording_ui()
+            return
+        
+        # Normal click: play if has recordings, show empty otherwise
+        if slot_info.has_recordings:
+            self.recorder.start_playback(slot)
+            self._pending_rec_slot = None
+            self._update_recording_ui()
+        else:
+            print(f"Slot {slot} is empty")
+
+    def _play_recording(self, slot: int, filepath: str):
+        """Play a specific recording from history."""
+        slot_info = self.recorder.get_slot_info(slot)
+        for idx, (display, path) in enumerate(slot_info.recordings):
+            if path == filepath:
+                self.recorder.start_playback(slot, idx)
+                self._update_recording_ui()
+                return
+        print(f"Recording not found: {filepath}")
+
+    def _update_recording_ui(self):
+        """Update the recording UI to match current state."""
+        if not self.gui:
+            return
+        
+        status = self.recorder.status
+        slots_info = [(i, self.recorder.get_slot_info(i).has_recordings) for i in range(1, 10)]
+        
+        # Map state to string, including armed state
+        if self._rec_armed and status.state == RecorderState.LIVE:
+            state_str = "armed"
+        else:
+            state_str = status.state.value  # 'live', 'recording', 'playing'
+        
+        current_slot = status.current_slot
+        
+        self.gui.update_recording_ui(
+            state=state_str,
+            current_slot=current_slot if current_slot > 0 else (self._pending_rec_slot or 0),
+            slots_info=slots_info,
+            recording_frames=status.recording_frames,
+            playback_frame=status.playback_frame,
+            playback_total=status.playback_total,
+        )
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+    def _draw_height_ruler(self, frame, scale: float = 1.0, thickness_scale: float = 1.0):
+        h, w = frame.shape[:2]
+        height_px = int(self.settings.person_height_px * scale)
+        ts = max(0.3, thickness_scale)
+        x = int(30 * ts)
+        y_center = h // 2
+        y_top = max(10, y_center - height_px // 2)
+        y_bottom = min(h - 10, y_center + height_px // 2)
+        color = (0, 255, 255)
+        bg_color = (0, 0, 0)
+        line_thickness = max(1, int(2 * ts))
+        cap_width = max(8, int(15 * ts))
+        bg_thickness = line_thickness + max(2, int(4 * ts))
+        cv2.line(frame, (x, y_top), (x, y_bottom), bg_color, bg_thickness)
+        cv2.line(frame, (x - cap_width // 2, y_top), (x + cap_width // 2, y_top), bg_color, bg_thickness)
+        cv2.line(frame, (x - cap_width // 2, y_bottom), (x + cap_width // 2, y_bottom), bg_color, bg_thickness)
+        cv2.line(frame, (x, y_top), (x, y_bottom), color, line_thickness)
+        cv2.line(frame, (x - cap_width // 2, y_top), (x + cap_width // 2, y_top), color, line_thickness)
+        cv2.line(frame, (x - cap_width // 2, y_bottom), (x + cap_width // 2, y_bottom), color, line_thickness)
+        label = f"{height_px}px"
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = max(0.3, 0.5 * ts)
+        thickness = max(1, int(1 * ts))
+        (tw, th), _ = cv2.getTextSize(label, font, font_scale, thickness)
+        text_x = x - tw // 2
+        text_y = y_bottom + th + int(8 * ts)
+        cv2.rectangle(frame, (text_x - 2, text_y - th - 2), (text_x + tw + 2, text_y + 2), bg_color, -1)
+        cv2.putText(frame, label, (text_x, text_y), font, font_scale, color, thickness)
+
+    def _handle_key(self, sender, app_data):
+        key = app_data
+        if key == dpg.mvKey_Q:
+            self.running = False
+        elif key == dpg.mvKey_E:
+            self.settings.enhance_enabled = not self.settings.enhance_enabled
+            self.gui and self.gui.sync_checkbox("enhance", self.settings.enhance_enabled)
+            print(f"Enhancement: {'ON' if self.settings.enhance_enabled else 'OFF'}")
+        elif key == dpg.mvKey_T:
+            self.show_trails = not self.show_trails
+            self.gui and self.gui.sync_checkbox("trails", self.show_trails)
+            print(f"Trails: {'ON' if self.show_trails else 'OFF'}")
+        elif key == dpg.mvKey_S and not (dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)):
+            self.show_skeleton = not self.show_skeleton
+            self.gui and self.gui.sync_checkbox("skeleton", self.show_skeleton)
+            print(f"Skeleton: {'ON' if self.show_skeleton else 'OFF'}")
+        elif key == dpg.mvKey_K:
+            self.show_keypoints = not self.show_keypoints
+            self.gui and self.gui.sync_checkbox("keypoints", self.show_keypoints)
+            print(f"Keypoints: {'ON' if self.show_keypoints else 'OFF'}")
+        elif key == dpg.mvKey_B:
+            self.show_bbox = not self.show_bbox
+            self.gui and self.gui.sync_checkbox("bbox", self.show_bbox)
+            print(f"Bounding box: {'ON' if self.show_bbox else 'OFF'}")
+        elif key == dpg.mvKey_I:
+            self.show_ids = not self.show_ids
+            self.gui and self.gui.sync_checkbox("ids", self.show_ids)
+            print(f"IDs: {'ON' if self.show_ids else 'OFF'}")
+        elif key == dpg.mvKey_P:
+            self.preview_enabled = not self.preview_enabled
+            self.gui and self.gui.sync_checkbox("preview", self.preview_enabled)
+            print(f"Preview: {'ON' if self.preview_enabled else 'OFF (measure raw FPS)'}")
+        elif key == dpg.mvKey_R:
+            self._cb_tracker_reset()
+        elif key == dpg.mvKey_Add or key == 61:
+            self.settings.upscale_factor = min(4.0, self.settings.upscale_factor + 0.5)
+            self.gui and self.gui.sync_slider("upscale", self.settings.upscale_factor)
+            print(f"Upscale: {self.settings.upscale_factor}x")
+        elif key == dpg.mvKey_Subtract or key == 45:
+            self.settings.upscale_factor = max(1.0, self.settings.upscale_factor - 0.5)
+            self.gui and self.gui.sync_slider("upscale", self.settings.upscale_factor)
+            print(f"Upscale: {self.settings.upscale_factor}x")
+        if key == dpg.mvKey_S and (dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)):
+            self._cb_save_config()
+
+    # ------------------------------------------------------------------
+    # Main loop
+    # ------------------------------------------------------------------
+    def run(self):
+        print("Detecting cameras...")
+        self.camera.state.available = CameraManager.detect_cameras()
+        print(f"Available cameras: {self.camera.state.available}")
+        print(f"Opening camera {self.camera.state.source}...")
+        if not self._open_camera(self.camera.state.source):
+            print(f"Warning: Camera {self.camera.state.source} not available, app will start without camera")
+            if self.camera.state.source not in self.camera.state.unavailable:
+                self.camera.state.unavailable.append(self.camera.state.source)
+
+        print("Initializing GUI...")
+        self.gui = WallDanceGUI(config=self._get_gui_config(), callbacks=self._get_gui_callbacks())
+        window_width = int(CAMERA_WIDTH * self.preview.display_scale) + 360
+        window_height = max(int(CAMERA_HEIGHT * self.preview.display_scale) + 80, 700)
+        self.gui.setup(width=window_width, height=window_height)
+        with dpg.handler_registry():
+            dpg.add_key_press_handler(callback=self._handle_key)
+        dpg.show_viewport()
+        self._autoload_config()
+        
+        # Initialize recording UI
+        self.recorder.set_project(self._current_project)
+        self._update_recording_ui()
+
+        print("Starting main loop...")
+        self.running = True
+        rec_ui_update_counter = 0
+        while self.running and dpg.is_dearpygui_running():
+            if self._pending_preview_resize and self.gui:
+                self.gui.resize_preview(self.preview.width, self.preview.height)
+                self._pending_preview_resize = False
+
+            # Get frame from appropriate source
+            frame = None
+            
+            if self.recorder.is_playing:
+                # Read from video file
+                frame = self.recorder.read_frame()
+                if frame is None:
+                    # Playback ended or error
+                    self.recorder.go_live()
+                    self._update_recording_ui()
+                    continue
+            else:
+                # Read from camera
+                if self.camera.cap is None or not self.camera.cap.isOpened():
+                    self.gui.render_frame()
+                    time.sleep(0.033)
+                    continue
+
+                ret, frame = self.camera.cap.read()
+                if not ret:
+                    print("Camera read failed, marking as unavailable")
+                    if self.camera.state.source not in self.camera.state.unavailable:
+                        self.camera.state.unavailable.append(self.camera.state.source)
+                    self.camera.state.is_open = False
+                    self.camera.close()
+                    all_sources = list(set(self.camera.state.available + self.camera.state.unavailable))
+                    all_sources.sort()
+                    self.gui.update_camera_sources(all_sources, self.camera.state.source, self.camera.state.unavailable)
+                    continue
+                
+                # If recording, write raw frame before any processing
+                if self.recorder.is_recording:
+                    self.recorder.write_frame(frame)
+
+            if self.frame_skip == 0:
+                should_process = True
+            else:
+                self.frame_skip_counter += 1
+                should_process = self.frame_skip_counter > self.frame_skip
+                if should_process:
+                    self.frame_skip_counter = 0
+
+            if should_process:
+                tracked, display_frame, timing, latency_ms = self.processor.process(frame)
+                self.last_tracked = tracked
+                self.timing = timing
+                self.latency_ms = latency_ms
+            else:
+                if self.settings.enhance_enabled:
+                    display_frame, _ = self.enhancer.enhance(frame)
+                else:
+                    display_frame = frame.copy()
+                tracked = self.last_tracked
+
+            if self.preview_enabled and (self.frame_count % self.preview_stride == 0):
+                now = time.time()
+                min_interval = 1.0 / 10.0 if self.preview_fps_cap else 0.0
+                # Check FPS cap BEFORE doing any expensive preview work
+                if now - self._last_preview_upload_time < min_interval:
+                    # Skip this frame entirely for preview
+                    pass
+                else:
+                    timing = dict(self.timing) if self.timing else {}
+                    render_w, render_h = self.preview.width, self.preview.height
+                    src_h, src_w = display_frame.shape[:2]
+                    scale_x = render_w / src_w
+                    scale_y = render_h / src_h
+                    thickness_scale = min(scale_x, scale_y)
+                    # Debug: log first few frames to check thickness calculation
+                    preview_frame = cv2.resize(display_frame, (render_w, render_h))
+                    if scale_x != 1.0 or scale_y != 1.0:
+                        scaled_tracks = []
+                        for track in tracked:
+                            scaled_tracks.append(
+                                ScaledTrack(
+                                    track_id=track.track_id,
+                                    keypoints=track.keypoints * np.array([scale_x, scale_y]),
+                                    confidence=track.confidence,
+                                    bbox=track.bbox * np.array([scale_x, scale_y, scale_x, scale_y]),
+                                    history=[pt * np.array([scale_x, scale_y]) for pt in track.history],
+                                    velocity=track.velocity * np.array([scale_x, scale_y]),
+                                )
+                            )
+                    else:
+                        scaled_tracks = tracked
+
+                    preview_t0 = time.time()
+                    for track in scaled_tracks:
+                        draw_dancer(
+                            preview_frame,
+                            track,
+                            show_skeleton=self.show_skeleton,
+                            show_keypoints=self.show_keypoints,
+                            show_bbox=self.show_bbox,
+                            show_trail=self.show_trails,
+                            show_id=self.show_ids,
+                            thickness_scale=thickness_scale,
+                        )
+                    self._draw_height_ruler(preview_frame, scale=scale_x, thickness_scale=thickness_scale)
+                    preview_draw_ms = (time.time() - preview_t0) * 1000
+                    upload_t0 = time.time()
+                    self.gui.update_frame(preview_frame)
+                    preview_upload_ms = (time.time() - upload_t0) * 1000
+                    self._last_preview_upload_time = now
+                    timing["preview_draw"] = preview_draw_ms
+                    timing["preview_upload"] = preview_upload_ms
+                    self.timing = timing
+            else:
+                if self.timing:
+                    self.timing["preview_draw"] = 0.0
+                    self.timing["preview_upload"] = 0.0
+
+            self.frame_count += 1
+            now = time.time()
+            if now - self.last_fps_time >= 1.0:
+                self.fps = self.frame_count / (now - self.last_fps_time)
+                self.frame_count = 0
+                self.last_fps_time = now
+
+            brightness = self.enhancer.get_status().get("brightness", 0)
+            enhance_bypassed = (
+                self.settings.enhance_enabled
+                and not self.settings.enhance_lite
+                and brightness >= BRIGHTNESS_THRESHOLD
+            )
+            self.gui.update_stats(
+                fps=self.fps,
+                num_dancers=len(tracked),
+                latency_ms=self.latency_ms,
+                brightness=brightness,
+                timing=self.timing,
+                input_res=(self.camera.state.width, self.camera.state.height),
+                preview_tex=(self.preview.width, self.preview.height),
+                model_name=self.current_model_name,
+                yolo_imgsz=self.settings.imgsz,
+                preview_enabled=self.preview_enabled,
+                preview_render_scale=self.preview.render_scale,
+                osc_enabled=self.osc_enabled,
+                osc_ip=self.osc_ip,
+                osc_port=self.osc_port,
+                camera_running=self.camera.state.is_open,
+                enhance_bypassed=enhance_bypassed,
+            )
+            
+            # Update recording UI periodically (every 10 frames to avoid overhead)
+            rec_ui_update_counter += 1
+            if rec_ui_update_counter >= 10:
+                rec_ui_update_counter = 0
+                self._update_recording_ui()
+            
+            dpg.render_dearpygui_frame()
+
+        self.recorder.close()
+        if self.camera.cap is not None:
+            self.camera.cap.release()
+        dpg.destroy_context()
+        print("WallDance stopped.")
+
+
+def main():
+    app = WallDanceApp()
+    app.run()
+
+
+if __name__ == "__main__":
+    main()
