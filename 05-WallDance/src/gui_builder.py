@@ -216,6 +216,8 @@ def build_top_bar(gui: Any):
                 dpg.add_spacer(width=6)
                 dpg.add_text("Model:", color=(180, 180, 180))
                 dpg.add_text("--", tag="badge_model", color=(150, 200, 255))
+                dpg.add_spacer(width=3)
+                dpg.add_text("[PT]", tag="badge_engine_type", color=(255, 220, 100))  # Yellow for PyTorch
                 dpg.add_spacer(width=6)
                 dpg.add_text("FPS:", color=(180, 180, 180))
                 dpg.add_text("--", tag="badge_fps", color=(150, 200, 255))
@@ -360,7 +362,7 @@ def build_video_panel(gui: Any):
                         ],
                         tag="tbl_model_combo",
                         default_value=gui.config.get("model", "yolo11m-pose"),
-                        width=-60,
+                        width=-80,
                         callback=gui._on_model_change,
                     )
                     dpg.add_text("FP16:")
@@ -375,8 +377,14 @@ def build_video_panel(gui: Any):
                         items=["640", "800", "960", "1280", "1920"],
                         tag="tbl_imgsz_combo",
                         default_value=str(gui.config.get("yolo_imgsz", 640)),
-                        width=-1,
+                        width=-100,
                         callback=gui._on_imgsz_change,
+                    )
+                    dpg.add_text("TensorRT:")
+                    dpg.add_checkbox(
+                        tag="tbl_trt_checkbox",
+                        default_value=gui.config.get("use_tensorrt", False),
+                        callback=gui._on_trt_toggle,
                     )
                 with dpg.group(horizontal=True):
                     dpg.add_text("Conf:")

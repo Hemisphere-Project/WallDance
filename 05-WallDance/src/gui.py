@@ -188,6 +188,10 @@ class WallDanceGUI:
         if 'on_model_change' in self.callbacks:
             self.callbacks['on_model_change'](value)
     
+    def _on_trt_toggle(self, sender, value):
+        if 'on_trt_toggle' in self.callbacks:
+            self.callbacks['on_trt_toggle'](value)
+    
     def _on_fp16_toggle(self, sender, value):
         if 'on_fp16_toggle' in self.callbacks:
             self.callbacks['on_fp16_toggle'](value)
@@ -509,28 +513,7 @@ class WallDanceGUI:
         dpg.set_value("brightness_text", f"{brightness:.0f}")
 
         # Update GPU stats (in top bar)
-        gpu = get_gpu_stats()
-        if gpu['util'] >= 0:
-            # GPU util/temp - colored by temperature
-            dpg.set_value("topbar_gpu_util_text", f"{gpu['util']}%/{gpu['temp']}°C")
-            if gpu['temp'] < 70:
-                dpg.configure_item("topbar_gpu_util_text", color=(100, 255, 100))
-            elif gpu['temp'] < 85:
-                dpg.configure_item("topbar_gpu_util_text", color=(255, 200, 0))
-            else:
-                dpg.configure_item("topbar_gpu_util_text", color=(255, 80, 80))
-            # VRAM % - colored by usage
-            vram_pct = gpu['vram_pct']
-            dpg.set_value("topbar_gpu_vram_text", f"{vram_pct:.0f}%")
-            if vram_pct < 50:
-                dpg.configure_item("topbar_gpu_vram_text", color=(100, 255, 100))
-            elif vram_pct < 80:
-                dpg.configure_item("topbar_gpu_vram_text", color=(255, 200, 0))
-            else:
-                dpg.configure_item("topbar_gpu_vram_text", color=(255, 80, 80))
-        else:
-            dpg.set_value("topbar_gpu_util_text", "N/A")
-            dpg.set_value("topbar_gpu_vram_text", "N/A")
+        self.update_gpu_stats()
         
         # Update save indicator (fade out after 2 seconds)
         import time
@@ -662,6 +645,62 @@ class WallDanceGUI:
         }
         if name in tag_map:
             dpg.set_value(tag_map[name], value)
+    
+    def update_model_dropdown(self, model_name: str):
+        """Update model dropdown to show current model."""
+        if dpg.does_item_exist("tbl_model_combo"):
+            dpg.set_value("tbl_model_combo", model_name)
+    
+    def update_engine_type_badge(self, is_tensorrt: bool):
+        """Update the engine type badge in the top bar.
+        
+        Args:
+            is_tensorrt: True if using TensorRT engine, False for PyTorch
+        """
+        if dpg.does_item_exist("badge_engine_type"):
+            if is_tensorrt:
+                dpg.set_value("badge_engine_type", "[TRT]")
+                dpg.configure_item("badge_engine_type", color=(100, 255, 150))  # Green for TensorRT
+            else:
+                dpg.set_value("badge_engine_type", "[PT]")
+                dpg.configure_item("badge_engine_type", color=(255, 220, 100))  # Yellow for PyTorch
+    
+    def set_trt_checkbox(self, enabled: bool):
+        """Set the TensorRT checkbox state.
+        
+        Args:
+            enabled: True to check, False to uncheck
+        """
+        if dpg.does_item_exist("tbl_trt_checkbox"):
+            dpg.set_value("tbl_trt_checkbox", enabled)
+    
+    def update_gpu_stats(self):
+        """Update GPU stats in the top bar (util, temp, VRAM).
+        
+        Can be called independently to update GPU stats during model loading.
+        """
+        gpu = get_gpu_stats()
+        if gpu['util'] >= 0:
+            # GPU util/temp - colored by temperature
+            dpg.set_value("topbar_gpu_util_text", f"{gpu['util']}%/{gpu['temp']}°C")
+            if gpu['temp'] < 70:
+                dpg.configure_item("topbar_gpu_util_text", color=(100, 255, 100))
+            elif gpu['temp'] < 85:
+                dpg.configure_item("topbar_gpu_util_text", color=(255, 200, 0))
+            else:
+                dpg.configure_item("topbar_gpu_util_text", color=(255, 80, 80))
+            # VRAM % - colored by usage
+            vram_pct = gpu['vram_pct']
+            dpg.set_value("topbar_gpu_vram_text", f"{vram_pct:.0f}%")
+            if vram_pct < 50:
+                dpg.configure_item("topbar_gpu_vram_text", color=(100, 255, 100))
+            elif vram_pct < 80:
+                dpg.configure_item("topbar_gpu_vram_text", color=(255, 200, 0))
+            else:
+                dpg.configure_item("topbar_gpu_vram_text", color=(255, 80, 80))
+        else:
+            dpg.set_value("topbar_gpu_util_text", "N/A")
+            dpg.set_value("topbar_gpu_vram_text", "N/A")
     
     def update_camera_sources(self, sources: list, current: str = "", unavailable: list = None):
         """Update camera source dropdown with available/unavailable cameras.
@@ -1002,6 +1041,191 @@ class WallDanceGUI:
             self.callbacks['on_do_load_config'](filepath)
         dpg.delete_item("load_config_dialog")
     
+    # === Model Loading Progress Modal ===
+    
+    def _cleanup_model_modals(self):
+        """Clean up any existing model-related modals."""
+        for tag in ["model_loading_modal", "tensorrt_prompt_modal"]:
+            if dpg.does_item_exist(tag):
+                dpg.delete_item(tag)
+    
+    def show_model_loading_modal(self, message: str = "Loading model..."):
+        """Show blocking modal for model loading/export operations."""
+        # Clean up any existing modals first
+        self._cleanup_model_modals()
+        
+        vp_width = dpg.get_viewport_width()
+        vp_height = dpg.get_viewport_height()
+        modal_width = 500
+        modal_height = 200
+        
+        with dpg.window(
+            label="Model Loading",
+            modal=True,
+            tag="model_loading_modal",
+            width=modal_width,
+            height=modal_height,
+            pos=[vp_width // 2 - modal_width // 2, vp_height // 2 - modal_height // 2],
+            no_resize=True,
+            no_move=True,
+            no_close=True,
+            no_collapse=True,
+        ):
+            dpg.add_spacer(height=10)
+            dpg.add_text(message, tag="model_loading_message", wrap=480)
+            dpg.add_spacer(height=15)
+            dpg.add_progress_bar(
+                tag="model_loading_progress",
+                default_value=0.0,
+                width=-1,
+                height=25,
+            )
+            dpg.add_spacer(height=8)
+            dpg.add_text("", tag="model_loading_detail", color=(150, 150, 150), wrap=480)
+    
+    def update_model_loading_progress(self, message: str, progress: float, detail: str = "", animate: bool = False):
+        """Update the model loading modal progress.
+        
+        Args:
+            message: Main status message
+            progress: Progress value 0.0 to 1.0 (ignored if animate=True)
+            detail: Secondary detail text
+            animate: If True, show animated/cycling progress bar
+        """
+        if dpg.does_item_exist("model_loading_message"):
+            dpg.set_value("model_loading_message", message)
+        if dpg.does_item_exist("model_loading_progress"):
+            if animate:
+                # Animated progress - use time to create cycling effect
+                import time
+                t = time.time() % 2.0  # 2 second cycle
+                # Create a ping-pong effect between 0.2 and 0.8
+                if t < 1.0:
+                    anim_progress = 0.2 + (t * 0.6)
+                else:
+                    anim_progress = 0.8 - ((t - 1.0) * 0.6)
+                dpg.set_value("model_loading_progress", anim_progress)
+            else:
+                dpg.set_value("model_loading_progress", max(0.0, min(1.0, progress)))
+        if dpg.does_item_exist("model_loading_detail"):
+            dpg.set_value("model_loading_detail", detail)
+    
+    def hide_model_loading_modal(self):
+        """Hide and destroy the model loading modal."""
+        if dpg.does_item_exist("model_loading_modal"):
+            dpg.delete_item("model_loading_modal")
+    
+    def show_tensorrt_prompt(self, model_name: str, callback):
+        """Show dialog asking whether to build TensorRT engine or use PyTorch.
+        
+        Args:
+            model_name: Name of the model
+            callback: Function to call with result (True=build TRT, False=use PT)
+        """
+        # Clean up any existing modals first
+        self._cleanup_model_modals()
+        
+        vp_width = dpg.get_viewport_width()
+        vp_height = dpg.get_viewport_height()
+        modal_width = 450
+        modal_height = 180
+        
+        def on_build_trt():
+            if dpg.does_item_exist("tensorrt_prompt_modal"):
+                dpg.delete_item("tensorrt_prompt_modal")
+            callback(True)
+        
+        def on_use_pytorch():
+            if dpg.does_item_exist("tensorrt_prompt_modal"):
+                dpg.delete_item("tensorrt_prompt_modal")
+            callback(False)
+        
+        with dpg.window(
+            label="TensorRT Engine",
+            modal=True,
+            tag="tensorrt_prompt_modal",
+            width=modal_width,
+            height=modal_height,
+            pos=[vp_width // 2 - modal_width // 2, vp_height // 2 - modal_height // 2],
+            no_resize=True,
+            no_move=True,
+            no_close=True,
+            no_collapse=True,
+        ):
+            dpg.add_spacer(height=10)
+            dpg.add_text(f"No TensorRT engine found for {model_name}.", wrap=420)
+            dpg.add_spacer(height=5)
+            dpg.add_text(
+                "Build TensorRT engine for faster inference (5-10 min)?\n"
+                "Or use PyTorch directly (slower but instant).",
+                wrap=420,
+                color=(180, 180, 180)
+            )
+            dpg.add_spacer(height=15)
+            with dpg.group(horizontal=True):
+                dpg.add_button(
+                    label="Build TensorRT (5-10 min)",
+                    callback=on_build_trt,
+                    width=180,
+                )
+                dpg.add_spacer(width=20)
+                dpg.add_button(
+                    label="Use PyTorch",
+                    callback=on_use_pytorch,
+                    width=120,
+                )
+    
+    def hide_tensorrt_prompt(self):
+        """Hide the TensorRT prompt dialog."""
+        if dpg.does_item_exist("tensorrt_prompt_modal"):
+            dpg.delete_item("tensorrt_prompt_modal")
+    
+    def show_toast(self, message: str, duration: float = 3.0, color: tuple = (255, 200, 100)):
+        """Show a temporary toast notification at top-left of preview area.
+        
+        Args:
+            message: The message to display
+            duration: How long to show the toast (seconds)
+            color: Text color (R, G, B)
+        """
+        import threading
+        
+        # Remove existing toast if any
+        if dpg.does_item_exist("toast_window"):
+            dpg.delete_item("toast_window")
+        
+        # Position at top-left of preview area (below top bar)
+        # Top bar is ~30px, so position toast just below it
+        toast_x = 15
+        toast_y = 38
+        
+        # Create toast window (compact, no padding)
+        with dpg.window(
+            label="",
+            tag="toast_window",
+            no_title_bar=True,
+            no_resize=True,
+            no_move=True,
+            no_collapse=True,
+            no_scrollbar=True,
+            autosize=True,
+            pos=(toast_x, toast_y),
+            min_size=(10, 10),
+        ):
+            dpg.add_text(message, tag="toast_text", color=color)
+        
+        # Auto-hide after duration
+        def hide_toast():
+            import time
+            time.sleep(duration)
+            if dpg.does_item_exist("toast_window"):
+                try:
+                    dpg.delete_item("toast_window")
+                except:
+                    pass
+        
+        threading.Thread(target=hide_toast, daemon=True).start()
+
     def setup(self, width: int = 1340, height: int = 900):
         """Setup viewport and prepare for rendering."""
         dpg.create_viewport(

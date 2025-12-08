@@ -65,6 +65,12 @@ YOLO_IMGSZ = 1280                   # YOLO input size (640, 960, 1280, 1920, 256
                                     # Values > camera resolution cause padding and reduced accuracy
 MAX_PERSONS = 6                     # Maximum dancers to track
 
+# TensorRT optimization
+USE_TENSORRT = True                 # If True, export and use TensorRT .engine files
+                                    # Provides ~2x inference speedup
+                                    # Engine is GPU-specific (rebuilt per GPU)
+                                    # First run will take 2-5 minutes to export
+
 # =============================================================================
 # PERSON SIZE CALIBRATION
 # =============================================================================

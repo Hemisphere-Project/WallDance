@@ -5,6 +5,7 @@ This module keeps the runtime glue small by delegating to:
 - FrameProcessor (enhance → YOLO → tracking → OSC)
 - ConfigStore (save/load presets)
 - WallDanceGUI (DearPyGui front-end)
+- ModelManager (model loading, TensorRT export)
 """
 
 from __future__ import annotations
@@ -49,11 +50,13 @@ from config import (
     TRACKER_DISTANCE_THRESHOLD,
     TRACKER_MAX_AGE,
     UPSCALE_FACTOR,
+    USE_TENSORRT,
     YOLO_CONFIDENCE,
     YOLO_IMGSZ,
     YOLO_MODEL,
 )
 from config_store import ConfigStore, format_config_display, sanitize_project_name
+from model_manager import ModelManager, ModelProgress, ModelStatus
 from osc_output import OSCSender
 from pipeline import FrameProcessor, ProcessingSettings, ScaledTrack
 from visualization import draw_dancer
@@ -79,14 +82,18 @@ class WallDanceApp:
         print("WallDance 1080p - Multi-Person Pose Detection")
         print("=" * 60)
 
-        os.makedirs(MODELS_DIR, exist_ok=True)
-        model_path = os.path.join(MODELS_DIR, YOLO_MODEL)
-        print(f"Loading {YOLO_MODEL} from {MODELS_DIR}...")
-        self.model = YOLO(model_path)
-        print("Model loaded!")
-
+        # Model loading is deferred until after GUI is created
+        # so we can show a progress modal
+        self.model = None
+        self.model_manager = ModelManager(MODELS_DIR, use_tensorrt=USE_TENSORRT, imgsz=YOLO_IMGSZ)
         self.current_model = YOLO_MODEL
-        self.current_model_name = YOLO_MODEL.replace(".pt", "")
+        self.current_model_name = YOLO_MODEL.replace(".pt", "").replace(".engine", "")
+        self._model_loaded = False
+        self._model_loading = False  # True while model is being loaded/switched
+        self._pending_model_switch: Optional[str] = None  # Deferred model switch
+        self._pending_trt_switch: Optional[bool] = None  # True=switch to TRT, False=switch to PT
+        self._pending_trt_build: Optional[str] = None  # Model name to build TRT engine for
+        self._pending_model_for_trt_build: Optional[str] = None  # Model to switch to after TRT build prompt
 
         self.settings = ProcessingSettings(
             confidence=YOLO_CONFIDENCE,
@@ -187,6 +194,7 @@ class WallDanceApp:
             "camera_source": state.source,
             "camera_sources": all_sources if all_sources else ["0"],
             "model": self.current_model_name,
+            "use_tensorrt": self.model_manager.is_using_tensorrt(),
             "confidence": self.settings.confidence,
             "max_persons": self.settings.max_persons,
             "fp16": self.settings.use_fp16,
@@ -228,6 +236,7 @@ class WallDanceApp:
             "on_confidence_change": self._cb_confidence_change,
             "on_max_persons_change": self._cb_max_persons_change,
             "on_model_change": self._cb_model_change,
+            "on_trt_toggle": self._cb_trt_toggle,
             "on_fp16_toggle": self._cb_fp16_toggle,
             "on_frame_skip_change": self._cb_frame_skip_change,
             "on_camera_change": self._cb_camera_change,
@@ -263,6 +272,7 @@ class WallDanceApp:
         return {
             "camera_source": self.camera.state.source,
             "model": self.current_model_name,
+            "use_tensorrt": self.model_manager.is_using_tensorrt(),
             "confidence": self.settings.confidence,
             "yolo_imgsz": self.settings.imgsz,
             "max_persons": self.settings.max_persons,
@@ -289,7 +299,13 @@ class WallDanceApp:
             "preview_scale": self.preview.render_scale,
         }
 
-    def _apply_config(self, config: Dict):
+    def _apply_config(self, config: Dict, skip_model: bool = False):
+        """Apply a configuration dictionary to the app state.
+        
+        Args:
+            config: Configuration dictionary
+            skip_model: If True, don't trigger model change (used during startup)
+        """
         # Camera
         if "camera_source" in config and config["camera_source"] != self.camera.state.source:
             saved_source = config["camera_source"]
@@ -305,11 +321,14 @@ class WallDanceApp:
                     self.gui.update_camera_sources(all_sources, saved_source, self.camera.state.unavailable)
                 print(f"Saved camera {saved_source} not available")
 
-        # Model
-        if "model" in config and config["model"] != self.current_model_name:
+        # Model - skip during startup to avoid double-loading
+        if not skip_model and "model" in config and config["model"] != self.current_model_name:
             self._cb_model_change(config["model"])
             if self.gui:
                 self.gui.sync_combo("model", config["model"])
+        elif skip_model and "model" in config and self.gui:
+            # Just sync the UI without triggering the load
+            self.gui.sync_combo("model", config["model"])
 
         # YOLO
         if "confidence" in config:
@@ -317,6 +336,7 @@ class WallDanceApp:
             self.gui and self.gui.sync_slider("confidence", config["confidence"])
         if "yolo_imgsz" in config:
             self.settings.imgsz = config["yolo_imgsz"]
+            self.model_manager.set_imgsz(config["yolo_imgsz"])
             self.gui and self.gui.sync_combo("imgsz", str(config["yolo_imgsz"]))
         if "max_persons" in config:
             self.settings.max_persons = config["max_persons"]
@@ -429,7 +449,13 @@ class WallDanceApp:
             if current_display:
                 self.gui.set_current_config(current_display)
 
-    def _autoload_config(self):
+    def _autoload_config(self, skip_model: bool = False):
+        """Auto-load the last used project/config.
+        
+        Args:
+            skip_model: If True, don't trigger model change (used during startup
+                       when model will be loaded separately)
+        """
         last_project = self.config_store.read_last_project()
         if not last_project:
             print("No last project found, starting fresh")
@@ -438,12 +464,32 @@ class WallDanceApp:
         latest = self.config_store.latest_for_project(last_project)
         if latest:
             config = self.config_store.load(latest)
-            self._apply_config(config)
+            self._apply_config(config, skip_model=skip_model)
             self._current_project = last_project
             print(f"Auto-loaded project '{last_project}': {os.path.basename(latest)}")
         else:
             print(f"No configs found for project '{last_project}'")
         self._update_topbar_state()
+    
+    def _get_startup_model(self) -> tuple:
+        """Get the model to load at startup.
+        
+        Returns:
+            Tuple of (model_name, use_tensorrt) from last saved config if available,
+            otherwise (default_model, False).
+        """
+        last_project = self.config_store.read_last_project()
+        if last_project:
+            latest = self.config_store.latest_for_project(last_project)
+            if latest:
+                config = self.config_store.load(latest)
+                if "model" in config:
+                    model_name = config["model"]
+                    use_trt = config.get("use_tensorrt", False)
+                    print(f"Will load model from saved config: {model_name} (TRT: {use_trt})")
+                    return model_name, use_trt
+        print(f"No saved model, using default: {YOLO_MODEL}")
+        return YOLO_MODEL, False
 
     # ------------------------------------------------------------------
     # GUI callbacks
@@ -525,12 +571,38 @@ class WallDanceApp:
         return opened
 
     def _cb_imgsz_change(self, value: int):
-        self.settings.imgsz = int(value)
+        new_imgsz = int(value)
+        old_imgsz = self.settings.imgsz
+        
+        if new_imgsz == old_imgsz:
+            return
+        
+        self.settings.imgsz = new_imgsz
+        self.model_manager.set_imgsz(new_imgsz)
+        
         max_cam_dim = max(self.camera.state.width, self.camera.state.height)
-        if self.settings.imgsz > max_cam_dim:
-            print(f"⚠️  YOLO imgsz {self.settings.imgsz} > camera {max_cam_dim}px - may reduce accuracy (padding)")
+        if new_imgsz > max_cam_dim:
+            print(f"⚠️  YOLO imgsz {new_imgsz} > camera {max_cam_dim}px - may reduce accuracy (padding)")
         else:
-            print(f"YOLO imgsz: {self.settings.imgsz}")
+            print(f"YOLO imgsz: {new_imgsz}")
+        
+        # If TRT is enabled, we need to reload the model because engines are imgsz-specific
+        if self.model_manager.is_using_tensorrt():
+            base_name = self.current_model_name
+            
+            # Check if engine exists for new imgsz
+            if self.model_manager.engine_exists(base_name):
+                # Engine exists, reload with TRT
+                print(f"TRT engine exists for {base_name}@{new_imgsz}, reloading...")
+                self._pending_trt_switch = True
+                self._pending_model_switch = base_name
+            else:
+                # No engine for new imgsz - fall back to PyTorch (don't prompt, just switch)
+                print(f"No TRT engine for {base_name}@{new_imgsz}, falling back to PyTorch")
+                self.gui.set_trt_checkbox(False)
+                self._pending_trt_switch = False
+                self._pending_model_switch = base_name
+                self.gui.show_toast(f"No TRT for {new_imgsz}px, using PyTorch", duration=3.0, color=(255, 200, 100))
 
     def _cb_person_height_change(self, value: int):
         self.settings.person_height_px = int(value)
@@ -625,19 +697,95 @@ class WallDanceApp:
         print(f"Config not found: {config_display}")
 
     def _cb_model_change(self, model_name: str):
-        full_model_name = f"{model_name}.pt"
-        if full_model_name == self.current_model:
+        """Handle model change from GUI dropdown.
+        
+        Note: This is called from a DearPyGui callback during render_frame().
+        We defer the actual loading to the main loop to avoid race conditions.
+        
+        If TRT checkbox is checked:
+        - Check if engine exists for new model
+        - If not, prompt to build (via _pending_trt_build)
+        - If user declines, switch model but disable TRT
+        """
+        # Check if we're already using this model (either .pt or .engine)
+        base_name = model_name.replace('.pt', '').replace('.engine', '')
+        current_base = self.current_model_name
+        if base_name == current_base:
+            print(f"[Model] Already using {base_name}, skipping switch")
             return
-        model_path = os.path.join(MODELS_DIR, full_model_name)
-        print(f"Loading model: {full_model_name} from {MODELS_DIR}...")
-        try:
-            self.model = YOLO(model_path)
-            self.processor.model = self.model
-            self.current_model = full_model_name
-            self.current_model_name = model_name
-            print(f"Model loaded: {full_model_name}")
-        except Exception as exc:
-            print(f"Failed to load model {full_model_name}: {exc}")
+        
+        # Check if a model load is already in progress
+        if self._model_loading:
+            print(f"[Model] WARNING: Model loading already in progress, ignoring switch to {model_name}")
+            return
+        
+        # Check if TRT checkbox is enabled
+        trt_enabled = self.model_manager.use_tensorrt
+        
+        if trt_enabled:
+            # TRT is enabled - check if engine exists for new model
+            from model_manager import is_tensorrt_available
+            
+            if is_tensorrt_available() and self.model_manager.engine_exists(base_name):
+                # Engine exists, switch with TRT
+                print(f"Queuing model switch to: {model_name} (TRT engine exists)...")
+                self._pending_trt_switch = True
+                self._pending_model_switch = model_name
+            elif is_tensorrt_available():
+                # No engine - need to prompt user before building
+                # Update model name tracking so TRT build knows which model
+                print(f"No TRT engine for {base_name}, prompting to build...")
+                self._pending_trt_build = base_name
+                # Store that this is a model switch (not just TRT toggle on same model)
+                self._pending_model_for_trt_build = base_name
+            else:
+                # TRT not available, switch with PT and disable checkbox
+                print(f"Queuing model switch to: {model_name} (TRT not available)...")
+                self._pending_trt_switch = False
+                self._pending_model_switch = model_name
+        else:
+            # TRT not enabled, just switch to PT model
+            print(f"Queuing model switch to: {model_name}...")
+            self._pending_trt_switch = False
+            self._pending_model_switch = model_name
+
+    def _cb_trt_toggle(self, enabled: bool):
+        """Handle TensorRT toggle checkbox.
+        
+        If enabling TRT:
+        - Check if .engine exists
+        - If not, ask to generate
+        - If user says no or generation fails, revert checkbox to off
+        
+        If disabling TRT:
+        - Switch to .pt model
+        """
+        base_name = self.current_model_name
+        
+        if enabled:
+            # User wants to enable TensorRT
+            from model_manager import is_tensorrt_available
+            
+            if not is_tensorrt_available():
+                print("TensorRT not available on this system")
+                self.gui.set_trt_checkbox(False)
+                self.gui.show_toast("TensorRT not available", duration=3.0, color=(255, 100, 100))
+                return
+            
+            if self.model_manager.engine_exists(base_name):
+                # Engine exists, just switch to it
+                print(f"Switching to TensorRT engine for {base_name}...")
+                self._pending_trt_switch = True
+                self._pending_model_switch = base_name
+            else:
+                # Need to build engine - show prompt
+                print(f"No TensorRT engine for {base_name}, prompting to build...")
+                self._pending_trt_build = base_name
+        else:
+            # User wants to disable TensorRT, switch to .pt
+            print(f"Switching to PyTorch for {base_name}...")
+            self._pending_trt_switch = False
+            self._pending_model_switch = base_name
 
     def _cb_fp16_toggle(self, enabled: bool):
         self.settings.use_fp16 = enabled
@@ -877,6 +1025,194 @@ class WallDanceApp:
             self._cb_save_config()
 
     # ------------------------------------------------------------------
+    # Model Loading with Progress
+    # ------------------------------------------------------------------
+    def _load_model_with_progress(self, model_name: str, force_pt: bool = False) -> bool:
+        """
+        Load model with GUI progress modal.
+        Blocks until complete.
+        
+        Args:
+            model_name: Model name (e.g., "yolo11m-pose" or "yolo11m-pose.pt")
+            force_pt: If True, skip TensorRT and use .pt directly
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        if self.gui is None:
+            # No GUI, load directly (shouldn't happen in normal flow)
+            print("Warning: Loading model without GUI")
+            try:
+                self.model = self.model_manager.load_model(model_name, force_pt=force_pt)
+                self.processor.model = self.model
+                self._model_loaded = True
+                return True
+            except Exception as e:
+                print(f"Failed to load model: {e}")
+                return False
+
+        base_name = model_name.replace('.pt', '').replace('.engine', '')
+        
+        print(f"[Model] Starting model load: {model_name} (force_pt={force_pt})...")
+
+        # Pause frame processing while loading model
+        self._model_loading = True
+        
+        # Show progress modal
+        print("[Model] Showing loading modal...")
+        self.gui.show_model_loading_modal(f"Preparing {model_name}...")
+        dpg.render_dearpygui_frame()
+        
+        # Thread-safe containers
+        import threading
+        import queue
+        load_result = {"model": None, "error": None, "done": False}
+        progress_queue = queue.Queue()  # For thread-safe progress updates
+        current_status = {"status": None, "message": "", "detail": ""}  # Track current status for animation
+        
+        def progress_callback(progress: ModelProgress):
+            # Don't call GUI from background thread - put in queue instead
+            status_messages = {
+                ModelStatus.CHECKING: "Checking model files...",
+                ModelStatus.DOWNLOADING: "Downloading model...",
+                ModelStatus.EXPORTING_TENSORRT: "Building TensorRT engine (2-5 min)...",
+                ModelStatus.LOADING: "Loading model into GPU...",
+                ModelStatus.READY: "Model ready!",
+                ModelStatus.ERROR: f"Error: {progress.error}",
+            }
+            message = status_messages.get(progress.status, progress.message)
+            detail = progress.message if progress.status != ModelStatus.ERROR else ""
+            # Include status so we know when to animate
+            progress_queue.put((progress.status, message, progress.progress, detail))
+        
+        self.model_manager.set_progress_callback(progress_callback)
+        
+        def load_in_background():
+            try:
+                load_result["model"] = self.model_manager.load_model(model_name, force_pt=force_pt)
+            except Exception as e:
+                load_result["error"] = e
+            load_result["done"] = True
+        
+        # Start loading in background thread
+        load_thread = threading.Thread(target=load_in_background, daemon=True)
+        load_thread.start()
+        
+        # Keep UI responsive while waiting for load to complete
+        while not load_result["done"]:
+            # Process any pending progress updates from the queue
+            while not progress_queue.empty():
+                try:
+                    status, message, progress_val, detail = progress_queue.get_nowait()
+                    current_status["status"] = status
+                    current_status["message"] = message
+                    current_status["detail"] = detail
+                except queue.Empty:
+                    break
+            
+            # Update UI - animate if exporting TensorRT, otherwise show real progress
+            if current_status["status"] == ModelStatus.EXPORTING_TENSORRT:
+                self.gui.update_model_loading_progress(
+                    current_status["message"], 0.5, current_status["detail"], animate=True
+                )
+            elif current_status["message"]:
+                self.gui.update_model_loading_progress(
+                    current_status["message"], 0.5, current_status["detail"], animate=False
+                )
+            
+            # Keep GPU stats updated during loading
+            self.gui.update_gpu_stats()
+            
+            dpg.render_dearpygui_frame()
+            time.sleep(0.03)  # ~30 FPS for smoother animation
+        
+        # Process any remaining progress updates
+        while not progress_queue.empty():
+            try:
+                status, message, progress_val, detail = progress_queue.get_nowait()
+                self.gui.update_model_loading_progress(message, progress_val, detail)
+            except queue.Empty:
+                break
+        
+        # Check result
+        if load_result["error"] is not None:
+            e = load_result["error"]
+            print(f"Failed to load model: {e}")
+            self.gui.update_model_loading_progress(f"Error: {e}", 0.0, "Will retry with PyTorch model")
+            dpg.render_dearpygui_frame()
+            time.sleep(2)
+            
+            # Try fallback to .pt
+            if not force_pt:
+                self.gui.update_model_loading_progress("Retrying with PyTorch model...", 0.5, "")
+                dpg.render_dearpygui_frame()
+                
+                # Run fallback in thread too
+                fallback_result = {"model": None, "error": None, "done": False}
+                def fallback_load():
+                    try:
+                        fallback_result["model"] = self.model_manager.load_model(model_name, force_pt=True)
+                    except Exception as e2:
+                        fallback_result["error"] = e2
+                    fallback_result["done"] = True
+                
+                fallback_thread = threading.Thread(target=fallback_load, daemon=True)
+                fallback_thread.start()
+                
+                while not fallback_result["done"]:
+                    self.gui.update_gpu_stats()
+                    dpg.render_dearpygui_frame()
+                    time.sleep(0.05)
+                
+                if fallback_result["model"] is not None:
+                    self.model = fallback_result["model"]
+                    self.processor.model = self.model
+                    self.current_model = f"{model_name.replace('.pt', '').replace('.engine', '')}.pt"
+                    self.current_model_name = model_name.replace('.pt', '').replace('.engine', '')
+                    self._model_loaded = True
+                    self.gui.update_engine_type_badge(False)
+                    self.gui.show_toast("Using PyTorch (fallback)", duration=4.0, color=(255, 180, 80))
+                    time.sleep(0.3)
+                    self.gui.hide_model_loading_modal()
+                    self._model_loading = False
+                    return True
+                else:
+                    print(f"Fallback also failed: {fallback_result['error']}")
+            
+            self.gui.hide_model_loading_modal()
+            self._model_loading = False
+            return False
+        
+        # Success path
+        self.model = load_result["model"]
+        self.processor.model = self.model
+        
+        # Update current model tracking
+        base_name = model_name.replace('.pt', '').replace('.engine', '')
+        if self.model_manager.use_tensorrt and self.model_manager.engine_exists(base_name):
+            self.current_model = f"{base_name}.engine"
+        else:
+            self.current_model = f"{base_name}.pt"
+        self.current_model_name = base_name
+        
+        self._model_loaded = True
+        
+        # Update engine type badge
+        self.gui.update_engine_type_badge(self.model_manager.is_using_tensorrt())
+        
+        # Show toast if TensorRT was expected but fell back to PyTorch
+        fallback_reason = self.model_manager.get_tensorrt_fallback_reason()
+        if fallback_reason and self.model_manager.use_tensorrt:
+            self.gui.show_toast(fallback_reason, duration=5.0, color=(255, 180, 80))
+        
+        # Brief pause to show "ready" message
+        time.sleep(0.3)
+        self.gui.hide_model_loading_modal()
+        self._model_loading = False
+        print(f"Model loading complete: {self.current_model_name}")
+        return True
+
+    # ------------------------------------------------------------------
     # Main loop
     # ------------------------------------------------------------------
     def run(self):
@@ -897,7 +1233,36 @@ class WallDanceApp:
         with dpg.handler_registry():
             dpg.add_key_press_handler(callback=self._handle_key)
         dpg.show_viewport()
-        self._autoload_config()
+        
+        # Determine which model to load: from saved config or default
+        startup_model, use_trt = self._get_startup_model()
+        
+        # Load saved config FIRST (skip model change since we'll load it directly)
+        # This ensures all settings are applied before we start
+        self._autoload_config(skip_model=True)
+        
+        # Now load the model (from saved config or default)
+        # If TRT was enabled in saved config but engine doesn't exist, fall back to PT
+        base_name = startup_model.replace('.pt', '').replace('.engine', '')
+        force_pt = not use_trt  # If saved config had TRT disabled, force PT
+        
+        # If TRT was enabled but engine doesn't exist, we need to fall back to PT
+        # (we don't want to prompt for TRT build on startup - user can enable via checkbox later)
+        if use_trt and not self.model_manager.engine_exists(base_name):
+            print(f"TensorRT was enabled in config but no engine exists for {base_name}, starting with PyTorch")
+            force_pt = True
+            use_trt = False
+        
+        print(f"Loading model {startup_model}... (TRT: {use_trt}, force_pt: {force_pt})")
+        if not self._load_model_with_progress(startup_model, force_pt=force_pt):
+            print("ERROR: Failed to load model. Exiting.")
+            return
+        
+        # Update model name tracking and TRT checkbox to match what we loaded
+        self.current_model_name = base_name
+        if self.gui:
+            self.gui.sync_combo("model", base_name)
+            self.gui.set_trt_checkbox(self.model_manager.is_using_tensorrt())
         
         # Initialize recording UI
         self.recorder.set_project(self._current_project)
@@ -907,6 +1272,83 @@ class WallDanceApp:
         self.running = True
         rec_ui_update_counter = 0
         while self.running and dpg.is_dearpygui_running():
+            # Handle pending TRT build request (user clicked TRT checkbox, engine doesn't exist)
+            if self._pending_trt_build is not None:
+                model_to_build = self._pending_trt_build
+                model_for_switch = self._pending_model_for_trt_build  # May be set if this came from model dropdown
+                self._pending_trt_build = None
+                self._pending_model_for_trt_build = None
+                
+                # Show prompt and wait for user choice
+                user_choice = {"build_trt": None}
+                
+                def on_choice(build_trt: bool):
+                    user_choice["build_trt"] = build_trt
+                
+                self.gui.show_tensorrt_prompt(model_to_build, on_choice)
+                
+                # Wait for user to click a button
+                while user_choice["build_trt"] is None:
+                    self.gui.update_gpu_stats()
+                    dpg.render_dearpygui_frame()
+                    time.sleep(0.016)
+                
+                # Clean up modal
+                for _ in range(5):
+                    dpg.render_dearpygui_frame()
+                    time.sleep(0.02)
+                
+                if user_choice["build_trt"]:
+                    # User wants to build, proceed with TRT loading
+                    print(f"User chose to build TensorRT engine for {model_to_build}")
+                    self._pending_trt_switch = True
+                    self._pending_model_switch = model_to_build
+                else:
+                    # User cancelled TRT build
+                    print(f"User cancelled TensorRT build for {model_to_build}")
+                    self.gui.set_trt_checkbox(False)
+                    
+                    # If this was a model switch (not just TRT toggle on same model),
+                    # still switch to the new model but with PyTorch
+                    if model_for_switch and model_for_switch != self.current_model_name:
+                        print(f"Switching to {model_for_switch} with PyTorch instead...")
+                        self._pending_trt_switch = False
+                        self._pending_model_switch = model_for_switch
+                continue
+            
+            # Handle pending model switch (deferred from callback to avoid race condition)
+            if self._pending_model_switch is not None:
+                model_to_load = self._pending_model_switch
+                trt_switch = self._pending_trt_switch
+                self._pending_model_switch = None
+                self._pending_trt_switch = None
+                
+                # Determine force_pt based on TRT switch state
+                # If trt_switch is False, force PT. If True or None, let model manager decide.
+                force_pt = (trt_switch == False)
+                
+                print(f"Switching to model: {model_to_load}... (TRT: {trt_switch}, force_pt: {force_pt})")
+                if not self._load_model_with_progress(model_to_load, force_pt=force_pt):
+                    print(f"Failed to switch to model {model_to_load}")
+                    # Revert dropdown to current model
+                    if self.gui:
+                        self.gui.update_model_dropdown(self.current_model_name)
+                        # Also revert TRT checkbox if it was a TRT switch attempt
+                        if trt_switch:
+                            self.gui.set_trt_checkbox(False)
+                else:
+                    # Success - update TRT checkbox to match actual state
+                    if self.gui:
+                        is_trt = self.model_manager.is_using_tensorrt()
+                        self.gui.set_trt_checkbox(is_trt)
+                continue  # Restart loop after model switch
+            
+            # Skip processing while model is loading/switching
+            if self._model_loading:
+                dpg.render_dearpygui_frame()
+                time.sleep(0.016)  # ~60 FPS UI update
+                continue
+                
             if self._pending_preview_resize and self.gui:
                 self.gui.resize_preview(self.preview.width, self.preview.height)
                 self._pending_preview_resize = False
@@ -953,6 +1395,10 @@ class WallDanceApp:
                 if should_process:
                     self.frame_skip_counter = 0
 
+            # Skip YOLO inference if model not loaded
+            if not self._model_loaded or self.model is None:
+                should_process = False
+                
             if should_process:
                 tracked, display_frame, timing, latency_ms = self.processor.process(frame)
                 self.last_tracked = tracked

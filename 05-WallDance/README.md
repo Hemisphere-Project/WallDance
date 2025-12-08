@@ -49,10 +49,32 @@ Support files: `install.sh` (uv sync), `run.sh` (launch), `configs/` (saved pres
 
 ## Performance Tips
 
+- **Enable TensorRT** via the TRT checkbox for ~2× inference speedup (first build takes 2-5 minutes).
 - Switch to `yolo11n-pose` or `yolo11s-pose` for speed; `yolo11m` is a balanced default.
-- Enable FP16 when running on CUDA for ~20-30% speedup.
+- Enable FP16 when running on CUDA for ~20-30% speedup (applies to PyTorch mode).
 - Increase **Frame Skip** (1–2) if the scene is stable; tracker interpolates between detections.
 - Lower **preview scale** if the UI lags; it only affects display, not detection.
+
+## TensorRT Acceleration
+
+TensorRT provides significant inference speedup (~2×) by optimizing the model for your specific GPU.
+
+### Enabling TensorRT
+1. In the **MODEL** section, check the **TRT** checkbox
+2. If no engine exists for the current model + imgsz, you'll be prompted to build one
+3. Building takes 2-5 minutes (GPU stats update during build)
+4. Once built, the engine is saved and reused automatically
+
+### Engine Files
+- Engines are named `{model}_{imgsz}.engine` (e.g., `yolo11m-pose_960.engine`)
+- Different imgsz settings require different engines
+- Engines are GPU-specific and must be rebuilt on different hardware
+- Engine preference is saved with your config
+
+### Fallback Behavior
+- If TensorRT is unavailable, the checkbox will be disabled
+- If an engine fails to load, the app falls back to PyTorch
+- On startup, if saved config had TRT but engine is missing, PyTorch is used
 
 ## OSC Messages
 
@@ -71,5 +93,7 @@ All coordinates are normalized (0–1) to the input frame.
 
 - No detections: verify camera with `ffplay /dev/video0`, lower confidence, or upscale more.
 - Flicker/ID swaps: raise tracker distance/age, lower confidence slightly, ensure lighting is stable.
-- Slow FPS: use faster model, enable FP16, increase frame skip, or reduce preview scale.
+- Slow FPS: use faster model, enable TensorRT, enable FP16, increase frame skip, or reduce preview scale.
+- TRT build fails: ensure CUDA drivers are up to date, check GPU memory, try smaller model first.
+- TRT checkbox disabled: TensorRT not installed; install with `pip install tensorrt`.
 - OSC not received: check IP/port, ensure firewall allows UDP, verify the `Enable OSC` toggle.

@@ -15,6 +15,7 @@ dependencies = [
     "python-osc>=1.8.0",
     "dearpygui>=2.0.0",
     "nvidia-ml-py>=13.580.82",
+    "tensorrt>=10.0.0",
 ]
 
 [tool.uv]
