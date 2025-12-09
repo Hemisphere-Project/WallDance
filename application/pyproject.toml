@@ -16,6 +16,7 @@ dependencies = [
     "dearpygui>=2.0.0",
     "nvidia-ml-py>=13.580.82",
     "tensorrt>=10.0.0",
+    "kornia>=0.8.2",
 ]
 
 [tool.uv]

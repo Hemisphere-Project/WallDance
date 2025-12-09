@@ -1,13 +1,14 @@
 """
 Frame processing pipeline for WallDance.
 Handles enhancement, YOLO inference, duplicate filtering, tracking, and OSC output.
+Supports full GPU pipeline for zero-copy processing (see gpu_pipeline.py).
 """
 
 from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import cv2
 import numpy as np
@@ -20,10 +21,20 @@ from config import (
     PERSON_HEIGHT_MIN_RATIO,
     TRACKER_DISTANCE_THRESHOLD,
     YOLO_IOU_THRESHOLD,
+    USE_GPU_PATH,
 )
-from enhancer import ImageEnhancer
+from enhancer import ImageEnhancer, TORCH_CUDA_AVAILABLE
 from osc_output import OSCSender
 from tracker import DancerTrack, DancerTracker
+
+# Import GPU pipeline (optional, for zero-copy GPU path)
+try:
+    from gpu_pipeline import GpuPipeline, GpuPipelineSettings, CUDA_AVAILABLE as GPU_CUDA_AVAILABLE, KORNIA_AVAILABLE
+    GPU_PIPELINE_AVAILABLE = GPU_CUDA_AVAILABLE and KORNIA_AVAILABLE
+except ImportError:
+    GPU_PIPELINE_AVAILABLE = False
+    GpuPipeline = None
+    GpuPipelineSettings = None
 
 
 @dataclass
@@ -35,10 +46,13 @@ class ProcessingSettings:
     upscale_factor: float
     enhance_enabled: bool
     enhance_lite: bool
+    enhance_force: bool  # Force enhancement even when brightness > threshold
     person_height_px: int
     person_height_min_ratio: float = PERSON_HEIGHT_MIN_RATIO
     person_height_max_ratio: float = PERSON_HEIGHT_MAX_RATIO
+    brightness_threshold: int = 60  # Auto-bypass threshold (0-255)
     osc_enabled: bool = True
+    use_gpu_path: bool = USE_GPU_PATH  # Enable GPU frame buffer
 
 
 @dataclass
@@ -68,6 +82,32 @@ class FrameProcessor:
         self.tracker = tracker or DancerTracker()
         self.osc = osc_sender
         self._timing: Dict[str, float] = {}
+        
+        # GPU pipeline (zero-copy path)
+        self._gpu_pipeline: Optional[GpuPipeline] = None
+        self._gpu_path_active = False
+        
+        if settings.use_gpu_path and GPU_PIPELINE_AVAILABLE:
+            # Create GPU pipeline with settings
+            gpu_settings = GpuPipelineSettings(
+                enhance_enabled=settings.enhance_enabled,
+                enhance_lite=settings.enhance_lite,
+                enhance_force=settings.enhance_force,
+                brightness_threshold=float(settings.brightness_threshold),
+                clahe_clip=self.enhancer.clahe_clip,
+                clahe_grid=8,
+                gamma=self.enhancer.gamma,
+                preview_width=960,  # Will be updated by app
+                preview_height=540,  # Will be updated by app
+                yolo_imgsz=settings.imgsz,
+            )
+            self._gpu_pipeline = GpuPipeline(gpu_settings)
+            self._gpu_path_active = True
+            print("[Pipeline] GPU pipeline active - zero-copy enhancement + YOLO (kornia/PyTorch)")
+        elif TORCH_CUDA_AVAILABLE:
+            print("[Pipeline] CUDA available - YOLO on GPU, Enhancement on CPU")
+        else:
+            print("[Pipeline] CUDA not available - all processing on CPU")
 
     # ------------------------------------------------------------------
     # Configuration management
@@ -80,25 +120,154 @@ class FrameProcessor:
     def attach_osc(self, osc_sender: Optional[OSCSender]):
         self.osc = osc_sender
 
+    @property
+    def gpu_path_active(self) -> bool:
+        """Check if GPU path is currently active."""
+        return self._gpu_path_active
+
     # ------------------------------------------------------------------
     # Processing
     # ------------------------------------------------------------------
-    def process(self, frame: np.ndarray) -> Tuple[List[ScaledTrack], np.ndarray, Dict[str, float], float]:
-        """Run a single frame through the pipeline."""
+    def process(self, frame: np.ndarray, need_preview: bool = True) -> Tuple[List[ScaledTrack], np.ndarray, Dict[str, float], float]:
+        """Run a single frame through the pipeline.
+        
+        When GPU pipeline is active:
+        - Frame is uploaded to GPU once
+        - Enhancement runs on GPU (kornia CLAHE + gamma)
+        - GPU tensor passed directly to YOLO (zero-copy)
+        - Preview downloaded only when needed
+        
+        Args:
+            frame: BGR numpy array from camera
+            need_preview: Whether to generate preview output (for rate limiting)
+        
+        Returns:
+            (tracked, enhanced_frame, timing, latency_ms)
+        """
+        if self._gpu_path_active and self._gpu_pipeline is not None:
+            return self._process_gpu(frame, need_preview)
+        else:
+            return self._process_cpu(frame)
+    
+    def _process_gpu(self, frame: np.ndarray, need_preview: bool = True) -> Tuple[List[ScaledTrack], np.ndarray, Dict[str, float], float]:
+        """GPU pipeline: zero-copy enhancement + YOLO."""
+        frame_start = time.time()
+        original_h, original_w = frame.shape[:2]
+        timing: Dict[str, float] = {}
+        
+        # Sync GPU pipeline settings
+        self._sync_gpu_settings()
+        
+        # 1. GPU Pipeline: Upload + Enhance + YOLO prep
+        # GPU pipeline handles rate limiting internally, returns preview_new flag
+        yolo_tensor, preview_frame, gpu_timing = self._gpu_pipeline.process(frame, preview_enabled=need_preview)
+        
+        # Merge GPU timing
+        timing.update(gpu_timing)
+        # GPU pipeline is always "gpu" path - enhancement may be active or bypassed
+        # Show "gpu" to indicate we're using GPU pipeline (even if enhancement bypassed)
+        timing["path_enhance"] = "gpu"
+        
+        # 2. YOLO inference with GPU tensor (zero-copy!)
+        t0 = time.time()
+        results = self.model(
+            yolo_tensor,  # Pass GPU tensor directly!
+            imgsz=self.settings.imgsz,
+            conf=self.settings.confidence,
+            iou=YOLO_IOU_THRESHOLD,
+            max_det=self.settings.max_persons,
+            half=self.settings.use_fp16,
+            verbose=False,
+        )
+        timing["yolo"] = (time.time() - t0) * 1000
+        timing["path_yolo"] = "gpu"
+        
+        # 3. Extract detections
+        t0 = time.time()
+        detections = self._extract_detections(results)
+        detections = self._filter_duplicate_detections(detections)
+        timing["extract"] = (time.time() - t0) * 1000
+        
+        # 4. Tracking
+        t0 = time.time()
+        tracked = self.tracker.update(detections)
+        timing["track"] = (time.time() - t0) * 1000
+        timing["path_track"] = "cpu"
+        
+        # 5. Unscale detections from letterboxed YOLO space to original camera space
+        # Letterbox info tells us: scale factor and padding applied
+        letterbox = gpu_timing.get('letterbox', {})
+        lb_scale = letterbox.get('scale', 1.0)
+        pad_x = letterbox.get('pad_x', 0)
+        pad_y = letterbox.get('pad_y', 0)
+        scaled_tracks = [self._unscale_letterbox(track, lb_scale, pad_x, pad_y) for track in tracked]
+        
+        # 6. OSC output
+        if self.osc and self.settings.osc_enabled:
+            self.osc.send_frame(scaled_tracks, original_w, original_h)
+        
+        latency_ms = (time.time() - frame_start) * 1000
+        timing["total"] = latency_ms
+        self._timing = timing
+        
+        # preview_frame is always generated in GPU path (never None)
+        return scaled_tracks, preview_frame, timing, latency_ms
+    
+    def _sync_gpu_settings(self):
+        """Sync ProcessingSettings to GpuPipelineSettings."""
+        if self._gpu_pipeline is None:
+            return
+        gs = self._gpu_pipeline.settings
+        gs.enhance_enabled = self.settings.enhance_enabled
+        gs.enhance_lite = self.settings.enhance_lite
+        gs.enhance_force = self.settings.enhance_force
+        gs.brightness_threshold = float(self.settings.brightness_threshold)
+        gs.clahe_clip = self.enhancer.clahe_clip
+        gs.gamma = self.enhancer.gamma
+        gs.yolo_imgsz = self.settings.imgsz
+    
+    def set_preview_size(self, width: int, height: int):
+        """Set preview dimensions for GPU pipeline."""
+        if self._gpu_pipeline is not None:
+            self._gpu_pipeline.settings.preview_width = width
+            self._gpu_pipeline.settings.preview_height = height
+    
+    def set_preview_fps_cap(self, fps_cap: Optional[float]):
+        """Set preview FPS cap for GPU pipeline rate limiting."""
+        if self._gpu_pipeline is not None:
+            self._gpu_pipeline.settings.preview_fps_cap = fps_cap
+            self._gpu_pipeline.update_settings(self._gpu_pipeline.settings)
+    
+    def _process_cpu(self, frame: np.ndarray) -> Tuple[List[ScaledTrack], np.ndarray, Dict[str, float], float]:
+        """CPU pipeline: traditional enhancement + YOLO."""
         frame_start = time.time()
         original_h, original_w = frame.shape[:2]
         timing: Dict[str, float] = {}
 
         # 1. Enhancement
         t0 = time.time()
-        if self.settings.enhance_enabled:
+        
+        brightness = 0.0
+        should_enhance = self.settings.enhance_enabled
+        if should_enhance and not self.settings.enhance_lite and not self.settings.enhance_force:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            brightness = float(np.mean(gray))
+            if brightness >= self.settings.brightness_threshold:
+                should_enhance = False
+        
+        if should_enhance:
             if self.settings.enhance_lite:
                 enhanced = self.enhancer.enhance_simple(frame)
             else:
                 enhanced, _ = self.enhancer.enhance(frame)
+            enhance_on_gpu = getattr(self.enhancer, 'last_used_gpu', False)
         else:
             enhanced = frame
+            enhance_on_gpu = False
+            
         timing["enhance"] = (time.time() - t0) * 1000
+        timing["path_enhance"] = "gpu" if enhance_on_gpu else "cpu"
+        timing["brightness"] = brightness
 
         # 2. Upscale (optional)
         t0 = time.time()
@@ -109,6 +278,7 @@ class FrameProcessor:
         else:
             process_frame = enhanced
         timing["upscale"] = (time.time() - t0) * 1000
+        timing["path_resize"] = "cpu"
 
         # 3. YOLO inference
         t0 = time.time()
@@ -122,6 +292,7 @@ class FrameProcessor:
             verbose=False,
         )
         timing["yolo"] = (time.time() - t0) * 1000
+        timing["path_yolo"] = "gpu"
 
         # 4. Extract detections
         t0 = time.time()
@@ -133,8 +304,9 @@ class FrameProcessor:
         t0 = time.time()
         tracked = self.tracker.update(detections)
         timing["track"] = (time.time() - t0) * 1000
+        timing["path_track"] = "cpu"
 
-        # 6. Scale back to original resolution
+        # 6. Scale back
         scale = 1.0 / self.settings.upscale_factor if self.settings.upscale_factor != 1.0 else 1.0
         scaled_tracks = [self._scale_track(track, scale) for track in tracked]
 
@@ -155,6 +327,59 @@ class FrameProcessor:
             bbox=track.bbox * scale,
             history=[pt * scale for pt in track.history],
             velocity=track.get_velocity() * scale,
+        )
+    
+    def _scale_track_xy(self, track: DancerTrack, scale_x: float, scale_y: float) -> ScaledTrack:
+        """Scale track with different X and Y factors (for non-square YOLO input)."""
+        scale_xy = np.array([scale_x, scale_y])
+        scale_bbox = np.array([scale_x, scale_y, scale_x, scale_y])
+        return ScaledTrack(
+            track_id=track.track_id,
+            keypoints=track.keypoints * scale_xy,
+            confidence=track.confidence.copy(),
+            bbox=track.bbox * scale_bbox,
+            history=[pt * scale_xy for pt in track.history],
+            velocity=track.get_velocity() * scale_xy,
+        )
+    
+    def _unscale_letterbox(self, track: DancerTrack, lb_scale: float, pad_x: int, pad_y: int) -> ScaledTrack:
+        """
+        Unscale track from letterboxed YOLO space to original camera space.
+        
+        Letterbox applies: original -> scale down -> pad to square
+        To reverse: subtract padding -> divide by scale
+        
+        Args:
+            track: Track with coords in letterboxed space
+            lb_scale: Scale factor that was applied (original * scale = letterboxed)
+            pad_x: Horizontal padding added (left side)
+            pad_y: Vertical padding added (top side)
+        """
+        # Subtract padding, then divide by scale
+        pad_xy = np.array([pad_x, pad_y])
+        inv_scale = 1.0 / lb_scale if lb_scale > 0 else 1.0
+        
+        # Keypoints: (x, y) -> subtract pad -> divide by scale
+        keypoints = (track.keypoints - pad_xy) * inv_scale
+        
+        # Bbox: (x, y, w, h) -> x,y subtract pad and scale; w,h just scale
+        bbox = track.bbox.copy()
+        bbox[0] = (bbox[0] - pad_x) * inv_scale  # x
+        bbox[1] = (bbox[1] - pad_y) * inv_scale  # y
+        bbox[2] = bbox[2] * inv_scale  # w
+        bbox[3] = bbox[3] * inv_scale  # h
+        
+        # History and velocity
+        history = [(pt - pad_xy) * inv_scale for pt in track.history]
+        velocity = track.get_velocity() * inv_scale
+        
+        return ScaledTrack(
+            track_id=track.track_id,
+            keypoints=keypoints,
+            confidence=track.confidence.copy(),
+            bbox=bbox,
+            history=history,
+            velocity=velocity,
         )
 
     # ------------------------------------------------------------------

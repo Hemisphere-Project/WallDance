@@ -24,17 +24,23 @@ except Exception:
 
 
 def get_gpu_stats() -> dict:
-    """Get GPU utilization, temperature, and VRAM usage."""
+    """Get GPU utilization, temperature, power draw, and VRAM usage."""
     if not _GPU_AVAILABLE:
-        return {'util': -1, 'temp': -1, 'vram_pct': -1}
+        return {'util': -1, 'temp': -1, 'power': -1, 'vram_pct': -1}
     try:
         util = pynvml.nvmlDeviceGetUtilizationRates(_GPU_HANDLE)
         temp = pynvml.nvmlDeviceGetTemperature(_GPU_HANDLE, pynvml.NVML_TEMPERATURE_GPU)
         mem = pynvml.nvmlDeviceGetMemoryInfo(_GPU_HANDLE)
         vram_pct = (mem.used / mem.total) * 100
-        return {'util': util.gpu, 'temp': temp, 'vram_pct': vram_pct}
+        # Get power draw in watts (returned in milliwatts)
+        try:
+            power_mw = pynvml.nvmlDeviceGetPowerUsage(_GPU_HANDLE)
+            power_w = power_mw / 1000
+        except Exception:
+            power_w = -1
+        return {'util': util.gpu, 'temp': temp, 'power': power_w, 'vram_pct': vram_pct}
     except Exception:
-        return {'util': -1, 'temp': -1, 'vram_pct': -1}
+        return {'util': -1, 'temp': -1, 'power': -1, 'vram_pct': -1}
 
 
 class WallDanceGUI:
@@ -123,6 +129,20 @@ class WallDanceGUI:
             self.callbacks['on_enhance_lite_toggle'](value)
         self._update_enhance_row_state(dpg.get_value('tbl_enhance_checkbox'), value, bypass=False)
     
+    def _on_enhance_force_toggle(self, sender, value):
+        if 'on_enhance_force_toggle' in self.callbacks:
+            self.callbacks['on_enhance_force_toggle'](value)
+        # Update row state: when Force is enabled, threshold slider should be greyed out
+        self._update_enhance_row_state(
+            dpg.get_value('tbl_enhance_checkbox'),
+            dpg.get_value('tbl_enhance_lite_checkbox'),
+            bypass=False
+        )
+
+    def _on_brightness_threshold_change(self, sender, value):
+        if 'on_brightness_threshold_change' in self.callbacks:
+            self.callbacks['on_brightness_threshold_change'](value)
+
     def _on_preview_toggle(self, sender, value):
         if 'on_preview_toggle' in self.callbacks:
             self.callbacks['on_preview_toggle'](value)
@@ -143,18 +163,30 @@ class WallDanceGUI:
     
     def _update_enhance_row_state(self, enabled: bool, lite_mode: bool, bypass: bool = False):
         """Grey out ENHANCE row controls when disabled, lite mode, or bypassed due to high brightness."""
+        # Check if Force is engaged - if so, ignore bypass
+        force_enabled = False
+        if dpg.does_item_exist("tbl_enhance_force_checkbox"):
+            force_enabled = dpg.get_value("tbl_enhance_force_checkbox")
+        
+        # When force is enabled, bypass is ignored
+        effective_bypass = bypass and not force_enabled
+        
         color = (200, 200, 200) if enabled else (80, 80, 80)
-        # Clahe and Gamma are greyed when: disabled, lite mode, or bypass (bright enough)
-        clahe_color = (80, 80, 80) if (not enabled or lite_mode or bypass) else (200, 200, 200)
-        gamma_color = (80, 80, 80) if (not enabled or bypass) else (200, 200, 200)
+        # Clahe and Gamma are greyed when: disabled, lite mode, or bypass (bright enough) unless forced
+        clahe_color = (80, 80, 80) if (not enabled or lite_mode or effective_bypass) else (200, 200, 200)
+        gamma_color = (80, 80, 80) if (not enabled or effective_bypass) else (200, 200, 200)
+        # Threshold is greyed when enhancement is disabled or Force is enabled (threshold ignored)
+        threshold_color = (80, 80, 80) if (not enabled or force_enabled) else (200, 200, 200)
         
         dpg.configure_item("enhance_lite_label", color=color)
         dpg.configure_item("tbl_enhance_lite_checkbox", enabled=enabled)
         dpg.configure_item("enhance_gamma_label", color=gamma_color)
-        dpg.configure_item("tbl_gamma_slider", enabled=(enabled and not bypass))
+        dpg.configure_item("tbl_gamma_slider", enabled=(enabled and not effective_bypass))
+        dpg.configure_item("enhance_threshold_label", color=threshold_color)
+        dpg.configure_item("tbl_brightness_threshold_slider", enabled=(enabled and not force_enabled))
         
         dpg.configure_item("enhance_clahe_label", color=clahe_color)
-        dpg.configure_item("tbl_clahe_slider", enabled=(enabled and not lite_mode and not bypass))
+        dpg.configure_item("tbl_clahe_slider", enabled=(enabled and not lite_mode and not effective_bypass))
 
     def _on_preview_scale_change(self, sender, value):
         if 'on_preview_scale_change' in self.callbacks:
@@ -631,6 +663,11 @@ class WallDanceGUI:
             pup = timing.get('preview_upload', 0)
             total = timing.get('total', 0)
             
+            # Get path indicators (gpu/cpu)
+            path_enhance = timing.get('path_enhance', 'cpu')
+            path_yolo = timing.get('path_yolo', 'gpu')
+            path_track = timing.get('path_track', 'cpu')
+            
             # Preview timing: only update when non-zero to avoid flickering
             preview_time = pdraw + pup
             if preview_time > 0:
@@ -641,6 +678,26 @@ class WallDanceGUI:
             dpg.set_value("time_track", f"{trk:.0f}")
             dpg.set_value("time_preview", f"{self._last_preview_time:.0f}")
             dpg.set_value("time_total", f"{total:.0f}")
+            
+            # Update path indicators with colors
+            # GPU = green [GPU], CPU = red [CPU]
+            gpu_color = (120, 255, 120)
+            cpu_color = (255, 120, 120)
+            
+            if dpg.does_item_exist("path_enhance"):
+                is_gpu = path_enhance == "gpu"
+                dpg.set_value("path_enhance", "[GPU]" if is_gpu else "[CPU]")
+                dpg.configure_item("path_enhance", color=gpu_color if is_gpu else cpu_color)
+            
+            if dpg.does_item_exist("path_yolo"):
+                is_gpu = path_yolo == "gpu"
+                dpg.set_value("path_yolo", "[GPU]" if is_gpu else "[CPU]")
+                dpg.configure_item("path_yolo", color=gpu_color if is_gpu else cpu_color)
+            
+            if dpg.does_item_exist("path_track"):
+                is_gpu = path_track == "gpu"
+                dpg.set_value("path_track", "[GPU]" if is_gpu else "[CPU]")
+                dpg.configure_item("path_track", color=gpu_color if is_gpu else cpu_color)
 
             # Color code key timings
             def _colorize(tag, val, g=40, y=80):
@@ -668,6 +725,7 @@ class WallDanceGUI:
         tag_map = {
             'enhance': 'tbl_enhance_checkbox',
             'enhance_lite': 'tbl_enhance_lite_checkbox',
+            'enhance_force': 'tbl_enhance_force_checkbox',
             'preview': 'tbl_preview_checkbox',
             'preview_cap': 'tbl_preview_cap_checkbox',
             'fp16': 'tbl_fp16_checkbox',
@@ -692,6 +750,7 @@ class WallDanceGUI:
             'confidence': 'tbl_conf_slider',
             'clahe': 'tbl_clahe_slider',
             'gamma': 'tbl_gamma_slider',
+            'brightness_threshold': 'tbl_brightness_threshold_slider',
             'preview_scale': 'tbl_preview_scale_slider',
             'frame_skip': 'tbl_frame_skip_slider',
             'max_persons': 'max_persons_slider',
@@ -748,8 +807,9 @@ class WallDanceGUI:
         """
         gpu = get_gpu_stats()
         if gpu['util'] >= 0:
-            # GPU util/temp - colored by temperature
-            dpg.set_value("topbar_gpu_util_text", f"{gpu['util']}%/{gpu['temp']}°C")
+            # GPU util/temp/power - colored by temperature
+            power_str = f"{gpu['power']:.0f}W" if gpu['power'] >= 0 else "?"
+            dpg.set_value("topbar_gpu_util_text", f"{gpu['util']}%/{gpu['temp']}°C/{power_str}")
             if gpu['temp'] < 70:
                 dpg.configure_item("topbar_gpu_util_text", color=(100, 255, 100))
             elif gpu['temp'] < 85:

@@ -71,6 +71,11 @@ USE_TENSORRT = True                 # If True, export and use TensorRT .engine f
                                     # Engine is GPU-specific (rebuilt per GPU)
                                     # First run will take 2-5 minutes to export
 
+# GPU Processing Path (see SPECIFICATIONS.md Section 14)
+USE_GPU_PATH = True                 # Enable GPU frame buffer and GPU-accelerated processing
+                                    # Requires OpenCV with CUDA support
+                                    # Falls back to CPU if CUDA not available
+
 # =============================================================================
 # PERSON SIZE CALIBRATION
 # =============================================================================

@@ -208,7 +208,7 @@ def build_top_bar(gui: Any):
                     dpg.add_text("Save config (Ctrl+S)")
                 
                 safe_btn = dpg.add_button(
-                    label=Icons.SHIELD,
+                    label=Icons.ROTATE,
                     tag="topbar_safe_btn",
                     width=20,
                     height=20,
@@ -217,22 +217,28 @@ def build_top_bar(gui: Any):
                 if gui._icon_font:
                     dpg.bind_item_font(safe_btn, gui._icon_font)
                 with dpg.tooltip(safe_btn):
-                    dpg.add_text("Ctrl+click: Save as safe defaults\nClick: Load safe defaults")
+                    dpg.add_text("Click: Load safe defaults\nCtrl+click: Save as safe defaults")
                 
                 save_ind = dpg.add_text(Icons.CHECK, tag="save_indicator", color=(100, 255, 100), show=False)
                 if gui._icon_font:
                     dpg.bind_item_font(save_ind, gui._icon_font)
             with dpg.group(horizontal=True):
                 dpg.add_text("CAM:", color=(180, 180, 180))
-                dpg.add_text("OFF", tag="badge_cam", color=(255, 120, 120))
+                cam_badge = dpg.add_text("OFF", tag="badge_cam", color=(255, 120, 120))
+                with dpg.tooltip(cam_badge):
+                    dpg.add_text("Camera status: ON (green) or OFF (red)")
                 dpg.add_spacer(width=6)
                 dpg.add_text("OSC:", color=(180, 180, 180))
-                dpg.add_text("OFF", tag="badge_osc", color=(255, 120, 120))
+                osc_badge = dpg.add_text("OFF", tag="badge_osc", color=(255, 120, 120))
+                with dpg.tooltip(osc_badge):
+                    dpg.add_text("OSC output status: ON (green) or OFF (red)")
                 dpg.add_spacer(width=6)
                 dpg.add_text("Model:", color=(180, 180, 180))
                 dpg.add_text("--", tag="badge_model", color=(150, 200, 255))
                 dpg.add_spacer(width=3)
-                dpg.add_text("[PT]", tag="badge_engine_type", color=(255, 220, 100))  # Yellow for PyTorch
+                engine_badge = dpg.add_text("[PT]", tag="badge_engine_type", color=(255, 220, 100))  # Yellow for PyTorch
+                with dpg.tooltip(engine_badge):
+                    dpg.add_text("[TRT] = TensorRT (fast, GPU-optimized)\n[PT] = PyTorch (slower, more compatible)")
                 dpg.add_spacer(width=6)
                 dpg.add_text("FPS:", color=(180, 180, 180))
                 dpg.add_text("--", tag="badge_fps", color=(150, 200, 255))
@@ -337,6 +343,14 @@ def build_video_panel(gui: Any):
                         default_value=gui.config.get("enhance_lite", False),
                         callback=gui._on_enhance_lite_toggle,
                     )
+                    dpg.add_text("  Force:", tag="enhance_force_label")
+                    force_cb = dpg.add_checkbox(
+                        tag="tbl_enhance_force_checkbox",
+                        default_value=gui.config.get("enhance_force", False),
+                        callback=gui._on_enhance_force_toggle,
+                    )
+                    with dpg.tooltip(force_cb):
+                        dpg.add_text("Force enhancement even when\nbrightness is above threshold")
                 with dpg.group(horizontal=True, tag="enhance_clahe_group"):
                     dpg.add_text("Clahe:", tag="enhance_clahe_label")
                     dpg.add_slider_float(
@@ -359,6 +373,19 @@ def build_video_panel(gui: Any):
                         width=-1,
                         callback=gui._on_gamma_change,
                     )
+                with dpg.group(horizontal=True, tag="enhance_threshold_group"):
+                    dpg.add_text("Threshold:", tag="enhance_threshold_label")
+                    threshold_slider = dpg.add_slider_int(
+                        tag="tbl_brightness_threshold_slider",
+                        default_value=gui.config.get("brightness_threshold", 60),
+                        min_value=0,
+                        max_value=255,
+                        format="%d",
+                        width=-1,
+                        callback=gui._on_brightness_threshold_change,
+                    )
+                    with dpg.tooltip(threshold_slider):
+                        dpg.add_text("Brightness threshold for auto-bypass.\nIf scene brightness > threshold,\nenhancement is skipped (unless Forced).")
             with dpg.table_row():
                 dpg.add_text("MODEL", color=(120, 200, 140))
                 with dpg.group(horizontal=True):
@@ -456,27 +483,30 @@ def build_video_panel(gui: Any):
             row_background=True,
         ):
             dpg.add_table_column(init_width_or_weight=0.8)
-            dpg.add_table_column(init_width_or_weight=1.0)
-            dpg.add_table_column(init_width_or_weight=1.0)
+            dpg.add_table_column(init_width_or_weight=1.2)
+            dpg.add_table_column(init_width_or_weight=1.2)
             dpg.add_table_column(init_width_or_weight=1.0)
             dpg.add_table_column(init_width_or_weight=1.0)
             dpg.add_table_column(init_width_or_weight=1.0)
             with dpg.table_row():
                 dpg.add_text("TIMINGS", color=(120, 200, 140))
                 with dpg.group(horizontal=True):
+                    dpg.add_text("[CPU]", tag="path_enhance", color=(255, 120, 120))
                     dpg.add_text("Enh:")
                     dpg.add_text("--", tag="time_enhance", color=(180, 180, 180))
                 with dpg.group(horizontal=True):
+                    dpg.add_text("[GPU]", tag="path_yolo", color=(120, 255, 120))
                     dpg.add_text("YOLO:")
                     dpg.add_text("--", tag="time_yolo", color=(180, 180, 180))
                 with dpg.group(horizontal=True):
-                    dpg.add_text("Track:")
+                    dpg.add_text("[CPU]", tag="path_track", color=(255, 120, 120))
+                    dpg.add_text("Trk:")
                     dpg.add_text("--", tag="time_track", color=(180, 180, 180))
                 with dpg.group(horizontal=True):
                     dpg.add_text("Prev:")
                     dpg.add_text("--", tag="time_preview", color=(180, 180, 180))
                 with dpg.group(horizontal=True):
-                    dpg.add_text("Total:")
+                    dpg.add_text("Tot:")
                     dpg.add_text("--", tag="time_total", color=(180, 180, 180))
 
 
@@ -488,25 +518,32 @@ def build_control_panel(gui: Any):
         dpg.add_spacer(height=10)
         
         with dpg.collapsing_header(label="Detection", default_open=True):
-            dpg.add_text("Max Persons")
-            dpg.add_slider_int(
-                tag="max_persons_slider",
-                default_value=gui.config.get("max_persons", 6),
-                min_value=1,
-                max_value=12,
-                callback=gui._on_max_persons_change,
-            )
-            dpg.add_spacer(height=10)
-            dpg.add_text("Person Height (pixels)")
-            dpg.add_slider_int(
-                tag="person_height_slider",
-                default_value=gui.config.get("person_height_px", 200),
-                min_value=50,
-                max_value=800,
-                format="%d px",
-                callback=gui._on_person_height_change,
-            )
-            dpg.add_text("(Adjust to match expected person size)", color=(150, 150, 150))
+            with dpg.group(horizontal=True):
+                with dpg.group():
+                    dpg.add_text("Max Persons", color=(180, 180, 180))
+                    max_p_slider = dpg.add_slider_int(
+                        tag="max_persons_slider",
+                        default_value=gui.config.get("max_persons", 6),
+                        min_value=1,
+                        max_value=12,
+                        width=100,
+                        callback=gui._on_max_persons_change,
+                    )
+                    with dpg.tooltip(max_p_slider):
+                        dpg.add_text("Maximum dancers to track simultaneously")
+                dpg.add_spacer(width=10)
+                with dpg.group():
+                    dpg.add_text("Height (px)", color=(180, 180, 180))
+                    height_slider = dpg.add_slider_int(
+                        tag="person_height_slider",
+                        default_value=gui.config.get("person_height_px", 200),
+                        min_value=50,
+                        max_value=800,
+                        width=100,
+                        callback=gui._on_person_height_change,
+                    )
+                    with dpg.tooltip(height_slider):
+                        dpg.add_text("Expected person height in pixels.\nAdjust to match dancers in frame.")
         dpg.add_spacer(height=10)
         with dpg.collapsing_header(label="Visualization", default_open=True):
             dpg.add_checkbox(
@@ -579,22 +616,26 @@ def build_control_panel(gui: Any):
             dpg.add_button(label="Reset Tracker [R]", width=-1, callback=gui._on_tracker_reset)
         dpg.add_spacer(height=10)
         with dpg.collapsing_header(label="OSC Output", default_open=True):
-            dpg.add_checkbox(
+            osc_chk = dpg.add_checkbox(
                 label="Enable OSC",
                 tag="osc_checkbox",
                 default_value=gui.config.get("osc_enabled", True),
                 callback=gui._on_osc_toggle,
             )
+            with dpg.tooltip(osc_chk):
+                dpg.add_text("Send pose data via Open Sound Control protocol")
             dpg.add_spacer(height=5)
             dpg.add_text("Target IP")
-            dpg.add_input_text(
+            osc_ip = dpg.add_input_text(
                 tag="osc_ip_input",
                 default_value=gui.config.get("osc_ip", "127.0.0.1"),
                 width=-1,
                 callback=gui._on_osc_config_change,
             )
+            with dpg.tooltip(osc_ip):
+                dpg.add_text("IP address of OSC receiver\n127.0.0.1 = localhost (same machine)")
             dpg.add_text("Target Port")
-            dpg.add_input_int(
+            osc_port = dpg.add_input_int(
                 tag="osc_port_input",
                 default_value=gui.config.get("osc_port", 9000),
                 min_value=1024,
@@ -602,8 +643,12 @@ def build_control_panel(gui: Any):
                 width=-1,
                 callback=gui._on_osc_config_change,
             )
+            with dpg.tooltip(osc_port):
+                dpg.add_text("UDP port for OSC messages (1024-65535)")
         dpg.add_spacer(height=20)
-        dpg.add_button(label="Quit [Q]", width=-1, callback=gui._on_quit)
+        quit_btn = dpg.add_button(label="Quit [Q]", width=-1, callback=gui._on_quit)
+        with dpg.tooltip(quit_btn):
+            dpg.add_text("Exit WallDance (Ctrl+Q or Q)")
 
 
 def build_recording_panel(gui: Any):

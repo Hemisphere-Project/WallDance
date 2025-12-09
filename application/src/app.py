@@ -103,9 +103,11 @@ class WallDanceApp:
             upscale_factor=UPSCALE_FACTOR,
             enhance_enabled=ENHANCE_ENABLED,
             enhance_lite=False,
+            enhance_force=False,
             person_height_px=PERSON_HEIGHT_PX,
             person_height_min_ratio=PERSON_HEIGHT_MIN_RATIO,
             person_height_max_ratio=PERSON_HEIGHT_MAX_RATIO,
+            brightness_threshold=BRIGHTNESS_THRESHOLD,
             osc_enabled=OSC_ENABLED,
         )
 
@@ -124,6 +126,12 @@ class WallDanceApp:
             tracker=self.tracker,
             osc_sender=self.osc,
         )
+        # Sync initial GPU pipeline settings
+        preview_w = int(CAMERA_WIDTH * PREVIEW_RENDER_SCALE)
+        preview_h = int(CAMERA_HEIGHT * PREVIEW_RENDER_SCALE)
+        self.processor.set_preview_size(preview_w, preview_h)
+        # FPS cap will be synced after config load (see _apply_full_config)
+        
         if self.osc_enabled:
             self._init_osc()
 
@@ -203,6 +211,7 @@ class WallDanceApp:
             "person_height_px": self.settings.person_height_px,
             "enhance_enabled": self.settings.enhance_enabled,
             "enhance_lite": self.settings.enhance_lite,
+            "enhance_force": self.settings.enhance_force,
             "clahe_clip": CLAHE_CLIP_LIMIT,
             "gamma": GAMMA_CORRECTION,
             "upscale_factor": self.settings.upscale_factor,
@@ -231,6 +240,8 @@ class WallDanceApp:
         return {
             "on_enhance_toggle": self._cb_enhance_toggle,
             "on_enhance_lite_toggle": self._cb_enhance_lite_toggle,
+            "on_enhance_force_toggle": self._cb_enhance_force_toggle,
+            "on_brightness_threshold_change": self._cb_brightness_threshold_change,
             "on_upscale_change": self._cb_upscale_change,
             "on_clahe_change": self._cb_clahe_change,
             "on_gamma_change": self._cb_gamma_change,
@@ -290,6 +301,8 @@ class WallDanceApp:
             "person_height_px": self.settings.person_height_px,
             "enhance_enabled": self.settings.enhance_enabled,
             "enhance_lite": self.settings.enhance_lite,
+            "enhance_force": self.settings.enhance_force,
+            "brightness_threshold": self.settings.brightness_threshold,
             "clahe_clip": self.enhancer.clahe_clip,
             "gamma": self.enhancer.gamma,
             "show_skeleton": self.show_skeleton,
@@ -370,6 +383,12 @@ class WallDanceApp:
         if "enhance_lite" in config:
             self.settings.enhance_lite = config["enhance_lite"]
             self.gui and self.gui.sync_checkbox("enhance_lite", config["enhance_lite"])
+        if "enhance_force" in config:
+            self.settings.enhance_force = config["enhance_force"]
+            self.gui and self.gui.sync_checkbox("enhance_force", config["enhance_force"])
+        if "brightness_threshold" in config:
+            self.settings.brightness_threshold = config["brightness_threshold"]
+            self.gui and self.gui.sync_slider("brightness_threshold", config["brightness_threshold"])
         if "clahe_clip" in config:
             self.enhancer.clahe_clip = config["clahe_clip"]
             self.enhancer._update_clahe()
@@ -433,6 +452,10 @@ class WallDanceApp:
             # Force apply to recompute texture size even if the scale matches the current value
             self._apply_preview_scale(config["preview_scale"], force=True)
             self.gui and self.gui.sync_slider("preview_scale", config["preview_scale"])
+        
+        # Always sync FPS cap to GPU pipeline (handles case where not in config)
+        if self.processor:
+            self.processor.set_preview_fps_cap(10.0 if self.preview_fps_cap else None)
 
         print("Config applied successfully")
 
@@ -514,6 +537,10 @@ class WallDanceApp:
         self.settings.enhance_lite = enabled
         print(f"Enhancement Lite Mode: {'ON (gamma only)' if enabled else 'OFF (full CLAHE)'}")
 
+    def _cb_enhance_force_toggle(self, enabled: bool):
+        self.settings.enhance_force = enabled
+        print(f"Enhancement Force: {'ON (ignore brightness threshold)' if enabled else 'OFF (auto-bypass)'}")
+
     def _cb_upscale_change(self, factor: float):
         self.settings.upscale_factor = factor
         print(f"Upscale: {factor:.1f}x")
@@ -527,6 +554,10 @@ class WallDanceApp:
         self.enhancer.gamma = value
         self.enhancer._update_gamma_lut()
         print(f"Gamma: {value:.2f}")
+
+    def _cb_brightness_threshold_change(self, value: int):
+        self.settings.brightness_threshold = value
+        print(f"Brightness threshold: {value}")
 
     def _cb_confidence_change(self, value: float):
         self.settings.confidence = value
@@ -864,6 +895,9 @@ class WallDanceApp:
 
     def _cb_preview_cap_toggle(self, enabled: bool):
         self.preview_fps_cap = enabled
+        # Sync to GPU pipeline if active
+        if self.processor:
+            self.processor.set_preview_fps_cap(10.0 if enabled else None)
         if enabled:
             print("Preview FPS cap: ON (10 FPS limit)")
         else:
@@ -877,6 +911,9 @@ class WallDanceApp:
         self.preview.width = int(self.camera.state.width * self.preview.render_scale)
         self.preview.height = int(self.camera.state.height * self.preview.render_scale)
         self._pending_preview_resize = True
+        # Sync to GPU pipeline if active (exact dimensions for GPU resize)
+        if self.processor:
+            self.processor.set_preview_size(self.preview.width, self.preview.height)
         print(
             f"Preview render scale set: {self.preview.render_scale:.2f}x -> tex {self.preview.width}x{self.preview.height} (will resize)"
         )
@@ -1456,7 +1493,8 @@ class WallDanceApp:
                 should_process = False
                 
             if should_process:
-                tracked, display_frame, timing, latency_ms = self.processor.process(frame)
+                # GPU pipeline handles preview rate limiting internally
+                tracked, display_frame, timing, latency_ms = self.processor.process(frame, need_preview=True)
                 self.last_tracked = tracked
                 self.timing = timing
                 self.latency_ms = latency_ms
@@ -1468,21 +1506,33 @@ class WallDanceApp:
                 tracked = self.last_tracked
 
             if self.preview_enabled and (self.frame_count % self.preview_stride == 0):
-                now = time.time()
-                min_interval = 1.0 / 10.0 if self.preview_fps_cap else 0.0
-                # Check FPS cap BEFORE doing any expensive preview work
-                if now - self._last_preview_upload_time < min_interval:
-                    # Skip this frame entirely for preview
-                    pass
-                else:
-                    timing = dict(self.timing) if self.timing else {}
+                timing = dict(self.timing) if self.timing else {}
+                
+                # Check if GPU pipeline produced a new preview frame
+                # GPU handles rate limiting - we just check the flag
+                preview_new = timing.get('preview_new', True)  # Default True for CPU path
+                
+                if preview_new and display_frame is not None:
                     render_w, render_h = self.preview.width, self.preview.height
-                    src_h, src_w = display_frame.shape[:2]
+                    
+                    # Check if GPU pipeline already resized the preview frame
+                    # In that case, use original dimensions for keypoint scaling
+                    gpu_prescaled = 'original_w' in timing and 'original_h' in timing
+                    if gpu_prescaled:
+                        # GPU pipeline: preview is pre-scaled, use original dims for scale calc
+                        src_w = timing['original_w']
+                        src_h = timing['original_h']
+                        # Ensure frame is contiguous for OpenCV drawing
+                        preview_frame = np.ascontiguousarray(display_frame)
+                    else:
+                        # CPU pipeline: need to resize
+                        src_h, src_w = display_frame.shape[:2]
+                        preview_frame = cv2.resize(display_frame, (render_w, render_h))
+                    
                     scale_x = render_w / src_w
                     scale_y = render_h / src_h
                     thickness_scale = min(scale_x, scale_y)
-                    # Debug: log first few frames to check thickness calculation
-                    preview_frame = cv2.resize(display_frame, (render_w, render_h))
+                    
                     if scale_x != 1.0 or scale_y != 1.0:
                         scaled_tracks = []
                         for track in tracked:
@@ -1516,7 +1566,7 @@ class WallDanceApp:
                     upload_t0 = time.time()
                     self.gui.update_frame(preview_frame)
                     preview_upload_ms = (time.time() - upload_t0) * 1000
-                    self._last_preview_upload_time = now
+                    self._last_preview_upload_time = time.time()
                     timing["preview_draw"] = preview_draw_ms
                     timing["preview_upload"] = preview_upload_ms
                     self.timing = timing
@@ -1532,11 +1582,15 @@ class WallDanceApp:
                 self.frame_count = 0
                 self.last_fps_time = now
 
-            brightness = self.enhancer.get_status().get("brightness", 0)
+            # Get brightness from pipeline timing (already calculated there)
+            # Fall back to enhancer status if not available
+            brightness = self.timing.get("brightness", 0)
+            if brightness == 0:
+                brightness = self.enhancer.get_status().get("brightness", 0)
             enhance_bypassed = (
                 self.settings.enhance_enabled
                 and not self.settings.enhance_lite
-                and brightness >= BRIGHTNESS_THRESHOLD
+                and brightness >= self.settings.brightness_threshold
             )
             self.gui.update_stats(
                 fps=self.fps,

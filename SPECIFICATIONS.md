@@ -1,7 +1,7 @@
 # WallDance - Technical Specifications
 
 **Project:** Multi-Person Pose Detection for Wall Dancers  
-**Version:** 1.3  
+**Version:** 1.6  
 **Last Updated:** December 9, 2025  
 **Status:** Production
 
@@ -22,6 +22,7 @@
 11. [Application Status](#11-application-status)
 12. [Future Enhancements](#12-future-enhancements)
 13. [Proposed Improvements](#13-proposed-improvements-dec-2025)
+14. [GPU Path Implementation](#14-gpu-path-implementation)
 - [Appendix A: Dependencies](#appendix-a-dependencies)
 - [Appendix B: OSC Testing](#appendix-b-osc-testing)
 - [Appendix C: Troubleshooting](#appendix-c-troubleshooting)
@@ -417,11 +418,11 @@ F = [1  0  dt  0   0.5dt²   0     ]
 
 ### 8.1 Latency Budget
 
-| Stage | Target | Measured | Notes |
+| Stage | Target | Current | Notes |
 |---|---|---|---|
 | Capture | <50ms | ~30-100ms | Depends on capture card |
-| Enhancement | <5ms | ~3ms | GPU accelerated CLAHE |
-| Upscale | <5ms | ~2ms | GPU resize |
+| Enhancement | <5ms | ~8-12ms | Target: GPU CLAHE (see Section 14) |
+| Upscale | <5ms | ~3-5ms | Target: GPU resize (see Section 14) |
 | YOLO Inference | <40ms | ~30-50ms | RTX 3090, 2× upscale |
 | Tracking | <2ms | ~1ms | CPU, lightweight |
 | OSC Send | <1ms | <1ms | UDP, no confirmation |
@@ -738,30 +739,13 @@ models/
 
 ### 12.6 Full GPU Processing Pipeline
 
-**Goal:** Keep frame data on GPU from capture to inference, eliminating CPU-GPU transfers.
+> **Note:** Detailed implementation plan has been moved to **Section 14: GPU Path Implementation**. This section preserved for reference code examples.
 
-**Current Pipeline (CPU-bound):**
-```
-Camera → CPU (OpenCV) → CPU (CLAHE) → CPU (Gamma) → CPU (Upscale) → GPU (YOLO) → CPU (Results)
-         ↑ copy        ↑ process    ↑ process     ↑ process       ↑ upload     ↑ download
-```
+**Goal:** Keep frame data on GPU from capture to inference, eliminating CPU-GPU transfers. See Section 14 for phased implementation plan and status tracking.
 
-**Proposed Pipeline (GPU-native):**
-```
-Camera → GPU (DMA-BUF) → GPU (CUDA CLAHE) → GPU (CUDA Gamma) → GPU (CUDA Resize) → GPU (TensorRT) → GPU (Results)
-         ↑ zero-copy    ↑ kernel           ↑ kernel           ↑ kernel            ↑ zero-copy      ↑ stays on GPU
-```
+**Current vs Target Pipeline:** See Section 14.1 for analysis.
 
-**Implementation Stages:**
-
-| Stage | Current | Proposed | Savings |
-|---|---|---|---|
-| Capture | OpenCV (CPU) | V4L2 DMA-BUF / GStreamer NVMM | ~10ms |
-| CLAHE | cv2.createCLAHE (CPU) | cv2.cuda.createCLAHE / CuPy kernel | ~3ms |
-| Gamma | cv2.LUT (CPU) | CuPy elementwise kernel | ~1ms |
-| Upscale | cv2.resize (CPU) | cv2.cuda.resize / torch.nn.functional | ~2ms |
-| Inference | PyTorch FP16 | TensorRT FP16/INT8 | ~15-25ms |
-| **Total** | **~70-100ms** | **~30-50ms** | **~40-50ms** |
+**Reference Code Examples:**
 
 **CuPy CLAHE Kernel Example:**
 ```python
@@ -808,13 +792,6 @@ void main() {
 }
 ```
 
-**Priority Implementation Order:**
-1. **TensorRT export** - Easiest win, 2× inference speedup
-2. **GPU CLAHE** - Fix existing unused cv2.cuda.createCLAHE code
-3. **CuPy gamma** - Simple kernel, eliminates CPU LUT
-4. **GStreamer capture** - Replaces OpenCV VideoCapture
-5. **Full pipeline integration** - Connect all GPU stages
-
 ---
 
 ## 13. Proposed Improvements (Dec 2025)
@@ -822,34 +799,334 @@ void main() {
 ### 13.1 UI Usability
 - ✅ Start/Stop camera button next to camera selector (implemented).
 - ✅ Status badges in top bar: camera, OSC, model, FPS (implemented).
-- Tooltips for key sliders (confidence, imgsz, frame skip, FP16) and inline numeric value display (todo).
-- “Safe defaults” button to restore a known-good preset for on-site recovery (todo).
+- ✅ Tooltips for sliders and UI elements with explanatory text (implemented).
+- ✅ "Safe defaults" button (rotate icon) next to save: click to load, Ctrl+click to save safe defaults per project (implemented).
+- ✅ Compact Detection section: Max Persons and Person Height on same row (implemented).
+- ✅ Top bar TRT/PT badge with tooltip explaining engine types (implemented).
 - Searchable project/config dropdowns when many presets exist (todo).
 
 ### 13.2 UI & Preview Performance
 - ✅ Preview downscale slider (0.3–1.0) already present.
 - ✅ Preview on/off (pause preview) already present; processing/OSC continue when off.
 - ✅ Preview texture uploads capped to ~15 FPS to reduce GPU/UI load (implemented).
-- “Low-impact preview” toggle (could combine downscale + throttle into one control) (todo).
+- "Low-impact preview" toggle (could combine downscale + throttle into one control) (todo).
 
-### 13.3 Detection/Tracking Robustness (Low Light, Long Distance)
-- Two-stage exposure logic: when brightness is low, force enhancement and slightly lower detection confidence.
-- Temporal confidence smoothing to keep detections alive briefly on dips.
-- Dynamic NMS/IoU tuned for small boxes to reduce duplicate detections at long distance.
-- Brightness/contrast watchdog that raises gamma/CLAHE when the scene darkens.
-- Per-track quality score: freeze/hold OSC output for low-quality tracks instead of dropping IDs.
+### 13.3 Video Playback Features
+- ✅ Threaded video decoder with frame buffer for smooth playback (implemented).
+- ✅ Playback speed control: x0.25, x0.5, x0.75, x1, x1.5, x2, x4 (implemented).
+- ✅ Pause/resume playback with keyboard shortcut (Space) (implemented).
+- ✅ Frame stepping: next/prev frame with arrow keys or buttons (implemented).
+- ✅ Font Awesome icons for playback controls (implemented).
 
-### 13.4 Detection Performance (Robustness First)
-- Auto model step-down only when FPS < target and confidence > floor; otherwise keep mid model.
-- Auto imgsz downshift when GPU load >90% while keeping confidence threshold unchanged.
-- Optional ROI cropping to skip sky/ground pixels and cut inference cost.
-- Cache resized frames during frame-skip cycles to avoid repeated upscales.
+### 13.4 Detection/Tracking Robustness (Low Light, Long Distance)
+- Two-stage exposure logic: when brightness is low, force enhancement and slightly lower detection confidence (todo).
+- ✅ Temporal confidence smoothing slider (1-10 frames) to stabilize detections (implemented).
+- Dynamic NMS/IoU tuned for small boxes to reduce duplicate detections at long distance (todo).
+- Brightness/contrast watchdog that raises gamma/CLAHE when the scene darkens (todo).
+- Per-track quality score: freeze/hold OSC output for low-quality tracks instead of dropping IDs (todo).
 
-### 13.5 Additional Features
-- Offline replay mode: load video files and emit OSC for QA without a live camera.
-- Logging/export: per-frame metrics (fps, brightness, latency, track counts) to CSV.
-- Alerting: notifications on OSC send failure or camera disconnect; optional auto-retry.
-- Model checksum/display: show model file hash and load time to verify correct weights on-site.
+### 13.5 Detection Performance (Robustness First)
+- Auto model step-down only when FPS < target and confidence > floor; otherwise keep mid model (todo).
+- Auto imgsz downshift when GPU load >90% while keeping confidence threshold unchanged (todo).
+- Optional ROI cropping to skip sky/ground pixels and cut inference cost (todo).
+- Cache resized frames during frame-skip cycles to avoid repeated upscales (todo).
+
+### 13.6 Additional Features
+- ✅ Offline replay mode: load video files and emit OSC for QA without a live camera (implemented).
+- Logging/export: per-frame metrics (fps, brightness, latency, track counts) to CSV (todo).
+- Alerting: notifications on OSC send failure or camera disconnect; optional auto-retry (todo).
+- Model checksum/display: show model file hash and load time to verify correct weights on-site (todo).
+
+---
+
+## 14. GPU Path Implementation
+
+This section documents the plan and progress for implementing a full GPU processing path to minimize CPU↔GPU memory transfers and maximize throughput.
+
+> **Cross-reference:** Section 8.1 (Latency Budget) lists target timings assuming GPU-accelerated enhancement and resize. These targets will be achieved by completing the phases below.
+
+### 14.1 Current Pipeline Workflows
+
+The pipeline now supports two processing paths depending on CUDA availability and `USE_GPU_PATH` config flag.
+
+#### CPU Path (Fallback)
+```
+Camera Frame (CPU numpy array)
+    ↓
+[1] Enhancement (CPU: CLAHE, Gamma LUT via OpenCV)
+    ↓
+[2] Upscale (CPU: cv2.resize)  
+    ↓
+[3] YOLO Inference (GPU - internal upload by Ultralytics)
+    ↓
+[4] Extract Detections (CPU: .cpu().numpy())
+    ↓
+[5] Tracking (CPU: Kalman filter, Hungarian algorithm)
+    ↓
+[6] Visualization (CPU: cv2.line, cv2.circle, cv2.putText)
+    ↓
+[7] Preview Texture (CPU→GPU upload via DearPyGui)
+```
+
+#### GPU Path (When CUDA Available)
+```
+Camera Frame (CPU numpy array)
+    ↓
+[1] Upload to GPU (GpuFrame wrapper, cv2.cuda.GpuMat)
+    ↓                                            ╭───────────────╮
+[2] Enhancement (GPU: cv2.cuda.createCLAHE,      │ Stays on GPU! │
+    cv2.cuda.cvtColor, cv2.cuda.LUT)             ╰───────────────╯
+    ↓
+[3] Upscale (TODO: cv2.cuda.resize)  ← currently still CPU
+    ↓
+[4] YOLO Inference (GPU - with CPU input, TODO: zero-copy)
+    ↓
+[5] Extract Detections (CPU: .cpu().numpy())
+    ↓
+[6] Tracking (CPU: Kalman filter, Hungarian algorithm)
+    ↓
+[7] Visualization (CPU: cv2.line, cv2.circle, cv2.putText)
+    ↓
+[8] Preview Texture (CPU→GPU upload via DearPyGui)
+```
+
+#### Phase Status Summary
+| Phase | Component | CPU Path | GPU Path | Status |
+|-------|-----------|----------|----------|--------|
+| 1 | Frame Buffer | numpy array | GpuFrame/GpuMat | ✅ Done |
+| 2 | Enhancement | cv2 CLAHE/LUT | cv2.cuda CLAHE/LUT | ✅ Done |
+| 3 | Resize | cv2.resize | cv2.cuda.resize | ⬜ TODO |
+| 4 | YOLO Input | numpy→GPU | GpuMat→Tensor | ⬜ TODO |
+| 5 | Visualization | cv2 drawing | Shader/GPU | ⬜ Future |
+
+#### Interface Indicators
+The GUI displays GPU/CPU status for each pipeline step in the timing breakdown:
+- **G** prefix = GPU path active (e.g., "G Enh: 3ms")
+- **C** prefix = CPU path (e.g., "C Enh: 12ms")
+- Color coding: green (<threshold), yellow (moderate), red (slow)
+- Multiple GPU↔CPU transfers per frame (3-4 round trips)
+- Visualization drawing is CPU-bound (but only affects preview)
+
+### 14.2 Implementation Phases
+
+#### Phase 1: GPU Frame Buffer (Foundation)
+**Status:** ✅ Implemented  
+**Goal:** Keep frames on GPU memory, avoid CPU↔GPU ping-pong  
+**Risk:** Low - doesn't change processing logic  
+**Files:** `pipeline.py`, `gpu_buffer.py`, `config.py`
+
+**Implementation:**
+- Created `GpuFrame` wrapper class using `cv2.cuda.GpuMat`
+- Added `USE_GPU_PATH` config flag (default True, auto-fallback if CUDA unavailable)
+- Pipeline uploads frame to GPU once at start
+- Downloads to CPU only when needed (currently: enhancement, resize, YOLO input)
+- Added timing for upload phase
+
+**Tasks:**
+1. ✅ Create `GpuFrame` wrapper class using `cv2.cuda.GpuMat`
+2. ✅ Upload camera frame to GPU once at start of pipeline
+3. ✅ Download to CPU only when needed (visualization, recording)
+4. ✅ Add `to_gpu()` / `to_cpu()` methods for explicit transfers
+5. ⬜ Benchmark: measure transfer time savings (pending testing)
+
+**API Design:**
+```python
+class GpuFrame:
+    def __init__(self, cpu_frame=None, gpu_mat=None):
+        self._cpu = cpu_frame
+        self._gpu = gpu_mat
+    
+    def to_gpu(self) -> cv2.cuda.GpuMat: ...
+    def to_cpu(self) -> np.ndarray: ...
+    def is_on_gpu(self) -> bool: ...
+```
+
+---
+
+#### Phase 2: GPU Enhancement ✅
+**Status:** Implemented  
+**Goal:** CLAHE + Gamma on GPU  
+**Files:** `enhancer.py`, `pipeline.py`
+
+**Implementation:**
+- Rewrote `enhancer.py` with new `Enhancer` class supporting both CPU and GPU paths
+- GPU enhancement uses `cv2.cuda.createCLAHE()`, `cv2.cuda.cvtColor()`, `cv2.cuda.LUT()`
+- Works in LAB color space for proper luminance enhancement
+- Automatic fallback to CPU if any GPU operation fails
+- `ImageEnhancer` class provides backward compatibility for legacy API
+- `EnhancerSettings` dataclass for clean parameter passing
+
+**Key Classes:**
+```python
+@dataclass
+class EnhancerSettings:
+    enabled: bool = False
+    clahe_clip: float = 2.0
+    clahe_grid: int = 8
+    gamma: float = 1.0
+
+class Enhancer:
+    def enhance(self, frame: GpuFrame | np.ndarray, settings: EnhancerSettings) -> GpuFrame | np.ndarray
+    def _enhance_gpu(self, frame: GpuFrame, settings: EnhancerSettings) -> GpuFrame
+    def _enhance_cpu(self, frame: np.ndarray, settings: EnhancerSettings) -> np.ndarray
+
+class ImageEnhancer(Enhancer):  # Backward compatible
+    def enhance(self, frame) -> (enhanced, status_dict)
+    def enhance_simple(self, frame) -> enhanced
+    def get_status() -> {"brightness": value}
+```
+
+---
+
+#### Phase 3: GPU Resize
+**Status:** Not started  
+**Goal:** Upscale on GPU  
+**Risk:** Low - straightforward CUDA call  
+**Files:** `pipeline.py`
+
+**Tasks:**
+1. Replace `cv2.resize()` with `cv2.cuda.resize()`
+2. Use `cv2.INTER_LINEAR` (fast) or `cv2.INTER_CUBIC` (quality)
+3. Chain with Phase 2: enhanced GPU frame → resized GPU frame
+4. Feed directly to YOLO (Ultralytics accepts GPU tensors)
+
+**Code change:**
+```python
+if self.settings.upscale_factor != 1.0:
+    gpu_resized = cv2.cuda.resize(gpu_enhanced, (new_w, new_h), 
+                                   interpolation=cv2.INTER_LINEAR)
+```
+
+---
+
+#### Phase 4: Zero-Copy YOLO Input
+**Status:** Not started  
+**Goal:** Avoid GPU→CPU→GPU round-trip for YOLO  
+**Risk:** High - requires Ultralytics internals knowledge  
+**Files:** `pipeline.py`, possibly custom YOLO wrapper
+
+**Options:**
+
+**Option A: Direct GpuMat → Tensor**
+```python
+# Convert cv2.cuda.GpuMat to PyTorch tensor without CPU copy
+import torch
+# GpuMat uses CUDA memory, can be wrapped as tensor
+gpu_tensor = torch.as_tensor(gpu_mat.cudaPtr(), device='cuda')
+results = self.model(gpu_tensor, ...)
+```
+
+**Option B: Use Ultralytics' native GPU path**
+- Ultralytics already handles GPU tensors if input is a `torch.Tensor`
+- Need to verify exact format expected (CHW vs HWC, normalization)
+- May need: `tensor = tensor.permute(2, 0, 1).float() / 255.0`
+
+**Option C: TensorRT direct inference**
+- For TensorRT engines, input can be CUDA memory directly
+- May require custom inference wrapper bypassing Ultralytics
+
+---
+
+#### Phase 5: GPU Visualization (Future/Optional)
+**Status:** Not planned  
+**Goal:** Draw overlays on GPU  
+**Risk:** High - OpenCV CUDA drawing is very limited  
+**Alternative:** Shader-based rendering or GPU compositing
+
+**Notes:**
+- Lower priority since preview is already throttled to 15 FPS
+- Visualization only affects display, not OSC output
+- DearPyGui texture upload is the real bottleneck here
+- Consider: render to GPU texture, composite in DearPyGui shader
+
+---
+
+### 14.3 Implementation Schedule
+
+| Phase | Effort | Impact | Dependencies | Status |
+|-------|--------|--------|--------------|--------|
+| 1: GPU Buffer | 2-3h | Foundation | None | ✅ Implemented |
+| 2: GPU Enhancement | 3-4h | High | Phase 1 | Not started |
+| 3: GPU Resize | 1h | Medium | Phase 1 | Not started |
+| 4: Zero-Copy YOLO | 4-6h | High | Phases 1-3 | Not started |
+| 5: GPU Visualization | Future | Low | All above | Not planned |
+
+### 14.4 Safety Measures
+
+1. **Feature flag:** `USE_GPU_PATH = True/False` in `config.py`
+2. **Fallback:** Auto-detect CUDA availability, graceful CPU fallback
+3. **Memory monitoring:** Track GPU memory usage, warn if approaching limit
+4. **A/B testing:** Compare FPS/latency between CPU and GPU paths
+5. **Per-phase toggle:** Enable phases individually for debugging
+
+### 14.5 Expected Performance Gains
+
+| Metric | Current | After Phase 2 | After Phase 4 |
+|--------|---------|---------------|---------------|
+| Enhancement | 8-12ms | 2-4ms | 2-4ms |
+| Upscale | 3-5ms | <1ms | <1ms |
+| GPU↔CPU transfers | 3-4/frame | 1-2/frame | 1/frame |
+| Total latency | 40-60ms | 30-45ms | 25-35ms |
+| Estimated FPS gain | baseline | +20-30% | +40-50% |
+
+### 14.6 Technical Notes
+
+**OpenCV CUDA Requirements:**
+- OpenCV must be compiled with CUDA support (`cv2.cuda.getCudaEnabledDeviceCount() > 0`)
+- Pre-built pip packages typically lack CUDA; may need custom build
+- Alternative: use `opencv-contrib-python` with CUDA or build from source
+
+**Memory Considerations:**
+- GPU memory usage increases with frame buffer on GPU
+- At 1080p: ~6MB per frame (BGR uint8)
+- With upscale 2x: ~24MB per frame
+- Keep ≤3 frames on GPU simultaneously to stay under 100MB overhead
+
+**Stream Synchronization:**
+- Use `cv2.cuda.Stream` for async operations
+- Sync before CPU access: `stream.waitForCompletion()`
+- Enables overlapping GPU operations with CPU work
+
+### 14.7 Reference Implementation Code
+
+**Stage-by-Stage Savings (Target):**
+
+| Stage | Current | Target | Savings |
+|---|---|---|---|
+| Capture | OpenCV (CPU) | V4L2 DMA-BUF / GStreamer NVMM | ~10ms |
+| CLAHE | cv2.createCLAHE (CPU) | cv2.cuda.createCLAHE | ~6-8ms |
+| Gamma | cv2.LUT (CPU) | CuPy elementwise kernel | ~1ms |
+| Upscale | cv2.resize (CPU) | cv2.cuda.resize | ~2ms |
+| Inference | PyTorch FP16 | TensorRT FP16 | ~15-25ms |
+| **Total** | **~70-100ms** | **~30-50ms** | **~40-50ms** |
+
+**CuPy Gamma Kernel Example:**
+```python
+import cupy as cp
+
+gamma_kernel = cp.ElementwiseKernel(
+    'uint8 x, float32 inv_gamma',
+    'uint8 y',
+    'y = (uint8)(powf((float)x / 255.0f, inv_gamma) * 255.0f)',
+    'gamma_correction'
+)
+# Apply: gpu_frame = gamma_kernel(gpu_frame, 1.0/1.2)
+```
+
+**Zero-Copy PyTorch Bridge:**
+```python
+# Convert cv2.cuda.GpuMat to PyTorch tensor without CPU copy
+import torch
+
+# Option 1: Via CuPy (requires dlpack)
+cupy_array = cp.asarray(gpu_mat)
+torch_tensor = torch.as_tensor(cupy_array, device='cuda')
+
+# Option 2: Direct pointer (advanced, requires matching memory layout)
+# torch.cuda.memory.caching_allocator_alloc(size)
+```
+
+---
 
 ## Appendix A: Dependencies
 
@@ -919,6 +1196,8 @@ Expected output:
 | 1.1 | 2025-12-08 | AI/Human collaboration | Video recording system, UI improvements |
 | 1.2 | 2025-12-08 | AI/Human collaboration | TensorRT integration with GUI controls |
 | 1.3 | 2025-12-09 | AI/Human collaboration | Restructured: hardware guide split out, paths updated, cleanup |
+| 1.4 | 2025-12-09 | AI/Human collaboration | Video playback (threaded decoder, speed control, pause/step), tooltips, safe defaults, smoothing slider |
+| 1.5 | 2025-12-09 | AI/Human collaboration | GPU Path Implementation plan (Section 14) |
 
 ---
 
