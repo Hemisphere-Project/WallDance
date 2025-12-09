@@ -88,6 +88,10 @@ class GpuPipelineSettings:
     clahe_grid: int = 8
     gamma: float = 1.2
     
+    # Denoising
+    denoise_enabled: bool = False
+    denoise_alpha: float = 0.6      # Weight of new frame (0.0-1.0). Lower = more smoothing.
+    
     # Preview - exact dimensions for GPU resize
     preview_width: int = 960        # Target preview width
     preview_height: int = 540       # Target preview height
@@ -156,6 +160,9 @@ class GpuEnhancer:
         # Last computed brightness (for status display)
         self.last_brightness: float = 0.0
         self.last_used_gpu: bool = False
+        
+        # Temporal denoising state
+        self._last_frame_tensor: Optional[torch.Tensor] = None
     
     @property
     def gpu_available(self) -> bool:
@@ -183,16 +190,33 @@ class GpuEnhancer:
         
         tensor = gpu_frame.tensor  # (1, 3, H, W) in RGB
         
+        # 1. Temporal Denoising (Raw RGB)
+        # Apply before brightness check/enhancement to stabilize the signal
+        if settings.denoise_enabled:
+            tensor = self._apply_temporal_denoise(tensor, settings.denoise_alpha)
+            # Update gpu_frame wrapper with denoised tensor
+            gpu_frame = GpuFrame(tensor, is_bgr=gpu_frame._is_bgr)
+        
         # Compute brightness from Y channel for auto-bypass check
         # Only needed if not in force mode
+        blend_factor = 1.0
         if not settings.enhance_force:
             brightness = self._compute_brightness_gpu(tensor)
             self.last_brightness = brightness
             
-            if brightness >= settings.brightness_threshold:
-                # Auto-bypass: scene is bright enough
+            # Progressive Enhancement:
+            # If brightness < threshold: factor = 1.0 (Full enhance)
+            # If brightness > threshold + fade: factor = 0.0 (No enhance)
+            # In between: linear blend
+            fade_range = 40.0
+            if brightness >= settings.brightness_threshold + fade_range:
+                # Scene is bright enough - skip enhancement completely
                 self.last_used_gpu = False
                 return gpu_frame, False
+            elif brightness > settings.brightness_threshold:
+                # In transition zone - calculate blend factor
+                over = brightness - settings.brightness_threshold
+                blend_factor = 1.0 - (over / fade_range)
         else:
             self.last_brightness = 0.0  # Not computed in force mode
         
@@ -209,9 +233,37 @@ class GpuEnhancer:
                 settings.gamma
             )
         
+        # Apply progressive blending if needed
+        if blend_factor < 1.0:
+            # result = original * (1-factor) + enhanced * factor
+            # lerp(end, weight) -> start + weight * (end - start)
+            # We want: original + factor * (enhanced - original)
+            # So we use tensor.lerp(enhanced, blend_factor)
+            enhanced = tensor.lerp(enhanced, blend_factor)
+        
         result = GpuFrame(enhanced, is_bgr=gpu_frame._is_bgr)
         self.last_used_gpu = True
         return result, True
+    
+    def _apply_temporal_denoise(self, current: torch.Tensor, alpha: float) -> torch.Tensor:
+        """
+        Apply temporal smoothing: out = (1-alpha)*last + alpha*current.
+        Uses in-place updates on a persistent buffer to minimize allocations.
+        """
+        # Reset history if shape changes or first frame
+        if self._last_frame_tensor is None or self._last_frame_tensor.shape != current.shape:
+            self._last_frame_tensor = current.clone()
+            return current
+        
+        # accum = (1-alpha)*accum + alpha*current
+        # lerp_(end, weight) -> self + weight*(end - self)
+        # We want: (1-alpha)*self + alpha*current
+        # This matches lerp exactly.
+        self._last_frame_tensor.lerp_(current, alpha)
+        
+        # Return a clone to ensure downstream operations don't modify our history buffer
+        # (unless we are sure downstream is out-of-place, but safety first)
+        return self._last_frame_tensor.clone()
     
     def _compute_brightness_gpu(self, tensor: torch.Tensor) -> float:
         """Compute average brightness from GPU tensor (RGB format)."""

@@ -28,6 +28,7 @@ from config import (
     CAMERA_INDEX,
     CAMERA_WIDTH,
     CLAHE_CLIP_LIMIT,
+    DENOISE_STRENGTH,
     ENHANCE_ENABLED,
     GAMMA_CORRECTION,
     KEYPOINT_CONFIDENCE,
@@ -108,6 +109,7 @@ class WallDanceApp:
             person_height_min_ratio=PERSON_HEIGHT_MIN_RATIO,
             person_height_max_ratio=PERSON_HEIGHT_MAX_RATIO,
             brightness_threshold=BRIGHTNESS_THRESHOLD,
+            denoise_strength=DENOISE_STRENGTH,
             osc_enabled=OSC_ENABLED,
         )
 
@@ -303,6 +305,7 @@ class WallDanceApp:
             "enhance_lite": self.settings.enhance_lite,
             "enhance_force": self.settings.enhance_force,
             "brightness_threshold": self.settings.brightness_threshold,
+            "denoise_strength": self.settings.denoise_strength,
             "clahe_clip": self.enhancer.clahe_clip,
             "gamma": self.enhancer.gamma,
             "show_skeleton": self.show_skeleton,
@@ -389,6 +392,9 @@ class WallDanceApp:
         if "brightness_threshold" in config:
             self.settings.brightness_threshold = config["brightness_threshold"]
             self.gui and self.gui.sync_slider("brightness_threshold", config["brightness_threshold"])
+        if "denoise_strength" in config:
+            self.settings.denoise_strength = config["denoise_strength"]
+            self.gui and self.gui.sync_slider("denoise", config["denoise_strength"])
         if "clahe_clip" in config:
             self.enhancer.clahe_clip = config["clahe_clip"]
             self.enhancer._update_clahe()

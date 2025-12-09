@@ -893,10 +893,10 @@ Camera Frame (CPU numpy array)
 #### Phase Status Summary
 | Phase | Component | CPU Path | GPU Path | Status |
 |-------|-----------|----------|----------|--------|
-| 1 | Frame Buffer | numpy array | GpuFrame/GpuMat | ✅ Done |
-| 2 | Enhancement | cv2 CLAHE/LUT | cv2.cuda CLAHE/LUT | ✅ Done |
-| 3 | Resize | cv2.resize | cv2.cuda.resize | ⬜ TODO |
-| 4 | YOLO Input | numpy→GPU | GpuMat→Tensor | ⬜ TODO |
+| 1 | Frame Buffer | numpy array | GpuFrame/Tensor | ✅ Done |
+| 2 | Enhancement | cv2 CLAHE/LUT | Kornia CLAHE/Gamma | ✅ Done |
+| 3 | Resize | cv2.resize | torch.nn.functional | ✅ Done |
+| 4 | YOLO Input | numpy→GPU | Tensor (Zero-Copy) | ✅ Done |
 | 5 | Visualization | cv2 drawing | Shader/GPU | ⬜ Future |
 
 #### Interface Indicators
@@ -999,45 +999,41 @@ if self.settings.upscale_factor != 1.0:
 
 ---
 
-#### Phase 4: Zero-Copy YOLO Input
-**Status:** Not started  
-**Goal:** Avoid GPU→CPU→GPU round-trip for YOLO  
-**Risk:** High - requires Ultralytics internals knowledge  
-**Files:** `pipeline.py`, possibly custom YOLO wrapper
-
-**Options:**
-
-**Option A: Direct GpuMat → Tensor**
-```python
-# Convert cv2.cuda.GpuMat to PyTorch tensor without CPU copy
-import torch
-# GpuMat uses CUDA memory, can be wrapped as tensor
-gpu_tensor = torch.as_tensor(gpu_mat.cudaPtr(), device='cuda')
-results = self.model(gpu_tensor, ...)
-```
-
-**Option B: Use Ultralytics' native GPU path**
-- Ultralytics already handles GPU tensors if input is a `torch.Tensor`
-- Need to verify exact format expected (CHW vs HWC, normalization)
-- May need: `tensor = tensor.permute(2, 0, 1).float() / 255.0`
-
-**Option C: TensorRT direct inference**
-- For TensorRT engines, input can be CUDA memory directly
-- May require custom inference wrapper bypassing Ultralytics
+#### Phase 4: Zero-Copy YOLO Input (Completed)
+**Status:** Implemented  
+**Goal:** Pass GPU tensor directly to Ultralytics YOLO  
+**Files:** `pipeline.py`, `gpu_pipeline.py`  
+**Implementation:**
+- `GpuPipeline.process()` returns a pre-processed `torch.Tensor`
+- `pipeline.py` passes this tensor directly to `model()`
+- Eliminates the costly `numpy` → `GPU` upload inside YOLO
 
 ---
 
-#### Phase 5: GPU Visualization (Future/Optional)
-**Status:** Not planned  
-**Goal:** Draw overlays on GPU  
-**Risk:** High - OpenCV CUDA drawing is very limited  
-**Alternative:** Shader-based rendering or GPU compositing
+#### Phase 5: Advanced Features (Future)
+**Status:** Planned  
+**Goal:** High-resolution support and further optimization  
 
-**Notes:**
-- Lower priority since preview is already throttled to 15 FPS
-- Visualization only affects display, not OSC output
-- DearPyGui texture upload is the real bottleneck here
-- Consider: render to GPU texture, composite in DearPyGui shader
+**A. 4K / Smart Tiling Inference**
+- **Problem:** Small targets at 4K resolution are lost when downscaled to 640x640.
+- **Solution: "Smart Tiling"**
+    1. **Global Watch:** Run fast detection on downscaled full frame (e.g., 1280px) to find general activity.
+    2. **Active Tiling:** Divide 4K frame into overlapping tiles (e.g., 960px with 25% overlap).
+    3. **Selective Inference:** Only run high-res inference on tiles that:
+        - Contain a tracked dancer (from previous frame).
+        - Contain a potential detection (from Global Watch).
+    4. **Merge:** Stitch results back to global coordinates using NMS.
+    - *Note:* This is more robust than simple ROI cropping as it handles new entrants via the Global Watch and doesn't rely on precise ROI prediction.
+
+**B. Temporal Denoising (Implemented)**
+- **Goal:** Reduce sensor noise in low-light conditions.
+- **Method:** Weighted moving average on GPU tensor (`out = (1-α)*last + α*new`).
+- **Status:** Implemented in `gpu_pipeline.py` with Progressive Enhancement logic (fades out based on brightness).
+
+**C. Zero-Copy Capture (DALI)**
+- **Goal:** Avoid CPU decoding of video stream.
+- **Method:** Use NVIDIA DALI to decode video directly to GPU memory.
+- **Benefit:** Removes the last major CPU bottleneck (video decoding).
 
 ---
 
@@ -1046,10 +1042,10 @@ results = self.model(gpu_tensor, ...)
 | Phase | Effort | Impact | Dependencies | Status |
 |-------|--------|--------|--------------|--------|
 | 1: GPU Buffer | 2-3h | Foundation | None | ✅ Implemented |
-| 2: GPU Enhancement | 3-4h | High | Phase 1 | Not started |
-| 3: GPU Resize | 1h | Medium | Phase 1 | Not started |
-| 4: Zero-Copy YOLO | 4-6h | High | Phases 1-3 | Not started |
-| 5: GPU Visualization | Future | Low | All above | Not planned |
+| 2: GPU Enhancement | 3-4h | High | Phase 1 | ✅ Implemented |
+| 3: GPU Resize | 1h | Medium | Phase 1 | ✅ Implemented |
+| 4: Zero-Copy YOLO | 4-6h | High | Phases 1-3 | ✅ Implemented |
+| 5: ROI Inference | Future | High | Phase 4 | ⬜ Planned |
 
 ### 14.4 Safety Measures
 
@@ -1198,6 +1194,8 @@ Expected output:
 | 1.3 | 2025-12-09 | AI/Human collaboration | Restructured: hardware guide split out, paths updated, cleanup |
 | 1.4 | 2025-12-09 | AI/Human collaboration | Video playback (threaded decoder, speed control, pause/step), tooltips, safe defaults, smoothing slider |
 | 1.5 | 2025-12-09 | AI/Human collaboration | GPU Path Implementation plan (Section 14) |
+| 1.6 | 2025-12-09 | AI/Human collaboration | GPU Path Completed (Phase 1-4), Temporal Denoising, ROI Roadmap |
+| 1.7 | 2025-12-09 | AI/Human collaboration | UI Refinement: Moved Denoise to PREPROC row |
 
 ---
 

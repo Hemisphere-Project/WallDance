@@ -143,6 +143,10 @@ class WallDanceGUI:
         if 'on_brightness_threshold_change' in self.callbacks:
             self.callbacks['on_brightness_threshold_change'](value)
 
+    def _on_denoise_change(self, sender, value):
+        if 'on_denoise_change' in self.callbacks:
+            self.callbacks['on_denoise_change'](value)
+
     def _on_preview_toggle(self, sender, value):
         if 'on_preview_toggle' in self.callbacks:
             self.callbacks['on_preview_toggle'](value)
@@ -181,12 +185,13 @@ class WallDanceGUI:
         dpg.configure_item("enhance_lite_label", color=color)
         dpg.configure_item("tbl_enhance_lite_checkbox", enabled=enabled)
         dpg.configure_item("enhance_gamma_label", color=gamma_color)
-        dpg.configure_item("tbl_gamma_slider", enabled=(enabled and not effective_bypass))
+        # User requested to be able to move sliders even when disabled
+        dpg.configure_item("tbl_gamma_slider", enabled=True)
         dpg.configure_item("enhance_threshold_label", color=threshold_color)
         dpg.configure_item("tbl_brightness_threshold_slider", enabled=(enabled and not force_enabled))
         
         dpg.configure_item("enhance_clahe_label", color=clahe_color)
-        dpg.configure_item("tbl_clahe_slider", enabled=(enabled and not lite_mode and not effective_bypass))
+        dpg.configure_item("tbl_clahe_slider", enabled=True)
 
     def _on_preview_scale_change(self, sender, value):
         if 'on_preview_scale_change' in self.callbacks:

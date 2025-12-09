@@ -51,6 +51,7 @@ class ProcessingSettings:
     person_height_min_ratio: float = PERSON_HEIGHT_MIN_RATIO
     person_height_max_ratio: float = PERSON_HEIGHT_MAX_RATIO
     brightness_threshold: int = 60  # Auto-bypass threshold (0-255)
+    denoise_strength: float = 0.0   # Temporal denoising (0.0-1.0)
     osc_enabled: bool = True
     use_gpu_path: bool = USE_GPU_PATH  # Enable GPU frame buffer
 
@@ -224,6 +225,16 @@ class FrameProcessor:
         gs.brightness_threshold = float(self.settings.brightness_threshold)
         gs.clahe_clip = self.enhancer.clahe_clip
         gs.gamma = self.enhancer.gamma
+        
+        # Map denoise_strength (0.0-1.0) to alpha (1.0-0.0)
+        # Strength 0.0 -> Alpha 1.0 (No smoothing)
+        # Strength 0.9 -> Alpha 0.1 (Heavy smoothing)
+        if self.settings.denoise_strength > 0.0:
+            gs.denoise_enabled = True
+            gs.denoise_alpha = max(0.01, 1.0 - self.settings.denoise_strength)
+        else:
+            gs.denoise_enabled = False
+            
         gs.yolo_imgsz = self.settings.imgsz
     
     def set_preview_size(self, width: int, height: int):

@@ -48,6 +48,11 @@ GAMMA_AUTO = True                   # Auto-adjust gamma based on brightness
 # Brightness threshold for auto-enhancement
 BRIGHTNESS_THRESHOLD = 60           # Below this (0-255), apply enhancement
 
+# Temporal Denoising (GPU only)
+DENOISE_STRENGTH = 0.0              # 0.0 = Off, 0.9 = Strong smoothing
+                                    # Reduces sensor noise in low light
+                                    # Only active when USE_GPU_PATH = True
+
 # =============================================================================
 # YOLO MODEL
 # =============================================================================
@@ -57,7 +62,7 @@ YOLO_MODEL = "yolo11m-pose.pt"      # Options: yolo11n/s/m/l/x-pose.pt
                                     # v8 models are older but well-tested
 YOLO_CONFIDENCE = 0.25              # Detection confidence threshold (0.1-0.9)
 YOLO_IOU_THRESHOLD = 0.45           # NMS IoU threshold
-YOLO_IMGSZ = 1280                   # YOLO input size (640, 960, 1280, 1920, 2560)
+YOLO_IMGSZ = 800                    # YOLO input size (640, 800, 960, 1280, 1536, 1920, 2560)
                                     # IMPORTANT: Should be ≤ camera resolution for best results
                                     # - 640-960: Fast, good for close-up / webcam
                                     # - 1280: Balanced, good for 1080p cameras at medium distance

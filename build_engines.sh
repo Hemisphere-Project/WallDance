@@ -8,7 +8,7 @@ cd "$ROOT_DIR/application"
 # Models are in the workspace models folder
 MODELS_DIR="$ROOT_DIR/models"
 
-SIZES=(640 800 960 1280 1920)
+SIZES=(640 800 960 1280 1536 1920)
 
 for model in $MODELS_DIR/*.pt; do
     base=$(basename "$model" .pt)

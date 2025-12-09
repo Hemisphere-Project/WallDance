@@ -336,6 +336,19 @@ def build_video_panel(gui: Any):
                         default_value=gui.config.get("enhance_enabled", False),
                         callback=gui._on_enhance_toggle,
                     )
+                with dpg.group(horizontal=True, tag="enhance_denoise_group"):
+                    dpg.add_text("Denoise:", tag="enhance_denoise_label")
+                    denoise_slider = dpg.add_slider_float(
+                        tag="tbl_denoise_slider",
+                        default_value=gui.config.get("denoise_strength", 0.0),
+                        min_value=0.0,
+                        max_value=0.9,
+                        format="%.2f",
+                        width=-1,
+                        callback=gui._on_denoise_change,
+                    )
+                    with dpg.tooltip(denoise_slider):
+                        dpg.add_text("Temporal Denoising (GPU only).\nReduces sensor noise in low light.\n0.0 = Off, 0.9 = Strong smoothing.")
                 with dpg.group(horizontal=True, tag="enhance_lite_group"):
                     dpg.add_text("Lite:", tag="enhance_lite_label")
                     dpg.add_checkbox(
@@ -351,6 +364,23 @@ def build_video_panel(gui: Any):
                     )
                     with dpg.tooltip(force_cb):
                         dpg.add_text("Force enhancement even when\nbrightness is above threshold")
+                dpg.add_spacer()
+                dpg.add_spacer()
+            with dpg.table_row():
+                dpg.add_text("", color=(120, 200, 140))
+                with dpg.group(horizontal=True, tag="enhance_threshold_group"):
+                    dpg.add_text("Threshold:", tag="enhance_threshold_label")
+                    threshold_slider = dpg.add_slider_int(
+                        tag="tbl_brightness_threshold_slider",
+                        default_value=gui.config.get("brightness_threshold", 60),
+                        min_value=0,
+                        max_value=255,
+                        format="%d",
+                        width=-1,
+                        callback=gui._on_brightness_threshold_change,
+                    )
+                    with dpg.tooltip(threshold_slider):
+                        dpg.add_text("Brightness threshold for auto-bypass.\nIf scene brightness > threshold,\nenhancement is skipped (unless Forced).")
                 with dpg.group(horizontal=True, tag="enhance_clahe_group"):
                     dpg.add_text("Clahe:", tag="enhance_clahe_label")
                     dpg.add_slider_float(
@@ -373,19 +403,6 @@ def build_video_panel(gui: Any):
                         width=-1,
                         callback=gui._on_gamma_change,
                     )
-                with dpg.group(horizontal=True, tag="enhance_threshold_group"):
-                    dpg.add_text("Threshold:", tag="enhance_threshold_label")
-                    threshold_slider = dpg.add_slider_int(
-                        tag="tbl_brightness_threshold_slider",
-                        default_value=gui.config.get("brightness_threshold", 60),
-                        min_value=0,
-                        max_value=255,
-                        format="%d",
-                        width=-1,
-                        callback=gui._on_brightness_threshold_change,
-                    )
-                    with dpg.tooltip(threshold_slider):
-                        dpg.add_text("Brightness threshold for auto-bypass.\nIf scene brightness > threshold,\nenhancement is skipped (unless Forced).")
             with dpg.table_row():
                 dpg.add_text("MODEL", color=(120, 200, 140))
                 with dpg.group(horizontal=True):
@@ -416,7 +433,7 @@ def build_video_panel(gui: Any):
                 with dpg.group(horizontal=True):
                     dpg.add_text("ImgSz:")
                     dpg.add_combo(
-                        items=["640", "800", "960", "1280", "1920"],
+                        items=["640", "800", "960", "1280", "1536", "1920"],
                         tag="tbl_imgsz_combo",
                         default_value=str(gui.config.get("yolo_imgsz", 640)),
                         width=-100,
