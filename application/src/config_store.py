@@ -154,3 +154,41 @@ class ConfigStore:
                 return meta_project
         project_dir = os.path.dirname(fallback_path)
         return os.path.basename(project_dir) if project_dir else "default"
+
+    # ------------------------------------------------------------------
+    # Safe defaults
+    # ------------------------------------------------------------------
+    def save_safe_defaults(self, project_name: str, config: Dict) -> str:
+        """Save config as safe defaults for the project."""
+        safe_name = sanitize_project_name(project_name)
+        project_dir = os.path.join(self.config_dir, safe_name)
+        os.makedirs(project_dir, exist_ok=True)
+
+        filepath = os.path.join(project_dir, "_safe_defaults.json")
+
+        payload = dict(config)
+        payload["_meta"] = {
+            "project": safe_name,
+            "saved_at": datetime.now().isoformat(),
+            "type": "safe_defaults",
+        }
+
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+
+        return filepath
+
+    def load_safe_defaults(self, project_name: str) -> Optional[Dict]:
+        """Load safe defaults for the project if they exist."""
+        safe_name = sanitize_project_name(project_name)
+        filepath = os.path.join(self.config_dir, safe_name, "_safe_defaults.json")
+        if os.path.exists(filepath):
+            with open(filepath, "r", encoding="utf-8") as f:
+                return json.load(f)
+        return None
+
+    def has_safe_defaults(self, project_name: str) -> bool:
+        """Check if safe defaults exist for the project."""
+        safe_name = sanitize_project_name(project_name)
+        filepath = os.path.join(self.config_dir, safe_name, "_safe_defaults.json")
+        return os.path.exists(filepath)

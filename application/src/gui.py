@@ -228,6 +228,10 @@ class WallDanceGUI:
         if 'on_tracker_age_change' in self.callbacks:
             self.callbacks['on_tracker_age_change'](value)
     
+    def _on_tracker_smoothing_change(self, sender, value):
+        if 'on_tracker_smoothing_change' in self.callbacks:
+            self.callbacks['on_tracker_smoothing_change'](value)
+    
     def _on_tracker_reset(self):
         if 'on_tracker_reset' in self.callbacks:
             self.callbacks['on_tracker_reset']()
@@ -245,6 +249,16 @@ class WallDanceGUI:
     def _on_save_config(self):
         if 'on_save_config' in self.callbacks:
             self.callbacks['on_save_config']()
+    
+    def _on_safe_defaults(self):
+        """Handle safe defaults button. Ctrl+click saves, normal click loads."""
+        ctrl_held = dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
+        if ctrl_held:
+            if 'on_save_safe_defaults' in self.callbacks:
+                self.callbacks['on_save_safe_defaults']()
+        else:
+            if 'on_load_safe_defaults' in self.callbacks:
+                self.callbacks['on_load_safe_defaults']()
     
     def _on_save_as_config(self):
         if 'on_save_as_config' in self.callbacks:
@@ -684,6 +698,7 @@ class WallDanceGUI:
             'person_height': 'person_height_slider',
             'tracker_distance': 'tracker_dist_slider',
             'tracker_max_age': 'tracker_age_slider',
+            'tracker_smoothing': 'tracker_smoothing_slider',
         }
         if name in tag_map:
             dpg.set_value(tag_map[name], value)

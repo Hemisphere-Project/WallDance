@@ -16,3 +16,4 @@ class Icons:
     STEP_FORWARD = "\uf051"
     STEP_BACKWARD = "\uf048"
     CIRCLE = "\uf111"
+    SHIELD = "\uf3ed"  # Shield-alt for safe defaults

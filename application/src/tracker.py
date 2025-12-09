@@ -22,7 +22,7 @@ class DancerTrack:
     
     _id_counter = 0
     
-    def __init__(self, keypoints, confidence, bbox):
+    def __init__(self, keypoints, confidence, bbox, smoothing_depth=1):
         """
         Initialize a new track.
         
@@ -30,6 +30,7 @@ class DancerTrack:
             keypoints: (17, 2) array of (x, y) positions
             confidence: (17,) array of confidence scores
             bbox: (x, y, w, h) bounding box
+            smoothing_depth: Number of frames to average for confidence smoothing
         """
         DancerTrack._id_counter += 1
         self.track_id = DancerTrack._id_counter
@@ -39,9 +40,13 @@ class DancerTrack:
         self.hits = 1
         self.age = 0
         self.time_since_update = 0
+        self.smoothing_depth = smoothing_depth
         
         # History for visualization
         self.history = deque(maxlen=30)
+        
+        # Confidence history for temporal smoothing
+        self.confidence_history = deque(maxlen=max(1, smoothing_depth))
         
         # Initialize Kalman filter for centroid tracking
         # State: [x, y, vx, vy, ax, ay]
@@ -115,10 +120,32 @@ class DancerTrack:
         self.hits += 1
         self.time_since_update = 0
         
+        # Store confidence for temporal smoothing
+        self.confidence_history.append(confidence.copy())
+        
         centroid = self._compute_centroid(keypoints, confidence)
         self.kf.update(centroid.reshape(2, 1))
         self.history.append(centroid)
     
+    def get_smoothed_confidence(self):
+        """Get temporally smoothed confidence values."""
+        if len(self.confidence_history) == 0:
+            return self.confidence
+        if len(self.confidence_history) == 1:
+            return self.confidence_history[0]
+        # Average across the history
+        stacked = np.stack(list(self.confidence_history))
+        return np.mean(stacked, axis=0)
+    
+    def set_smoothing_depth(self, depth):
+        """Update smoothing depth (resizes confidence history)."""
+        self.smoothing_depth = max(1, depth)
+        # Create new deque with new maxlen, preserving recent values
+        old_history = list(self.confidence_history)
+        self.confidence_history = deque(maxlen=self.smoothing_depth)
+        for conf in old_history[-self.smoothing_depth:]:
+            self.confidence_history.append(conf)
+
     def get_centroid(self):
         """Get current estimated centroid."""
         return self.kf.x[:2].flatten()
@@ -148,6 +175,18 @@ class DancerTracker:
         self.min_hits = TRACKER_MIN_HITS
         self.distance_threshold = TRACKER_DISTANCE_THRESHOLD
         self.velocity_weight = TRACKER_VELOCITY_WEIGHT
+        self._smoothing_depth = 1  # Temporal confidence smoothing depth
+    
+    @property
+    def smoothing_depth(self):
+        return self._smoothing_depth
+    
+    @smoothing_depth.setter
+    def smoothing_depth(self, value):
+        """Set smoothing depth and update all existing tracks."""
+        self._smoothing_depth = max(1, value)
+        for track in self.tracks:
+            track.set_smoothing_depth(self._smoothing_depth)
     
     def reset(self):
         """Reset all tracks."""
@@ -258,7 +297,7 @@ class DancerTracker:
                 if min_dist > self.distance_threshold:
                     if TRACKER_DEBUG:
                         print(f"[TRACKER] New track #{DancerTrack._id_counter + 1}: min_dist={min_dist:.1f} > thresh={self.distance_threshold}")
-                    self.tracks.append(DancerTrack(kpts, conf, bbox))
+                    self.tracks.append(DancerTrack(kpts, conf, bbox, self.smoothing_depth))
                 elif closest_track is not None and closest_track_idx not in matched_trk:
                     # This detection is close to an unmatched track - force update it
                     if TRACKER_DEBUG:

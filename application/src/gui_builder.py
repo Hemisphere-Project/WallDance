@@ -204,6 +204,21 @@ def build_top_bar(gui: Any):
                 )
                 if gui._icon_font:
                     dpg.bind_item_font(save_btn, gui._icon_font)
+                with dpg.tooltip(save_btn):
+                    dpg.add_text("Save config (Ctrl+S)")
+                
+                safe_btn = dpg.add_button(
+                    label=Icons.SHIELD,
+                    tag="topbar_safe_btn",
+                    width=20,
+                    height=20,
+                    callback=gui._on_safe_defaults,
+                )
+                if gui._icon_font:
+                    dpg.bind_item_font(safe_btn, gui._icon_font)
+                with dpg.tooltip(safe_btn):
+                    dpg.add_text("Ctrl+click: Save as safe defaults\nClick: Load safe defaults")
+                
                 save_ind = dpg.add_text(Icons.CHECK, tag="save_indicator", color=(100, 255, 100), show=False)
                 if gui._icon_font:
                     dpg.bind_item_font(save_ind, gui._icon_font)
@@ -388,7 +403,7 @@ def build_video_panel(gui: Any):
                     )
                 with dpg.group(horizontal=True):
                     dpg.add_text("Conf:")
-                    dpg.add_slider_float(
+                    conf_slider = dpg.add_slider_float(
                         tag="tbl_conf_slider",
                         default_value=gui.config.get("confidence", 0.25),
                         min_value=0.1,
@@ -397,6 +412,8 @@ def build_video_panel(gui: Any):
                         width=-1,
                         callback=gui._on_confidence_change,
                     )
+                    with dpg.tooltip(conf_slider):
+                        dpg.add_text("Detection confidence threshold.\nLower = more detections (may include false positives).\nHigher = fewer, more certain detections.")
         dpg.add_spacer(height=4)
         with dpg.table(
             header_row=False,
@@ -525,7 +542,7 @@ def build_control_panel(gui: Any):
         dpg.add_spacer(height=10)
         with dpg.collapsing_header(label="Tracker", default_open=True):
             dpg.add_text("Distance Threshold")
-            dpg.add_slider_int(
+            dist_slider = dpg.add_slider_int(
                 tag="tracker_dist_slider",
                 default_value=gui.config.get("tracker_distance", 300),
                 min_value=100,
@@ -533,14 +550,31 @@ def build_control_panel(gui: Any):
                 format="%d px",
                 callback=gui._on_tracker_distance_change,
             )
+            with dpg.tooltip(dist_slider):
+                dpg.add_text("Max distance for matching detections to tracks.\nIncrease for fast-moving dancers.")
+            
             dpg.add_text("Max Age (frames)")
-            dpg.add_slider_int(
+            age_slider = dpg.add_slider_int(
                 tag="tracker_age_slider",
                 default_value=gui.config.get("tracker_max_age", 20),
                 min_value=5,
                 max_value=60,
                 callback=gui._on_tracker_age_change,
             )
+            with dpg.tooltip(age_slider):
+                dpg.add_text("Frames to keep a lost track before deletion.\nIncrease for brief occlusions.")
+            
+            dpg.add_text("Smoothing (frames)")
+            smooth_slider = dpg.add_slider_int(
+                tag="tracker_smoothing_slider",
+                default_value=gui.config.get("tracker_smoothing", 1),
+                min_value=1,
+                max_value=10,
+                callback=gui._on_tracker_smoothing_change,
+            )
+            with dpg.tooltip(smooth_slider):
+                dpg.add_text("Temporal smoothing depth for confidence values.\nHigher = smoother but more latency.")
+            
             dpg.add_spacer(height=10)
             dpg.add_button(label="Reset Tracker [R]", width=-1, callback=gui._on_tracker_reset)
         dpg.add_spacer(height=10)

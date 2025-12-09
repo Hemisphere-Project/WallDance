@@ -213,6 +213,7 @@ class WallDanceApp:
             "show_ids": self.show_ids,
             "tracker_distance": TRACKER_DISTANCE_THRESHOLD,
             "tracker_max_age": TRACKER_MAX_AGE,
+            "tracker_smoothing": 1,
             "osc_enabled": self.osc_enabled,
             "osc_ip": self.osc_ip,
             "osc_port": self.osc_port,
@@ -246,6 +247,7 @@ class WallDanceApp:
             "on_visualization_toggle": self._cb_visualization_toggle,
             "on_tracker_distance_change": self._cb_tracker_distance_change,
             "on_tracker_age_change": self._cb_tracker_age_change,
+            "on_tracker_smoothing_change": self._cb_tracker_smoothing_change,
             "on_tracker_reset": self._cb_tracker_reset,
             "on_osc_toggle": self._cb_osc_toggle,
             "on_osc_config": self._cb_osc_config,
@@ -254,6 +256,8 @@ class WallDanceApp:
             "on_preview_scale_change": self._cb_preview_scale_change,
             "on_save_config": self._cb_save_config,
             "on_save_as_config": self._cb_save_as_config,
+            "on_save_safe_defaults": self._cb_save_safe_defaults,
+            "on_load_safe_defaults": self._cb_load_safe_defaults,
             "on_load_config": self._cb_load_config,
             "on_do_save_config": self._cb_do_save_config,
             "on_do_load_config": self._cb_do_load_config,
@@ -295,6 +299,7 @@ class WallDanceApp:
             "show_ids": self.show_ids,
             "tracker_distance": self.tracker.distance_threshold,
             "tracker_max_age": self.tracker.max_age,
+            "tracker_smoothing": self.tracker.smoothing_depth,
             "osc_enabled": self.osc_enabled,
             "osc_ip": self.osc_ip,
             "osc_port": self.osc_port,
@@ -398,6 +403,9 @@ class WallDanceApp:
         if "tracker_max_age" in config:
             self.tracker.max_age = config["tracker_max_age"]
             self.gui and self.gui.sync_slider("tracker_max_age", config["tracker_max_age"])
+        if "tracker_smoothing" in config:
+            self.tracker.smoothing_depth = config["tracker_smoothing"]
+            self.gui and self.gui.sync_slider("tracker_smoothing", config["tracker_smoothing"])
 
         # OSC
         if "osc_enabled" in config:
@@ -633,6 +641,10 @@ class WallDanceApp:
         self.tracker.max_age = value
         print(f"Tracker max age: {value} frames")
 
+    def _cb_tracker_smoothing_change(self, value: int):
+        self.tracker.smoothing_depth = value
+        print(f"Tracker smoothing: {value} frames")
+
     def _cb_tracker_reset(self):
         self.tracker.reset()
         if self.osc:
@@ -699,6 +711,24 @@ class WallDanceApp:
                 self._cb_do_load_config(filepath)
                 return
         print(f"Config not found: {config_display}")
+
+    def _cb_save_safe_defaults(self):
+        """Save current settings as safe defaults for this project."""
+        filepath = self.config_store.save_safe_defaults(self._current_project, self._get_saveable_config())
+        if self.gui:
+            self.gui.show_save_indicator("Safe defaults saved!")
+        print(f"Safe defaults saved: {filepath}")
+
+    def _cb_load_safe_defaults(self):
+        """Load safe defaults for this project."""
+        config = self.config_store.load_safe_defaults(self._current_project)
+        if config:
+            self._apply_config(config)
+            if self.gui:
+                self.gui.show_save_indicator("Safe defaults loaded!")
+            print(f"Safe defaults loaded for project: {self._current_project}")
+        else:
+            print(f"No safe defaults found for project: {self._current_project}")
 
     def _cb_model_change(self, model_name: str):
         """Handle model change from GUI dropdown.
