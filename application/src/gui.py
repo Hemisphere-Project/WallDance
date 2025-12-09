@@ -322,7 +322,7 @@ class WallDanceGUI:
     
     def update_recording_ui(self, state: str, current_slot: int, slots_info: list, 
                             recording_frames: int = 0, playback_frame: int = 0, playback_total: int = 0,
-                            playback_fps: float = 30.0, paused: bool = False):
+                            playback_fps: float = 30.0, paused: bool = False, playback_speed: float = 1.0):
         """Update recording UI state.
         
         Args:
@@ -396,6 +396,11 @@ class WallDanceGUI:
             dpg.configure_item("rec_playback_group", show=(state == "playing"))
         if dpg.does_item_exist("rec_controls_group"):
             dpg.configure_item("rec_controls_group", show=(state == "playing"))
+        
+        # Update speed combo to match current playback speed
+        if dpg.does_item_exist("rec_speed_combo") and state == "playing":
+            speed_str = f"x{playback_speed}"
+            dpg.set_value("rec_speed_combo", speed_str)
         
         # Update pause button label
         if dpg.does_item_exist("rec_pause_btn"):

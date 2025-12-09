@@ -574,40 +574,36 @@ def build_control_panel(gui: Any):
 
 def build_recording_panel(gui: Any):
     """Recording controls: LIVE, REC, and 9 slot buttons."""
-    dpg.add_text("INPUT SOURCE", color=(120, 200, 140))
-    dpg.add_spacer(height=5)
-    
-    # Status text
-    with dpg.group(horizontal=True):
-        dpg.add_text("Status:", color=(150, 150, 150))
-        dpg.add_text("LIVE", tag="rec_status_text", color=(80, 200, 80))
-    
-    dpg.add_spacer(height=5)
-    
-    # LIVE and REC buttons
-    with dpg.group(horizontal=True):
-        live_btn = dpg.add_button(
-            label=f"{Icons.VIDEO}  LIVE",
-            tag="rec_live_btn",
-            width=90,
-            callback=gui._on_rec_live,
-        )
-        dpg.bind_item_theme("rec_live_btn", gui._rec_live_active_theme)
-        if gui._icon_font:
-            dpg.bind_item_font(live_btn, gui._icon_font)
+    with dpg.collapsing_header(label="SOURCE", default_open=True):
+        # dpg.add_spacer(height=5)
         
-        rec_btn = dpg.add_button(
-            label=f"{Icons.CIRCLE}  REC",
-            tag="rec_rec_btn",
-            width=90,
-            callback=gui._on_rec_toggle,
-        )
-        dpg.bind_item_theme("rec_rec_btn", gui._rec_btn_theme)
-        if gui._icon_font:
-            dpg.bind_item_font(rec_btn, gui._icon_font)
+        # Status text
+        with dpg.group(horizontal=True):
+            dpg.add_text("Status:", color=(150, 150, 150))
+            dpg.add_text("LIVE", tag="rec_status_text", color=(80, 200, 80))
         
-        # Frame counter for recording
-        dpg.add_text("", tag="rec_frame_counter", color=(150, 150, 150))
+        dpg.add_spacer(height=5)
+        
+        # LIVE and REC buttons
+        with dpg.group(horizontal=True):
+            dpg.add_button(
+                label="LIVE",
+                tag="rec_live_btn",
+                width=70,
+                callback=gui._on_rec_live,
+            )
+            dpg.bind_item_theme("rec_live_btn", gui._rec_live_active_theme)
+            
+            dpg.add_button(
+                label="REC",
+                tag="rec_rec_btn",
+                width=70,
+                callback=gui._on_rec_toggle,
+            )
+            dpg.bind_item_theme("rec_rec_btn", gui._rec_btn_theme)
+            
+            # Frame counter for recording
+            dpg.add_text("", tag="rec_frame_counter", color=(150, 150, 150))
     
     dpg.add_spacer(height=5)
     

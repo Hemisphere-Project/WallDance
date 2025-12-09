@@ -244,6 +244,7 @@ class VideoRecorder:
         start_time = time.time()
         frame_count = 0
         paused_time = 0.0
+        last_speed = self._playback_speed
         
         while self._playback_running:
             # If paused, just sleep and wait
@@ -258,6 +259,11 @@ class VideoRecorder:
                 pause_duration = time.time() - paused_time
                 start_time += pause_duration
                 paused_time = 0.0
+            
+            # Speed changed - reset timing to avoid hang
+            if self._playback_speed != last_speed:
+                start_time = time.time() - (frame_count * frame_interval / self._playback_speed)
+                last_speed = self._playback_speed
             
             # Calculate target time for this frame
             target_time = start_time + (frame_count * frame_interval / self._playback_speed)

@@ -970,6 +970,7 @@ class WallDanceApp:
             playback_total=status.playback_total,
             playback_fps=status.playback_fps,
             paused=self.recorder.is_paused(),
+            playback_speed=self.recorder._playback_speed,
         )
 
     # ------------------------------------------------------------------
