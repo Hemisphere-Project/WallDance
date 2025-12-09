@@ -1,4 +1,7 @@
+# ML Models
 *.pt
+*.onnx
+*.engine
 models/
 
 # Python 
@@ -6,13 +9,33 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+.python-version
+*.egg-info/
+
+# Virtual environments
 env/
 venv/
 ENV/
 .venv/
+.uv/
+
+# Package manager
+uv.lock
+
+# Build artifacts
 build/
 develop-eggs/
 dist/
 
-# projects folder
+# Projects folder (user data)
 projects/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db

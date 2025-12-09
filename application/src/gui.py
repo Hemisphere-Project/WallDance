@@ -296,8 +296,33 @@ class WallDanceGUI:
         if 'on_rec_slot_click' in self.callbacks:
             self.callbacks['on_rec_slot_click'](slot, ctrl_held)
     
+    def _on_playback_speed_change(self, sender, value):
+        """Handle playback speed change (e.g. 'x2.0')."""
+        try:
+            speed = float(value.replace('x', ''))
+            if 'on_playback_speed_change' in self.callbacks:
+                self.callbacks['on_playback_speed_change'](speed)
+        except ValueError:
+            pass
+    
+    def _on_playback_pause(self):
+        """Handle pause/resume button click."""
+        if 'on_playback_pause' in self.callbacks:
+            self.callbacks['on_playback_pause']()
+    
+    def _on_playback_next_frame(self):
+        """Handle next frame button click."""
+        if 'on_playback_next_frame' in self.callbacks:
+            self.callbacks['on_playback_next_frame']()
+    
+    def _on_playback_prev_frame(self):
+        """Handle previous frame button click."""
+        if 'on_playback_prev_frame' in self.callbacks:
+            self.callbacks['on_playback_prev_frame']()
+    
     def update_recording_ui(self, state: str, current_slot: int, slots_info: list, 
-                            recording_frames: int = 0, playback_frame: int = 0, playback_total: int = 0):
+                            recording_frames: int = 0, playback_frame: int = 0, playback_total: int = 0,
+                            playback_fps: float = 30.0, paused: bool = False):
         """Update recording UI state.
         
         Args:
@@ -307,6 +332,7 @@ class WallDanceGUI:
             recording_frames: Number of frames recorded (when recording)
             playback_frame: Current playback frame (when playing)
             playback_total: Total playback frames (when playing)
+            playback_fps: FPS of the video being played
         """
         # Update status text
         if dpg.does_item_exist("rec_status_text"):
@@ -365,11 +391,32 @@ class WallDanceGUI:
                 else:
                     dpg.bind_item_theme(tag, self._slot_empty_theme)
         
-        # Update playback progress
+        # Update playback controls
         if dpg.does_item_exist("rec_playback_group"):
             dpg.configure_item("rec_playback_group", show=(state == "playing"))
+        if dpg.does_item_exist("rec_controls_group"):
+            dpg.configure_item("rec_controls_group", show=(state == "playing"))
+        
+        # Update pause button label
+        if dpg.does_item_exist("rec_pause_btn"):
+            if paused:
+                dpg.set_item_label("rec_pause_btn", Icons.PLAY)
+            else:
+                dpg.set_item_label("rec_pause_btn", Icons.PAUSE)
+            # Ensure icon font is bound
+            if self._icon_font:
+                dpg.bind_item_font("rec_pause_btn", self._icon_font)
+            
         if dpg.does_item_exist("rec_playback_progress"):
-            dpg.set_value("rec_playback_progress", f"{playback_frame}/{playback_total}")
+            # Format as time: MM:SS / MM:SS
+            if playback_fps > 0:
+                cur_sec = int(playback_frame / playback_fps)
+                tot_sec = int(playback_total / playback_fps)
+                cur_str = f"{cur_sec//60:02d}:{cur_sec%60:02d}"
+                tot_str = f"{tot_sec//60:02d}:{tot_sec%60:02d}"
+                dpg.set_value("rec_playback_progress", f"{cur_str} / {tot_str} ({playback_frame}/{playback_total})")
+            else:
+                dpg.set_value("rec_playback_progress", f"{playback_frame}/{playback_total}")
     
     def show_slot_history_menu(self, slot: int, recordings: list, callback):
         """Show a popup menu with recording history for a slot.

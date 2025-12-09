@@ -586,21 +586,25 @@ def build_recording_panel(gui: Any):
     
     # LIVE and REC buttons
     with dpg.group(horizontal=True):
-        dpg.add_button(
-            label="LIVE",
+        live_btn = dpg.add_button(
+            label=f"{Icons.VIDEO}  LIVE",
             tag="rec_live_btn",
-            width=70,
+            width=90,
             callback=gui._on_rec_live,
         )
         dpg.bind_item_theme("rec_live_btn", gui._rec_live_active_theme)
+        if gui._icon_font:
+            dpg.bind_item_font(live_btn, gui._icon_font)
         
-        dpg.add_button(
-            label="REC",
+        rec_btn = dpg.add_button(
+            label=f"{Icons.CIRCLE}  REC",
             tag="rec_rec_btn",
-            width=70,
+            width=90,
             callback=gui._on_rec_toggle,
         )
         dpg.bind_item_theme("rec_rec_btn", gui._rec_btn_theme)
+        if gui._icon_font:
+            dpg.bind_item_font(rec_btn, gui._icon_font)
         
         # Frame counter for recording
         dpg.add_text("", tag="rec_frame_counter", color=(150, 150, 150))
@@ -632,7 +636,45 @@ def build_recording_panel(gui: Any):
     
     dpg.add_spacer(height=5)
     
+    # Playback controls (hidden by default)
+    with dpg.group(horizontal=True, tag="rec_controls_group", show=False):
+        dpg.add_text("Speed:", color=(150, 150, 150))
+        dpg.add_combo(
+            items=["x0.25", "x0.5", "x0.75", "x1.0", "x1.5", "x2.0", "x4.0"],
+            tag="rec_speed_combo",
+            default_value="x1.0",
+            width=80,
+            callback=gui._on_playback_speed_change,
+        )
+        dpg.add_spacer(width=10)
+        pause_btn = dpg.add_button(
+            label=Icons.PAUSE,
+            tag="rec_pause_btn",
+            width=35,
+            callback=gui._on_playback_pause,
+        )
+        if gui._icon_font:
+            dpg.bind_item_font(pause_btn, gui._icon_font)
+        
+        prev_btn = dpg.add_button(
+            label=Icons.STEP_BACKWARD,
+            tag="rec_prev_frame_btn",
+            width=35,
+            callback=gui._on_playback_prev_frame,
+        )
+        if gui._icon_font:
+            dpg.bind_item_font(prev_btn, gui._icon_font)
+        
+        next_btn = dpg.add_button(
+            label=Icons.STEP_FORWARD,
+            tag="rec_next_frame_btn",
+            width=35,
+            callback=gui._on_playback_next_frame,
+        )
+        if gui._icon_font:
+            dpg.bind_item_font(next_btn, gui._icon_font)
+    
     # Playback progress (hidden by default)
     with dpg.group(horizontal=True, tag="rec_playback_group", show=False):
-        dpg.add_text("Playback:", color=(150, 150, 150))
+        dpg.add_text("Time:", color=(150, 150, 150))
         dpg.add_text("0/0", tag="rec_playback_progress", color=(100, 180, 220))

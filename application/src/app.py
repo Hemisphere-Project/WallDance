@@ -262,6 +262,10 @@ class WallDanceApp:
             "on_rec_live": self._cb_rec_live,
             "on_rec_toggle": self._cb_rec_toggle,
             "on_rec_slot_click": self._cb_rec_slot_click,
+            "on_playback_speed_change": self._cb_playback_speed_change,
+            "on_playback_pause": self._cb_playback_pause,
+            "on_playback_next_frame": self._cb_playback_next_frame,
+            "on_playback_prev_frame": self._cb_playback_prev_frame,
             "on_quit": self._cb_quit,
         }
 
@@ -798,6 +802,25 @@ class WallDanceApp:
         else:
             print(f"Frame skip: {self.frame_skip} (process every {self.frame_skip + 1} frames)")
 
+    def _cb_playback_speed_change(self, speed: float):
+        """Handle playback speed change."""
+        self.recorder.set_playback_speed(speed)
+    
+    def _cb_playback_pause(self):
+        """Handle pause/resume toggle."""
+        if self.recorder.is_paused():
+            self.recorder.resume_playback()
+        else:
+            self.recorder.pause_playback()
+    
+    def _cb_playback_next_frame(self):
+        """Handle next frame button."""
+        self.recorder.next_frame()
+    
+    def _cb_playback_prev_frame(self):
+        """Handle previous frame button."""
+        self.recorder.prev_frame()
+
     def _cb_quit(self):
         self.running = False
         self.recorder.close()
@@ -945,6 +968,8 @@ class WallDanceApp:
             recording_frames=status.recording_frames,
             playback_frame=status.playback_frame,
             playback_total=status.playback_total,
+            playback_fps=status.playback_fps,
+            paused=self.recorder.is_paused(),
         )
 
     # ------------------------------------------------------------------

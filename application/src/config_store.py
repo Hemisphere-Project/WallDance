@@ -13,9 +13,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
-# Projects directory (in project root, not src/)
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PROJECTS_DIR = os.path.join(_PROJECT_ROOT, "projects")
+# Projects directory is at workspace root (two levels up from src/)
+_APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_WORKSPACE_ROOT = os.path.dirname(_APP_ROOT)
+PROJECTS_DIR = os.path.join(_WORKSPACE_ROOT, "projects")
 LAST_PROJECT_FILE = os.path.join(PROJECTS_DIR, "last_project.txt")
 
 

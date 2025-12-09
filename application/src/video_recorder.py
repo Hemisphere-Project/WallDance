@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import os
 import re
+import time
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -47,6 +49,7 @@ class RecorderStatus:
     recording_frames: int = 0
     playback_frame: int = 0
     playback_total: int = 0
+    playback_fps: float = 30.0  # FPS of the video being played
 
 
 class VideoRecorder:
@@ -68,6 +71,16 @@ class VideoRecorder:
         # Playback state
         self._reader: Optional[cv2.VideoCapture] = None
         self._playback_path: Optional[str] = None
+        self._playback_fps: float = 30.0
+        self._playback_speed: float = 1.0
+        
+        # Threaded playback decoder
+        self._playback_thread: Optional[threading.Thread] = None
+        self._playback_running: bool = False
+        self._playback_paused: bool = False
+        self._frame_buffer: Optional[np.ndarray] = None
+        self._frame_lock = threading.Lock()
+        self._playback_frame_count: int = 0
     
     @property
     def status(self) -> RecorderStatus:
@@ -222,6 +235,59 @@ class VideoRecorder:
     # ------------------------------------------------------------------
     # Playback
     # ------------------------------------------------------------------
+    def _playback_decoder_thread(self):
+        """Background thread that decodes video at the correct speed."""
+        if self._reader is None:
+            return
+        
+        frame_interval = 1.0 / self._playback_fps
+        start_time = time.time()
+        frame_count = 0
+        paused_time = 0.0
+        
+        while self._playback_running:
+            # If paused, just sleep and wait
+            if self._playback_paused:
+                if paused_time == 0.0:
+                    paused_time = time.time()
+                time.sleep(0.05)  # Check pause state every 50ms
+                continue
+            
+            # Resume from pause - adjust start time
+            if paused_time > 0.0:
+                pause_duration = time.time() - paused_time
+                start_time += pause_duration
+                paused_time = 0.0
+            
+            # Calculate target time for this frame
+            target_time = start_time + (frame_count * frame_interval / self._playback_speed)
+            now = time.time()
+            wait_time = target_time - now
+            
+            if wait_time > 0:
+                time.sleep(wait_time)
+            
+            # Read next frame
+            ret, frame = self._reader.read()
+            if not ret:
+                # End of video - loop back
+                self._reader.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                frame_count = 0
+                start_time = time.time()
+                ret, frame = self._reader.read()
+                if not ret:
+                    print("Playback decoder thread: cannot read frame after loop")
+                    break
+            
+            # Update buffer (latest frame overwrites previous)
+            with self._frame_lock:
+                self._frame_buffer = frame.copy()
+                self._playback_frame_count = frame_count
+            
+            frame_count += 1
+        
+        print("Playback decoder thread stopped")
+    
     def start_playback(self, slot: int, recording_index: int = 0) -> bool:
         """Start playing from a slot. recording_index=0 is latest."""
         # Stop any current playback or recording
@@ -246,41 +312,119 @@ class VideoRecorder:
             return False
         
         self._playback_path = filepath
+        self._playback_fps = self._reader.get(cv2.CAP_PROP_FPS) or 30.0
+        self._playback_speed = 1.0  # Reset speed on new playback
+        
         self._status.state = RecorderState.PLAYING
         self._status.current_slot = slot
         self._status.playback_frame = 0
         self._status.playback_total = int(self._reader.get(cv2.CAP_PROP_FRAME_COUNT))
+        self._status.playback_fps = self._playback_fps
         
-        print(f"Started playback from slot {slot}: {filepath} ({self._status.playback_total} frames)")
+        # Start decoder thread
+        self._playback_running = True
+        self._playback_paused = False
+        self._frame_buffer = None
+        self._playback_frame_count = 0
+        self._playback_thread = threading.Thread(target=self._playback_decoder_thread, daemon=True)
+        self._playback_thread.start()
+        
+        print(f"Started playback from slot {slot}: {filepath} ({self._status.playback_total} frames @ {self._playback_fps:.1f} FPS)")
         return True
     
-    def read_frame(self) -> Optional[np.ndarray]:
-        """Read next frame from playback. Returns None if not playing or error."""
-        if not self.is_playing or self._reader is None:
+    def read_frame(self, respect_fps: bool = True) -> Optional[np.ndarray]:
+        """Get the latest decoded frame from the buffer.
+        
+        The decoder thread runs independently, so this always returns
+        the most recent frame without blocking.
+        """
+        if not self.is_playing:
             return None
         
+        with self._frame_lock:
+            if self._frame_buffer is None:
+                return None
+            # Update status
+            self._status.playback_frame = self._playback_frame_count
+            return self._frame_buffer.copy()
+    
+    def set_playback_speed(self, speed: float):
+        """Set playback speed multiplier (e.g. 0.5, 1.0, 2.0)."""
+        if speed <= 0:
+            return
+        
+        self._playback_speed = speed
+        print(f"Playback speed set to {speed}x")
+    
+    def pause_playback(self):
+        """Pause video playback (keeps current frame in buffer)."""
+        if self.is_playing and not self._playback_paused:
+            self._playback_paused = True
+            print("Playback paused")
+    
+    def resume_playback(self):
+        """Resume video playback."""
+        if self.is_playing and self._playback_paused:
+            self._playback_paused = False
+            print("Playback resumed")
+    
+    def is_paused(self) -> bool:
+        """Check if playback is paused."""
+        return self.is_playing and self._playback_paused
+    
+    def next_frame(self):
+        """Step forward one frame (when paused)."""
+        if not self.is_playing or self._reader is None:
+            return
+        
+        # Read and update buffer
         ret, frame = self._reader.read()
         if not ret:
-            # End of video - loop back to beginning
+            # Loop back
             self._reader.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            self._status.playback_frame = 0
             ret, frame = self._reader.read()
-            if not ret:
-                print("Playback error: cannot read frame after loop")
-                self.stop_playback()
-                return None
         
-        self._status.playback_frame = int(self._reader.get(cv2.CAP_PROP_POS_FRAMES))
-        return frame
+        if ret:
+            with self._frame_lock:
+                self._frame_buffer = frame.copy()
+                self._playback_frame_count = int(self._reader.get(cv2.CAP_PROP_POS_FRAMES)) - 1
+    
+    def prev_frame(self):
+        """Step backward one frame (when paused)."""
+        if not self.is_playing or self._reader is None:
+            return
+        
+        # Go back 2 frames, then read 1 (to land on previous frame)
+        current_pos = self._reader.get(cv2.CAP_PROP_POS_FRAMES)
+        target_pos = max(0, current_pos - 2)
+        
+        self._reader.set(cv2.CAP_PROP_POS_FRAMES, target_pos)
+        ret, frame = self._reader.read()
+        
+        if ret:
+            with self._frame_lock:
+                self._frame_buffer = frame.copy()
+                self._playback_frame_count = int(self._reader.get(cv2.CAP_PROP_POS_FRAMES)) - 1
     
     def stop_playback(self):
         """Stop playback and return to live mode."""
+        # Stop decoder thread
+        if self._playback_running:
+            self._playback_running = False
+            if self._playback_thread is not None:
+                self._playback_thread.join(timeout=2.0)
+                self._playback_thread = None
+        
+        # Clean up reader
         if self._reader is not None:
             self._reader.release()
             self._reader = None
         
         if self.is_playing:
             print(f"Stopped playback from slot {self._status.current_slot}")
+        
+        with self._frame_lock:
+            self._frame_buffer = None
         
         self._playback_path = None
         self._status.state = RecorderState.LIVE

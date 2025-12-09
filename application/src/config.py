@@ -10,7 +10,7 @@ All parameters are tunable - adjust based on your specific setup.
 # =============================================================================
 # Shared models directory at workspace root (used by all workflows)
 import os
-# Go up from src/ to 05-WallDance1080p/, then up to WallDance/, then into models/
+# Go up from src/ to application/, then up to workspace root, then into models/
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _WORKSPACE_ROOT = os.path.dirname(_PROJECT_ROOT)
 MODELS_DIR = os.path.join(_WORKSPACE_ROOT, "models")

@@ -1,9 +1,9 @@
 # WallDance - Technical Specifications
 
 **Project:** Multi-Person Pose Detection for Wall Dancers  
-**Version:** 1.0  
-**Last Updated:** December 6, 2025  
-**Status:** Prototype Phase
+**Version:** 1.3  
+**Last Updated:** December 9, 2025  
+**Status:** Production
 
 ---
 
@@ -18,10 +18,13 @@
 7.  [Output Protocols](#7-output-protocols)
 8.  [Performance Targets](#8-performance-targets)
 9.  [Implementation Roadmap](#9-implementation-roadmap)
-10.  [Technical Challenges & Solutions](#10-technical-challenges--solutions)
-11.  [Prototype Status](#11-prototype-status)
-12.  [Future Enhancements](#12-future-enhancements)
-13.  [Proposed Improvements (Dec 2025)](#13-proposed-improvements-dec-2025)
+10. [Technical Challenges & Solutions](#10-technical-challenges--solutions)
+11. [Application Status](#11-application-status)
+12. [Future Enhancements](#12-future-enhancements)
+13. [Proposed Improvements](#13-proposed-improvements-dec-2025)
+- [Appendix A: Dependencies](#appendix-a-dependencies)
+- [Appendix B: OSC Testing](#appendix-b-osc-testing)
+- [Appendix C: Troubleshooting](#appendix-c-troubleshooting)
 
 ---
 
@@ -90,74 +93,9 @@ WallDance is a real-time computer vision system designed to detect and track mul
 | RAM | 16 GB | 32 GB | Frame buffers |
 | Storage | SSD | NVMe SSD | Fast model loading |
 
-### 3.3 Capture Interface
+### 3.3 Capture & Camera Options
 
-| Option | Latency | Quality | Cost | Pros | Cons |
-|---|---|---|---|---|---|
-| Elgato Cam Link 4K | ~100ms | Good | $130 | USB plug-and-play, portable, widely available | Higher latency, USB bandwidth limits, occasional driver issues |
-| Blackmagic DeckLink | ~30ms | Excellent | $200+ | Lowest latency, professional SDI/HDMI, rock-solid drivers | Requires PCIe slot, higher cost, fixed installation |
-| AVerMedia Live Gamer | ~50ms | Good | $150 | Good balance, PCIe reliability, gamer-focused features | Middle-ground on all specs, less pro features than Blackmagic |
-| Magewell Pro Capture | ~20ms | Excellent | $300+ | Ultra-low latency, SDK support, multi-input options, Linux drivers | Premium price, overkill for simple setups |
-
-### 3.4 Machine Vision Cameras (Direct USB3/GigE)
-
-These cameras connect directly to the PC without a capture card, providing lower latency and higher control.
-
-| Option | Interface | Resolution | FPS | Cost | Pros | Cons |
-|---|---|---|---|---|---|---|
-| FLIR Blackfly S USB3 | USB3 Vision | Up to 5MP | 30-160 | $400-800 | Very low latency (~5ms), Spinnaker SDK, global shutter options, excellent Linux support | Requires SDK integration, no standard webcam interface |
-| Basler ace 2 Basic | USB3/GigE | Up to 5MP | 30-120 | $300-500 | Low latency, Pylon SDK, good value, reliable industrial quality | SDK learning curve, basic feature set |
-| Basler ace 2 Pro | USB3/GigE | Up to 5MP | 30-120 | $500-900 | Ultra-low latency, advanced features (PTP sync, chunk data), SFP+ GigE option | Higher cost, more complex setup |
-
-**Notes:**
-- Machine vision cameras bypass HDMI/SDI capture entirely
-- USB3 Vision provides ~5-10ms glass-to-RAM latency
-- GigE Vision allows cable runs up to 100m (vs 5m for USB3)
-- Requires camera SDK (Spinnaker, Pylon) instead of OpenCV VideoCapture
-- Global shutter recommended for moving subjects (no rolling shutter artifacts)
-
-### 3.5 Low-Light Machine Vision Cameras (Recommended for Night Performance)
-
-For outdoor night performances, standard machine vision sensors struggle. The following cameras use specialized low-light sensors (Sony Starvis or large-pixel Global Shutter) optimized for dark conditions.
-
-#### Recommended Low-Light Models
-
-| Brand | Model | Sensor | Pixel Size | Form Factor | Pros | Cons |
-|---|---|---|---|---|---|---|
-| **IDS** | uEye+ U3-3860CP | Sony IMX462 (Starvis 2) | 2.9µm | Metal C-Mount | **Best low-light sensor**, NIR sensitivity, rugged, modern ids_peak SDK | Less common brand |
-| Basler | ace U acA1920-40uc | Sony IMX249 (Pregius GS) | 5.86µm | Metal C-Mount | Huge pixels = clean low-light, Global Shutter (no motion blur), proven Pylon SDK | Not Starvis, but excellent |
-| Basler | dart daA1920-30uc | Sony IMX290 (Starvis 1) | 2.9µm | Board/S-Mount | Cheapest Starvis option, tiny form factor | Requires S-mount adapter, board-level |
-| FLIR | BFS-U3-21S4C-C | Sony IMX290 (Starvis 1) | 2.9µm | Metal C-Mount | Starvis in robust case, Spinnaker SDK | Often backordered |
-| FLIR | BFS-U3-31S4C-C | Sony IMX265 (Global Shutter) | 3.45µm | Metal C-Mount | High dynamic range, no motion blur | Not Starvis, moderate low-light |
-
-#### Sensor Technology Comparison
-
-| Sensor Type | Example | Low-Light Performance | Motion Handling | Best For |
-|---|---|---|---|---|
-| **Sony Starvis 2** | IMX462 | ⭐⭐⭐⭐⭐ Excellent | Rolling shutter | Maximum darkness, NIR lighting |
-| Sony Starvis 1 | IMX290 | ⭐⭐⭐⭐ Very Good | Rolling shutter | Dark scenes, budget option |
-| Sony Pregius (Large Pixel) | IMX249 | ⭐⭐⭐⭐ Very Good | ✅ Global Shutter | Moving subjects in low light |
-| Standard Global Shutter | IMX265 | ⭐⭐⭐ Good | ✅ Global Shutter | Moderate darkness with motion |
-
-#### Recommendations by Priority
-
-1. **Best Overall (if open to IDS brand):** IDS uEye+ U3-3860CP
-   - Sony IMX462 (Starvis 2) is the best low-light sensor available
-   - Standard C-mount, rugged metal case
-   - Modern `ids_peak` SDK works well on Linux
-
-2. **Best Basler Option:** ace U acA1920-40uc
-   - Sony IMX249 with huge 5.86µm pixels
-   - Often cleaner than Starvis in moderate darkness
-   - Global Shutter eliminates motion blur on dancers
-   - Avoids board-level dart form factor hassle
-
-3. **Best FLIR Option:** Blackfly S BFS-U3-21S4C-C
-   - Sony IMX290 Starvis in standard metal case
-   - Robust and field-proven
-   - Note: Check availability (often backordered)
-
-**Key Insight:** Large pixel sensors (IMX249: 5.86µm) can outperform smaller Starvis pixels (IMX462: 2.9µm) in moderate darkness by collecting more light per pixel with less noise. Global Shutter is a major advantage for capturing moving dancers.
+For detailed hardware purchasing recommendations (capture cards, machine vision cameras, low-light sensors), see [docs/HARDWARE_GUIDE.md](docs/HARDWARE_GUIDE.md).
 
 ---
 
@@ -255,17 +193,29 @@ For outdoor night performances, standard machine vision sensors struggle. The fo
 ### 5.3 Module Structure
 
 ```
-05-WallDance1080p/
-├── main.py              # Application entry point, main loop
-├── gui.py               # DearPyGui control panel
-├── config.py            # All tunable parameters
-├── enhancer.py          # Low-light image enhancement (CLAHE + gamma)
-├── tracker.py           # Kalman filter + Hungarian algorithm tracker
-├── osc_output.py        # OSC message formatting and sending
-├── visualization.py     # Drawing helpers, overlays
-├── install.sh           # Dependency installation
-├── run.sh               # Launch script
-└── README.md            # Usage documentation
+application/
+├── src/
+│   ├── main.py          # Application entry point
+│   ├── app.py           # Main application orchestrator
+│   ├── gui.py           # DearPyGui control panel
+│   ├── gui_builder.py   # UI component builders
+│   ├── config.py        # Configuration parameters
+│   ├── config_store.py  # Project/config persistence
+│   ├── enhancer.py      # Low-light enhancement (CLAHE + gamma)
+│   ├── tracker.py       # Kalman filter + Hungarian tracking
+│   ├── osc_output.py    # OSC message formatting
+│   ├── visualization.py # Drawing helpers, overlays
+│   ├── camera_manager.py# Camera handling
+│   ├── model_manager.py # YOLO model loading/switching
+│   ├── pipeline.py      # Processing pipeline
+│   └── video_recorder.py# Recording functionality
+├── assets/              # Icons, fonts
+└── pyproject.toml       # Dependencies
+
+# Workspace root scripts:
+├── run.sh               # Launch application
+├── install.sh           # Install dependencies
+└── build_engines.sh     # Build TensorRT engines
 ```
 
 ---
@@ -502,44 +452,31 @@ F = [1  0  dt  0   0.5dt²   0     ]
 
 ### Phase 1: Prototyping ✅ COMPLETE
 
-| Task | Status | Notes |
-|---|---|---|
-| Basic MoveNet skeleton detection | ✅ | 01-MoveNet |
-| MMPose integration | ✅ | 02-MMPose (torch 2.4.x compatibility) |
-| YOLO11-pose multi-person | ✅ | 03-Yolo11m |
-| Kalman+Hungarian tracking | ✅ | 04-RTMPose |
-| Integrated solution | ✅ | 05-WallDance1080p |
+Prototypes in `prototypes/` folder explored MoveNet, MMPose, YOLO11, and RTMPose tracking. The final integrated solution is in `application/`.
 
-### Phase 2: Optimization (Current)
+### Phase 2: Optimization ✅ COMPLETE
 
-| Task | Priority | Status | Est. Effort |
-|---|---|---|---|
-| Fine-tune detection confidence | High | 🔄 | 2h |
-| Tune tracker for real scene | High | 🔄 | 4h |
-| Test with actual camera setup | High | ⬜ | 4h |
-| Profile and optimize bottlenecks | Medium | ⬜ | 8h |
-| Add recording/playback mode | Medium | ⬜ | 4h |
+- ✅ Detection confidence tuning
+- ✅ Tracker tuning for real scenes
+- ✅ Recording/playback mode
+- ✅ TensorRT acceleration
+- ✅ FP16 inference
 
-### Phase 3: Production Hardening
+### Phase 3: Production Hardening (Current)
 
-| Task | Priority | Status | Est. Effort |
-|---|---|---|---|
-| Robust error handling | High | ⬜ | 4h |
-| Auto-reconnect camera | High | ⬜ | 2h |
-| Configuration file (YAML) | Medium | ⬜ | 2h |
-| Logging system | Medium | ⬜ | 2h |
-| Systemd service integration | Low | ⬜ | 2h |
-| Health monitoring endpoint | Low | ⬜ | 4h |
+- ✅ JSON configuration persistence
+- ✅ Project/preset management
+- 🔄 Robust error handling
+- 🔄 Auto-reconnect camera
+- ⬜ Logging system
+- ⬜ Health monitoring
 
-### Phase 4: Advanced Features
+### Phase 4: Advanced Features (Future)
 
-| Task | Priority | Status | Est. Effort |
-|---|---|---|---|
-| 4K input support | Medium | ⬜ | 4h |
-| Multi-camera stitching | Low | ⬜ | 16h |
-| 3D pose estimation | Low | ⬜ | 24h |
-| Gesture recognition | Low | ⬜ | 16h |
-| Web dashboard | Low | ⬜ | 12h |
+- ⬜ 4K input support
+- ⬜ Multi-camera stitching
+- ⬜ 3D pose estimation
+- ⬜ Web dashboard
 
 ---
 
@@ -627,22 +564,22 @@ torch = { version = "2.4.1+cu121", source = "pytorch" }
 
 ---
 
-## 11. Prototype Status
+## 11. Application Status
 
-### 11.1 Implemented Prototypes
+### 11.1 Prototypes Summary
 
-| Prototype | Purpose | Status | Key Learning |
-|---|---|---|---|
-| **01-MoveNet** | Single-person baseline | ✅ Working | Simple but limited to 1 person |
-| **02-MMPose** | MMPose ecosystem test | ✅ Working | Complex deps, two-stage slower |
-| **03-Yolo11m** | Multi-person detection | ✅ Working | Best single-shot performance |
-| **04-RTMPose** | Tracking integration | ✅ Working | Kalman filter essential |
-| **05-WallDance1080p** | Production prototype | ✅ Working | Integrated solution |
+Prototypes in `prototypes/` explored different approaches:
+- **01-MoveNet**: Single-person baseline (simple but limited)
+- **02-MMPose**: MMPose ecosystem (complex deps, slower)
+- **03-Yolo11m**: Multi-person detection (best single-shot)
+- **04-RTMPose**: Tracking integration (Kalman filter essential)
+
+The production application is in `application/`.
 
 ### 11.2 Current Best Configuration
 
 ```python
-# 05-WallDance1080p/config.py
+# application/src/config.py
 UPSCALE_FACTOR = 2.0              # 4K equivalent processing
 YOLO_MODEL = "yolo11m-pose.pt"    # Best accuracy/speed balance
 YOLO_CONFIDENCE = 0.25            # Permissive detection
@@ -939,41 +876,7 @@ numpy = ">=1.24"
 
 ---
 
-## Appendix B: Quick Start
-
-```bash
-# Clone repository
-git clone https://github.com/Hemisphere-Project/WallDance.git
-cd WallDance/05-WallDance1080p
-
-# Install dependencies
-./install.sh
-
-# Configure (edit as needed)
-nano config.py
-
-# Run
-./run.sh
-```
-
-### Keyboard Controls
-
-| Key | Action |
-|---|---|
-| Q | Quit |
-| H | Toggle help overlay |
-| E | Toggle enhancement |
-| +/- | Adjust upscale factor |
-| T | Toggle motion trails |
-| S | Toggle skeleton |
-| K | Toggle keypoints |
-| B | Toggle bounding box |
-| I | Toggle dancer IDs |
-| R | Reset tracker |
-
----
-
-## Appendix C: OSC Testing
+## Appendix B: OSC Testing
 
 ```bash
 # Install oscdump (liblo-tools)
@@ -995,7 +898,7 @@ Expected output:
 
 ---
 
-## Appendix D: Troubleshooting
+## Appendix C: Troubleshooting
 
 | Issue | Cause | Solution |
 |---|---|---|
@@ -1015,6 +918,7 @@ Expected output:
 | 1.0 | 2025-12-06 | AI/Human collaboration | Initial specification |
 | 1.1 | 2025-12-08 | AI/Human collaboration | Video recording system, UI improvements |
 | 1.2 | 2025-12-08 | AI/Human collaboration | TensorRT integration with GUI controls |
+| 1.3 | 2025-12-09 | AI/Human collaboration | Restructured: hardware guide split out, paths updated, cleanup |
 
 ---
 

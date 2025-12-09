@@ -11,3 +11,8 @@ class Icons:
     VIDEO = "\uf03d"
     CAMERA = "\uf030"
     CHECK = "\uf00c"
+    PAUSE = "\uf04c"
+    PLAY = "\uf04b"
+    STEP_FORWARD = "\uf051"
+    STEP_BACKWARD = "\uf048"
+    CIRCLE = "\uf111"
