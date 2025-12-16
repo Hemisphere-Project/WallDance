@@ -100,6 +100,9 @@ class VideoRecorder:
     
     def set_project(self, project_name: str):
         """Set the current project (creates recordings folder if needed)."""
+        # Stop any ongoing playback/recording when switching projects
+        self.stop_playback()
+        self.stop_recording()
         self._current_project = sanitize_project_name(project_name)
         recordings_dir = self._get_recordings_dir()
         os.makedirs(recordings_dir, exist_ok=True)

@@ -245,6 +245,10 @@ class WallDanceGUI:
         if 'on_camera_toggle' in self.callbacks:
             self.callbacks['on_camera_toggle']()
     
+    def _on_camera_refresh(self, sender=None, value=None):
+        if 'on_camera_refresh' in self.callbacks:
+            self.callbacks['on_camera_refresh']()
+    
     def _on_imgsz_change(self, sender, value):
         if 'on_imgsz_change' in self.callbacks:
             self.callbacks['on_imgsz_change'](int(value))

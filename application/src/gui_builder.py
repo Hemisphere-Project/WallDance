@@ -277,13 +277,21 @@ def build_video_panel(gui: Any):
                         items=gui.config.get("camera_sources", ["0"]),
                         tag="tbl_camera_combo",
                         default_value=gui.config.get("camera_source", "0"),
-                        width=100,
+                        width=80,
                         callback=gui._on_camera_change,
                     )
+                    refresh_btn = dpg.add_button(
+                        label=Icons.ROTATE,
+                        tag="camera_refresh_btn",
+                        width=25,
+                        callback=gui._on_camera_refresh,
+                    )
+                    if gui._icon_font:
+                        dpg.bind_item_font(refresh_btn, gui._icon_font)
                     dpg.add_button(
                         label="Stop" if gui.config.get("camera_running", True) else "Start",
                         tag="camera_toggle_btn",
-                        width=60,
+                        width=50,
                         callback=gui._on_camera_toggle,
                     )
                 with dpg.group(horizontal=True):

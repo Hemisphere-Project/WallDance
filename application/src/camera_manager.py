@@ -80,6 +80,10 @@ class CameraManager:
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
         self.cap.set(cv2.CAP_PROP_FPS, CAMERA_FPS)
 
+        # Flush camera buffer - read and discard a few frames to let camera stabilize
+        for _ in range(5):
+            self.cap.grab()
+
         actual_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         actual_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.state.width = actual_w

@@ -11,6 +11,7 @@ This module keeps the runtime glue small by delegating to:
 from __future__ import annotations
 
 import os
+import sys
 import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional
@@ -18,6 +19,10 @@ from typing import Dict, List, Optional
 import cv2
 import dearpygui.dearpygui as dpg
 import numpy as np
+
+# Force unbuffered output so we see logs before crashes
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
 from ultralytics import YOLO
 
 from camera_manager import CameraManager
@@ -176,6 +181,10 @@ class WallDanceApp:
         self.latency_ms = 0.0
         self.running = False
         self.last_tracked: List[ScaledTrack] = []
+        
+        # Pending operations (deferred to main loop)
+        self._pending_camera_refresh = False
+        self._pending_project_switch: Optional[str] = None  # Config filepath to switch to
 
     # ------------------------------------------------------------------
     # OSC
@@ -247,6 +256,7 @@ class WallDanceApp:
             "on_upscale_change": self._cb_upscale_change,
             "on_clahe_change": self._cb_clahe_change,
             "on_gamma_change": self._cb_gamma_change,
+            "on_denoise_change": self._cb_denoise_change,
             "on_confidence_change": self._cb_confidence_change,
             "on_max_persons_change": self._cb_max_persons_change,
             "on_model_change": self._cb_model_change,
@@ -255,6 +265,7 @@ class WallDanceApp:
             "on_frame_skip_change": self._cb_frame_skip_change,
             "on_camera_change": self._cb_camera_change,
             "on_camera_toggle": self._cb_camera_toggle,
+            "on_camera_refresh": self._cb_camera_refresh,
             "on_imgsz_change": self._cb_imgsz_change,
             "on_person_height_change": self._cb_person_height_change,
             "on_visualization_toggle": self._cb_visualization_toggle,
@@ -324,45 +335,167 @@ class WallDanceApp:
             "preview_scale": self.preview.render_scale,
         }
 
-    def _apply_config(self, config: Dict, skip_model: bool = False):
-        """Apply a configuration dictionary to the app state.
+    def _update_topbar_state(self, selected_filepath: Optional[str] = None):
+        projects = self.config_store.list_projects()
+        if self.gui:
+            self.gui.update_project_list(projects, self._current_project)
+
+        history = self.config_store.project_history(self._current_project)
+
+        current_display = ""
+        if selected_filepath:
+            selected_abs = os.path.abspath(selected_filepath)
+            for display, path in history.configs:
+                if os.path.abspath(path) == selected_abs:
+                    current_display = display
+                    break
+            if not current_display:
+                current_display = format_config_display(os.path.basename(selected_filepath))
+
+        if not current_display and history.configs:
+            current_display = history.configs[0][0]
+
+        if self.gui:
+            self.gui.update_config_list(history.configs, current_display)
+            if current_display:
+                self.gui.set_current_config(current_display)
+
+    def _execute_project_switch(self, config_filepath: str):
+        """Execute a full project switch with proper cleanup and initialization.
+        
+        This is the unified path for both startup and runtime project switching.
+        It ensures everything is properly closed and reinitialized.
         
         Args:
-            config: Configuration dictionary
-            skip_model: If True, don't trigger model change (used during startup)
+            config_filepath: Path to the config file to load
         """
-        # Camera
-        if "camera_source" in config and config["camera_source"] != self.camera.state.source:
-            saved_source = config["camera_source"]
-            if CameraManager.check_camera_available(saved_source):
-                self._open_camera(saved_source)
+        print(f"\n{'='*60}")
+        print(f"[Project Switch] Starting switch to: {os.path.basename(config_filepath)}")
+        print(f"{'='*60}")
+        
+        # 1. Stop any recording/playback
+        print("[Project Switch] Stopping recorder...")
+        self.recorder.stop_recording()
+        self.recorder.stop_playback()
+        
+        # 2. Block processing
+        self._model_loading = True
+        
+        # 3. Close camera
+        camera_was_open = self.camera.state.is_open
+        if camera_was_open:
+            print("[Project Switch] Closing camera...")
+            self.camera.close()
+            self.camera.state.is_open = False
+        
+        # 4. Load the config
+        try:
+            config = self.config_store.load(config_filepath)
+        except Exception as e:
+            print(f"[Project Switch] ERROR: Failed to load config: {e}")
+            self._model_loading = False
+            if camera_was_open:
+                self._open_camera(self.camera.state.source)
+            return False
+        
+        # 5. Extract model info before applying config
+        model_name = config.get("model", self.current_model_name)
+        use_trt = config.get("use_tensorrt", False)
+        new_imgsz = config.get("yolo_imgsz", self.settings.imgsz)
+        base_name = model_name.replace('.pt', '').replace('.engine', '')
+        
+        print(f"[Project Switch] Target: model={model_name}, TRT={use_trt}, imgsz={new_imgsz}")
+        
+        # 6. Update imgsz in model manager BEFORE loading model
+        self.settings.imgsz = new_imgsz
+        self.model_manager.set_imgsz(new_imgsz)
+        
+        # 7. Determine if we need to reload the model
+        need_model_reload = (
+            base_name != self.current_model_name or
+            new_imgsz != self.settings.imgsz or
+            use_trt != self.model_manager.is_using_tensorrt()
+        )
+        
+        # For TRT, we always need to reload if imgsz changed (engines are size-specific)
+        if self.model_manager.is_using_tensorrt() or use_trt:
+            need_model_reload = True
+        
+        # 8. Load the model if needed
+        if need_model_reload:
+            # Check if TRT engine exists
+            force_pt = not use_trt
+            if use_trt and not self.model_manager.engine_exists(base_name):
+                print(f"[Project Switch] TRT enabled but no engine for {base_name}@{new_imgsz}, using PyTorch")
+                force_pt = True
+                use_trt = False
+            
+            print(f"[Project Switch] Loading model {model_name}... (TRT={use_trt}, force_pt={force_pt})")
+            if not self._load_model_with_progress(model_name, force_pt=force_pt):
+                print(f"[Project Switch] ERROR: Failed to load model")
+                self._model_loading = False
+                if camera_was_open:
+                    self._open_camera(self.camera.state.source)
+                return False
+        
+        # 9. Apply the rest of the config (skip model since we just loaded it)
+        # Also skip imgsz since we already set it
+        print("[Project Switch] Applying config settings...")
+        self._apply_config_without_model(config)
+        
+        # 10. Update project tracking
+        self._current_project = self.config_store.infer_project_from_config(config, config_filepath)
+        self.config_store.remember_last_project(self._current_project)
+        
+        # 11. Update recorder
+        self.recorder.set_project(self._current_project)
+        
+        # 12. Clear any pending operations that were set during config apply
+        self._pending_model_switch = None
+        self._pending_trt_switch = None
+        self._pending_trt_build = None
+        self._pending_model_for_trt_build = None
+        
+        # 13. Reopen camera if it was open (using new camera source from config if specified)
+        camera_source = config.get("camera_source", self.camera.state.source)
+        if camera_was_open or camera_source != self.camera.state.source:
+            print(f"[Project Switch] Opening camera {camera_source}...")
+            if CameraManager.check_camera_available(camera_source):
+                self._open_camera(camera_source)
+                time.sleep(0.3)
+                if self.camera.cap:
+                    for _ in range(5):
+                        self.camera.cap.grab()
             else:
-                self.camera.state.source = saved_source
-                if saved_source not in self.camera.state.unavailable:
-                    self.camera.state.unavailable.append(saved_source)
-                if self.gui:
-                    all_sources = list(set(self.camera.state.available + self.camera.state.unavailable))
-                    all_sources.sort()
-                    self.gui.update_camera_sources(all_sources, saved_source, self.camera.state.unavailable)
-                print(f"Saved camera {saved_source} not available")
+                print(f"[Project Switch] Camera {camera_source} not available")
+                self.camera.state.source = camera_source
+                if camera_source not in self.camera.state.unavailable:
+                    self.camera.state.unavailable.append(camera_source)
+        
+        # 14. Update UI
+        self._update_topbar_state(selected_filepath=config_filepath)
+        self._update_recording_ui()
+        if self.gui:
+            self.gui.sync_combo("model", base_name)
+            self.gui.set_trt_checkbox(self.model_manager.is_using_tensorrt())
+            all_sources = list(set(self.camera.state.available + self.camera.state.unavailable))
+            all_sources.sort()
+            self.gui.update_camera_sources(all_sources, self.camera.state.source, self.camera.state.unavailable)
+            self.gui.update_camera_status(self.camera.state.is_open, self.camera.state.source)
+        
+        # 15. Resume processing
+        self._model_loading = False
+        
+        print(f"[Project Switch] Complete: {self._current_project}")
+        print(f"{'='*60}\n")
+        return True
 
-        # Model - skip during startup to avoid double-loading
-        if not skip_model and "model" in config and config["model"] != self.current_model_name:
-            self._cb_model_change(config["model"])
-            if self.gui:
-                self.gui.sync_combo("model", config["model"])
-        elif skip_model and "model" in config and self.gui:
-            # Just sync the UI without triggering the load
-            self.gui.sync_combo("model", config["model"])
-
-        # YOLO
+    def _apply_config_without_model(self, config: Dict):
+        """Apply config settings except model/imgsz (those are handled separately during project switch)."""
+        # YOLO settings (except imgsz which is handled separately)
         if "confidence" in config:
             self.settings.confidence = config["confidence"]
             self.gui and self.gui.sync_slider("confidence", config["confidence"])
-        if "yolo_imgsz" in config:
-            self.settings.imgsz = config["yolo_imgsz"]
-            self.model_manager.set_imgsz(config["yolo_imgsz"])
-            self.gui and self.gui.sync_combo("imgsz", str(config["yolo_imgsz"]))
         if "max_persons" in config:
             self.settings.max_persons = config["max_persons"]
             self.gui and self.gui.sync_slider("max_persons", config["max_persons"])
@@ -378,6 +511,9 @@ class WallDanceApp:
         if "person_height_px" in config:
             self.settings.person_height_px = config["person_height_px"]
             self.gui and self.gui.sync_slider("person_height", config["person_height_px"])
+        if "yolo_imgsz" in config:
+            # Just sync UI, don't trigger callback (imgsz already set)
+            self.gui and self.gui.sync_combo("imgsz", str(config["yolo_imgsz"]))
 
         # Enhancement
         if "enhance_enabled" in config:
@@ -454,83 +590,12 @@ class WallDanceApp:
             self.preview_fps_cap = config["preview_fps_cap"]
             self.gui and self.gui.sync_checkbox("preview_cap", config["preview_fps_cap"])
         if "preview_scale" in config:
-            print(f"[Config] Applying preview_scale={config['preview_scale']} (camera: {self.camera.state.width}x{self.camera.state.height})")
-            # Force apply to recompute texture size even if the scale matches the current value
             self._apply_preview_scale(config["preview_scale"], force=True)
             self.gui and self.gui.sync_slider("preview_scale", config["preview_scale"])
         
-        # Always sync FPS cap to GPU pipeline (handles case where not in config)
+        # Sync FPS cap to GPU pipeline
         if self.processor:
             self.processor.set_preview_fps_cap(10.0 if self.preview_fps_cap else None)
-
-        print("Config applied successfully")
-
-    def _update_topbar_state(self, selected_filepath: Optional[str] = None):
-        projects = self.config_store.list_projects()
-        if self.gui:
-            self.gui.update_project_list(projects, self._current_project)
-
-        history = self.config_store.project_history(self._current_project)
-
-        current_display = ""
-        if selected_filepath:
-            selected_abs = os.path.abspath(selected_filepath)
-            for display, path in history.configs:
-                if os.path.abspath(path) == selected_abs:
-                    current_display = display
-                    break
-            if not current_display:
-                current_display = format_config_display(os.path.basename(selected_filepath))
-
-        if not current_display and history.configs:
-            current_display = history.configs[0][0]
-
-        if self.gui:
-            self.gui.update_config_list(history.configs, current_display)
-            if current_display:
-                self.gui.set_current_config(current_display)
-
-    def _autoload_config(self, skip_model: bool = False):
-        """Auto-load the last used project/config.
-        
-        Args:
-            skip_model: If True, don't trigger model change (used during startup
-                       when model will be loaded separately)
-        """
-        last_project = self.config_store.read_last_project()
-        if not last_project:
-            print("No last project found, starting fresh")
-            self._update_topbar_state()
-            return
-        latest = self.config_store.latest_for_project(last_project)
-        if latest:
-            config = self.config_store.load(latest)
-            self._apply_config(config, skip_model=skip_model)
-            self._current_project = last_project
-            print(f"Auto-loaded project '{last_project}': {os.path.basename(latest)}")
-        else:
-            print(f"No configs found for project '{last_project}'")
-        self._update_topbar_state()
-    
-    def _get_startup_model(self) -> tuple:
-        """Get the model to load at startup.
-        
-        Returns:
-            Tuple of (model_name, use_tensorrt) from last saved config if available,
-            otherwise (default_model, False).
-        """
-        last_project = self.config_store.read_last_project()
-        if last_project:
-            latest = self.config_store.latest_for_project(last_project)
-            if latest:
-                config = self.config_store.load(latest)
-                if "model" in config:
-                    model_name = config["model"]
-                    use_trt = config.get("use_tensorrt", False)
-                    print(f"Will load model from saved config: {model_name} (TRT: {use_trt})")
-                    return model_name, use_trt
-        print(f"No saved model, using default: {YOLO_MODEL}")
-        return YOLO_MODEL, False
 
     # ------------------------------------------------------------------
     # GUI callbacks
@@ -565,6 +630,10 @@ class WallDanceApp:
         self.settings.brightness_threshold = value
         print(f"Brightness threshold: {value}")
 
+    def _cb_denoise_change(self, value: float):
+        self.settings.denoise_strength = value
+        print(f"Denoise strength: {value:.2f}")
+
     def _cb_confidence_change(self, value: float):
         self.settings.confidence = value
         print(f"Confidence: {value:.2f}")
@@ -595,6 +664,40 @@ class WallDanceApp:
             opened = self._open_camera(self.camera.state.source)
             if self.gui:
                 self.gui.update_camera_status(opened, self.camera.state.source)
+
+    def _cb_camera_refresh(self):
+        """Request a camera list refresh (deferred to main loop)."""
+        self._pending_camera_refresh = True
+
+    def _do_camera_refresh(self):
+        """Actually perform camera refresh - called from main loop."""
+        print("Refreshing camera list...")
+        # Remember current source and whether it was open
+        current_source = self.camera.state.source
+        was_open = self.camera.state.is_open
+        
+        # Close camera first so detection can find all cameras
+        if was_open:
+            self.camera.close()
+            self.camera.state.is_open = False
+        
+        # Detect all cameras (now that none are in use)
+        self.camera.state.available = CameraManager.detect_cameras()
+        self.camera.state.unavailable = []
+        print(f"Available cameras: {self.camera.state.available}")
+        
+        # Update GUI
+        if self.gui:
+            self.gui.update_camera_sources(self.camera.state.available, current_source, [])
+        
+        # Reopen the camera if it was open and is still available
+        if was_open:
+            if current_source in self.camera.state.available:
+                self._open_camera(current_source)
+            else:
+                print(f"Camera {current_source} no longer available")
+                if self.gui:
+                    self.gui.update_camera_status(False, current_source)
 
     def _open_camera(self, source: str) -> bool:
         opened = self.camera.open(source)
@@ -645,12 +748,16 @@ class WallDanceApp:
                 print(f"TRT engine exists for {base_name}@{new_imgsz}, reloading...")
                 self._pending_trt_switch = True
                 self._pending_model_switch = base_name
+                # Block processing until model is reloaded to prevent imgsz mismatch
+                self._model_loading = True
             else:
                 # No engine for new imgsz - fall back to PyTorch (don't prompt, just switch)
                 print(f"No TRT engine for {base_name}@{new_imgsz}, falling back to PyTorch")
                 self.gui.set_trt_checkbox(False)
                 self._pending_trt_switch = False
                 self._pending_model_switch = base_name
+                # Block processing until model is reloaded to prevent imgsz mismatch
+                self._model_loading = True
                 self.gui.show_toast(f"No TRT for {new_imgsz}px, using PyTorch", duration=3.0, color=(255, 200, 100))
 
     def _cb_person_height_change(self, value: int):
@@ -717,21 +824,26 @@ class WallDanceApp:
     def _cb_do_save_config(self, project_name: str):
         filepath = self.config_store.save(project_name, self._get_saveable_config())
         self._current_project = sanitize_project_name(project_name)
+        # Update recorder to use new project's recordings folder
+        self.recorder.set_project(self._current_project)
         self._update_topbar_state()
+        self._update_recording_ui()  # Refresh slots for new project
         if self.gui:
             self.gui.show_save_indicator("Saved!")
         print(f"Config saved: {filepath}")
 
     def _cb_do_load_config(self, filepath: str):
-        try:
-            config = self.config_store.load(filepath)
-            self._apply_config(config)
-            self._current_project = self.config_store.infer_project_from_config(config, filepath)
-            self.config_store.remember_last_project(self._current_project)
-            self._update_topbar_state(selected_filepath=filepath)
-            print(f"Config loaded: {filepath} (project: {self._current_project})")
-        except Exception as exc:
-            print(f"Failed to load config: {exc}")
+        """Handle config load request - defers to main loop for proper sequencing."""
+        # Defer the actual project switch to main loop to avoid race conditions
+        # The main loop will call _execute_project_switch() which handles:
+        # - Stopping recording/playback
+        # - Closing camera
+        # - Loading model with correct imgsz
+        # - Applying config
+        # - Reopening camera
+        print(f"Queuing project switch to: {os.path.basename(filepath)}")
+        self._pending_project_switch = filepath
+        self._model_loading = True  # Block processing immediately
 
     def _cb_project_select(self, project_name: str):
         latest = self.config_store.latest_for_project(project_name)
@@ -760,7 +872,20 @@ class WallDanceApp:
         """Load safe defaults for this project."""
         config = self.config_store.load_safe_defaults(self._current_project)
         if config:
-            self._apply_config(config)
+            # Check if model or imgsz would change
+            model_changes = config.get("model", self.current_model_name) != self.current_model_name
+            imgsz_changes = config.get("yolo_imgsz", self.settings.imgsz) != self.settings.imgsz
+            trt_changes = config.get("use_tensorrt", self.model_manager.is_using_tensorrt()) != self.model_manager.is_using_tensorrt()
+            
+            if model_changes or imgsz_changes or trt_changes:
+                # Need full project switch for model/imgsz/trt changes
+                # Save the config temporarily and trigger a project switch
+                temp_path = self.config_store.save(self._current_project, config)
+                self._pending_project_switch = temp_path
+                self._model_loading = True
+            else:
+                # No model changes, just apply config directly
+                self._apply_config_without_model(config)
             if self.gui:
                 self.gui.show_save_indicator("Safe defaults loaded!")
             print(f"Safe defaults loaded for project: {self._current_project}")
@@ -802,6 +927,7 @@ class WallDanceApp:
                 print(f"Queuing model switch to: {model_name} (TRT engine exists)...")
                 self._pending_trt_switch = True
                 self._pending_model_switch = model_name
+                self._model_loading = True  # Block processing until model is reloaded
             elif is_tensorrt_available():
                 # No engine - need to prompt user before building
                 # Update model name tracking so TRT build knows which model
@@ -814,11 +940,13 @@ class WallDanceApp:
                 print(f"Queuing model switch to: {model_name} (TRT not available)...")
                 self._pending_trt_switch = False
                 self._pending_model_switch = model_name
+                self._model_loading = True  # Block processing until model is reloaded
         else:
             # TRT not enabled, just switch to PT model
             print(f"Queuing model switch to: {model_name}...")
             self._pending_trt_switch = False
             self._pending_model_switch = model_name
+            self._model_loading = True  # Block processing until model is reloaded
 
     def _cb_trt_toggle(self, enabled: bool):
         """Handle TensorRT toggle checkbox.
@@ -848,6 +976,7 @@ class WallDanceApp:
                 print(f"Switching to TensorRT engine for {base_name}...")
                 self._pending_trt_switch = True
                 self._pending_model_switch = base_name
+                self._model_loading = True  # Block processing until model is reloaded
             else:
                 # Need to build engine - show prompt
                 print(f"No TensorRT engine for {base_name}, prompting to build...")
@@ -857,6 +986,7 @@ class WallDanceApp:
             print(f"Switching to PyTorch for {base_name}...")
             self._pending_trt_switch = False
             self._pending_model_switch = base_name
+            self._model_loading = True  # Block processing until model is reloaded
 
     def _cb_fp16_toggle(self, enabled: bool):
         self.settings.use_fp16 = enabled
@@ -1145,6 +1275,10 @@ class WallDanceApp:
                 self.model = self.model_manager.load_model(model_name, force_pt=force_pt)
                 self.processor.model = self.model
                 self._model_loaded = True
+                # Warmup inference to force TRT engine initialization
+                import numpy as np
+                dummy_frame = np.zeros((640, 640, 3), dtype=np.uint8)
+                _ = self.model(dummy_frame, verbose=False)
                 return True
             except Exception as e:
                 print(f"Failed to load model: {e}")
@@ -1156,6 +1290,14 @@ class WallDanceApp:
 
         # Pause frame processing while loading model
         self._model_loading = True
+        
+        # Close camera during model loading to prevent buffer overflow/stale connection
+        camera_was_open = self.camera.state.is_open
+        camera_source = self.camera.state.source
+        if camera_was_open:
+            print("[Model] Pausing camera during model load...")
+            self.camera.close()
+            self.camera.state.is_open = False
         
         # Show progress modal
         print("[Model] Showing loading modal...")
@@ -1270,16 +1412,42 @@ class WallDanceApp:
                     self.current_model_name = model_name.replace('.pt', '').replace('.engine', '')
                     self._model_loaded = True
                     self.gui.update_engine_type_badge(False)
+                    # Do warmup inference for fallback model too
+                    print("[Model] Running warmup inference (fallback)...")
+                    try:
+                        import numpy as np
+                        dummy_frame = np.zeros((640, 640, 3), dtype=np.uint8)
+                        _ = self.model(dummy_frame, verbose=False)
+                        print("[Model] Warmup complete")
+                    except Exception as e:
+                        print(f"[Model] Warmup failed (non-critical): {e}")
                     self.gui.show_toast("Using PyTorch (fallback)", duration=4.0, color=(255, 180, 80))
                     time.sleep(0.3)
                     self.gui.hide_model_loading_modal()
                     self._model_loading = False
+                    # Reopen camera if it was open before
+                    if camera_was_open:
+                        print("[Model] Reopening camera after model load...")
+                        self._open_camera(camera_source)
+                        # Give camera time to stabilize
+                        time.sleep(0.5)
+                        if self.camera.cap is not None:
+                            for _ in range(10):
+                                self.camera.cap.grab()
                     return True
                 else:
                     print(f"Fallback also failed: {fallback_result['error']}")
             
             self.gui.hide_model_loading_modal()
             self._model_loading = False
+            # Reopen camera if it was open before
+            if camera_was_open:
+                print("[Model] Reopening camera after model load failure...")
+                self._open_camera(camera_source)
+                time.sleep(0.5)
+                if self.camera.cap is not None:
+                    for _ in range(10):
+                        self.camera.cap.grab()
             return False
         
         # Success path
@@ -1304,10 +1472,32 @@ class WallDanceApp:
         if fallback_reason and self.model_manager.use_tensorrt:
             self.gui.show_toast(fallback_reason, duration=5.0, color=(255, 180, 80))
         
+        # Do a warmup inference to force TRT engine to fully initialize
+        # This prevents lazy loading during camera capture which causes buffer overflow
+        print("[Model] Running warmup inference...")
+        self.gui.update_model_loading_progress("Warming up model...", 0.98, "First inference may take a moment")
+        dpg.render_dearpygui_frame()
+        try:
+            import numpy as np
+            dummy_frame = np.zeros((640, 640, 3), dtype=np.uint8)
+            _ = self.model(dummy_frame, verbose=False)
+            print("[Model] Warmup complete")
+        except Exception as e:
+            print(f"[Model] Warmup failed (non-critical): {e}")
+        
         # Brief pause to show "ready" message
         time.sleep(0.3)
         self.gui.hide_model_loading_modal()
         self._model_loading = False
+        # Reopen camera if it was open before
+        if camera_was_open:
+            print(f"[Model] Reopening camera {camera_source}...")
+            self._open_camera(camera_source)
+            # Give camera time to stabilize and flush any stale frames
+            time.sleep(0.5)
+            if self.camera.cap is not None:
+                for _ in range(10):
+                    self.camera.cap.grab()
         print(f"Model loading complete: {self.current_model_name}")
         return True
 
@@ -1333,35 +1523,29 @@ class WallDanceApp:
             dpg.add_key_press_handler(callback=self._handle_key)
         dpg.show_viewport()
         
-        # Determine which model to load: from saved config or default
-        startup_model, use_trt = self._get_startup_model()
+        # Load last project using the unified project switch path
+        # This ensures startup and runtime project switching use the same code
+        last_project = self.config_store.read_last_project()
+        startup_config = None
+        if last_project:
+            startup_config = self.config_store.latest_for_project(last_project)
         
-        # Load saved config FIRST (skip model change since we'll load it directly)
-        # This ensures all settings are applied before we start
-        self._autoload_config(skip_model=True)
-        
-        # Now load the model (from saved config or default)
-        # If TRT was enabled in saved config but engine doesn't exist, fall back to PT
-        base_name = startup_model.replace('.pt', '').replace('.engine', '')
-        force_pt = not use_trt  # If saved config had TRT disabled, force PT
-        
-        # If TRT was enabled but engine doesn't exist, we need to fall back to PT
-        # (we don't want to prompt for TRT build on startup - user can enable via checkbox later)
-        if use_trt and not self.model_manager.engine_exists(base_name):
-            print(f"TensorRT was enabled in config but no engine exists for {base_name}, starting with PyTorch")
-            force_pt = True
-            use_trt = False
-        
-        print(f"Loading model {startup_model}... (TRT: {use_trt}, force_pt: {force_pt})")
-        if not self._load_model_with_progress(startup_model, force_pt=force_pt):
-            print("ERROR: Failed to load model. Exiting.")
-            return
-        
-        # Update model name tracking and TRT checkbox to match what we loaded
-        self.current_model_name = base_name
-        if self.gui:
-            self.gui.sync_combo("model", base_name)
-            self.gui.set_trt_checkbox(self.model_manager.is_using_tensorrt())
+        if startup_config:
+            print(f"Loading last project: {last_project}")
+            if not self._execute_project_switch(startup_config):
+                print("ERROR: Failed to load last project. Exiting.")
+                return
+        else:
+            # No saved project - load default model
+            print("No saved project, loading default model...")
+            if not self._load_model_with_progress(YOLO_MODEL, force_pt=not USE_TENSORRT):
+                print("ERROR: Failed to load model. Exiting.")
+                return
+            self.current_model_name = YOLO_MODEL.replace('.pt', '').replace('.engine', '')
+            if self.gui:
+                self.gui.sync_combo("model", self.current_model_name)
+                self.gui.set_trt_checkbox(self.model_manager.is_using_tensorrt())
+            self._update_topbar_state()
         
         # Initialize recording UI
         self.recorder.set_project(self._current_project)
@@ -1371,6 +1555,20 @@ class WallDanceApp:
         self.running = True
         rec_ui_update_counter = 0
         while self.running and dpg.is_dearpygui_running():
+            # Handle pending project switch (deferred from callback)
+            # This is the unified path for project/config switching
+            if self._pending_project_switch is not None:
+                config_filepath = self._pending_project_switch
+                self._pending_project_switch = None
+                self._execute_project_switch(config_filepath)
+                continue  # Restart loop after switch
+            
+            # Handle pending camera refresh (deferred from callback)
+            if self._pending_camera_refresh:
+                self._pending_camera_refresh = False
+                self._do_camera_refresh()
+                continue  # Restart loop after refresh
+            
             # Handle pending TRT build request (user clicked TRT checkbox, engine doesn't exist)
             if self._pending_trt_build is not None:
                 model_to_build = self._pending_trt_build
@@ -1402,6 +1600,7 @@ class WallDanceApp:
                     print(f"User chose to build TensorRT engine for {model_to_build}")
                     self._pending_trt_switch = True
                     self._pending_model_switch = model_to_build
+                    self._model_loading = True  # Block processing until model is reloaded
                 else:
                     # User cancelled TRT build
                     print(f"User cancelled TensorRT build for {model_to_build}")
@@ -1413,6 +1612,7 @@ class WallDanceApp:
                         print(f"Switching to {model_for_switch} with PyTorch instead...")
                         self._pending_trt_switch = False
                         self._pending_model_switch = model_for_switch
+                        self._model_loading = True  # Block processing until model is reloaded
                 continue
             
             # Handle pending model switch (deferred from callback to avoid race condition)
@@ -1464,22 +1664,39 @@ class WallDanceApp:
                     self._update_recording_ui()
                     continue
             else:
-                # Read from camera
-                if self.camera.cap is None or not self.camera.cap.isOpened():
-                    self.gui.render_frame()
+                # Read from camera - with safety checks for sudden disconnection
+                try:
+                    camera_ready = self.camera.cap is not None and self.camera.cap.isOpened()
+                except Exception:
+                    camera_ready = False
+                
+                if not camera_ready:
+                    if self.gui:
+                        self.gui.render_frame()
                     time.sleep(0.033)
                     continue
 
-                ret, frame = self.camera.cap.read()
-                if not ret:
+                try:
+                    ret, frame = self.camera.cap.read()
+                except Exception as e:
+                    print(f"Camera read exception: {e}")
+                    ret, frame = False, None
+                
+                if not ret or frame is None:
                     print("Camera read failed, marking as unavailable")
                     if self.camera.state.source not in self.camera.state.unavailable:
                         self.camera.state.unavailable.append(self.camera.state.source)
                     self.camera.state.is_open = False
-                    self.camera.close()
-                    all_sources = list(set(self.camera.state.available + self.camera.state.unavailable))
-                    all_sources.sort()
-                    self.gui.update_camera_sources(all_sources, self.camera.state.source, self.camera.state.unavailable)
+                    try:
+                        self.camera.close()
+                    except Exception as e:
+                        print(f"Camera close exception: {e}")
+                        self.camera.cap = None
+                    if self.gui:
+                        all_sources = list(set(self.camera.state.available + self.camera.state.unavailable))
+                        all_sources.sort()
+                        self.gui.update_camera_sources(all_sources, self.camera.state.source, self.camera.state.unavailable)
+                        self.gui.update_camera_status(False, self.camera.state.source)
                     continue
                 
                 # If recording, write raw frame before any processing
