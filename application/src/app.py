@@ -373,8 +373,9 @@ class WallDanceApp:
         print(f"[Project Switch] Starting switch to: {os.path.basename(config_filepath)}")
         print(f"{'='*60}")
         
-        # 1. Stop any recording/playback
+        # 1. Stop any recording/playback (clear callback first)
         print("[Project Switch] Stopping recorder...")
+        self.camera.set_frame_callback(None)
         self.recorder.stop_recording()
         self.recorder.stop_playback()
         
@@ -1061,8 +1062,14 @@ class WallDanceApp:
     # ------------------------------------------------------------------
     # Recording callbacks
     # ------------------------------------------------------------------
+    def _camera_frame_callback(self, frame: np.ndarray):
+        """Called from camera thread for each captured frame. Used for recording."""
+        if self.recorder.is_recording:
+            self.recorder.write_frame(frame)
+    
     def _cb_rec_live(self):
         """Switch to live camera mode."""
+        self.camera.set_frame_callback(None)  # Clear recording callback
         self.recorder.go_live()
         self._pending_rec_slot = None
         self._rec_armed = False
@@ -1072,7 +1079,8 @@ class WallDanceApp:
     def _cb_rec_toggle(self):
         """Toggle recording mode."""
         if self.recorder.is_recording:
-            # Stop recording
+            # Stop recording - clear callback first
+            self.camera.set_frame_callback(None)
             filepath = self.recorder.stop_recording()
             self._pending_rec_slot = None
             self._rec_armed = False
@@ -1119,6 +1127,8 @@ class WallDanceApp:
         if self._rec_armed and self.recorder.is_live:
             fps = CAMERA_FPS
             size = (self.camera.state.width, self.camera.state.height)
+            # Wire up camera callback BEFORE starting recording
+            self.camera.set_frame_callback(self._camera_frame_callback)
             if self.recorder.start_recording(slot, fps, size):
                 self._rec_armed = False
                 self._pending_rec_slot = slot
@@ -1126,6 +1136,7 @@ class WallDanceApp:
                 print(f"Recording to slot {slot}...")
             else:
                 print(f"Failed to start recording to slot {slot}")
+                self.camera.set_frame_callback(None)  # Remove callback on failure
                 self._rec_armed = False
                 self._update_recording_ui()
             return
@@ -1666,7 +1677,7 @@ class WallDanceApp:
             else:
                 # Read from camera - with safety checks for sudden disconnection
                 try:
-                    camera_ready = self.camera.cap is not None and self.camera.cap.isOpened()
+                    camera_ready = self.camera.state.is_open and not self.camera.has_capture_error()
                 except Exception:
                     camera_ready = False
                 
@@ -1677,12 +1688,13 @@ class WallDanceApp:
                     continue
 
                 try:
-                    ret, frame = self.camera.cap.read()
+                    ret, frame = self.camera.read()
                 except Exception as e:
                     print(f"Camera read exception: {e}")
                     ret, frame = False, None
                 
-                if not ret or frame is None:
+                # ret=False means camera error, ret=True with frame=None means still initializing
+                if not ret:
                     print("Camera read failed, marking as unavailable")
                     if self.camera.state.source not in self.camera.state.unavailable:
                         self.camera.state.unavailable.append(self.camera.state.source)
@@ -1699,9 +1711,14 @@ class WallDanceApp:
                         self.gui.update_camera_status(False, self.camera.state.source)
                     continue
                 
-                # If recording, write raw frame before any processing
-                if self.recorder.is_recording:
-                    self.recorder.write_frame(frame)
+                # Camera is open but no frame yet (still initializing) - skip this iteration
+                if frame is None:
+                    if self.gui:
+                        self.gui.render_frame()
+                    time.sleep(0.01)
+                    continue
+                
+                # Recording is handled via camera callback thread - no write_frame here
 
             if self.frame_skip == 0:
                 should_process = True

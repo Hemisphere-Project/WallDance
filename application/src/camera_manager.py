@@ -1,13 +1,17 @@
 """
 Camera management utilities for WallDance.
 Encapsulates camera discovery, opening, and state tracking.
+Supports threaded frame capture for consistent frame rate.
 """
 
 from __future__ import annotations
 
 import cv2
+import threading
+import time
+import numpy as np
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from config import CAMERA_FPS, CAMERA_HEIGHT, CAMERA_INDEX, CAMERA_WIDTH
 
@@ -23,11 +27,114 @@ class CameraState:
 
 
 class CameraManager:
-    """Manage video capture lifecycle."""
+    """Manage video capture lifecycle with optional threaded capture."""
 
-    def __init__(self):
+    def __init__(self, threaded: bool = True):
         self.cap: Optional[cv2.VideoCapture] = None
         self.state = CameraState()
+        
+        # Threaded capture
+        self._threaded = threaded
+        self._capture_thread: Optional[threading.Thread] = None
+        self._capture_running: bool = False
+        self._frame_lock = threading.Lock()
+        self._latest_frame: Optional[np.ndarray] = None
+        self._frame_ready: bool = False
+        self._capture_error: bool = False
+        
+        # Callback for recording (called from capture thread with each frame)
+        self._frame_callback: Optional[Callable[[np.ndarray], None]] = None
+
+    def set_frame_callback(self, callback: Optional[Callable[[np.ndarray], None]]):
+        """Set a callback to receive every captured frame (for recording)."""
+        self._frame_callback = callback
+
+    # ------------------------------------------------------------------
+    # Threaded Capture
+    # ------------------------------------------------------------------
+    def _capture_loop(self):
+        """Background thread that continuously captures frames."""
+        print("[CameraThread] Capture thread started")
+        while self._capture_running:
+            # Check if we should stop before attempting capture
+            if not self._capture_running:
+                break
+                
+            if self.cap is None or not self.cap.isOpened():
+                self._capture_error = True
+                break
+            
+            try:
+                # Use grab() + retrieve() pattern for better control
+                # grab() is faster and allows checking _capture_running more frequently
+                if not self.cap.grab():
+                    # Grab failed - camera might be disconnected
+                    if self._capture_running:  # Only error if we weren't asked to stop
+                        self._capture_error = True
+                    break
+                
+                # Check again before retrieve
+                if not self._capture_running:
+                    break
+                
+                ret, frame = self.cap.retrieve()
+                if ret and frame is not None:
+                    with self._frame_lock:
+                        self._latest_frame = frame
+                        self._frame_ready = True
+                    
+                    # Call recording callback if set (outside lock to not block)
+                    if self._frame_callback is not None:
+                        try:
+                            self._frame_callback(frame)
+                        except Exception as e:
+                            print(f"[CameraThread] Frame callback error: {e}")
+                else:
+                    # Retrieve failed
+                    if self._capture_running:
+                        self._capture_error = True
+                    break
+            except Exception as e:
+                if self._capture_running:
+                    print(f"[CameraThread] Capture error: {e}")
+                    self._capture_error = True
+                break
+        
+        print("[CameraThread] Capture thread finished")
+    
+    def read(self) -> tuple[bool, Optional[np.ndarray]]:
+        """Read a frame. Uses threaded buffer if enabled, otherwise direct read.
+        
+        Returns:
+            (True, frame) if a frame is available
+            (False, None) if camera has an error or is not open
+            (True, None) if camera is open but no frame yet (still initializing)
+        """
+        if not self._threaded:
+            # Direct read
+            if self.cap is None or not self.cap.isOpened():
+                return False, None
+            return self.cap.read()
+        
+        # Threaded read from buffer
+        if self._capture_error:
+            return False, None
+        
+        # If not open, return failure
+        if not self.state.is_open:
+            return False, None
+        
+        with self._frame_lock:
+            if not self._frame_ready or self._latest_frame is None:
+                # Camera is open but no frame yet - not an error, just wait
+                return True, None
+            # Return a copy to avoid buffer overwrite issues
+            frame = self._latest_frame.copy()
+            return True, frame
+    
+    def has_capture_error(self) -> bool:
+        """Check if capture thread encountered an error."""
+        return self._capture_error
 
     # ------------------------------------------------------------------
     # Discovery
@@ -57,8 +164,48 @@ class CameraManager:
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
+    def _stop_capture_thread(self):
+        """Stop the capture thread if running."""
+        if self._capture_thread is not None:
+            self._capture_running = False
+            # Give thread a moment to notice the flag
+            time.sleep(0.05)
+            self._capture_thread.join(timeout=1.0)
+            if self._capture_thread.is_alive():
+                print("[Camera] Warning: capture thread did not stop cleanly")
+            self._capture_thread = None
+        self._frame_ready = False
+        self._latest_frame = None
+        self._capture_error = False
+    
+    def _start_capture_thread(self):
+        """Start the capture thread."""
+        if not self._threaded:
+            return
+        
+        self._capture_error = False
+        self._frame_ready = False
+        self._latest_frame = None
+        self._capture_running = True
+        self._capture_thread = threading.Thread(
+            target=self._capture_loop,
+            name="CameraCapture",
+            daemon=True
+        )
+        self._capture_thread.start()
+        
+        # Wait a bit for first frame
+        for _ in range(50):  # 500ms max wait
+            with self._frame_lock:
+                if self._frame_ready:
+                    break
+            time.sleep(0.01)
+    
     def open(self, source: str) -> bool:
         """Open or switch to a camera source."""
+        # Stop any existing capture thread first
+        self._stop_capture_thread()
+        
         if self.cap is not None:
             self.cap.release()
             self.cap = None
@@ -96,9 +243,16 @@ class CameraManager:
         if source not in self.state.available:
             self.state.available.append(source)
         self.state.available.sort()
+        
+        # Start capture thread
+        self._start_capture_thread()
+        
         return True
 
     def close(self) -> None:
+        # Stop capture thread first
+        self._stop_capture_thread()
+        
         if self.cap is not None:
             self.cap.release()
             self.cap = None

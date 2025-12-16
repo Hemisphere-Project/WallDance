@@ -12,6 +12,7 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from queue import Queue, Empty
 from typing import List, Optional, Tuple
 
 import cv2
@@ -67,6 +68,11 @@ class VideoRecorder:
         self._recording_path: Optional[str] = None
         self._recording_fps: float = 30.0
         self._recording_size: Tuple[int, int] = (1920, 1080)
+        
+        # Threaded recording encoder
+        self._recording_queue: Queue[Optional[np.ndarray]] = Queue(maxsize=300)  # ~10 sec buffer at 30fps
+        self._recording_thread: Optional[threading.Thread] = None
+        self._recording_running: bool = False
         
         # Playback state
         self._reader: Optional[cv2.VideoCapture] = None
@@ -159,6 +165,33 @@ class VideoRecorder:
     # ------------------------------------------------------------------
     # Recording
     # ------------------------------------------------------------------
+    def _recording_encoder_thread(self):
+        """Background thread that writes frames from queue to disk."""
+        print("[RecorderThread] Recording encoder thread started")
+        frames_written = 0
+        
+        while self._recording_running:
+            try:
+                # Wait for frame with timeout to allow checking _recording_running
+                frame = self._recording_queue.get(timeout=0.1)
+                
+                if frame is None:
+                    # Sentinel value - stop signal
+                    break
+                
+                if self._writer is not None:
+                    self._writer.write(frame)
+                    frames_written += 1
+                    
+            except Empty:
+                # Timeout - just loop and check if still running
+                continue
+            except Exception as e:
+                print(f"[RecorderThread] Error writing frame: {e}")
+                break
+        
+        print(f"[RecorderThread] Recording encoder thread finished, wrote {frames_written} frames")
+    
     def start_recording(self, slot: int, fps: float = 30.0, size: Tuple[int, int] = (1920, 1080)) -> bool:
         """Start recording to a slot. Returns True if started successfully."""
         if not self.is_live:
@@ -199,12 +232,28 @@ class VideoRecorder:
         self._status.current_slot = slot
         self._status.recording_frames = 0
         
+        # Clear any leftover frames in queue
+        while not self._recording_queue.empty():
+            try:
+                self._recording_queue.get_nowait()
+            except Empty:
+                break
+        
+        # Start recording thread
+        self._recording_running = True
+        self._recording_thread = threading.Thread(
+            target=self._recording_encoder_thread,
+            name="RecordingEncoder",
+            daemon=True
+        )
+        self._recording_thread.start()
+        
         print(f"Started recording to slot {slot}: {filepath}")
         return True
     
     def write_frame(self, frame: np.ndarray):
-        """Write a frame to the current recording."""
-        if not self.is_recording or self._writer is None:
+        """Queue a frame for recording (non-blocking)."""
+        if not self.is_recording:
             return
         
         # Resize if needed
@@ -212,8 +261,16 @@ class VideoRecorder:
         if (w, h) != self._recording_size:
             frame = cv2.resize(frame, self._recording_size)
         
-        self._writer.write(frame)
-        self._status.recording_frames += 1
+        # Make a copy since the frame buffer might be reused
+        frame_copy = frame.copy()
+        
+        try:
+            # Non-blocking put - drop frame if queue is full (better than blocking main loop)
+            self._recording_queue.put_nowait(frame_copy)
+            self._status.recording_frames += 1
+        except Exception:
+            # Queue full - drop frame rather than block
+            print(f"[Recorder] Queue full, dropped frame (queue size: {self._recording_queue.qsize()})")
     
     def stop_recording(self) -> Optional[str]:
         """Stop recording and return the saved filepath."""
@@ -222,6 +279,23 @@ class VideoRecorder:
         
         filepath = self._recording_path
         
+        # Signal thread to stop
+        self._recording_running = False
+        
+        # Send sentinel to unblock the thread if waiting
+        try:
+            self._recording_queue.put_nowait(None)
+        except Exception:
+            pass
+        
+        # Wait for thread to finish (with timeout)
+        if self._recording_thread is not None:
+            self._recording_thread.join(timeout=5.0)
+            if self._recording_thread.is_alive():
+                print("[Recorder] Warning: recording thread did not finish in time")
+            self._recording_thread = None
+        
+        # Release writer after thread has stopped
         if self._writer is not None:
             self._writer.release()
             self._writer = None
