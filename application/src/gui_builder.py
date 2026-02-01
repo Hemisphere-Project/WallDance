@@ -794,6 +794,8 @@ def build_model_section(gui: Any):
         with dpg.group(horizontal=True):
             dpg.add_combo(
                 items=[
+                    "yolo26n-pose", "yolo26s-pose", "yolo26m-pose",
+                    "yolo26l-pose", "yolo26x-pose",
                     "yolo11n-pose", "yolo11s-pose", "yolo11m-pose", 
                     "yolo11l-pose", "yolo11x-pose",
                     "yolov8n-pose", "yolov8s-pose", "yolov8m-pose", 
