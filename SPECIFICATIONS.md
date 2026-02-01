@@ -69,34 +69,53 @@ WallDance is a real-time computer vision system designed to detect and track mul
 
 ### 3.1 Camera System
 
-| Component | Specification | Rationale |
-|---|---|---|
-| Camera | Sony Alpha 7 (or equivalent) | Low-light sensitivity, clean 1080p output |
-| Resolution | 1920×1080 (Full HD) | Balance of coverage and detail |
-| Frame Rate | 30 FPS | Standard capture rate |
-| Output | Clean HDMI / SDI | Via capture card to PC |
-| Lens | Wide-angle (24-35mm equiv.) | Cover 50m scene from safe distance |
-| Mounting | Fixed tripod/rigging | Stable, unobstructed view |
+**Production Hardware (Purchased Feb 2025):**
+
+| Component | Model | Specification | Rationale |
+|---|---|---|---|
+| Camera | IDS U3-34E0XCP-M-GL Rev.1.2 | 4MP Sony IMX664 Starvis 2, Monochrome | Excellent low-light, USB3 Vision, industrial grade |
+| Lens | Tamron M118FM08 | 8mm, 1/1.8", C-Mount, F1.8 | Wide FOV (~50° HFOV), bright aperture for low-light |
+| IR Filter | MidOpt BP850-25.4 | 850nm bandpass, C-Mount | Blocks projector light, passes IR illumination |
+| Resolution | 2688×1520 (4MP native) | Native 4MP, can crop/bin to 1080p | High resolution for distant subjects |
+| Frame Rate | 30-60 FPS | Configurable via SDK | Adjustable based on exposure needs |
+| Interface | USB3 Vision | Direct to PC, no capture card | Low latency (~5-10ms), SDK control |
+| Mounting | Fixed tripod/rigging | Stable, unobstructed view | Weather housing recommended |
 
 **Calculated Figure Size:**
 
 -   At 1080p covering 50m width: 1920px / 50m = 38.4 px/m
 -   Average dancer height (1.7m): 1.7m × 38.4 = **~65 pixels**
+-   At 4MP (2688px) covering 50m: 2688px / 50m = 53.8 px/m → **~91 pixels**
 -   This is below optimal detection threshold (~100px), requiring upscaling
+-   **Production camera (IDS 4MP)** improves native resolution by ~40%
 
 ### 3.2 Processing Hardware
 
+**Production Hardware (Purchased Feb 2025):**
+
+| Component | Model | Specification | Notes |
+|---|---|---|---|
+| Laptop | ASUS ROG Strix SCAR 16 G635LW | Gaming laptop, portable | Field deployment ready |
+| GPU | NVIDIA RTX 5080 (Laptop) | 16GB VRAM, Blackwell architecture | Latest generation, excellent inference |
+| CPU | Intel Core Ultra 9 275HX | 24-core | High-performance mobile CPU |
+| RAM | 32 GB DDR5 | Standard config | Sufficient for all workloads |
+| Storage | NVMe SSD | 1TB+ | Fast model loading |
+
+**General Requirements:**
+
 | Component | Minimum | Recommended | Notes |
 |---|---|---|---|
-| GPU | RTX 3070 | RTX 3090 / RTX 4080 | CUDA compute for inference |
-| VRAM | 8 GB | 24 GB | Model + upscaled frames |
-| CPU | 8-core | 16-core | Pre/post processing |
+| GPU | RTX 3070 | RTX 4080+ / RTX 5080 | CUDA compute for inference |
+| VRAM | 8 GB | 16 GB+ | Model + upscaled frames |
+| CPU | 8-core | 16-core+ | Pre/post processing |
 | RAM | 16 GB | 32 GB | Frame buffers |
 | Storage | SSD | NVMe SSD | Fast model loading |
 
 ### 3.3 Capture & Camera Options
 
-For detailed hardware purchasing recommendations (capture cards, machine vision cameras, low-light sensors), see [docs/HARDWARE_GUIDE.md](docs/HARDWARE_GUIDE.md).
+For detailed hardware purchasing recommendations (capture cards, machine vision cameras, low-light sensors), see [HARDWARE_GUIDE.md](HARDWARE_GUIDE.md).
+
+**Note:** The production setup uses USB3 Vision (IDS camera) which bypasses capture cards entirely, providing lower latency and direct SDK control.
 
 ---
 
@@ -1196,6 +1215,7 @@ Expected output:
 | 1.5 | 2025-12-09 | AI/Human collaboration | GPU Path Implementation plan (Section 14) |
 | 1.6 | 2025-12-09 | AI/Human collaboration | GPU Path Completed (Phase 1-4), Temporal Denoising, ROI Roadmap |
 | 1.7 | 2025-12-09 | AI/Human collaboration | UI Refinement: Moved Denoise to PREPROC row |
+| 1.8 | 2026-02-01 | AI/Human collaboration | Production hardware purchased: IDS U3-34E0XCP camera, Tamron 8mm lens, MidOpt BP850 filter, ASUS ROG SCAR 16 (RTX 5080) |
 
 ---
 

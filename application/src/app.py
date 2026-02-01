@@ -66,7 +66,7 @@ from model_manager import ModelManager, ModelProgress, ModelStatus
 from osc_output import OSCSender
 from pipeline import FrameProcessor, ProcessingSettings, ScaledTrack
 from visualization import draw_dancer
-from gui import WallDanceGUI
+from gui import WallDanceGUI, get_display_scale
 from enhancer import ImageEnhancer
 from tracker import DancerTracker
 from video_recorder import VideoRecorder, RecorderState
@@ -205,9 +205,15 @@ class WallDanceApp:
         state = self.camera.state
         all_sources = list(set(state.available + state.unavailable))
         all_sources.sort(key=lambda x: (x not in state.available, x))
+        
+        # Get DPI scale for video display sizing
+        dpi_scale = get_display_scale()
+        video_w = int(CAMERA_WIDTH * PREVIEW_DISPLAY_SCALE * dpi_scale)
+        video_h = int(CAMERA_HEIGHT * PREVIEW_DISPLAY_SCALE * dpi_scale)
+        
         return {
-            "video_width": int(CAMERA_WIDTH * PREVIEW_DISPLAY_SCALE),
-            "video_height": int(CAMERA_HEIGHT * PREVIEW_DISPLAY_SCALE),
+            "video_width": video_w,
+            "video_height": video_h,
             "camera_width": state.width,
             "camera_height": state.height,
             "camera_source": state.source,
@@ -1527,8 +1533,10 @@ class WallDanceApp:
 
         print("Initializing GUI...")
         self.gui = WallDanceGUI(config=self._get_gui_config(), callbacks=self._get_gui_callbacks())
-        window_width = int(CAMERA_WIDTH * self.preview.display_scale) + 360
-        window_height = max(int(CAMERA_HEIGHT * self.preview.display_scale) + 80, 700)
+        dpi_scale = get_display_scale()
+        # Add extra space for controls (400 base + scaled padding)
+        window_width = int((CAMERA_WIDTH * self.preview.display_scale + 400) * dpi_scale)
+        window_height = max(int((CAMERA_HEIGHT * self.preview.display_scale + 120) * dpi_scale), int(800 * dpi_scale))
         self.gui.setup(width=window_width, height=window_height)
         with dpg.handler_registry():
             dpg.add_key_press_handler(callback=self._handle_key)

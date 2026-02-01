@@ -4,12 +4,13 @@ Provides real-time parameter adjustment with sliders, checkboxes, and buttons.
 """
 
 import os
+import subprocess
 from typing import Any, Callable, Dict, Optional
 
 import dearpygui.dearpygui as dpg
 import numpy as np
 
-from gui_builder import build_ui, create_texture, setup_theme
+from gui_builder import build_ui, create_texture, setup_theme, load_icon_font
 from gui_icons import Icons
 
 # GPU monitoring (optional - works with NVIDIA GPUs)
@@ -41,6 +42,88 @@ def get_gpu_stats() -> dict:
         return {'util': util.gpu, 'temp': temp, 'power': power_w, 'vram_pct': vram_pct}
     except Exception:
         return {'util': -1, 'temp': -1, 'power': -1, 'vram_pct': -1}
+
+
+def get_display_scale() -> float:
+    """
+    Detect display scale factor based on screen resolution and system DPI settings.
+    Returns a scale factor for DPI-aware rendering.
+    
+    Can be overridden via WALLDANCE_UI_SCALE environment variable.
+    """
+    # Allow manual override via environment variable
+    env_scale = os.environ.get('WALLDANCE_UI_SCALE')
+    if env_scale:
+        try:
+            scale = float(env_scale)
+            print(f"[GUI] Using UI scale from environment: {scale}")
+            return scale
+        except ValueError:
+            print(f"[GUI] Invalid WALLDANCE_UI_SCALE value: {env_scale}, using auto-detect")
+    
+    screen_width = 1920  # default
+    system_scale = 1.0
+    
+    # Auto-detect screen resolution (Linux with xrandr)
+    try:
+        result = subprocess.run(['xrandr'], capture_output=True, text=True, timeout=2)
+        if result.returncode == 0:
+            for line in result.stdout.split('\n'):
+                if '*' in line:  # Current resolution marked with *
+                    parts = line.split()
+                    resolution = parts[0]  # e.g., "3840x2560"
+                    screen_width = int(resolution.split('x')[0])
+                    print(f"[GUI] Detected display resolution: {resolution}")
+                    break
+    except Exception as e:
+        print(f"[GUI] Could not detect display resolution: {e}")
+    
+    # Try to detect system DPI scale from various sources
+    try:
+        # Check GDK_SCALE (GNOME/GTK)
+        gdk_scale = os.environ.get('GDK_SCALE')
+        if gdk_scale:
+            system_scale = float(gdk_scale)
+            print(f"[GUI] Detected GDK_SCALE: {system_scale}")
+        else:
+            # Check QT_SCALE_FACTOR (KDE/Qt)
+            qt_scale = os.environ.get('QT_SCALE_FACTOR')
+            if qt_scale:
+                system_scale = float(qt_scale)
+                print(f"[GUI] Detected QT_SCALE_FACTOR: {system_scale}")
+            else:
+                # Try gsettings for GNOME scaling factor
+                try:
+                    result = subprocess.run(
+                        ['gsettings', 'get', 'org.gnome.desktop.interface', 'text-scaling-factor'],
+                        capture_output=True, text=True, timeout=2
+                    )
+                    if result.returncode == 0:
+                        system_scale = float(result.stdout.strip())
+                        print(f"[GUI] Detected GNOME text-scaling-factor: {system_scale}")
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"[GUI] Could not detect system DPI scale: {e}")
+    
+    # Calculate final scale based on resolution and system settings
+    # For high-DPI displays, we need to scale UI to be readable
+    if screen_width >= 3840:  # 4K or higher
+        # Base scale of 2.0 for 4K, adjusted by system scale
+        # If system is already at 125% (1.25), effective pixels are 3072 logical
+        # We want fonts to appear ~same physical size as on 1080p
+        base_scale = 2.0
+    elif screen_width >= 2560:  # QHD
+        base_scale = 1.5
+    else:
+        base_scale = 1.0
+    
+    # If system scale is > 1.0, the system is already scaling things
+    # but DearPyGui may not respect it, so we apply our own
+    final_scale = base_scale
+    print(f"[GUI] Screen width: {screen_width}, System scale: {system_scale}, Using UI scale: {final_scale}")
+    
+    return final_scale
 
 
 class WallDanceGUI:
@@ -94,8 +177,16 @@ class WallDanceGUI:
         self._current_config_timestamp = ""
         self._save_indicator_time = 0  # For showing save success feedback
         
+        # DPI scaling for high-resolution displays (4K)
+        self._dpi_scale = get_display_scale()
+        
         # Initialize DearPyGui
         dpg.create_context()
+        
+        # Apply global font scale for DPI awareness
+        if self._dpi_scale != 1.0:
+            dpg.set_global_font_scale(self._dpi_scale)
+        
         self._setup_theme()
         self._create_texture()
         self._build_ui()
@@ -1363,13 +1454,21 @@ class WallDanceGUI:
         threading.Thread(target=hide_toast, daemon=True).start()
 
     def setup(self, width: int = 1340, height: int = 900):
-        """Setup viewport and prepare for rendering."""
+        """Setup viewport and prepare for rendering.
+        
+        Args:
+            width: Viewport width (should already be DPI-scaled if called from app.py)
+            height: Viewport height (should already be DPI-scaled if called from app.py)
+        """
+        # Min dimensions should be scaled for high DPI
+        scaled_min = int(900 * self._dpi_scale)
+        
         dpg.create_viewport(
             title="WallDance Control Panel",
             width=width,
             height=height,
-            min_width=900,
-            min_height=900,
+            min_width=scaled_min,
+            min_height=scaled_min,
             vsync=False  # Disable vsync to prevent throttling when window is in background
         )
         dpg.setup_dearpygui()

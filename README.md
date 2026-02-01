@@ -12,6 +12,8 @@ chmod +x install.sh run.sh
 
 Requirements: Python 3.10+, `uv` installed (`pip install uv` if missing), a webcam or capture card, and optional CUDA GPU for best performance. Model weights live in `models/` (already included in the repo).
 
+**Production Hardware:** IDS U3-34E0XCP-M-GL camera (4MP Starvis 2 mono), Tamron 8mm lens, MidOpt BP850 IR filter, ASUS ROG Strix SCAR 16 (RTX 5080). See [HARDWARE_GUIDE.md](HARDWARE_GUIDE.md) for details.
+
 ## GUI at a Glance
 
 - **Top bar**: pick project, pick saved config version, save current settings, GPU/VRAM readout.

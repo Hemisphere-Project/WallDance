@@ -11,9 +11,27 @@ import numpy as np
 
 from gui_icons import Icons
 
+# Global DPI scale factor - set by setup_theme based on gui._dpi_scale
+_dpi_scale = 1.0
+
+
+def scaled(value: int) -> int:
+    """Scale a pixel value by the DPI factor."""
+    return int(value * _dpi_scale)
+
 
 def setup_theme(gui: Any):
     """Configure the global and topbar themes."""
+    global _dpi_scale
+    _dpi_scale = getattr(gui, '_dpi_scale', 1.0)
+    
+    # Scaled style values
+    frame_pad_x = scaled(6)
+    frame_pad_y = scaled(5)
+    item_space_x = scaled(8)
+    item_space_y = scaled(6)
+    cell_pad = scaled(6)
+    
     with dpg.theme() as gui.global_theme:
         with dpg.theme_component(dpg.mvAll):
             dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 0)
@@ -23,9 +41,10 @@ def setup_theme(gui: Any):
             dpg.add_theme_style(dpg.mvStyleVar_GrabRounding, 0)
             dpg.add_theme_style(dpg.mvStyleVar_TabRounding, 0)
             dpg.add_theme_style(dpg.mvStyleVar_ScrollbarRounding, 0)
-            dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 6, 5)
-            dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, 8, 6)
-            dpg.add_theme_style(dpg.mvStyleVar_CellPadding, 6, 6)
+            dpg.add_theme_style(dpg.mvStyleVar_FramePadding, frame_pad_x, frame_pad_y)
+            dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, item_space_x, item_space_y)
+            dpg.add_theme_style(dpg.mvStyleVar_CellPadding, cell_pad, cell_pad)
+            dpg.add_theme_style(dpg.mvStyleVar_ScrollbarSize, scaled(14))
             dpg.add_theme_color(dpg.mvThemeCol_WindowBg, (30, 30, 32, 255))
             dpg.add_theme_color(dpg.mvThemeCol_FrameBg, (48, 48, 52, 255))
             dpg.add_theme_color(dpg.mvThemeCol_FrameBgHovered, (62, 62, 68, 255))
@@ -46,9 +65,9 @@ def setup_theme(gui: Any):
 
     with dpg.theme() as gui._topbar_theme:
         with dpg.theme_component(dpg.mvAll):
-            dpg.add_theme_style(dpg.mvStyleVar_CellPadding, 4, 1)
-            dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 4, 3)
-            dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, 6, 1)
+            dpg.add_theme_style(dpg.mvStyleVar_CellPadding, scaled(4), scaled(1))
+            dpg.add_theme_style(dpg.mvStyleVar_FramePadding, scaled(4), scaled(3))
+            dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, scaled(6), scaled(1))
 
     # Recording button themes
     with dpg.theme() as gui._rec_live_theme:
@@ -119,11 +138,18 @@ def setup_theme(gui: Any):
             dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (220, 100, 100, 255))
             dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (240, 120, 120, 255))
 
-    load_icon_font(gui)
+    # Get DPI scale from gui instance if available
+    dpi_scale = getattr(gui, '_dpi_scale', 1.0)
+    load_icon_font(gui, scale=dpi_scale)
 
 
-def load_icon_font(gui: Any):
-    """Load Font Awesome icons used by the GUI."""
+def load_icon_font(gui: Any, scale: float = 1.0):
+    """Load Font Awesome icons used by the GUI.
+    
+    Args:
+        gui: The WallDanceGUI instance
+        scale: DPI scale factor for font size adjustment
+    """
     src_dir = os.path.dirname(os.path.abspath(__file__))
     project_dir = os.path.dirname(src_dir)
     font_path = os.path.join(project_dir, "assets", "fa-solid.otf")
@@ -133,8 +159,11 @@ def load_icon_font(gui: Any):
         gui._icon_font = None
         return
 
+    # Icons stay at fixed size - don't scale with DPI
+    # The global font scale already affects icon rendering size
+    font_size = 14  # Fixed base size
     with dpg.font_registry():
-        gui._icon_font = dpg.add_font(font_path, 14)
+        gui._icon_font = dpg.add_font(font_path, font_size)
         dpg.add_font_range_hint(dpg.mvFontRangeHint_Default, parent=gui._icon_font)
         dpg.add_font_range(0xf000, 0xf8ff, parent=gui._icon_font)
 
@@ -183,23 +212,23 @@ def build_top_bar(gui: Any):
                     items=["+ New..."],
                     tag="topbar_project_combo",
                     default_value="",
-                    width=150,
+                    width=scaled(150),
                     callback=gui._on_topbar_project_change,
                 )
-                dpg.add_spacer(width=15)
+                dpg.add_spacer(width=scaled(15))
                 dpg.add_text("Version:", color=(120, 200, 140))
                 dpg.add_combo(
                     items=[],
                     tag="topbar_config_combo",
                     default_value="",
-                    width=180,
+                    width=scaled(180),
                     callback=gui._on_topbar_config_change,
                 )
                 save_btn = dpg.add_button(
                     label=Icons.FLOPPY_DISK,
                     tag="topbar_save_btn",
-                    width=20,
-                    height=20,
+                    width=scaled(20),
+                    height=scaled(20),
                     callback=gui._on_save_config,
                 )
                 if gui._icon_font:
@@ -210,8 +239,8 @@ def build_top_bar(gui: Any):
                 safe_btn = dpg.add_button(
                     label=Icons.ROTATE,
                     tag="topbar_safe_btn",
-                    width=20,
-                    height=20,
+                    width=scaled(20),
+                    height=scaled(20),
                     callback=gui._on_safe_defaults,
                 )
                 if gui._icon_font:
@@ -227,32 +256,32 @@ def build_top_bar(gui: Any):
                 cam_badge = dpg.add_text("OFF", tag="badge_cam", color=(255, 120, 120))
                 with dpg.tooltip(cam_badge):
                     dpg.add_text("Camera status: ON (green) or OFF (red)")
-                dpg.add_spacer(width=6)
+                dpg.add_spacer(width=scaled(6))
                 dpg.add_text("OSC:", color=(180, 180, 180))
                 osc_badge = dpg.add_text("OFF", tag="badge_osc", color=(255, 120, 120))
                 with dpg.tooltip(osc_badge):
                     dpg.add_text("OSC output status: ON (green) or OFF (red)")
-                dpg.add_spacer(width=6)
+                dpg.add_spacer(width=scaled(6))
                 dpg.add_text("Model:", color=(180, 180, 180))
                 dpg.add_text("--", tag="badge_model", color=(150, 200, 255))
-                dpg.add_spacer(width=3)
+                dpg.add_spacer(width=scaled(3))
                 engine_badge = dpg.add_text("[PT]", tag="badge_engine_type", color=(255, 220, 100))  # Yellow for PyTorch
                 with dpg.tooltip(engine_badge):
                     dpg.add_text("[TRT] = TensorRT (fast, GPU-optimized)\n[PT] = PyTorch (slower, more compatible)")
-                dpg.add_spacer(width=6)
+                dpg.add_spacer(width=scaled(6))
                 dpg.add_text("FPS:", color=(180, 180, 180))
                 dpg.add_text("--", tag="badge_fps", color=(150, 200, 255))
-                dpg.add_spacer(width=6)
+                dpg.add_spacer(width=scaled(6))
                 dpg.add_text("GPU:", color=(180, 180, 180))
                 dpg.add_text("--", tag="topbar_gpu_util_text", color=(150, 150, 150))
-                dpg.add_spacer(width=8)
+                dpg.add_spacer(width=scaled(8))
                 dpg.add_text("VRAM:", color=(180, 180, 180))
                 dpg.add_text("--", tag="topbar_gpu_vram_text", color=(150, 150, 150))
 
 
 def build_video_panel(gui: Any):
     """Video preview and core controls grouped in the left panel."""
-    with dpg.child_window(width=gui.video_width + 20, height=-1, tag="video_panel"):
+    with dpg.child_window(width=gui.video_width + scaled(20), height=-1, tag="video_panel"):
         dpg.add_image(gui.frame_texture_tag, width=gui.video_width, height=gui.video_height, tag="video_image")
         dpg.add_separator()
         with dpg.table(
@@ -277,13 +306,13 @@ def build_video_panel(gui: Any):
                         items=gui.config.get("camera_sources", ["0"]),
                         tag="tbl_camera_combo",
                         default_value=gui.config.get("camera_source", "0"),
-                        width=80,
+                        width=scaled(80),
                         callback=gui._on_camera_change,
                     )
                     refresh_btn = dpg.add_button(
                         label=Icons.ROTATE,
                         tag="camera_refresh_btn",
-                        width=25,
+                        width=scaled(25),
                         callback=gui._on_camera_refresh,
                     )
                     if gui._icon_font:
@@ -291,7 +320,7 @@ def build_video_panel(gui: Any):
                     dpg.add_button(
                         label="Stop" if gui.config.get("camera_running", True) else "Start",
                         tag="camera_toggle_btn",
-                        width=50,
+                        width=scaled(50),
                         callback=gui._on_camera_toggle,
                     )
                 with dpg.group(horizontal=True):
@@ -429,7 +458,7 @@ def build_video_panel(gui: Any):
                         ],
                         tag="tbl_model_combo",
                         default_value=gui.config.get("model", "yolo11m-pose"),
-                        width=-80,
+                        width=scaled(-80),
                         callback=gui._on_model_change,
                     )
                     dpg.add_text("FP16:")
@@ -444,7 +473,7 @@ def build_video_panel(gui: Any):
                         items=["640", "800", "960", "1280", "1536", "1920"],
                         tag="tbl_imgsz_combo",
                         default_value=str(gui.config.get("yolo_imgsz", 640)),
-                        width=-100,
+                        width=scaled(-100),
                         callback=gui._on_imgsz_change,
                     )
                     dpg.add_text("TensorRT:")
@@ -466,7 +495,7 @@ def build_video_panel(gui: Any):
                     )
                     with dpg.tooltip(conf_slider):
                         dpg.add_text("Detection confidence threshold.\nLower = more detections (may include false positives).\nHigher = fewer, more certain detections.")
-        dpg.add_spacer(height=4)
+        dpg.add_spacer(height=scaled(4))
         with dpg.table(
             header_row=False,
             policy=dpg.mvTable_SizingStretchProp,
@@ -493,10 +522,10 @@ def build_video_panel(gui: Any):
                     dpg.add_text("0", tag="dancers_text", color=(0, 255, 100))
                 with dpg.group(horizontal=True):
                     dpg.add_text("Bright:")
-                    dpg.add_text("0", tag="brightness_text", color=(150, 150, 150))
+                dpg.add_text("", tag="brightness_text", color=(150, 150, 150))
                 dpg.add_text("")
                 dpg.add_text("")
-        dpg.add_spacer(height=4)
+        dpg.add_spacer(height=scaled(4))
         with dpg.table(
             header_row=False,
             policy=dpg.mvTable_SizingStretchProp,
@@ -537,10 +566,10 @@ def build_video_panel(gui: Any):
 
 def build_control_panel(gui: Any):
     """Right-side control stack."""
-    with dpg.child_window(width=320, height=-1, tag="control_panel"):
+    with dpg.child_window(width=scaled(320), height=-1, tag="control_panel"):
         # Recording controls at top
         build_recording_panel(gui)
-        dpg.add_spacer(height=10)
+        dpg.add_spacer(height=scaled(10))
         
         with dpg.collapsing_header(label="Detection", default_open=True):
             with dpg.group(horizontal=True):
@@ -551,12 +580,12 @@ def build_control_panel(gui: Any):
                         default_value=gui.config.get("max_persons", 6),
                         min_value=1,
                         max_value=12,
-                        width=100,
+                        width=scaled(100),
                         callback=gui._on_max_persons_change,
                     )
                     with dpg.tooltip(max_p_slider):
                         dpg.add_text("Maximum dancers to track simultaneously")
-                dpg.add_spacer(width=10)
+                dpg.add_spacer(width=scaled(10))
                 with dpg.group():
                     dpg.add_text("Height (px)", color=(180, 180, 180))
                     height_slider = dpg.add_slider_int(
@@ -564,12 +593,12 @@ def build_control_panel(gui: Any):
                         default_value=gui.config.get("person_height_px", 200),
                         min_value=50,
                         max_value=800,
-                        width=100,
+                        width=scaled(100),
                         callback=gui._on_person_height_change,
                     )
                     with dpg.tooltip(height_slider):
                         dpg.add_text("Expected person height in pixels.\nAdjust to match dancers in frame.")
-        dpg.add_spacer(height=10)
+        dpg.add_spacer(height=scaled(10))
         with dpg.collapsing_header(label="Visualization", default_open=True):
             dpg.add_checkbox(
                 label="Skeleton [S]",
@@ -601,7 +630,7 @@ def build_control_panel(gui: Any):
                 default_value=gui.config.get("show_ids", True),
                 callback=lambda s, d: gui._on_vis_toggle("ids", d),
             )
-        dpg.add_spacer(height=10)
+        dpg.add_spacer(height=scaled(10))
         with dpg.collapsing_header(label="Tracker", default_open=True):
             dpg.add_text("Distance Threshold")
             dist_slider = dpg.add_slider_int(
@@ -637,9 +666,9 @@ def build_control_panel(gui: Any):
             with dpg.tooltip(smooth_slider):
                 dpg.add_text("Temporal smoothing depth for confidence values.\nHigher = smoother but more latency.")
             
-            dpg.add_spacer(height=10)
+            dpg.add_spacer(height=scaled(10))
             dpg.add_button(label="Reset Tracker [R]", width=-1, callback=gui._on_tracker_reset)
-        dpg.add_spacer(height=10)
+        dpg.add_spacer(height=scaled(10))
         with dpg.collapsing_header(label="OSC Output", default_open=True):
             osc_chk = dpg.add_checkbox(
                 label="Enable OSC",
@@ -649,7 +678,7 @@ def build_control_panel(gui: Any):
             )
             with dpg.tooltip(osc_chk):
                 dpg.add_text("Send pose data via Open Sound Control protocol")
-            dpg.add_spacer(height=5)
+            dpg.add_spacer(height=scaled(5))
             dpg.add_text("Target IP")
             osc_ip = dpg.add_input_text(
                 tag="osc_ip_input",
@@ -670,7 +699,7 @@ def build_control_panel(gui: Any):
             )
             with dpg.tooltip(osc_port):
                 dpg.add_text("UDP port for OSC messages (1024-65535)")
-        dpg.add_spacer(height=20)
+        dpg.add_spacer(height=scaled(20))
         quit_btn = dpg.add_button(label="Quit [Q]", width=-1, callback=gui._on_quit)
         with dpg.tooltip(quit_btn):
             dpg.add_text("Exit WallDance (Ctrl+Q or Q)")
@@ -679,21 +708,21 @@ def build_control_panel(gui: Any):
 def build_recording_panel(gui: Any):
     """Recording controls: LIVE, REC, and 9 slot buttons."""
     with dpg.collapsing_header(label="SOURCE", default_open=True):
-        # dpg.add_spacer(height=5)
+        # dpg.add_spacer(height=scaled(5))
         
         # Status text
         with dpg.group(horizontal=True):
             dpg.add_text("Status:", color=(150, 150, 150))
             dpg.add_text("LIVE", tag="rec_status_text", color=(80, 200, 80))
         
-        dpg.add_spacer(height=5)
+        dpg.add_spacer(height=scaled(5))
         
         # LIVE and REC buttons
         with dpg.group(horizontal=True):
             dpg.add_button(
                 label="LIVE",
                 tag="rec_live_btn",
-                width=70,
+                width=scaled(70),
                 callback=gui._on_rec_live,
             )
             dpg.bind_item_theme("rec_live_btn", gui._rec_live_active_theme)
@@ -701,7 +730,7 @@ def build_recording_panel(gui: Any):
             dpg.add_button(
                 label="REC",
                 tag="rec_rec_btn",
-                width=70,
+                width=scaled(70),
                 callback=gui._on_rec_toggle,
             )
             dpg.bind_item_theme("rec_rec_btn", gui._rec_btn_theme)
@@ -709,7 +738,7 @@ def build_recording_panel(gui: Any):
             # Frame counter for recording
             dpg.add_text("", tag="rec_frame_counter", color=(150, 150, 150))
     
-    dpg.add_spacer(height=5)
+    dpg.add_spacer(height=scaled(5))
     
     # Slot buttons 1-9 on two rows
     with dpg.group(horizontal=True):
@@ -717,7 +746,7 @@ def build_recording_panel(gui: Any):
             dpg.add_button(
                 label=str(slot),
                 tag=f"rec_slot_{slot}_btn",
-                width=30,
+                width=scaled(30),
                 callback=lambda s, a, u: gui._on_rec_slot_click(u),
                 user_data=slot,
             )
@@ -728,13 +757,13 @@ def build_recording_panel(gui: Any):
             dpg.add_button(
                 label=str(slot),
                 tag=f"rec_slot_{slot}_btn",
-                width=30,
+                width=scaled(30),
                 callback=lambda s, a, u: gui._on_rec_slot_click(u),
                 user_data=slot,
             )
             dpg.bind_item_theme(f"rec_slot_{slot}_btn", gui._slot_empty_theme)
     
-    dpg.add_spacer(height=5)
+    dpg.add_spacer(height=scaled(5))
     
     # Playback controls (hidden by default)
     with dpg.group(horizontal=True, tag="rec_controls_group", show=False):
@@ -743,14 +772,14 @@ def build_recording_panel(gui: Any):
             items=["x0.25", "x0.5", "x0.75", "x1.0", "x1.5", "x2.0", "x4.0"],
             tag="rec_speed_combo",
             default_value="x1.0",
-            width=80,
+            width=scaled(80),
             callback=gui._on_playback_speed_change,
         )
-        dpg.add_spacer(width=10)
+        dpg.add_spacer(width=scaled(10))
         pause_btn = dpg.add_button(
             label=Icons.PAUSE,
             tag="rec_pause_btn",
-            width=35,
+            width=scaled(35),
             callback=gui._on_playback_pause,
         )
         if gui._icon_font:
@@ -759,7 +788,7 @@ def build_recording_panel(gui: Any):
         prev_btn = dpg.add_button(
             label=Icons.STEP_BACKWARD,
             tag="rec_prev_frame_btn",
-            width=35,
+            width=scaled(35),
             callback=gui._on_playback_prev_frame,
         )
         if gui._icon_font:
@@ -768,7 +797,7 @@ def build_recording_panel(gui: Any):
         next_btn = dpg.add_button(
             label=Icons.STEP_FORWARD,
             tag="rec_next_frame_btn",
-            width=35,
+            width=scaled(35),
             callback=gui._on_playback_next_frame,
         )
         if gui._icon_font:
