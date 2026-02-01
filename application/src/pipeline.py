@@ -36,6 +36,16 @@ except ImportError:
     GpuPipeline = None
     GpuPipelineSettings = None
 
+# Import torch for type hints
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    torch = None
+    TORCH_AVAILABLE = False
+    GpuPipeline = None
+    GpuPipelineSettings = None
+
 
 @dataclass
 class ProcessingSettings:
@@ -214,6 +224,81 @@ class FrameProcessor:
         # preview_frame is always generated in GPU path (never None)
         return scaled_tracks, preview_frame, timing, latency_ms
     
+    def process_gpu_direct(self, gpu_tensor: 'torch.Tensor', need_preview: bool = True) -> Tuple[List[ScaledTrack], np.ndarray, Dict[str, float], float]:
+        """Process a pre-uploaded GPU tensor (optimized path for IDS camera).
+        
+        This bypasses the CPU→GPU upload step for lowest latency when the
+        camera provides frames directly as GPU tensors via read_gpu().
+        
+        Args:
+            gpu_tensor: GPU tensor (1, 3, H, W) float32 [0,1] RGB format
+            need_preview: Whether to generate preview output
+            
+        Returns:
+            (tracked, enhanced_frame, timing, latency_ms)
+        """
+        if not self._gpu_path_active or self._gpu_pipeline is None:
+            raise RuntimeError("GPU path not active, cannot use process_gpu_direct")
+        
+        frame_start = time.time()
+        _, _, original_h, original_w = gpu_tensor.shape
+        timing: Dict[str, float] = {}
+        
+        # Sync GPU pipeline settings
+        self._sync_gpu_settings()
+        
+        # 1. GPU Pipeline: process_gpu_tensor (skip upload, already on GPU)
+        yolo_tensor, preview_frame, gpu_timing = self._gpu_pipeline.process_gpu_tensor(
+            gpu_tensor, preview_enabled=need_preview
+        )
+        
+        # Merge GPU timing
+        timing.update(gpu_timing)
+        timing["path_enhance"] = "gpu-direct"  # Indicate direct GPU path
+        
+        # 2. YOLO inference with GPU tensor (zero-copy!)
+        t0 = time.time()
+        results = self.model(
+            yolo_tensor,
+            imgsz=self.settings.imgsz,
+            conf=self.settings.confidence,
+            iou=YOLO_IOU_THRESHOLD,
+            max_det=self.settings.max_persons,
+            half=self.settings.use_fp16,
+            verbose=False,
+        )
+        timing["yolo"] = (time.time() - t0) * 1000
+        timing["path_yolo"] = "gpu"
+        
+        # 3. Extract detections
+        t0 = time.time()
+        detections = self._extract_detections(results)
+        detections = self._filter_duplicate_detections(detections)
+        timing["extract"] = (time.time() - t0) * 1000
+        
+        # 4. Tracking
+        t0 = time.time()
+        tracked = self.tracker.update(detections)
+        timing["track"] = (time.time() - t0) * 1000
+        timing["path_track"] = "cpu"
+        
+        # 5. Unscale detections from letterboxed YOLO space to original camera space
+        letterbox = gpu_timing.get('letterbox', {})
+        lb_scale = letterbox.get('scale', 1.0)
+        pad_x = letterbox.get('pad_x', 0)
+        pad_y = letterbox.get('pad_y', 0)
+        scaled_tracks = [self._unscale_letterbox(track, lb_scale, pad_x, pad_y) for track in tracked]
+        
+        # 6. OSC output
+        if self.osc and self.settings.osc_enabled:
+            self.osc.send_frame(scaled_tracks, original_w, original_h)
+        
+        latency_ms = (time.time() - frame_start) * 1000
+        timing["total"] = latency_ms
+        self._timing = timing
+        
+        return scaled_tracks, preview_frame, timing, latency_ms
+
     def _sync_gpu_settings(self):
         """Sync ProcessingSettings to GpuPipelineSettings."""
         if self._gpu_pipeline is None:

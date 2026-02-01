@@ -482,6 +482,85 @@ class GpuPipeline:
         self.timing = timing
         return yolo_tensor, preview_frame, timing
     
+    def process_gpu_tensor(
+        self,
+        gpu_tensor: torch.Tensor,
+        preview_enabled: bool = True
+    ) -> Tuple[torch.Tensor, Optional[np.ndarray], Dict[str, float]]:
+        """
+        Process a pre-uploaded GPU tensor (optimized path for IDS camera).
+        
+        This bypasses the CPU→GPU upload step for lowest latency when the
+        camera driver provides frames directly as GPU tensors.
+        
+        Args:
+            gpu_tensor: GPU tensor (1, 3, H, W) float32 [0,1] RGB format
+            preview_enabled: Whether to generate preview
+            
+        Returns:
+            Same as process(): (yolo_tensor, preview_frame, timing_dict)
+        """
+        timing: Dict[str, float] = {}
+        current_time = time.time()
+        
+        # No upload needed - tensor is already on GPU
+        timing['upload'] = 0.0
+        
+        # Wrap in GpuFrame
+        gpu_frame = GpuFrame(gpu_tensor, is_bgr=False)  # IDS provides RGB-equivalent
+        
+        # 2. Enhancement (on GPU, in RGB)
+        t0 = time.time()
+        enhanced_frame, was_enhanced = self._enhancer.enhance(gpu_frame, self.settings)
+        timing['enhance'] = (time.time() - t0) * 1000
+        timing['enhance_active'] = was_enhanced
+        timing['enhance_gpu'] = self._enhancer.last_used_gpu
+        timing['brightness'] = self._enhancer.last_brightness
+        
+        # 3. Resize for YOLO with letterboxing
+        t0 = time.time()
+        yolo_tensor, letterbox_info = self._prepare_yolo_input(enhanced_frame, self.settings.yolo_imgsz)
+        timing['yolo_resize'] = (time.time() - t0) * 1000
+        timing['letterbox'] = letterbox_info
+        
+        # 4. Preview path (same rate-limited logic as process())
+        should_generate = preview_enabled
+        if should_generate and self._preview_interval > 0:
+            time_since_last = current_time - self._last_preview_time
+            should_generate = time_since_last >= self._preview_interval
+        
+        if should_generate:
+            t0 = time.time()
+            preview_tensor = self._resizer.resize(
+                enhanced_frame,
+                self.settings.preview_width,
+                self.settings.preview_height
+            )
+            preview_frame = preview_tensor.to_numpy_bgr()
+            timing['preview_resize'] = (time.time() - t0) * 1000
+            
+            t0 = time.time()
+            # Download is already included in to_numpy_bgr()
+            timing['preview_download'] = (time.time() - t0) * 1000
+            timing['preview_new'] = True
+            
+            # Cache and update timestamp
+            self._cached_preview = preview_frame
+            self._last_preview_time = current_time
+        else:
+            preview_frame = self._cached_preview
+            timing['preview_resize'] = 0.0
+            timing['preview_download'] = 0.0
+            timing['preview_new'] = False
+        
+        # Store dimensions from tensor shape
+        _, _, h, w = gpu_tensor.shape
+        timing['original_w'] = w
+        timing['original_h'] = h
+        
+        self.timing = timing
+        return yolo_tensor, preview_frame, timing
+
     def _upload_to_gpu(self, frame: np.ndarray) -> GpuFrame:
         """Upload numpy BGR frame to GPU tensor, convert to RGB."""
         h, w, c = frame.shape

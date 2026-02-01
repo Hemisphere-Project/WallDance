@@ -71,6 +71,16 @@ from enhancer import ImageEnhancer
 from tracker import DancerTracker
 from video_recorder import VideoRecorder, RecorderState
 
+# IDS Camera support (optional, falls back to OpenCV)
+try:
+    from ids_camera import UnifiedCamera, IDSCamera, IDS_PEAK_AVAILABLE, CameraSource
+    UNIFIED_CAMERA_AVAILABLE = True
+except ImportError:
+    UNIFIED_CAMERA_AVAILABLE = False
+    IDS_PEAK_AVAILABLE = False
+    UnifiedCamera = None
+    CameraSource = None
+
 
 @dataclass
 class PreviewGeometry:
@@ -118,7 +128,17 @@ class WallDanceApp:
             osc_enabled=OSC_ENABLED,
         )
 
-        self.camera = CameraManager()
+        # Camera: Use UnifiedCamera (IDS + OpenCV fallback) if available
+        self._use_unified_camera = UNIFIED_CAMERA_AVAILABLE
+        if self._use_unified_camera:
+            self.unified_camera = UnifiedCamera(prefer_ids=True)
+            self.camera = CameraManager()  # Keep for compatibility with camera state
+            print(f"[Camera] UnifiedCamera available (IDS Peak: {IDS_PEAK_AVAILABLE})")
+        else:
+            self.unified_camera = None
+            self.camera = CameraManager()
+            print("[Camera] Using OpenCV CameraManager")
+        
         self.osc: Optional[OSCSender] = None
         self.osc_ip = OSC_IP
         self.osc_port = OSC_PORT
@@ -685,13 +705,38 @@ class WallDanceApp:
         
         # Close camera first so detection can find all cameras
         if was_open:
-            self.camera.close()
+            if self._use_unified_camera and self.unified_camera is not None:
+                self.unified_camera.close()
+            else:
+                self.camera.close()
             self.camera.state.is_open = False
         
-        # Detect all cameras (now that none are in use)
-        self.camera.state.available = CameraManager.detect_cameras()
+        # Detect all cameras (OpenCV + IDS)
+        available_sources = []
+        
+        # OpenCV cameras
+        opencv_cameras = CameraManager.detect_cameras()
+        available_sources.extend(opencv_cameras)
+        print(f"OpenCV cameras: {opencv_cameras}")
+        
+        # IDS cameras (if available)
+        if IDS_PEAK_AVAILABLE:
+            try:
+                ids_cameras = IDSCamera.list_cameras()
+                for cam in ids_cameras:
+                    source_id = f"ids:{cam.serial}"
+                    available_sources.append(source_id)
+                    print(f"IDS camera: {cam.model} (SN: {cam.serial})")
+            except Exception as e:
+                print(f"IDS camera detection error: {e}")
+        
+        # Add "auto" option for automatic detection
+        if "auto" not in available_sources:
+            available_sources.insert(0, "auto")
+        
+        self.camera.state.available = available_sources
         self.camera.state.unavailable = []
-        print(f"Available cameras: {self.camera.state.available}")
+        print(f"Available cameras: {available_sources}")
         
         # Update GUI
         if self.gui:
@@ -707,6 +752,69 @@ class WallDanceApp:
                     self.gui.update_camera_status(False, current_source)
 
     def _open_camera(self, source: str) -> bool:
+        """Open camera using UnifiedCamera (IDS+OpenCV) or legacy CameraManager."""
+        if self._use_unified_camera and self.unified_camera is not None:
+            return self._open_camera_unified(source)
+        else:
+            return self._open_camera_legacy(source)
+    
+    def _open_camera_unified(self, source: str) -> bool:
+        """Open camera using UnifiedCamera (supports IDS and OpenCV)."""
+        # Close any existing camera
+        self.unified_camera.close()
+        
+        # Determine source type
+        # "ids" or "ids:SERIAL" for IDS cameras
+        # "auto" for auto-detection (IDS first, then OpenCV)
+        # numeric string for OpenCV index
+        if source.lower() == "auto" or source.lower().startswith("ids"):
+            camera_source = source
+        else:
+            # Numeric source - use OpenCV
+            camera_source = source
+        
+        opened = self.unified_camera.open(camera_source)
+        
+        if opened:
+            # Sync state with legacy CameraManager state (for UI compatibility)
+            self.camera.state.is_open = True
+            self.camera.state.width = self.unified_camera.width
+            self.camera.state.height = self.unified_camera.height
+            self.camera.state.source = source
+            
+            # Report camera type
+            source_type = self.unified_camera.source_type
+            if source_type == CameraSource.IDS_PEAK:
+                print(f"[Camera] IDS camera opened: {self.unified_camera.width}x{self.unified_camera.height}")
+            else:
+                print(f"[Camera] OpenCV camera opened: {self.unified_camera.width}x{self.unified_camera.height}")
+            
+            if self.gui:
+                all_sources = list(set(self.camera.state.available + [source]))
+                all_sources.sort()
+                self.gui.update_camera_sources(all_sources, source, self.camera.state.unavailable)
+                self.gui.update_camera_status(True, source)
+            
+            # Update preview geometry
+            self.preview.width = int(self.unified_camera.width * self.preview.render_scale)
+            self.preview.height = int(self.unified_camera.height * self.preview.render_scale)
+            self._pending_preview_resize = True
+        else:
+            self.camera.state.is_open = False
+            if source not in self.camera.state.unavailable:
+                self.camera.state.unavailable.append(source)
+            
+            if self.gui:
+                all_sources = list(set(self.camera.state.available + self.camera.state.unavailable))
+                all_sources.sort()
+                self.gui.update_camera_sources(all_sources, source, self.camera.state.unavailable)
+                self.gui.update_camera_status(False, source)
+            print(f"[Camera] Failed to open: {source}")
+        
+        return opened
+    
+    def _open_camera_legacy(self, source: str) -> bool:
+        """Open camera using legacy CameraManager (OpenCV only)."""
         opened = self.camera.open(source)
         state = self.camera.state
         if opened:
@@ -728,6 +836,13 @@ class WallDanceApp:
                 self.gui.update_camera_status(False, source)
             print(f"Camera {source} unavailable")
         return opened
+    
+    def _is_ids_camera_active(self) -> bool:
+        """Check if an IDS camera is currently active."""
+        if not self._use_unified_camera or self.unified_camera is None:
+            return False
+        return (self.unified_camera.is_open and 
+                self.unified_camera.source_type == CameraSource.IDS_PEAK)
 
     def _cb_imgsz_change(self, value: int):
         new_imgsz = int(value)
@@ -1684,10 +1799,14 @@ class WallDanceApp:
                     continue
             else:
                 # Read from camera - with safety checks for sudden disconnection
-                try:
-                    camera_ready = self.camera.state.is_open and not self.camera.has_capture_error()
-                except Exception:
-                    camera_ready = False
+                # Use UnifiedCamera if available (supports IDS + OpenCV)
+                if self._use_unified_camera and self.unified_camera is not None:
+                    camera_ready = self.unified_camera.is_open and not self.unified_camera.has_error()
+                else:
+                    try:
+                        camera_ready = self.camera.state.is_open and not self.camera.has_capture_error()
+                    except Exception:
+                        camera_ready = False
                 
                 if not camera_ready:
                     if self.gui:
@@ -1695,11 +1814,24 @@ class WallDanceApp:
                     time.sleep(0.033)
                     continue
 
+                # Read frame (BGR numpy or GPU tensor for IDS)
+                gpu_tensor = None
+                frame = None
+                
                 try:
-                    ret, frame = self.camera.read()
+                    if self._use_unified_camera and self.unified_camera is not None:
+                        # Try GPU direct path for IDS camera (lowest latency)
+                        if (self._is_ids_camera_active() and 
+                            self.processor.gpu_path_active and 
+                            self._model_loaded):
+                            ret, gpu_tensor = self.unified_camera.read_gpu()
+                        else:
+                            ret, frame = self.unified_camera.read()
+                    else:
+                        ret, frame = self.camera.read()
                 except Exception as e:
                     print(f"Camera read exception: {e}")
-                    ret, frame = False, None
+                    ret, frame, gpu_tensor = False, None, None
                 
                 # ret=False means camera error, ret=True with frame=None means still initializing
                 if not ret:
@@ -1708,10 +1840,14 @@ class WallDanceApp:
                         self.camera.state.unavailable.append(self.camera.state.source)
                     self.camera.state.is_open = False
                     try:
-                        self.camera.close()
+                        if self._use_unified_camera and self.unified_camera is not None:
+                            self.unified_camera.close()
+                        else:
+                            self.camera.close()
                     except Exception as e:
                         print(f"Camera close exception: {e}")
-                        self.camera.cap = None
+                        if hasattr(self.camera, 'cap'):
+                            self.camera.cap = None
                     if self.gui:
                         all_sources = list(set(self.camera.state.available + self.camera.state.unavailable))
                         all_sources.sort()
@@ -1720,7 +1856,7 @@ class WallDanceApp:
                     continue
                 
                 # Camera is open but no frame yet (still initializing) - skip this iteration
-                if frame is None:
+                if frame is None and gpu_tensor is None:
                     if self.gui:
                         self.gui.render_frame()
                     time.sleep(0.01)
@@ -1742,15 +1878,33 @@ class WallDanceApp:
                 
             if should_process:
                 # GPU pipeline handles preview rate limiting internally
-                tracked, display_frame, timing, latency_ms = self.processor.process(frame, need_preview=True)
+                # Use GPU direct path if we have a GPU tensor (IDS camera)
+                if gpu_tensor is not None:
+                    tracked, display_frame, timing, latency_ms = self.processor.process_gpu_direct(
+                        gpu_tensor, need_preview=True
+                    )
+                else:
+                    tracked, display_frame, timing, latency_ms = self.processor.process(
+                        frame, need_preview=True
+                    )
                 self.last_tracked = tracked
                 self.timing = timing
                 self.latency_ms = latency_ms
             else:
-                if self.settings.enhance_enabled:
-                    display_frame, _ = self.enhancer.enhance(frame)
+                # No processing - just enhance for display
+                if gpu_tensor is not None:
+                    # GPU tensor path without YOLO: convert to BGR for display
+                    # This is a fallback, normally we'd process
+                    display_frame = gpu_tensor.squeeze(0).permute(1, 2, 0).cpu().numpy()
+                    display_frame = (display_frame * 255).astype(np.uint8)
+                    display_frame = cv2.cvtColor(display_frame, cv2.COLOR_RGB2BGR)
+                elif frame is not None:
+                    if self.settings.enhance_enabled:
+                        display_frame, _ = self.enhancer.enhance(frame)
+                    else:
+                        display_frame = frame.copy()
                 else:
-                    display_frame = frame.copy()
+                    display_frame = None
                 tracked = self.last_tracked
 
             if self.preview_enabled and (self.frame_count % self.preview_stride == 0):

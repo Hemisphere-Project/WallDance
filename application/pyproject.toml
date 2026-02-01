@@ -17,6 +17,8 @@ dependencies = [
     "nvidia-ml-py>=13.580.82",
     "tensorrt>=10.0.0",
     "kornia>=0.8.2",
+    "ids-peak>=1.13.0.0.6",
+    "ids-peak-ipl>=1.17.1.0.5",
 ]
 
 [tool.uv]
@@ -25,3 +27,7 @@ index-strategy = "unsafe-best-match"
 
 [dependency-groups]
 dev = ["pytest"]
+ids = [
+    "ids-peak",
+    "ids-peak-ipl",
+]

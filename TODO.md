@@ -4,21 +4,42 @@ A streamlined plan to bring WallDance from research GUI to production-ready show
 
 ---
 
-## Phase 1 — IDS Camera Integration (3–4 days)
+## Phase 1 — IDS Camera Integration
 
 **Goal:** Get the production camera working before UI work.
 
-- ⬜ Install IDS Peak SDK on laptop
-- ⬜ Create `ids_camera.py` wrapper (acquisition, exposure, gain controls)
-- ⬜ Handle Mono8/Mono12 → BGR conversion for YOLO pipeline
+- ✅ Install IDS Peak SDK on laptop
+  - Download from: https://en.ids-imaging.com/ids-peak.html
+  - Install Python wheel: `pip install ids-peak ids-peak-ipl`
+- ✅ Create `ids_camera.py` wrapper (acquisition, exposure, gain controls)
+  - `IDSCamera` class with low-latency buffer strategy (newest-frame-only, 3 buffers)
+  - `UnifiedCamera` class for transparent IDS/OpenCV switching
+  - Mono10/12 support for maximum IR dynamic range
+- ✅ Handle Mono10/12 → Mono8 → BGR conversion for YOLO pipeline
+  - IDS IPL for Mono10/12 → Mono8 (preserves dynamic range)
+  - GPU-accelerated Mono8 → BGR expansion (`_mono8_to_gpu_bgr`)
+  - `read_gpu()` method returns `(1,3,H,W)` GPU tensor directly
+- ✅ Integrate with app.py and pipeline.py
+  - `process_gpu_direct()` in pipeline for zero-copy IDS path
+  - `process_gpu_tensor()` in gpu_pipeline for pre-uploaded tensors
+  - Camera refresh lists both OpenCV and IDS cameras
+  - Main loop auto-selects GPU direct path when IDS active
 - ⬜ Test end-to-end: IDS camera → detection → OSC output
-- ⬜ Fallback path: keep OpenCV VideoCapture for dev/testing with webcam
+- ✅ Fallback path: keep OpenCV VideoCapture for dev/testing with webcam
+  - `UnifiedCamera` auto-detects and falls back gracefully
+  - Use "auto" source for automatic IDS→OpenCV fallback
+
+**Latency path comparison:**
+| Path | Upload | Convert | Total overhead |
+|------|--------|---------|----------------|
+| OpenCV | ~2ms | ~1ms (BGR→RGB flip) | ~3ms |
+| IDS GPU Direct | ~0.3ms | 0ms (already RGB) | ~0.3ms |
 
 **Deliverable:** working IDS camera pipeline
 
 ---
 
-## Phase 2 — GUI Hierarchy Reorganization (3–4 days)
+## Phase 2 — GUI Hierarchy Reorganization
 
 **Goal:** Single GUI with clear hierarchy — live controls prominent, tweaky settings secondary.
 
@@ -63,7 +84,7 @@ A streamlined plan to bring WallDance from research GUI to production-ready show
 
 ---
 
-## Phase 3 — Live Mode & OSC Gating (2–3 days)
+## Phase 3 — Live Mode & OSC Gating
 
 **Goal:** Clear operational states with OSC output control.
 
@@ -91,7 +112,7 @@ A streamlined plan to bring WallDance from research GUI to production-ready show
 
 ---
 
-## Phase 4 — Show Profiles (2–3 days)
+## Phase 4 — Show Profiles
 
 **Goal:** Save/load per-venue configurations quickly.
 
@@ -110,7 +131,7 @@ A streamlined plan to bring WallDance from research GUI to production-ready show
 
 ---
 
-## Phase 5 — Robustness & Watchdog (2–3 days)
+## Phase 5 — Robustness & Watchdog
 
 **Goal:** Reliable long-run operation.
 
@@ -126,7 +147,7 @@ A streamlined plan to bring WallDance from research GUI to production-ready show
 
 ---
 
-## Phase 6 — Logging & Diagnostics (1–2 days)
+## Phase 6 — Logging & Diagnostics
 
 - ⬜ Per-show timestamped log folder
 - ⬜ CSV metrics: FPS, latency, brightness, track count, dropped frames
@@ -137,7 +158,7 @@ A streamlined plan to bring WallDance from research GUI to production-ready show
 
 ---
 
-## Phase 7 — Future Enhancements (as needed)
+## Phase 7 — Future Enhancements
 
 - ⬜ ROI / scene mask editing
 - ⬜ Target 1920+ imgsz optimization
