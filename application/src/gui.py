@@ -50,6 +50,8 @@ def get_display_scale() -> float:
     Returns a scale factor for DPI-aware rendering.
     
     Can be overridden via WALLDANCE_UI_SCALE environment variable.
+    
+    Supports: Windows, Linux (GNOME, KDE), macOS (basic)
     """
     # Allow manual override via environment variable
     env_scale = os.environ.get('WALLDANCE_UI_SCALE')
@@ -64,47 +66,101 @@ def get_display_scale() -> float:
     screen_width = 1920  # default
     system_scale = 1.0
     
-    # Auto-detect screen resolution (Linux with xrandr)
-    try:
-        result = subprocess.run(['xrandr'], capture_output=True, text=True, timeout=2)
-        if result.returncode == 0:
-            for line in result.stdout.split('\n'):
-                if '*' in line:  # Current resolution marked with *
-                    parts = line.split()
-                    resolution = parts[0]  # e.g., "3840x2560"
-                    screen_width = int(resolution.split('x')[0])
-                    print(f"[GUI] Detected display resolution: {resolution}")
-                    break
-    except Exception as e:
-        print(f"[GUI] Could not detect display resolution: {e}")
-    
-    # Try to detect system DPI scale from various sources
-    try:
-        # Check GDK_SCALE (GNOME/GTK)
-        gdk_scale = os.environ.get('GDK_SCALE')
-        if gdk_scale:
-            system_scale = float(gdk_scale)
-            print(f"[GUI] Detected GDK_SCALE: {system_scale}")
-        else:
-            # Check QT_SCALE_FACTOR (KDE/Qt)
-            qt_scale = os.environ.get('QT_SCALE_FACTOR')
-            if qt_scale:
-                system_scale = float(qt_scale)
-                print(f"[GUI] Detected QT_SCALE_FACTOR: {system_scale}")
-            else:
-                # Try gsettings for GNOME scaling factor
+    # Platform-specific detection
+    if sys.platform == 'win32':
+        # Windows DPI detection
+        try:
+            import ctypes
+            # Make process DPI aware
+            try:
+                ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
+            except Exception:
                 try:
-                    result = subprocess.run(
-                        ['gsettings', 'get', 'org.gnome.desktop.interface', 'text-scaling-factor'],
-                        capture_output=True, text=True, timeout=2
-                    )
-                    if result.returncode == 0:
-                        system_scale = float(result.stdout.strip())
-                        print(f"[GUI] Detected GNOME text-scaling-factor: {system_scale}")
+                    ctypes.windll.user32.SetProcessDPIAware()
                 except Exception:
                     pass
-    except Exception as e:
-        print(f"[GUI] Could not detect system DPI scale: {e}")
+            
+            user32 = ctypes.windll.user32
+            screen_width = user32.GetSystemMetrics(0)  # SM_CXSCREEN
+            screen_height = user32.GetSystemMetrics(1)  # SM_CYSCREEN
+            print(f"[GUI] Detected display resolution: {screen_width}x{screen_height}")
+            
+            # Get DPI scale from device context
+            try:
+                hdc = user32.GetDC(0)
+                dpi = ctypes.windll.gdi32.GetDeviceCaps(hdc, 88)  # LOGPIXELSX
+                user32.ReleaseDC(0, hdc)
+                system_scale = dpi / 96.0
+                print(f"[GUI] Windows DPI: {dpi}, system scale: {system_scale}")
+            except Exception as e:
+                print(f"[GUI] Could not get Windows DPI: {e}")
+        except Exception as e:
+            print(f"[GUI] Windows display detection failed: {e}")
+    
+    elif sys.platform == 'darwin':
+        # macOS - basic detection (Retina displays typically 2x)
+        try:
+            result = subprocess.run(
+                ['system_profiler', 'SPDisplaysDataType'],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                output = result.stdout
+                for line in output.split('\n'):
+                    if 'Resolution' in line and 'x' in line:
+                        parts = line.split(':')[1].strip().split()
+                        if len(parts) >= 3 and parts[1] == 'x':
+                            screen_width = int(parts[0])
+                            print(f"[GUI] Detected macOS display width: {screen_width}")
+                        if 'Retina' in line:
+                            system_scale = 2.0
+                            print(f"[GUI] Detected Retina display")
+                        break
+        except Exception as e:
+            print(f"[GUI] macOS display detection failed: {e}")
+    
+    else:
+        # Linux with xrandr
+        try:
+            result = subprocess.run(['xrandr'], capture_output=True, text=True, timeout=2)
+            if result.returncode == 0:
+                for line in result.stdout.split('\n'):
+                    if '*' in line:  # Current resolution marked with *
+                        parts = line.split()
+                        resolution = parts[0]  # e.g., "3840x2560"
+                        screen_width = int(resolution.split('x')[0])
+                        print(f"[GUI] Detected display resolution: {resolution}")
+                        break
+        except Exception as e:
+            print(f"[GUI] Could not detect display resolution: {e}")
+        
+        # Try to detect system DPI scale from various sources (Linux)
+        try:
+            # Check GDK_SCALE (GNOME/GTK)
+            gdk_scale = os.environ.get('GDK_SCALE')
+            if gdk_scale:
+                system_scale = float(gdk_scale)
+                print(f"[GUI] Detected GDK_SCALE: {system_scale}")
+            else:
+                # Check QT_SCALE_FACTOR (KDE/Qt)
+                qt_scale = os.environ.get('QT_SCALE_FACTOR')
+                if qt_scale:
+                    system_scale = float(qt_scale)
+                    print(f"[GUI] Detected QT_SCALE_FACTOR: {system_scale}")
+                else:
+                    # Try gsettings for GNOME scaling factor
+                    try:
+                        result = subprocess.run(
+                            ['gsettings', 'get', 'org.gnome.desktop.interface', 'text-scaling-factor'],
+                            capture_output=True, text=True, timeout=2
+                        )
+                        if result.returncode == 0:
+                            system_scale = float(result.stdout.strip())
+                            print(f"[GUI] Detected GNOME text-scaling-factor: {system_scale}")
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"[GUI] Could not detect system DPI scale: {e}")
     
     # Calculate final scale based on resolution and system settings
     # For high-DPI displays, we need to scale UI to be readable
