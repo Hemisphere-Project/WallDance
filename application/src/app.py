@@ -67,6 +67,7 @@ from osc_output import OSCSender
 from pipeline import FrameProcessor, ProcessingSettings, ScaledTrack
 from visualization import draw_dancer
 from gui import WallDanceGUI, get_display_scale
+from gui_builder import SystemState
 from enhancer import ImageEnhancer
 from tracker import DancerTracker
 from video_recorder import VideoRecorder, RecorderState
@@ -1649,8 +1650,8 @@ class WallDanceApp:
         print("Initializing GUI...")
         self.gui = WallDanceGUI(config=self._get_gui_config(), callbacks=self._get_gui_callbacks())
         dpi_scale = get_display_scale()
-        # Add extra space for controls (400 base + scaled padding)
-        window_width = int((CAMERA_WIDTH * self.preview.display_scale + 400) * dpi_scale)
+        # Add space for controls: control_panel(320) + video_padding(20) + borders(~10)
+        window_width = int((CAMERA_WIDTH * self.preview.display_scale + 350) * dpi_scale)
         window_height = max(int((CAMERA_HEIGHT * self.preview.display_scale + 120) * dpi_scale), int(800 * dpi_scale))
         self.gui.setup(width=window_width, height=window_height)
         with dpg.handler_registry():
@@ -1788,6 +1789,7 @@ class WallDanceApp:
 
             # Get frame from appropriate source
             frame = None
+            gpu_tensor = None  # GPU tensor path for IDS camera, None for playback/OpenCV
             
             if self.recorder.is_playing:
                 # Read from video file
@@ -1811,6 +1813,11 @@ class WallDanceApp:
                 if not camera_ready:
                     if self.gui:
                         self.gui.render_frame()
+                        # Still update GPU stats periodically when waiting for camera
+                        now = time.time()
+                        if now - self.last_fps_time >= 1.0:
+                            self.last_fps_time = now
+                            self.gui.update_gpu_stats()
                     time.sleep(0.033)
                     continue
 
@@ -1853,12 +1860,23 @@ class WallDanceApp:
                         all_sources.sort()
                         self.gui.update_camera_sources(all_sources, self.camera.state.source, self.camera.state.unavailable)
                         self.gui.update_camera_status(False, self.camera.state.source)
+                        self.gui.render_frame()
+                        # Update GPU stats
+                        now = time.time()
+                        if now - self.last_fps_time >= 1.0:
+                            self.last_fps_time = now
+                            self.gui.update_gpu_stats()
                     continue
                 
                 # Camera is open but no frame yet (still initializing) - skip this iteration
                 if frame is None and gpu_tensor is None:
                     if self.gui:
                         self.gui.render_frame()
+                        # Update GPU stats periodically
+                        now = time.time()
+                        if now - self.last_fps_time >= 1.0:
+                            self.last_fps_time = now
+                            self.gui.update_gpu_stats()
                     time.sleep(0.01)
                     continue
                 
@@ -1874,6 +1892,10 @@ class WallDanceApp:
 
             # Skip YOLO inference if model not loaded
             if not self._model_loaded or self.model is None:
+                should_process = False
+            
+            # Skip YOLO inference if not in RUN state (Phase 3 gating)
+            if self.gui and self.gui.get_system_state() != SystemState.RUN:
                 should_process = False
                 
             if should_process:
@@ -1891,7 +1913,8 @@ class WallDanceApp:
                 self.timing = timing
                 self.latency_ms = latency_ms
             else:
-                # No processing - just enhance for display
+                # No processing (STANDBY mode) - just enhance for display
+                # Apply same brightness threshold logic as pipeline
                 if gpu_tensor is not None:
                     # GPU tensor path without YOLO: convert to BGR for display
                     # This is a fallback, normally we'd process
@@ -1899,8 +1922,19 @@ class WallDanceApp:
                     display_frame = (display_frame * 255).astype(np.uint8)
                     display_frame = cv2.cvtColor(display_frame, cv2.COLOR_RGB2BGR)
                 elif frame is not None:
-                    if self.settings.enhance_enabled:
-                        display_frame, _ = self.enhancer.enhance(frame)
+                    should_enhance = self.settings.enhance_enabled
+                    if should_enhance and not self.settings.enhance_lite and not self.settings.enhance_force:
+                        # Check brightness threshold (same logic as pipeline)
+                        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                        brightness = float(np.mean(gray))
+                        if brightness >= self.settings.brightness_threshold:
+                            should_enhance = False
+                    
+                    if should_enhance:
+                        if self.settings.enhance_lite:
+                            display_frame = self.enhancer.enhance_simple(frame)
+                        else:
+                            display_frame, _ = self.enhancer.enhance(frame)
                     else:
                         display_frame = frame.copy()
                 else:
@@ -1983,6 +2017,8 @@ class WallDanceApp:
                 self.fps = self.frame_count / (now - self.last_fps_time)
                 self.frame_count = 0
                 self.last_fps_time = now
+                # Update GPU stats once per second
+                self.gui.update_gpu_stats()
 
             # Get brightness from pipeline timing (already calculated there)
             # Fall back to enhancer status if not available

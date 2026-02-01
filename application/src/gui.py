@@ -10,7 +10,7 @@ from typing import Any, Callable, Dict, Optional
 import dearpygui.dearpygui as dpg
 import numpy as np
 
-from gui_builder import build_ui, create_texture, setup_theme, load_icon_font
+from gui_builder import build_ui, create_texture, setup_theme, load_icon_font, SystemState
 from gui_icons import Icons
 
 # GPU monitoring (optional - works with NVIDIA GPUs)
@@ -177,6 +177,9 @@ class WallDanceGUI:
         self._current_config_timestamp = ""
         self._save_indicator_time = 0  # For showing save success feedback
         
+        # System state (Phase 3 - simplified 2-state system)
+        self._system_state = SystemState.RUN
+        
         # DPI scaling for high-resolution displays (4K)
         self._dpi_scale = get_display_scale()
         
@@ -190,6 +193,13 @@ class WallDanceGUI:
         self._setup_theme()
         self._create_texture()
         self._build_ui()
+        
+        # Section headers for mutual exclusion
+        self._section_headers = [
+            "section_input", "section_enhancement", "section_model",
+            "section_preview", "section_tracker", "section_osc"
+        ]
+        self._last_open_section = None  # Track which section was open last frame
         
         # Set initial grey state for disabled rows
         self._update_preview_row_state(self.config.get('preview_enabled', True))
@@ -213,22 +223,22 @@ class WallDanceGUI:
     def _on_enhance_toggle(self, sender, value):
         if 'on_enhance_toggle' in self.callbacks:
             self.callbacks['on_enhance_toggle'](value)
-        self._update_enhance_row_state(value, dpg.get_value('tbl_enhance_lite_checkbox'), bypass=False)
+        lite_val = dpg.get_value('adv_enhance_lite_checkbox') if dpg.does_item_exist('adv_enhance_lite_checkbox') else False
+        self._update_enhance_row_state(value, lite_val, bypass=False)
     
     def _on_enhance_lite_toggle(self, sender, value):
         if 'on_enhance_lite_toggle' in self.callbacks:
             self.callbacks['on_enhance_lite_toggle'](value)
-        self._update_enhance_row_state(dpg.get_value('tbl_enhance_checkbox'), value, bypass=False)
+        en_val = dpg.get_value('adv_enhance_checkbox') if dpg.does_item_exist('adv_enhance_checkbox') else False
+        self._update_enhance_row_state(en_val, value, bypass=False)
     
     def _on_enhance_force_toggle(self, sender, value):
         if 'on_enhance_force_toggle' in self.callbacks:
             self.callbacks['on_enhance_force_toggle'](value)
         # Update row state: when Force is enabled, threshold slider should be greyed out
-        self._update_enhance_row_state(
-            dpg.get_value('tbl_enhance_checkbox'),
-            dpg.get_value('tbl_enhance_lite_checkbox'),
-            bypass=False
-        )
+        en_val = dpg.get_value('adv_enhance_checkbox') if dpg.does_item_exist('adv_enhance_checkbox') else False
+        lite_val = dpg.get_value('adv_enhance_lite_checkbox') if dpg.does_item_exist('adv_enhance_lite_checkbox') else False
+        self._update_enhance_row_state(en_val, lite_val, bypass=False)
 
     def _on_brightness_threshold_change(self, sender, value):
         if 'on_brightness_threshold_change' in self.callbacks:
@@ -250,18 +260,23 @@ class WallDanceGUI:
     def _update_preview_row_state(self, enabled: bool):
         """Grey out PREVIEW row controls when disabled."""
         color = (200, 200, 200) if enabled else (80, 80, 80)
-        dpg.configure_item("preview_tex_text", color=color)
-        dpg.configure_item("preview_scale_label", color=color)
-        dpg.configure_item("tbl_preview_scale_slider", enabled=enabled)
-        dpg.configure_item("preview_cap_label", color=color)
-        dpg.configure_item("tbl_preview_cap_checkbox", enabled=enabled)
+        if dpg.does_item_exist("preview_tex_text"):
+            dpg.configure_item("preview_tex_text", color=color)
+        if dpg.does_item_exist("preview_scale_label"):
+            dpg.configure_item("preview_scale_label", color=color)
+        if dpg.does_item_exist("adv_preview_scale_slider"):
+            dpg.configure_item("adv_preview_scale_slider", enabled=enabled)
+        if dpg.does_item_exist("preview_cap_label"):
+            dpg.configure_item("preview_cap_label", color=color)
+        if dpg.does_item_exist("adv_preview_cap_checkbox"):
+            dpg.configure_item("adv_preview_cap_checkbox", enabled=enabled)
     
     def _update_enhance_row_state(self, enabled: bool, lite_mode: bool, bypass: bool = False):
         """Grey out ENHANCE row controls when disabled, lite mode, or bypassed due to high brightness."""
         # Check if Force is engaged - if so, ignore bypass
         force_enabled = False
-        if dpg.does_item_exist("tbl_enhance_force_checkbox"):
-            force_enabled = dpg.get_value("tbl_enhance_force_checkbox")
+        if dpg.does_item_exist("adv_enhance_force_checkbox"):
+            force_enabled = dpg.get_value("adv_enhance_force_checkbox")
         
         # When force is enabled, bypass is ignored
         effective_bypass = bypass and not force_enabled
@@ -273,16 +288,25 @@ class WallDanceGUI:
         # Threshold is greyed when enhancement is disabled or Force is enabled (threshold ignored)
         threshold_color = (80, 80, 80) if (not enabled or force_enabled) else (200, 200, 200)
         
-        dpg.configure_item("enhance_lite_label", color=color)
-        dpg.configure_item("tbl_enhance_lite_checkbox", enabled=enabled)
-        dpg.configure_item("enhance_gamma_label", color=gamma_color)
+        # Labels may not exist in new layout - check existence
+        if dpg.does_item_exist("enhance_lite_label"):
+            dpg.configure_item("enhance_lite_label", color=color)
+        if dpg.does_item_exist("adv_enhance_lite_checkbox"):
+            dpg.configure_item("adv_enhance_lite_checkbox", enabled=enabled)
+        if dpg.does_item_exist("enhance_gamma_label"):
+            dpg.configure_item("enhance_gamma_label", color=gamma_color)
         # User requested to be able to move sliders even when disabled
-        dpg.configure_item("tbl_gamma_slider", enabled=True)
-        dpg.configure_item("enhance_threshold_label", color=threshold_color)
-        dpg.configure_item("tbl_brightness_threshold_slider", enabled=(enabled and not force_enabled))
+        if dpg.does_item_exist("adv_gamma_slider"):
+            dpg.configure_item("adv_gamma_slider", enabled=True)
+        if dpg.does_item_exist("enhance_threshold_label"):
+            dpg.configure_item("enhance_threshold_label", color=threshold_color)
+        if dpg.does_item_exist("adv_brightness_threshold_slider"):
+            dpg.configure_item("adv_brightness_threshold_slider", enabled=(enabled and not force_enabled))
         
-        dpg.configure_item("enhance_clahe_label", color=clahe_color)
-        dpg.configure_item("tbl_clahe_slider", enabled=True)
+        if dpg.does_item_exist("enhance_clahe_label"):
+            dpg.configure_item("enhance_clahe_label", color=clahe_color)
+        if dpg.does_item_exist("adv_clahe_slider"):
+            dpg.configure_item("adv_clahe_slider", enabled=True)
 
     def _on_preview_scale_change(self, sender, value):
         if 'on_preview_scale_change' in self.callbacks:
@@ -352,6 +376,76 @@ class WallDanceGUI:
         if 'on_visualization_toggle' in self.callbacks:
             self.callbacks['on_visualization_toggle'](name, value)
     
+    def _on_vis_toolbar_toggle(self, name: str):
+        """Handle visualization toolbar button toggle."""
+        # Get current value and toggle
+        key_map = {
+            "skeleton": "show_skeleton",
+            "keypoints": "show_keypoints",
+            "bbox": "show_bbox",
+            "trails": "show_trails",
+            "ids": "show_ids",
+        }
+        config_key = key_map.get(name)
+        if not config_key:
+            return
+        
+        current = self.config.get(config_key, True)
+        new_value = not current
+        self.config[config_key] = new_value
+        
+        # Update button theme
+        btn_tag = f"vis_{name}_btn"
+        if dpg.does_item_exist(btn_tag):
+            theme = self._vis_btn_on_theme if new_value else self._vis_btn_off_theme
+            dpg.bind_item_theme(btn_tag, theme)
+        
+        # Notify callback
+        if 'on_visualization_toggle' in self.callbacks:
+            self.callbacks['on_visualization_toggle'](name, new_value)
+    
+    def _on_state_standby(self):
+        """Handle STANDBY button press - preview only, no YOLO, no OSC."""
+        self.set_system_state(SystemState.STANDBY)
+    
+    def _on_state_run(self):
+        """Handle RUN button press - start YOLO inference and OSC output."""
+        self.set_system_state(SystemState.RUN)
+    
+    def set_system_state(self, state: SystemState):
+        """Change system state and update UI.
+        
+        2-state system:
+        - STANDBY: Preview + enhancement, no YOLO, no OSC (standby btn active, run btn greyed)
+        - RUN: Full YOLO + OSC (run btn active, standby btn greyed)
+        """
+        old_state = self._system_state
+        self._system_state = state
+        
+        # Update state badge in top bar
+        if dpg.does_item_exist("state_badge"):
+            from gui_builder import STATE_LABELS, STATE_COLORS
+            dpg.set_value("state_badge", STATE_LABELS.get(state, "UNKNOWN"))
+            text_color, _ = STATE_COLORS.get(state, ((200, 200, 200, 255), (80, 80, 90, 255)))
+            dpg.configure_item("state_badge", color=text_color)
+        
+        # Update button themes - active state highlighted, inactive greyed out
+        if dpg.does_item_exist("state_standby_btn"):
+            theme = self._btn_standby_active_theme if state == SystemState.STANDBY else self._btn_standby_theme
+            dpg.bind_item_theme("state_standby_btn", theme)
+        
+        if dpg.does_item_exist("state_run_btn"):
+            theme = self._btn_run_active_theme if state == SystemState.RUN else self._btn_run_theme
+            dpg.bind_item_theme("state_run_btn", theme)
+        
+        # Notify callback
+        if 'on_system_state_change' in self.callbacks:
+            self.callbacks['on_system_state_change'](state, old_state)
+    
+    def get_system_state(self) -> SystemState:
+        """Get current system state."""
+        return self._system_state
+
     def _on_tracker_distance_change(self, sender, value):
         if 'on_tracker_distance_change' in self.callbacks:
             self.callbacks['on_tracker_distance_change'](value)
@@ -489,10 +583,10 @@ class WallDanceGUI:
                 dpg.set_value("rec_status_text", "REC ARMED - Select slot")
                 dpg.configure_item("rec_status_text", color=(255, 180, 80))
             elif state == "recording":
-                dpg.set_value("rec_status_text", f"REC >> Slot {current_slot}")
+                dpg.set_value("rec_status_text", f"SLOT {current_slot}")
                 dpg.configure_item("rec_status_text", color=(255, 80, 80))
             elif state == "playing":
-                dpg.set_value("rec_status_text", f"PLAY << Slot {current_slot}")
+                dpg.set_value("rec_status_text", f"SLOT {current_slot}")
                 dpg.configure_item("rec_status_text", color=(80, 180, 255))
         
         # Update LIVE button theme
@@ -537,11 +631,12 @@ class WallDanceGUI:
                 else:
                     dpg.bind_item_theme(tag, self._slot_empty_theme)
         
-        # Update playback controls
-        if dpg.does_item_exist("rec_playback_group"):
-            dpg.configure_item("rec_playback_group", show=(state == "playing"))
-        if dpg.does_item_exist("rec_controls_group"):
-            dpg.configure_item("rec_controls_group", show=(state == "playing"))
+        # Update playback controls visibility (toggle between status and playback groups)
+        is_playing = (state == "playing")
+        if dpg.does_item_exist("source_status_group"):
+            dpg.configure_item("source_status_group", show=not is_playing)
+        if dpg.does_item_exist("source_playback_group"):
+            dpg.configure_item("source_playback_group", show=is_playing)
         
         # Update speed combo to match current playback speed
         if dpg.does_item_exist("rec_speed_combo") and state == "playing":
@@ -723,8 +818,8 @@ class WallDanceGUI:
                 self._save_indicator_time = 0
 
         # Update enhance row grey state based on bypass
-        enhance_enabled = dpg.get_value('tbl_enhance_checkbox')
-        lite_mode = dpg.get_value('tbl_enhance_lite_checkbox')
+        enhance_enabled = dpg.get_value('adv_enhance_checkbox') if dpg.does_item_exist('adv_enhance_checkbox') else False
+        lite_mode = dpg.get_value('adv_enhance_lite_checkbox') if dpg.does_item_exist('adv_enhance_lite_checkbox') else False
         self._update_enhance_row_state(enhance_enabled, lite_mode, bypass=enhance_bypassed)
 
         # Status badges
@@ -821,61 +916,84 @@ class WallDanceGUI:
             dpg.configure_item("fps_text", color=(255, 80, 80))
     
     def sync_checkbox(self, name: str, value: bool):
-        """Sync checkbox state (when changed via keyboard)."""
+        """Sync checkbox state (when changed via keyboard or config load)."""
+        # Map to both video panel (tbl_) and control panel (adv_) tags
         tag_map = {
-            'enhance': 'tbl_enhance_checkbox',
-            'enhance_lite': 'tbl_enhance_lite_checkbox',
-            'enhance_force': 'tbl_enhance_force_checkbox',
-            'preview': 'tbl_preview_checkbox',
-            'preview_cap': 'tbl_preview_cap_checkbox',
-            'fp16': 'tbl_fp16_checkbox',
-            'skeleton': 'skeleton_checkbox',
-            'keypoints': 'keypoints_checkbox',
-            'bbox': 'bbox_checkbox',
-            'trails': 'trails_checkbox',
-            'ids': 'ids_checkbox',
-            'osc': 'osc_checkbox',
+            # Control panel (adv_) and video panel (tbl_) duplicates
+            'enhance': ['adv_enhance_checkbox', 'tbl_enhance_checkbox'],
+            'enhance_lite': ['adv_enhance_lite_checkbox', 'tbl_enhance_lite_checkbox'],
+            'enhance_force': ['adv_enhance_force_checkbox', 'tbl_enhance_force_checkbox'],
+            'preview': ['adv_preview_checkbox', 'tbl_preview_checkbox'],
+            'preview_cap': ['adv_preview_cap_checkbox', 'tbl_preview_cap_checkbox'],
+            'fp16': ['adv_fp16_checkbox', 'tbl_fp16_checkbox'],
+            'trt': ['adv_trt_checkbox', 'tbl_trt_checkbox'],
+            'osc': ['osc_checkbox'],
         }
+        # Visualization toggles - update toolbar button themes instead of checkboxes
+        vis_toggles = ['skeleton', 'keypoints', 'bbox', 'trails', 'ids']
+        if name in vis_toggles:
+            btn_tag = f"vis_{name}_btn"
+            if dpg.does_item_exist(btn_tag):
+                theme = self._vis_btn_on_theme if value else self._vis_btn_off_theme
+                dpg.bind_item_theme(btn_tag, theme)
+            return
+        
         if name in tag_map:
-            dpg.set_value(tag_map[name], value)
+            for tag in tag_map[name]:
+                if dpg.does_item_exist(tag):
+                    dpg.set_value(tag, value)
         # Update row grey state when toggling via keyboard
         if name == 'preview':
             self._update_preview_row_state(value)
         elif name == 'enhance':
-            self._update_enhance_row_state(value, dpg.get_value('tbl_enhance_lite_checkbox'), bypass=False)
+            # Check both possible tag locations
+            lite_val = False
+            for tag in ['adv_enhance_lite_checkbox', 'tbl_enhance_lite_checkbox']:
+                if dpg.does_item_exist(tag):
+                    lite_val = dpg.get_value(tag)
+                    break
+            self._update_enhance_row_state(value, lite_val, bypass=False)
     
     def sync_slider(self, name: str, value: float):
-        """Sync slider state (when changed via keyboard)."""
+        """Sync slider state (when changed via keyboard or config load)."""
+        # Map to both video panel (tbl_) and control panel (adv_/show_) tags
         tag_map = {
-            'confidence': 'tbl_conf_slider',
-            'clahe': 'tbl_clahe_slider',
-            'gamma': 'tbl_gamma_slider',
-            'brightness_threshold': 'tbl_brightness_threshold_slider',
-            'preview_scale': 'tbl_preview_scale_slider',
-            'frame_skip': 'tbl_frame_skip_slider',
-            'max_persons': 'max_persons_slider',
-            'person_height': 'person_height_slider',
-            'tracker_distance': 'tracker_dist_slider',
-            'tracker_max_age': 'tracker_age_slider',
-            'tracker_smoothing': 'tracker_smoothing_slider',
+            'confidence': ['show_conf_slider', 'tbl_conf_slider'],
+            'clahe': ['adv_clahe_slider', 'tbl_clahe_slider'],
+            'gamma': ['adv_gamma_slider', 'tbl_gamma_slider'],
+            'brightness_threshold': ['adv_brightness_threshold_slider', 'tbl_brightness_threshold_slider'],
+            'denoise_strength': ['adv_denoise_slider', 'tbl_denoise_slider'],
+            'preview_scale': ['adv_preview_scale_slider', 'tbl_preview_scale_slider'],
+            'frame_skip': ['adv_frame_skip_slider', 'tbl_frame_skip_slider'],
+            'max_persons': ['max_persons_slider'],
+            'person_height': ['person_height_slider'],
+            'tracker_distance': ['tracker_dist_slider'],
+            'tracker_max_age': ['tracker_age_slider'],
+            'tracker_smoothing': ['tracker_smoothing_slider'],
         }
         if name in tag_map:
-            dpg.set_value(tag_map[name], value)
+            for tag in tag_map[name]:
+                if dpg.does_item_exist(tag):
+                    dpg.set_value(tag, value)
     
     def sync_combo(self, name: str, value: str):
         """Sync combo box state."""
+        # Map to both video panel (tbl_) and control panel (adv_) tags
         tag_map = {
-            'model': 'tbl_model_combo',
-            'imgsz': 'tbl_imgsz_combo',
-            'camera': 'tbl_camera_combo',
+            'model': ['adv_model_combo', 'tbl_model_combo'],
+            'imgsz': ['adv_imgsz_combo', 'tbl_imgsz_combo'],
+            'camera': ['adv_camera_combo', 'tbl_camera_combo'],
         }
         if name in tag_map:
-            dpg.set_value(tag_map[name], value)
+            for tag in tag_map[name]:
+                if dpg.does_item_exist(tag):
+                    dpg.set_value(tag, value)
     
     def update_model_dropdown(self, model_name: str):
         """Update model dropdown to show current model."""
-        if dpg.does_item_exist("tbl_model_combo"):
-            dpg.set_value("tbl_model_combo", model_name)
+        for tag in ["adv_model_combo", "tbl_model_combo"]:
+            if dpg.does_item_exist(tag):
+                dpg.set_value(tag, model_name)
     
     def update_engine_type_badge(self, is_tensorrt: bool):
         """Update the engine type badge in the top bar.
@@ -897,8 +1015,9 @@ class WallDanceGUI:
         Args:
             enabled: True to check, False to uncheck
         """
-        if dpg.does_item_exist("tbl_trt_checkbox"):
-            dpg.set_value("tbl_trt_checkbox", enabled)
+        for tag in ["adv_trt_checkbox", "tbl_trt_checkbox"]:
+            if dpg.does_item_exist(tag):
+                dpg.set_value(tag, enabled)
     
     def update_gpu_stats(self):
         """Update GPU stats in the top bar (util, temp, VRAM).
@@ -948,13 +1067,15 @@ class WallDanceGUI:
             else:
                 display_items.append(src)
         
-        if dpg.does_item_exist("tbl_camera_combo"):
-            dpg.configure_item("tbl_camera_combo", items=display_items)
-            # Set current value
-            if current in unavailable:
-                dpg.set_value("tbl_camera_combo", f"{current} (unavailable)")
-            elif current:
-                dpg.set_value("tbl_camera_combo", current)
+        # Update both video panel and control panel camera combos
+        for combo_tag in ["adv_camera_combo", "tbl_camera_combo"]:
+            if dpg.does_item_exist(combo_tag):
+                dpg.configure_item(combo_tag, items=display_items)
+                # Set current value
+                if current in unavailable:
+                    dpg.set_value(combo_tag, f"{current} (unavailable)")
+                elif current:
+                    dpg.set_value(combo_tag, current)
 
         # Disable toggle if current source is unavailable
         if dpg.does_item_exist("camera_toggle_btn"):
@@ -1489,8 +1610,29 @@ class WallDanceGUI:
         """
         if not dpg.is_dearpygui_running():
             return False
+        
+        # Check for section mutual exclusion
+        self._check_section_exclusion()
+        
         dpg.render_dearpygui_frame()
         return True
+    
+    def _check_section_exclusion(self):
+        """Close other section headers when one is opened (mutual exclusion)."""
+        # Find which section is currently open
+        current_open = None
+        for section in self._section_headers:
+            if dpg.does_item_exist(section) and dpg.get_value(section):
+                current_open = section
+                break
+        
+        # If a new section was just opened, close the previous one
+        if current_open and current_open != self._last_open_section:
+            for section in self._section_headers:
+                if section != current_open and dpg.does_item_exist(section):
+                    dpg.set_value(section, False)
+        
+        self._last_open_section = current_open
     
     def stop(self):
         """Stop the GUI."""

@@ -72,66 +72,57 @@ A streamlined plan to bring WallDance from research GUI to production-ready show
 
 ### Tasks
 
-- ⬜ Reorganize GUI into 3 tiers:
+- ✅ Reorganize GUI into 3 tiers:
   1. **Live Controls** — always visible, large buttons: Standby/Live/Pause, status indicators
   2. **Show Settings** — visible, per-venue adjustments: person height, max dancers, confidence, OSC target
   3. **Advanced** — collapsible section: tracker tuning, enhancement params, model/imgsz, debug flags
-- ⬜ Add system state badge in top bar (Setup / Standby / Live / Paused / Error)
-- ⬜ Grey out or disable Advanced section when in Live mode (optional safety)
-- ⬜ Move visualization toggles (skeleton, bbox, trails) to a compact toolbar or submenu
+- ✅ Add system state badge in top bar (Setup / Standby / Live / Paused / Error)
+- ✅ Add `SystemState` enum and state management in gui.py
+- ✅ Add compact visualization toolbar (S/K/B/T/I buttons)
+- ✅ Move visualization toggles (skeleton, bbox, trails) to a compact toolbar or submenu
 
 **Deliverable:** cleaner single-view GUI with production-first hierarchy
 
 ---
 
-## Phase 3 — Live Mode & OSC Gating
+## Phase 3 — Run Mode & State Control
 
-**Goal:** Clear operational states with OSC output control.
+**Goal:** Simple 2-state system with clear visual feedback.
 
 ### System States
 
-| State    | OSC Output | Description |
-|----------|------------|-------------|
-| Setup    | OFF        | Configuring camera/scene, not ready |
-| Standby  | OFF        | Ready, waiting for show start |
-| Live     | ON         | Show running, full OSC streaming |
-| Paused   | OFF        | Temporarily stopped (break, issue) |
-| Error    | OFF        | Camera lost, GPU fail, etc. |
+| State    | YOLO | OSC | Enhancement | Preview | Description |
+|----------|------|-----|-------------|---------|-------------|
+| Standby  | OFF  | ON  | ON          | ON      | Input ready, OSC open for status/control |
+| Run      | ON   | ON  | ON          | ON      | Full pipeline active, OSC streaming poses |
+
+### Behavior
+
+- **App startup** → Run state (full processing active)
+- **Click RUN** → Start YOLO inference, OSC sends pose data
+- **Click STANDBY** → Stop YOLO, OSC stays open (for status/control messages)
+
+### Visual Feedback
+
+- **Standby active**: STANDBY button highlighted (yellow), RUN button greyed
+- **Run active**: RUN button highlighted (green), STANDBY button greyed
+- Clear at-a-glance state from button colors alone
 
 ### Tasks
 
-- ⬜ Implement state machine in `app.py`
-- ⬜ OSC output gated by state (only send in Live)
-- ⬜ Add OSC status messages for TouchOSC monitoring:
-  - `/walldance/status/state` — current state string
-  - `/walldance/status/fps`, `/status/tracks`, `/status/latency`
-- ⬜ "Go Live" button with optional confirmation
-- ⬜ Auto-pause on camera disconnect or critical error
+- ✅ Simplify `SystemState` enum to 2 states (remove Setup/Live/Paused/Error)
+- ✅ Skip YOLO inference in Standby (just show enhanced preview)
+- ✅ Button styling: active state = highlighted, inactive = greyed out
+- ✅ App starts in Run state by default
+- ⬜ Optional: Add OSC status messages for TouchOSC monitoring:
+  - `/walldance/status/state` — "standby" or "run"
+  - `/walldance/status/fps`, `/status/tracks`
 
-**Deliverable:** state-controlled OSC output with TouchOSC status feed
-
----
-
-## Phase 4 — Show Profiles
-
-**Goal:** Save/load per-venue configurations quickly.
-
-- ⬜ Define "Show Profile" schema:
-  - Venue name, date
-  - Camera source + resolution
-  - Person height calibration
-  - Detection thresholds (confidence, max persons)
-  - OSC target (IP, port)
-  - Model + imgsz selection
-- ⬜ Save/Load profile buttons in top bar
-- ⬜ "Last used profile" auto-load on startup
-- ⬜ Profile includes only show-varying settings (not hardware-specific like GPU path)
-
-**Deliverable:** quick venue switching with saved profiles
+**Deliverable:** simple 2-state operation with clear visual feedback
 
 ---
 
-## Phase 5 — Robustness & Watchdog
+## Phase 4 — Robustness & Watchdog
 
 **Goal:** Reliable long-run operation.
 
@@ -147,7 +138,7 @@ A streamlined plan to bring WallDance from research GUI to production-ready show
 
 ---
 
-## Phase 6 — Logging & Diagnostics
+## Phase 5 — Logging & Diagnostics
 
 - ⬜ Per-show timestamped log folder
 - ⬜ CSV metrics: FPS, latency, brightness, track count, dropped frames
@@ -158,13 +149,14 @@ A streamlined plan to bring WallDance from research GUI to production-ready show
 
 ---
 
-## Phase 7 — Future Enhancements
+## Phase 6 — Future Enhancements
 
 - ⬜ ROI / scene mask editing
 - ⬜ Target 1920+ imgsz optimization
 - ⬜ Tiling for 4K inference
 - ⬜ REC with OSC out for offline replay
 - ⬜ TouchOSC bidirectional control (receive state commands)
+- ⬜ Show Profiles (lightweight per-venue presets on top of projects)
 
 ---
 
