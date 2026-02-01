@@ -289,8 +289,10 @@ def build_ui(gui: Any):
         build_top_bar(gui)
         dpg.add_spacer(height=1)
         with dpg.group(horizontal=True):
+            dpg.add_spacer(width=scaled(6))  # Left padding
             build_video_panel(gui)
             build_control_panel(gui)
+            dpg.add_spacer(width=scaled(6))  # Right padding to match left
 
 
 def build_top_bar(gui: Any):
@@ -389,83 +391,11 @@ def build_top_bar(gui: Any):
 
 
 def build_video_panel(gui: Any):
-    """Video preview with stats below."""
-    with dpg.child_window(width=gui.video_width + scaled(20), height=-1, tag="video_panel"):
+    """Video preview with SOURCE controls."""
+    with dpg.child_window(width=gui.video_width + scaled(20), autosize_y=True, border=False, tag="video_panel"):
         dpg.add_image(gui.frame_texture_tag, width=gui.video_width, height=gui.video_height, tag="video_image")
         dpg.add_separator()
-        # PROCESS stats row
-        with dpg.table(
-            header_row=False,
-            policy=dpg.mvTable_SizingStretchProp,
-            borders_innerH=True,
-            borders_innerV=True,
-            borders_outerH=True,
-            borders_outerV=True,
-            pad_outerX=True,
-            row_background=True,
-        ):
-            dpg.add_table_column(init_width_or_weight=0.8)
-            dpg.add_table_column(init_width_or_weight=1.0)
-            dpg.add_table_column(init_width_or_weight=1.0)
-            dpg.add_table_column(init_width_or_weight=1.0)
-            dpg.add_table_column(init_width_or_weight=1.0)
-            dpg.add_table_column(init_width_or_weight=1.0)
-            with dpg.table_row():
-                dpg.add_text("STATS", color=(120, 200, 140))
-                with dpg.group(horizontal=True):
-                    dpg.add_text("FPS:")
-                    dpg.add_text("0.0", tag="fps_text", color=(0, 255, 100))
-                with dpg.group(horizontal=True):
-                    dpg.add_text("Dancers:")
-                    dpg.add_text("0", tag="dancers_text", color=(0, 255, 100))
-                with dpg.group(horizontal=True):
-                    dpg.add_text("In:")
-                    dpg.add_text("--", tag="input_res_text", color=(180, 180, 180))
-                with dpg.group(horizontal=True):
-                    dpg.add_text("Prev:")
-                    dpg.add_text("--", tag="preview_tex_text", color=(180, 180, 180))
-                with dpg.group(horizontal=True):
-                    dpg.add_text("Bright:")
-                    dpg.add_text("", tag="brightness_text", color=(150, 150, 150))
-        dpg.add_spacer(height=scaled(4))
-        with dpg.table(
-            header_row=False,
-            policy=dpg.mvTable_SizingStretchProp,
-            borders_innerH=True,
-            borders_innerV=True,
-            borders_outerH=True,
-            borders_outerV=True,
-            pad_outerX=True,
-            row_background=True,
-        ):
-            dpg.add_table_column(init_width_or_weight=0.8)
-            dpg.add_table_column(init_width_or_weight=1.2)
-            dpg.add_table_column(init_width_or_weight=1.2)
-            dpg.add_table_column(init_width_or_weight=1.0)
-            dpg.add_table_column(init_width_or_weight=1.0)
-            dpg.add_table_column(init_width_or_weight=1.0)
-            with dpg.table_row():
-                dpg.add_text("TIMINGS", color=(120, 200, 140))
-                with dpg.group(horizontal=True):
-                    dpg.add_text("[CPU]", tag="path_enhance", color=(255, 120, 120))
-                    dpg.add_text("Enh:")
-                    dpg.add_text("--", tag="time_enhance", color=(180, 180, 180))
-                with dpg.group(horizontal=True):
-                    dpg.add_text("[GPU]", tag="path_yolo", color=(120, 255, 120))
-                    dpg.add_text("YOLO:")
-                    dpg.add_text("--", tag="time_yolo", color=(180, 180, 180))
-                with dpg.group(horizontal=True):
-                    dpg.add_text("[CPU]", tag="path_track", color=(255, 120, 120))
-                    dpg.add_text("Trk:")
-                    dpg.add_text("--", tag="time_track", color=(180, 180, 180))
-                with dpg.group(horizontal=True):
-                    dpg.add_text("Prev:")
-                    dpg.add_text("--", tag="time_preview", color=(180, 180, 180))
-                with dpg.group(horizontal=True):
-                    dpg.add_text("Tot:")
-                    dpg.add_text("--", tag="time_total", color=(180, 180, 180))
         
-        dpg.add_spacer(height=scaled(4))
         # SOURCE row - unified source control with dynamic right section
         # Layout: SOURCE | LIVE/REC + slots | status/playback controls
         with dpg.table(
@@ -591,6 +521,47 @@ def build_video_panel(gui: Any):
             dpg.bind_item_theme(run_btn, gui._btn_run_active_theme)  # Start active
             with dpg.tooltip(run_btn):
                 dpg.add_text("RUN: Full YOLO inference + OSC output")
+        
+        # Stats footer - compact line at bottom of video panel
+        dpg.add_spacer(height=scaled(170))
+        with dpg.group(horizontal=True):
+            dpg.add_text("Dancers:", color=(100, 100, 100))
+            dpg.add_text("0", tag="dancers_text", color=(140, 180, 140))
+            dpg.add_spacer(width=scaled(6))
+            dpg.add_text("In:", color=(100, 100, 100))
+            dpg.add_text("--", tag="input_res_text", color=(140, 180, 140))
+            dpg.add_spacer(width=scaled(4))
+            dpg.add_text("Prev:", color=(80, 80, 80))
+            dpg.add_text("--", tag="preview_tex_text", color=(90, 90, 90))
+            dpg.add_spacer(width=scaled(6))
+            dpg.add_text("Bright:", color=(100, 100, 100))
+            dpg.add_text("--", tag="brightness_text", color=(120, 120, 120))
+            dpg.add_spacer(width=scaled(8))
+            dpg.add_text("|", color=(60, 60, 60))
+            dpg.add_spacer(width=scaled(8))
+            dpg.add_text("FPS:", color=(100, 100, 100))
+            dpg.add_text("--", tag="fps_text", color=(140, 180, 140))
+            dpg.add_spacer(width=scaled(6))
+            dpg.add_text("Enh:", color=(80, 80, 80))
+            dpg.add_text("--", tag="time_enhance", color=(100, 100, 100))
+            dpg.add_spacer(width=scaled(3))
+            dpg.add_text("YOLO:", color=(80, 80, 80))
+            dpg.add_text("--", tag="time_yolo", color=(100, 100, 100))
+            dpg.add_spacer(width=scaled(3))
+            dpg.add_text("Trk:", color=(80, 80, 80))
+            dpg.add_text("--", tag="time_track", color=(100, 100, 100))
+            dpg.add_spacer(width=scaled(3))
+            dpg.add_text("Prev:", color=(80, 80, 80))
+            dpg.add_text("--", tag="time_preview", color=(100, 100, 100))
+            dpg.add_spacer(width=scaled(6))
+            dpg.add_text("Tot:", color=(100, 100, 100))
+            dpg.add_text("--", tag="time_total", color=(140, 180, 140))
+        
+        # Hidden tags (for code compatibility)
+        with dpg.group(show=False):
+            dpg.add_text("", tag="path_enhance")
+            dpg.add_text("", tag="path_yolo")
+            dpg.add_text("", tag="path_track")
 
 
 def build_control_panel(gui: Any):
@@ -601,7 +572,7 @@ def build_control_panel(gui: Any):
     2. Visualization - S/K/B/T/I toggles
     3. Input/Enhancement/Model/Preview/Tracker - collapsed, mutually exclusive
     """
-    with dpg.child_window(width=scaled(320), height=-1, tag="control_panel"):
+    with dpg.child_window(width=scaled(320), autosize_y=True, border=False, tag="control_panel"):
         # === SHOW SETTINGS (Visible, per-venue) ===
         build_show_settings(gui)
         dpg.add_spacer(height=scaled(8))

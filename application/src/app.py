@@ -1651,8 +1651,8 @@ class WallDanceApp:
         self.gui = WallDanceGUI(config=self._get_gui_config(), callbacks=self._get_gui_callbacks())
         dpi_scale = get_display_scale()
         # Add space for controls: control_panel(320) + video_padding(20) + borders(~10)
-        window_width = int((CAMERA_WIDTH * self.preview.display_scale + 350) * dpi_scale)
-        window_height = max(int((CAMERA_HEIGHT * self.preview.display_scale + 120) * dpi_scale), int(800 * dpi_scale))
+        window_width = int((CAMERA_WIDTH * self.preview.display_scale + 375) * dpi_scale)
+        window_height = max(int((CAMERA_HEIGHT * self.preview.display_scale ) * dpi_scale), int(800 * dpi_scale))
         self.gui.setup(width=window_width, height=window_height)
         with dpg.handler_registry():
             dpg.add_key_press_handler(callback=self._handle_key)
