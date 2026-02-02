@@ -62,6 +62,7 @@ class ProcessingSettings:
     person_height_max_ratio: float = PERSON_HEIGHT_MAX_RATIO
     brightness_threshold: int = 60  # Auto-bypass threshold (0-255)
     denoise_strength: float = 0.0   # Temporal denoising (0.0-1.0)
+    greyscale: bool = False         # Convert to greyscale (mono camera simulation)
     osc_enabled: bool = True
     use_gpu_path: bool = USE_GPU_PATH  # Enable GPU frame buffer
 
@@ -310,6 +311,7 @@ class FrameProcessor:
         gs.brightness_threshold = float(self.settings.brightness_threshold)
         gs.clahe_clip = self.enhancer.clahe_clip
         gs.gamma = self.enhancer.gamma
+        gs.greyscale = self.settings.greyscale
         
         # Map denoise_strength (0.0-1.0) to alpha (1.0-0.0)
         # Strength 0.0 -> Alpha 1.0 (No smoothing)

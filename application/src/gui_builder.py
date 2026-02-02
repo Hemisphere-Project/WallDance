@@ -853,6 +853,12 @@ def build_enhancement_section(gui: Any):
                 default_value=gui.config.get("enhance_force", False),
                 callback=gui._on_enhance_force_toggle,
             )
+            dpg.add_checkbox(
+                label="Greyscale",
+                tag="adv_greyscale_checkbox",
+                default_value=gui.config.get("greyscale", False),
+                callback=gui._on_greyscale_toggle,
+            )
         
         dpg.add_text("Brightness Threshold", color=(180, 180, 180))
         dpg.add_slider_int(

@@ -250,6 +250,7 @@ class WallDanceApp:
             "enhance_enabled": self.settings.enhance_enabled,
             "enhance_lite": self.settings.enhance_lite,
             "enhance_force": self.settings.enhance_force,
+            "greyscale": self.settings.greyscale,
             "clahe_clip": CLAHE_CLIP_LIMIT,
             "gamma": GAMMA_CORRECTION,
             "upscale_factor": self.settings.upscale_factor,
@@ -279,6 +280,7 @@ class WallDanceApp:
             "on_enhance_toggle": self._cb_enhance_toggle,
             "on_enhance_lite_toggle": self._cb_enhance_lite_toggle,
             "on_enhance_force_toggle": self._cb_enhance_force_toggle,
+            "on_greyscale_toggle": self._cb_greyscale_toggle,
             "on_brightness_threshold_change": self._cb_brightness_threshold_change,
             "on_upscale_change": self._cb_upscale_change,
             "on_clahe_change": self._cb_clahe_change,
@@ -342,6 +344,7 @@ class WallDanceApp:
             "enhance_enabled": self.settings.enhance_enabled,
             "enhance_lite": self.settings.enhance_lite,
             "enhance_force": self.settings.enhance_force,
+            "greyscale": self.settings.greyscale,
             "brightness_threshold": self.settings.brightness_threshold,
             "denoise_strength": self.settings.denoise_strength,
             "clahe_clip": self.enhancer.clahe_clip,
@@ -553,6 +556,9 @@ class WallDanceApp:
         if "enhance_force" in config:
             self.settings.enhance_force = config["enhance_force"]
             self.gui and self.gui.sync_checkbox("enhance_force", config["enhance_force"])
+        if "greyscale" in config:
+            self.settings.greyscale = config["greyscale"]
+            self.gui and self.gui.sync_checkbox("greyscale", config["greyscale"])
         if "brightness_threshold" in config:
             self.settings.brightness_threshold = config["brightness_threshold"]
             self.gui and self.gui.sync_slider("brightness_threshold", config["brightness_threshold"])
@@ -639,6 +645,10 @@ class WallDanceApp:
     def _cb_enhance_force_toggle(self, enabled: bool):
         self.settings.enhance_force = enabled
         print(f"Enhancement Force: {'ON (ignore brightness threshold)' if enabled else 'OFF (auto-bypass)'}")
+
+    def _cb_greyscale_toggle(self, enabled: bool):
+        self.settings.greyscale = enabled
+        print(f"Greyscale: {'ON (mono camera simulation)' if enabled else 'OFF'}")
 
     def _cb_upscale_change(self, factor: float):
         self.settings.upscale_factor = factor

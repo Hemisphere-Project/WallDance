@@ -296,6 +296,10 @@ class WallDanceGUI:
         lite_val = dpg.get_value('adv_enhance_lite_checkbox') if dpg.does_item_exist('adv_enhance_lite_checkbox') else False
         self._update_enhance_row_state(en_val, lite_val, bypass=False)
 
+    def _on_greyscale_toggle(self, sender, value):
+        if 'on_greyscale_toggle' in self.callbacks:
+            self.callbacks['on_greyscale_toggle'](value)
+
     def _on_brightness_threshold_change(self, sender, value):
         if 'on_brightness_threshold_change' in self.callbacks:
             self.callbacks['on_brightness_threshold_change'](value)
@@ -979,6 +983,7 @@ class WallDanceGUI:
             'enhance': ['adv_enhance_checkbox', 'tbl_enhance_checkbox'],
             'enhance_lite': ['adv_enhance_lite_checkbox', 'tbl_enhance_lite_checkbox'],
             'enhance_force': ['adv_enhance_force_checkbox', 'tbl_enhance_force_checkbox'],
+            'greyscale': ['adv_greyscale_checkbox'],
             'preview': ['adv_preview_checkbox', 'tbl_preview_checkbox'],
             'preview_cap': ['adv_preview_cap_checkbox', 'tbl_preview_cap_checkbox'],
             'fp16': ['adv_fp16_checkbox', 'tbl_fp16_checkbox'],

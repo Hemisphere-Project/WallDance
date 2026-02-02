@@ -87,6 +87,7 @@ class GpuPipelineSettings:
     clahe_clip: float = 2.0
     clahe_grid: int = 8
     gamma: float = 1.2
+    greyscale: bool = False         # Convert to greyscale (mono camera simulation)
     
     # Denoising
     denoise_enabled: bool = False
@@ -186,6 +187,10 @@ class GpuEnhancer:
         if not settings.enhance_enabled:
             self.last_used_gpu = False
             self.last_brightness = 0.0
+            # Still apply greyscale if enabled (independent of enhancement)
+            if settings.greyscale:
+                grey_frame = self._apply_greyscale_gpu(gpu_frame.tensor)
+                return GpuFrame(grey_frame, is_bgr=gpu_frame._is_bgr), True
             return gpu_frame, False
         
         tensor = gpu_frame.tensor  # (1, 3, H, W) in RGB
@@ -195,6 +200,12 @@ class GpuEnhancer:
         if settings.denoise_enabled:
             tensor = self._apply_temporal_denoise(tensor, settings.denoise_alpha)
             # Update gpu_frame wrapper with denoised tensor
+            gpu_frame = GpuFrame(tensor, is_bgr=gpu_frame._is_bgr)
+        
+        # 2. Greyscale conversion (mono camera simulation)
+        # Apply before enhancement so CLAHE/Gamma work on greyscale signal
+        if settings.greyscale:
+            tensor = self._apply_greyscale_gpu(tensor)
             gpu_frame = GpuFrame(tensor, is_bgr=gpu_frame._is_bgr)
         
         # Compute brightness from Y channel for auto-bypass check
@@ -211,8 +222,9 @@ class GpuEnhancer:
             fade_range = 40.0
             if brightness >= settings.brightness_threshold + fade_range:
                 # Scene is bright enough - skip enhancement completely
-                self.last_used_gpu = False
-                return gpu_frame, False
+                # Greyscale already applied earlier if enabled
+                self.last_used_gpu = settings.greyscale
+                return gpu_frame, settings.greyscale
             elif brightness > settings.brightness_threshold:
                 # In transition zone - calculate blend factor
                 over = brightness - settings.brightness_threshold
@@ -317,6 +329,20 @@ class GpuEnhancer:
         ycbcr_new[:, 0:1, :, :] = y
         
         return ycbcr_to_rgb(ycbcr_new)
+
+    def _apply_greyscale_gpu(self, tensor: torch.Tensor) -> torch.Tensor:
+        """
+        Convert RGB tensor to greyscale (mono camera simulation).
+        
+        Uses standard luminance weights: Y = 0.299*R + 0.587*G + 0.114*B
+        Returns a 3-channel tensor with identical R, G, B values (for compatibility).
+        """
+        # Compute luminance using standard BT.601 weights (RGB order)
+        weights = torch.tensor([0.299, 0.587, 0.114], device=tensor.device, dtype=tensor.dtype)
+        gray = (tensor * weights.view(1, 3, 1, 1)).sum(dim=1, keepdim=True)
+        
+        # Expand back to 3 channels (R=G=B=Y)
+        return gray.expand(-1, 3, -1, -1)
 
 
 class GpuResizer:
