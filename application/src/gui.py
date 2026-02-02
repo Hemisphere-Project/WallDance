@@ -3,7 +3,7 @@ DearPyGui-based control panel for WallDance.
 Provides real-time parameter adjustment with sliders, checkboxes, and buttons.
 """
 
-import os
+import os, sys
 import subprocess
 from typing import Any, Callable, Dict, Optional
 
