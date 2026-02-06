@@ -10,7 +10,26 @@ chmod +x install.sh run.sh
 ./run.sh             # launches GUI + camera processing
 ```
 
-Requirements: Python 3.10+, `uv` installed (`pip install uv` if missing), a webcam or capture card, and optional CUDA GPU for best performance. Model weights live in `models/` (already included in the repo).
+Requirements: Python 3.10+, `uv` installed (`pip install uv` if missing), a webcam or capture card, and optional CUDA GPU for best performance. Model weights live in `models/` (some are included in the repo; others may be downloaded by Ultralytics depending on configuration).
+
+## License
+
+WallDance is free software licensed under the **GNU General Public License v3.0 (GPLv3)**. See [LICENSE](LICENSE).
+
+## YOLO models, downloads, and third-party terms
+
+WallDance uses **Ultralytics YOLO** for pose estimation and relies on pretrained YOLO model files (e.g. `*.pt`, `*.onnx`) and optionally TensorRT engines (`*.engine`).
+
+- Some model files may be present in this repository (for convenience), and the Ultralytics stack may also **download model weights automatically** if a requested model file is missing.
+- **Model weights/engines and the Ultralytics package are third-party components** and are **not** covered by WallDance's GPLv3 license.
+- Your use of YOLO software and/or model weights may be subject to separate **licenses, terms, and conditions** (including restrictions that may vary by model and by commercial vs non-commercial use).
+
+Please review and comply with the applicable terms for:
+
+- Ultralytics YOLO (code/package): https://github.com/ultralytics/ultralytics
+- Ultralytics documentation / licensing pages: https://docs.ultralytics.com/
+
+This note is informational and not legal advice.
 
 **Production Hardware:** IDS U3-34E0XCP-M-GL camera (4MP Starvis 2 mono), Tamron 8mm lens, MidOpt BP850 IR filter, ASUS ROG Strix SCAR 16 (RTX 5080). See [HARDWARE_GUIDE.md](HARDWARE_GUIDE.md) for details.
 
