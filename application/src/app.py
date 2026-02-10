@@ -1649,8 +1649,12 @@ class WallDanceApp:
     # ------------------------------------------------------------------
     def run(self):
         print("Detecting cameras...")
-        self.camera.state.available = CameraManager.detect_cameras()
-        print(f"Available cameras: {self.camera.state.available}")
+        self._do_camera_refresh()
+
+        ids_sources = [s for s in self.camera.state.available if s.startswith("ids:")]
+        if ids_sources and self.camera.state.source == str(CAMERA_INDEX):
+            self.camera.state.source = "auto"
+
         print(f"Opening camera {self.camera.state.source}...")
         if not self._open_camera(self.camera.state.source):
             print(f"Warning: Camera {self.camera.state.source} not available, app will start without camera")

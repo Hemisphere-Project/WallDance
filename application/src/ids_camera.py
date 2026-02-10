@@ -31,6 +31,8 @@ Usage:
 
 from __future__ import annotations
 
+import glob
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -170,16 +172,109 @@ class IDSCamera:
         # Callback for recording
         self._frame_callback: Optional[Callable[[np.ndarray], None]] = None
         
-        # Initialize IDS Peak library
-        ids_peak.Library.Initialize()
+        # Initialize IDS Peak library (idempotent)
+        self._acquire_library()
     
     def __del__(self):
         """Cleanup on destruction."""
         self.close()
         try:
-            ids_peak.Library.Close()
+            self._release_library()
         except:
             pass
+
+    # ------------------------------------------------------------------
+    # Library lifecycle
+    # ------------------------------------------------------------------
+    _library_lock = threading.Lock()
+    _library_initialized = False
+    _library_refcount = 0
+    _gentl_checked = False
+    _gentl_paths_cached: Optional[str] = None
+
+    @classmethod
+    def _ensure_gentl_path(cls) -> None:
+        """Ensure GENICAM_GENTL64_PATH is set for IDS Peak CTI discovery."""
+        if cls._gentl_checked:
+            return
+
+        cls._gentl_checked = True
+
+        if os.environ.get("GENICAM_GENTL64_PATH"):
+            return
+
+        # Common IDS Peak install locations (Linux)
+        candidates = [
+            "/opt/ids/ids-peak",
+            "/opt/ids/ids-peak/cti",
+            "/opt/ids/ids-peak/lib",
+            "/opt/ids/ids-peak/bin",
+            "/opt/ids/ids-peak/ids-peak",
+            "/opt/ids/ids-peak/ids-peak/cti",
+            "/usr/local/ids/ids-peak",
+            "/usr/local/ids/ids-peak/cti",
+            "/usr/local/lib",
+            "/usr/lib",
+            "/home/*/Programs/ids-peak*",
+            "/home/*/Programs/ids-peak*/lib/x86_64-linux-gnu/ids-peak/cti",
+        ]
+
+        cti_dirs = set()
+        expanded_candidates = []
+        for base in candidates:
+            if "*" in base:
+                expanded_candidates.extend(glob.glob(base))
+            else:
+                expanded_candidates.append(base)
+
+        for base in expanded_candidates:
+            if not os.path.isdir(base):
+                continue
+            # Look for *.cti in base and one level below
+            for path in glob.glob(os.path.join(base, "*.cti")):
+                cti_dirs.add(os.path.dirname(path))
+            for path in glob.glob(os.path.join(base, "*", "*.cti")):
+                cti_dirs.add(os.path.dirname(path))
+
+        if cti_dirs:
+            value = ":".join(sorted(cti_dirs))
+            os.environ["GENICAM_GENTL64_PATH"] = value
+            cls._gentl_paths_cached = value
+            print(f"[IDSCamera] GENICAM_GENTL64_PATH set to: {value}")
+        else:
+            print(
+                "[IDSCamera] GENICAM_GENTL64_PATH not set and no CTI found. "
+                "Install IDS Peak or export GENICAM_GENTL64_PATH to the CTI directory."
+            )
+
+    @classmethod
+    def _ensure_library_initialized(cls) -> None:
+        """Initialize IDS Peak library once per process."""
+        with cls._library_lock:
+            if not cls._library_initialized:
+                cls._ensure_gentl_path()
+                ids_peak.Library.Initialize()
+                cls._library_initialized = True
+
+    @classmethod
+    def _acquire_library(cls) -> None:
+        """Ensure library is initialized and bump refcount."""
+        with cls._library_lock:
+            if not cls._library_initialized:
+                cls._ensure_gentl_path()
+                ids_peak.Library.Initialize()
+                cls._library_initialized = True
+            cls._library_refcount += 1
+
+    @classmethod
+    def _release_library(cls) -> None:
+        """Decrement refcount and close library when unused."""
+        with cls._library_lock:
+            if cls._library_refcount > 0:
+                cls._library_refcount -= 1
+            if cls._library_refcount == 0 and cls._library_initialized:
+                ids_peak.Library.Close()
+                cls._library_initialized = False
     
     # ------------------------------------------------------------------
     # Discovery
@@ -196,6 +291,7 @@ class IDSCamera:
         
         cameras = []
         try:
+            IDSCamera._ensure_library_initialized()
             # Update device manager
             device_manager = ids_peak.DeviceManager.Instance()
             device_manager.Update()
@@ -255,6 +351,7 @@ class IDSCamera:
             self.close()
         
         try:
+            self._ensure_library_initialized()
             # Find camera
             device_manager = ids_peak.DeviceManager.Instance()
             device_manager.Update()
@@ -327,6 +424,10 @@ class IDSCamera:
                 selected_format = fmt
                 break
         
+        if selected_format is None and available_formats:
+            # Fallback: pick the first available format
+            selected_format = available_formats[0]
+
         if selected_format:
             pixel_format_node.SetCurrentEntry(
                 pixel_format_node.FindEntry(selected_format)
@@ -498,11 +599,11 @@ class IDSCamera:
             return True
         
         try:
+            # Start data stream first (some cameras require this order)
+            self._datastream.StartAcquisition()
+            
             # Start camera acquisition
             self._node_map.FindNode("AcquisitionStart").Execute()
-            
-            # Start data stream
-            self._datastream.StartAcquisition()
             
             # Start acquisition thread
             self._acquire_error = None
@@ -519,8 +620,28 @@ class IDSCamera:
             return True
             
         except Exception as e:
-            print(f"[IDSCamera] Failed to start acquisition: {e}")
-            return False
+            # Retry with reversed order for compatibility
+            try:
+                self._datastream.StopAcquisition(ids_peak.AcquisitionStopMode_Default)
+            except Exception:
+                pass
+            try:
+                self._node_map.FindNode("AcquisitionStart").Execute()
+                self._datastream.StartAcquisition()
+                self._acquire_error = None
+                self._acquire_running = True
+                self._acquire_thread = threading.Thread(
+                    target=self._acquisition_loop,
+                    name="IDSAcquisition",
+                    daemon=True
+                )
+                self._acquire_thread.start()
+                self.state.is_acquiring = True
+                print("[IDSCamera] Acquisition started (fallback order)")
+                return True
+            except Exception as e2:
+                print(f"[IDSCamera] Failed to start acquisition: {e2}")
+                return False
     
     def stop_acquisition(self) -> None:
         """Stop frame acquisition."""

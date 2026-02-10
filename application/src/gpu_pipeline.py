@@ -559,8 +559,7 @@ class GpuPipeline:
             t0 = time.time()
             preview_tensor = self._resizer.resize(
                 enhanced_frame,
-                self.settings.preview_width,
-                self.settings.preview_height
+                target_size=(self.settings.preview_width, self.settings.preview_height)
             )
             preview_frame = preview_tensor.to_numpy_bgr()
             timing['preview_resize'] = (time.time() - t0) * 1000
