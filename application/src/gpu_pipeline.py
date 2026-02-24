@@ -268,14 +268,11 @@ class GpuEnhancer:
             return current
         
         # accum = (1-alpha)*accum + alpha*current
-        # lerp_(end, weight) -> self + weight*(end - self)
-        # We want: (1-alpha)*self + alpha*current
-        # This matches lerp exactly.
         self._last_frame_tensor.lerp_(current, alpha)
         
-        # Return a clone to ensure downstream operations don't modify our history buffer
-        # (unless we are sure downstream is out-of-place, but safety first)
-        return self._last_frame_tensor.clone()
+        # Downstream enhancement ops (CLAHE, gamma, greyscale) are all out-of-place,
+        # so returning the buffer directly is safe — no clone needed.
+        return self._last_frame_tensor
     
     def _compute_brightness_gpu(self, tensor: torch.Tensor) -> float:
         """Compute average brightness from GPU tensor (RGB format)."""
@@ -561,11 +558,11 @@ class GpuPipeline:
                 enhanced_frame,
                 target_size=(self.settings.preview_width, self.settings.preview_height)
             )
-            preview_frame = preview_tensor.to_numpy_bgr()
             timing['preview_resize'] = (time.time() - t0) * 1000
             
+            # GPU→CPU download (included in to_numpy_bgr)
             t0 = time.time()
-            # Download is already included in to_numpy_bgr()
+            preview_frame = preview_tensor.to_numpy_bgr()
             timing['preview_download'] = (time.time() - t0) * 1000
             timing['preview_new'] = True
             
@@ -587,16 +584,22 @@ class GpuPipeline:
         return yolo_tensor, preview_frame, timing
 
     def _upload_to_gpu(self, frame: np.ndarray) -> GpuFrame:
-        """Upload numpy BGR frame to GPU tensor, convert to RGB."""
-        h, w, c = frame.shape
+        """Upload numpy BGR frame to GPU tensor, convert to RGB.
         
-        # Convert HWC uint8 BGR -> BCHW float32 RGB [0,1]
-        tensor = torch.from_numpy(frame).to(DEVICE)
-        tensor = tensor.permute(2, 0, 1).unsqueeze(0).float() / 255.0
+        Uses pinned memory + non_blocking transfer for async DMA.
+        """
+        # Pin source memory for async H2D transfer
+        tensor = torch.from_numpy(frame)  # (H, W, 3) uint8, CPU
+        if not hasattr(self, '_upload_pinned') or self._upload_pinned.shape != tensor.shape:
+            self._upload_pinned = torch.empty_like(tensor).pin_memory()
+        self._upload_pinned.copy_(tensor)
+        
+        gpu_tensor = self._upload_pinned.to(DEVICE, non_blocking=True)
+        gpu_tensor = gpu_tensor.permute(2, 0, 1).unsqueeze(0).float().mul_(1.0 / 255.0)
         # BGR -> RGB (flip channel dimension)
-        tensor = tensor.flip(1)
+        gpu_tensor = gpu_tensor.flip(1)
         
-        return GpuFrame(tensor, is_bgr=False)  # Now RGB
+        return GpuFrame(gpu_tensor, is_bgr=False)  # Now RGB
     
     def _prepare_yolo_input(self, gpu_frame: GpuFrame, imgsz: int) -> Tuple[torch.Tensor, Dict]:
         """

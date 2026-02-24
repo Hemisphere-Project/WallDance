@@ -889,23 +889,30 @@ class IDSCamera:
         """Convert Mono8 to GPU tensor (1, 3, H, W) float32 [0, 1].
         
         Optimized path:
-        1. Upload Mono8 to GPU
-        2. Expand to 3 channels (BGR)
+        1. Upload Mono8 to GPU via pinned memory (async DMA)
+        2. Expand to 3 channels (pseudo-BGR)
         3. Normalize to [0, 1]
         
         This is faster than CPU BGR conversion + upload.
+        Uses pinned memory + non_blocking=True for async H2D transfer.
         """
-        # Upload to GPU as uint8
-        mono_tensor = torch.from_numpy(mono8).cuda()  # (H, W) uint8
+        # Pin+upload: pinned memory enables async DMA on the PCIe bus
+        # Allocate/reuse pinned buffer for consistent frame sizes
+        mono_tensor = torch.from_numpy(mono8)  # (H, W) uint8, CPU
+        if not hasattr(self, '_pinned_buffer') or self._pinned_buffer.shape != mono_tensor.shape:
+            self._pinned_buffer = torch.empty_like(mono_tensor).pin_memory()
+        self._pinned_buffer.copy_(mono_tensor)
         
-        # Convert to float32 [0, 1]
-        mono_float = mono_tensor.float() / 255.0  # (H, W)
+        # Async transfer to GPU (non-blocking allows CPU to continue)
+        gpu_mono = self._pinned_buffer.cuda(non_blocking=True)  # (H, W) uint8
         
-        # Expand to 3 channels: (H, W) → (3, H, W)
-        rgb_tensor = mono_float.unsqueeze(0).expand(3, -1, -1)  # (3, H, W)
+        # Convert to float32 [0, 1] on GPU
+        mono_float = gpu_mono.float().mul_(1.0 / 255.0)  # (H, W), in-place mul
         
-        # Add batch dimension: (3, H, W) → (1, 3, H, W)
-        return rgb_tensor.unsqueeze(0).contiguous()
+        # Expand to 3 channels: (H, W) → (1, 3, H, W)
+        # .expand() is a view (no memory copy), but downstream ops need contiguous
+        # Use .repeat() for a single small allocation that is contiguous
+        return mono_float.unsqueeze(0).unsqueeze(0).expand(1, 3, -1, -1).contiguous()
     
     # ------------------------------------------------------------------
     # Controls (runtime adjustable)
