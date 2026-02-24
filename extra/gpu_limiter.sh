@@ -2,7 +2,7 @@
 # GPU Power Limiter for WallDance
 # Limits RTX 3090 power to prevent PSU overload on 750W systems
 #
-# Usage: sudo ./gpu_limiter.sh [power_limit_watts]
+# Usage: sudo ./extra/gpu_limiter.sh [power_limit_watts]
 # Default: 280W (safe for 750W PSU with RTX 3090)
 #
 # Run this before starting WallDance if you experience system shutdowns

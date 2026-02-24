@@ -4,13 +4,83 @@ Multi-person pose detection and tracking for wall dancers in low-light outdoor s
 
 ## Quick Start
 
+### Linux
+
 ```bash
 chmod +x install.sh run.sh
 ./install.sh         # installs dependencies via uv
 ./run.sh             # launches GUI + camera processing
 ```
 
+### Windows 11
+
+```bat
+install.bat          REM installs dependencies via uv
+run.bat              REM launches GUI + camera processing
+```
+
+### Windows GPU compatibility note (PyTorch/CUDA)
+
+On some recent NVIDIA GPUs (for example RTX 50-series), the pinned PyTorch/CUDA build may not support your GPU architecture yet. If that happens, WallDance will show **CPU fallback** in the top bar and FPS will be much lower.
+
+`install.bat` checks this and now attempts an automatic fix when detected.
+
+Important: this is usually a **PyTorch wheel compatibility** issue, not a missing standalone CUDA Toolkit issue.
+
+- Installing NVIDIA CUDA Toolkit by itself (for example CUDA 13.1.1 from NVIDIA downloads) is **not usually enough** to fix `sm_120` mismatch.
+- The proper fix is to install a PyTorch build that explicitly supports your GPU architecture.
+
+Simple fix steps:
+
+1. Update NVIDIA driver (latest Studio/Game Ready).
+2. Run `install.bat` again. It will auto-try PyTorch wheel indexes in this order: `cu130`, `cu129`, `cu128`, `cu126`, `cu124`.
+3. If auto-fix still fails, reinstall PyTorch using the selector command from https://pytorch.org/get-started/locally/ (latest stable/nightly CUDA option).
+4. Re-run:
+
+```bat
+install.bat
+run.bat
+```
+
+Optional example (check the PyTorch site first for the latest recommended command):
+
+```bat
+cd application
+uv pip install --upgrade torch torchvision --index-url https://download.pytorch.org/whl/cu130
+```
+
+If stable wheels still do not include your architecture, use a newer/nightly PyTorch CUDA wheel from the PyTorch selector page and then re-run `install.bat`.
+
+To skip the automatic install attempts (for offline/manual control), run:
+
+```bat
+set WALLDANCE_SKIP_TORCH_AUTOFIX=1
+install.bat
+```
+
+If you intentionally run on CPU, use:
+
+```bat
+run.bat --cpu
+```
+
 Requirements: Python 3.10+, `uv` installed (`pip install uv` if missing), a webcam or capture card, and optional CUDA GPU for best performance. Model weights live in `models/` (some are included in the repo; others may be downloaded by Ultralytics depending on configuration).
+
+## Extra Scripts
+
+### Build TensorRT engines
+
+- Linux: `./extra/build_engines.sh`
+- Windows: `extra\build_engines.bat`
+
+Builds TensorRT engines for all `.pt` models in `models/` across preset image sizes.
+
+### GPU power limiter (NVIDIA)
+
+- Linux (root): `sudo ./extra/gpu_limiter.sh 280`
+- Windows (Administrator terminal): `extra\gpu_limiter.bat 280`
+
+Applies a temporary GPU power limit in watts (resets after reboot).
 
 ## License
 

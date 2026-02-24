@@ -9,8 +9,8 @@ dependencies = [
     "ultralytics>=8.3.0",
     "opencv-python>=4.8.0",
     "numpy>=1.24.0,<2.0",
-    "torch==2.4.1",
-    "torchvision==0.19.1",
+    "torch>=2.10.0",
+    "torchvision>=0.25.0",
     "scipy>=1.10.0",
     "filterpy>=1.4.5",
     "python-osc>=1.8.0",
@@ -23,7 +23,7 @@ dependencies = [
 ]
 
 [tool.uv]
-extra-index-url = ["https://download.pytorch.org/whl/cu121"]
+extra-index-url = ["https://download.pytorch.org/whl/cu130"]
 index-strategy = "unsafe-best-match"
 
 [dependency-groups]

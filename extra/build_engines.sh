@@ -1,8 +1,8 @@
 #!/bin/bash
 # Build TensorRT engines for all models and sizes
 
-# Get script directory (workspace root)
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Get workspace root
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR/application"
 
 # Models are in the workspace models folder

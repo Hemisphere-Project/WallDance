@@ -235,7 +235,13 @@ application/
 # Workspace root scripts:
 ├── run.sh               # Launch application
 ├── install.sh           # Install dependencies
-└── build_engines.sh     # Build TensorRT engines
+
+# Extra scripts:
+└── extra/
+    ├── build_engines.sh   # Build TensorRT engines (Linux)
+    ├── build_engines.bat  # Build TensorRT engines (Windows)
+    ├── gpu_limiter.sh     # Set NVIDIA GPU power limit (Linux)
+    └── gpu_limiter.bat    # Set NVIDIA GPU power limit (Windows)
 ```
 
 ---
