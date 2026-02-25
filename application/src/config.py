@@ -84,6 +84,20 @@ USE_GPU_PATH = True                 # Enable GPU frame buffer and GPU-accelerate
                                     # Requires OpenCV with CUDA support
                                     # Falls back to CPU if CUDA not available
 
+# IDS staged rollout switches (stability-first)
+# GPU-direct is ON for maximum YOLO efficiency: frame uploads via pinned
+# memory async DMA (~4 MB mono8), YOLO runs on GPU tensor directly.
+# Preview is rate-limited to reduce GPU→CPU PCIe traffic.
+# Full investigation: docs/IDS_CAMERA_STALL_INVESTIGATION.md
+IDS_USE_GPU_DIRECT = True
+IDS_USE_FULL_RES = True
+# Keep native capture but cap processing resolution to avoid UI stalls.
+# When True, IDS frames are downscaled to CAMERA_WIDTH/HEIGHT before heavy conversion.
+IDS_CAP_PROCESSING_RES = False
+# Cap IDS acquisition FPS (independent from OpenCV camera FPS).
+# Lower values can improve stream stability on full-resolution IDS capture.
+IDS_MAX_FPS = 20
+
 # =============================================================================
 # PERSON SIZE CALIBRATION
 # =============================================================================
@@ -149,7 +163,9 @@ OSC_PORT = 9000                     # Target port
 DISPLAY_ENABLED = True              # Show visualization window
 PREVIEW_ENABLED = True              # Push video to GUI (disable to measure FPS impact)
 # Render at lower resolution to save GPU/CPU, but keep the on-screen area size.
-PREVIEW_RENDER_SCALE = 0.5          # Texture resolution scale (0.3-1.0); lower = faster
+PREVIEW_RENDER_SCALE = 0.35         # Texture resolution scale (0.3-1.0); lower = faster
+                                    # IDS 2688×1528 @ 0.35 → 940×535 (~1.5 MB uint8 transfer)
+                                    # IDS 2688×1528 @ 0.50 → 1344×764 (~3.1 MB — too heavy)
 PREVIEW_DISPLAY_SCALE = 0.5        # On-screen preview area scale relative to camera
 PREVIEW_SCALE = PREVIEW_DISPLAY_SCALE  # Backward compatibility alias
 SHOW_SKELETON = True                # Draw skeleton

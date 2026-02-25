@@ -56,6 +56,9 @@ from config import (
     TRACKER_DISTANCE_THRESHOLD,
     TRACKER_MAX_AGE,
     UPSCALE_FACTOR,
+    IDS_CAP_PROCESSING_RES,
+    IDS_USE_FULL_RES,
+    IDS_USE_GPU_DIRECT,
     USE_TENSORRT,
     YOLO_CONFIDENCE,
     YOLO_IMGSZ,
@@ -71,6 +74,7 @@ from gui_builder import SystemState
 from enhancer import ImageEnhancer
 from tracker import DancerTracker
 from video_recorder import VideoRecorder, RecorderState
+
 
 # IDS Camera support (optional, falls back to OpenCV)
 try:
@@ -158,7 +162,6 @@ class WallDanceApp:
         preview_w = int(CAMERA_WIDTH * PREVIEW_RENDER_SCALE)
         preview_h = int(CAMERA_HEIGHT * PREVIEW_RENDER_SCALE)
         self.processor.set_preview_size(preview_w, preview_h)
-        # FPS cap will be synced after config load (see _apply_full_config)
         
         if self.osc_enabled:
             self._init_osc()
@@ -174,8 +177,11 @@ class WallDanceApp:
 
         # Preview/display state
         self.preview_enabled = PREVIEW_ENABLED
-        self.preview_fps_cap = True  # Limit preview to 10 FPS to save resources
-        self.preview_stride = 2
+        # Preview FPS cap: always ON for IDS to limit GPU→CPU preview PCIe traffic.
+        self.preview_fps_cap = bool(IDS_USE_FULL_RES)
+        if self.preview_fps_cap and self.processor:
+            self.processor.set_preview_fps_cap(10.0)
+        self.preview_stride = 1
         self.preview = PreviewGeometry(
             display_scale=PREVIEW_DISPLAY_SCALE,
             render_scale=PREVIEW_RENDER_SCALE,
@@ -197,8 +203,14 @@ class WallDanceApp:
         self.frame_skip_counter = 0
         self.frame_count = 0
         self.last_fps_time = time.time()
+        self._last_gpu_stats_time = self.last_fps_time
         self.fps = 0.0
         self.timing: Dict[str, float] = {}
+        self._last_spike_log_time = 0.0
+        self._last_diag_log_time = 0.0
+        self._last_fresh_preview_time = time.time()
+        self._last_fresh_frame_time = time.time()
+        self._last_preview_stalled_state = False
         self.latency_ms = 0.0
         self.running = False
         self.last_tracked: List[ScaledTrack] = []
@@ -535,7 +547,7 @@ class WallDanceApp:
             self.gui and self.gui.sync_checkbox("fp16", config["fp16"])
         if "frame_skip" in config:
             self.frame_skip = config["frame_skip"]
-            self.gui and self.gui.sync_slider("frame_skip", config["frame_skip"])
+            self.gui and self.gui.sync_slider("frame_skip", self.frame_skip)
         if "upscale_factor" in config:
             self._cb_upscale_change(config["upscale_factor"])
             self.gui and self.gui.sync_slider("upscale", config["upscale_factor"])
@@ -621,15 +633,20 @@ class WallDanceApp:
             self.preview_enabled = config["preview_enabled"]
             self.gui and self.gui.sync_checkbox("preview", config["preview_enabled"])
         if "preview_fps_cap" in config:
-            self.preview_fps_cap = config["preview_fps_cap"]
-            self.gui and self.gui.sync_checkbox("preview_cap", config["preview_fps_cap"])
+            # When IDS full-res: always force cap ON to reduce PCIe
+            # contention — DearPyGui texture upload is always CPU→GPU PCIe.
+            if IDS_USE_FULL_RES:
+                self.preview_fps_cap = True
+            else:
+                self.preview_fps_cap = config["preview_fps_cap"]
+            self.gui and self.gui.sync_checkbox("preview_cap", self.preview_fps_cap)
         if "preview_scale" in config:
-            self._apply_preview_scale(config["preview_scale"], force=True)
-            self.gui and self.gui.sync_slider("preview_scale", config["preview_scale"])
-        
-        # Sync FPS cap to GPU pipeline
-        if self.processor:
-            self.processor.set_preview_fps_cap(10.0 if self.preview_fps_cap else None)
+            scale = config["preview_scale"]
+            # Cap preview scale for IDS: smaller texture = less PCIe traffic
+            if IDS_USE_FULL_RES:
+                scale = min(scale, PREVIEW_RENDER_SCALE)
+            self._apply_preview_scale(scale, force=True)
+            self.gui and self.gui.sync_slider("preview_scale", scale)
 
     # ------------------------------------------------------------------
     # GUI callbacks
@@ -809,6 +826,8 @@ class WallDanceApp:
             # Update preview geometry
             self.preview.width = int(self.unified_camera.width * self.preview.render_scale)
             self.preview.height = int(self.unified_camera.height * self.preview.render_scale)
+            if self.processor:
+                self.processor.set_preview_size(self.preview.width, self.preview.height)
             self._pending_preview_resize = True
         else:
             self.camera.state.is_open = False
@@ -837,6 +856,8 @@ class WallDanceApp:
             # Update preview geometry to match actual camera size
             self.preview.width = int(state.width * self.preview.render_scale)
             self.preview.height = int(state.height * self.preview.render_scale)
+            if self.processor:
+                self.processor.set_preview_size(self.preview.width, self.preview.height)
             self._pending_preview_resize = True
             print(f"Camera {source} opened: {state.width}x{state.height}")
         else:
@@ -883,6 +904,7 @@ class WallDanceApp:
                 self._pending_model_switch = base_name
                 # Block processing until model is reloaded to prevent imgsz mismatch
                 self._model_loading = True
+                self._model_loaded = False
             else:
                 # No engine for new imgsz - fall back to PyTorch (don't prompt, just switch)
                 print(f"No TRT engine for {base_name}@{new_imgsz}, falling back to PyTorch")
@@ -891,7 +913,13 @@ class WallDanceApp:
                 self._pending_model_switch = base_name
                 # Block processing until model is reloaded to prevent imgsz mismatch
                 self._model_loading = True
+                self._model_loaded = False
                 self.gui.show_toast(f"No TRT for {new_imgsz}px, using PyTorch", duration=3.0, color=(255, 200, 100))
+
+    @staticmethod
+    def _is_trt_input_size_mismatch_error(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return "input size" in msg and "max model size" in msg and "not equal to" in msg
 
     def _cb_person_height_change(self, value: int):
         self.settings.person_height_px = int(value)
@@ -1351,6 +1379,112 @@ class WallDanceApp:
         cv2.rectangle(frame, (text_x - 2, text_y - th - 2), (text_x + tw + 2, text_y + 2), bg_color, -1)
         cv2.putText(frame, label, (text_x, text_y), font, font_scale, color, thickness)
 
+    def _update_gpu_stats_if_due(self, now: Optional[float] = None, interval_s: float = 1.0):
+        """Update top-bar GPU stats at a fixed cadence without affecting FPS timing."""
+        if self.gui is None:
+            return
+        t = now if now is not None else time.time()
+        if t - self._last_gpu_stats_time >= interval_s:
+            self._last_gpu_stats_time = t
+            self.gui.update_gpu_stats()
+
+    def _log_timing_spikes_if_any(self, timing: Optional[Dict[str, float]]):
+        """Diagnosis-only: print timing spikes with per-stage breakdown (throttled)."""
+        if not timing:
+            return
+
+        now = time.time()
+        if now - self._last_spike_log_time < 1.0:
+            return
+
+        watch_keys = [
+            "preview_download",
+            "preview_download_sync",
+            "preview_download_numpy",
+            "preview_download_cast",
+            "extract_cpu_total",
+            "extract_kpts_cpu",
+            "extract_boxes_cpu",
+            "yolo",
+            "total",
+        ]
+        spikes = []
+        for key in watch_keys:
+            value = timing.get(key)
+            if value is None:
+                continue
+            threshold = 20.0 if key not in ("yolo", "total") else 35.0
+            if float(value) >= threshold:
+                spikes.append((key, float(value)))
+
+        if not spikes:
+            return
+
+        self._last_spike_log_time = now
+        spikes.sort(key=lambda item: item[1], reverse=True)
+        summary = ", ".join([f"{name}={value:.1f}ms" for name, value in spikes[:6]])
+        print(f"[PerfSpike] {summary}")
+
+    def _log_runtime_diag_if_stalled(
+        self,
+        camera_read_ms: float,
+        process_wall_ms: float,
+        preview_new: bool,
+        frame_available: bool,
+        gpu_tensor_available: bool,
+        camera_waiting: bool = False,
+    ):
+        """Diagnosis-only: emit a compact runtime heartbeat + stall transitions."""
+        now = time.time()
+        # Stall detection: based on frame ACQUISITION, not preview generation.
+        frame_acquired = frame_available or gpu_tensor_available
+        if frame_acquired:
+            self._last_fresh_frame_time = now
+        if preview_new:
+            self._last_fresh_preview_time = now
+
+        stall_age_s = now - self._last_fresh_frame_time
+        stalled = stall_age_s >= 0.25
+        state_changed = stalled != self._last_preview_stalled_state
+        heartbeat_due = (now - self._last_diag_log_time) >= 1.0
+        if not state_changed and not heartbeat_due:
+            return
+
+        self._last_diag_log_time = now
+        self._last_preview_stalled_state = stalled
+        path = "ids" if self._is_ids_camera_active() else "opencv"
+        timing = self.timing or {}
+        state = "STALL" if stalled else "OK"
+
+        ids_read_age_s = float("inf")
+        ids_acq_age_s = float("inf")
+        ids_frame_count = 0
+        ids_dropped = 0
+        if self._is_ids_camera_active() and self.unified_camera is not None:
+            try:
+                ids_read_age_s = float(self.unified_camera.get_last_frame_age_s())
+                ids_acq_age_s = float(self.unified_camera.get_last_acquired_age_s())
+                ids_frame_count, ids_dropped = self.unified_camera.get_ids_counters()
+            except Exception:
+                pass
+
+        print(
+            "[Diag] "
+            f"state={state} "
+            f"path={path} "
+            f"stall_age={stall_age_s:.2f}s "
+            f"cam_wait={int(camera_waiting)} "
+            f"cam_read={camera_read_ms:.1f}ms "
+            f"proc_wall={process_wall_ms:.1f}ms "
+            f"preview_new={int(preview_new)} "
+            f"frame={int(frame_available)} gpu_tensor={int(gpu_tensor_available)} "
+            f"ids_read_age={ids_read_age_s:.2f}s ids_acq_age={ids_acq_age_s:.2f}s "
+            f"ids_frames={ids_frame_count} ids_drop={ids_dropped} "
+            f"yolo={float(timing.get('yolo', 0.0)):.1f} "
+            f"extract_cpu={float(timing.get('extract_cpu_total', 0.0)):.1f} "
+            f"preview_sync={float(timing.get('preview_download_sync', 0.0)):.1f}"
+        )
+
     def _handle_key(self, sender, app_data):
         key = app_data
         if key == dpg.mvKey_Q:
@@ -1778,6 +1912,7 @@ class WallDanceApp:
                 print(f"Switching to model: {model_to_load}... (TRT: {trt_switch}, force_pt: {force_pt})")
                 if not self._load_model_with_progress(model_to_load, force_pt=force_pt):
                     print(f"Failed to switch to model {model_to_load}")
+                    self._model_loaded = self.model is not None
                     # Revert dropdown to current model
                     if self.gui:
                         self.gui.update_model_dropdown(self.current_model_name)
@@ -1828,31 +1963,38 @@ class WallDanceApp:
                     if self.gui:
                         self.gui.render_frame()
                         # Still update GPU stats periodically when waiting for camera
-                        now = time.time()
-                        if now - self.last_fps_time >= 1.0:
-                            self.last_fps_time = now
-                            self.gui.update_gpu_stats()
+                        self._update_gpu_stats_if_due()
                     time.sleep(0.033)
                     continue
 
                 # Read frame (BGR numpy or GPU tensor for IDS)
                 gpu_tensor = None
                 frame = None
+                camera_read_ms = 0.0
                 
                 try:
+                    _cam_t0 = time.perf_counter()
                     if self._use_unified_camera and self.unified_camera is not None:
-                        # Try GPU direct path for IDS camera (lowest latency)
-                        if (self._is_ids_camera_active() and 
-                            self.processor.gpu_path_active and 
-                            self._model_loaded):
+                        use_ids_gpu_direct = (
+                            IDS_USE_GPU_DIRECT
+                            and not (IDS_USE_FULL_RES and IDS_CAP_PROCESSING_RES)
+                        )
+                        if (
+                            use_ids_gpu_direct
+                            and self._is_ids_camera_active()
+                            and self.processor.gpu_path_active
+                            and self._model_loaded
+                        ):
                             ret, gpu_tensor = self.unified_camera.read_gpu()
                         else:
                             ret, frame = self.unified_camera.read()
                     else:
                         ret, frame = self.camera.read()
+                    camera_read_ms = (time.perf_counter() - _cam_t0) * 1000.0
                 except Exception as e:
                     print(f"Camera read exception: {e}")
                     ret, frame, gpu_tensor = False, None, None
+                    camera_read_ms = 0.0
                 
                 # ret=False means camera error, ret=True with frame=None means still initializing
                 if not ret:
@@ -1876,23 +2018,37 @@ class WallDanceApp:
                         self.gui.update_camera_status(False, self.camera.state.source)
                         self.gui.render_frame()
                         # Update GPU stats
-                        now = time.time()
-                        if now - self.last_fps_time >= 1.0:
-                            self.last_fps_time = now
-                            self.gui.update_gpu_stats()
+                        self._update_gpu_stats_if_due()
                     continue
                 
                 # Camera is open but no frame yet (still initializing) - skip this iteration
                 if frame is None and gpu_tensor is None:
+                    self._log_runtime_diag_if_stalled(
+                        camera_read_ms=camera_read_ms,
+                        process_wall_ms=0.0,
+                        preview_new=False,
+                        frame_available=False,
+                        gpu_tensor_available=False,
+                        camera_waiting=True,
+                    )
                     if self.gui:
                         self.gui.render_frame()
                         # Update GPU stats periodically
-                        now = time.time()
-                        if now - self.last_fps_time >= 1.0:
-                            self.last_fps_time = now
-                            self.gui.update_gpu_stats()
+                        self._update_gpu_stats_if_due()
                     time.sleep(0.01)
                     continue
+
+                # Update frame acquisition timestamp for stall detection.
+                # Must happen here (not just in diag callback) because the diag
+                # heartbeat may fire from a "waiting" iteration where frame=None.
+                self._last_fresh_frame_time = time.time()
+
+                # Stabilization: bound IDS processing resolution to app working size.
+                # Full-res IDS frames can intermittently block the main loop and freeze UI/stats.
+                if frame is not None and self._is_ids_camera_active():
+                    fh, fw = frame.shape[:2]
+                    if fw > CAMERA_WIDTH or fh > CAMERA_HEIGHT:
+                        frame = cv2.resize(frame, (CAMERA_WIDTH, CAMERA_HEIGHT), interpolation=cv2.INTER_AREA)
                 
                 # Recording is handled via camera callback thread - no write_frame here
 
@@ -1913,28 +2069,61 @@ class WallDanceApp:
                 should_process = False
                 
             if should_process:
-                # GPU pipeline handles preview rate limiting internally
-                # Use GPU direct path if we have a GPU tensor (IDS camera)
-                if gpu_tensor is not None:
-                    tracked, display_frame, timing, latency_ms = self.processor.process_gpu_direct(
-                        gpu_tensor, need_preview=True
-                    )
-                else:
-                    tracked, display_frame, timing, latency_ms = self.processor.process(
-                        frame, need_preview=True
-                    )
+                process_wall_ms = 0.0
+                try:
+                    _proc_t0 = time.perf_counter()
+                    if gpu_tensor is not None:
+                        tracked, display_frame, timing, latency_ms = self.processor.process_gpu_direct(
+                            gpu_tensor
+                        )
+                    elif frame is not None:
+                        tracked, display_frame, timing, latency_ms = self.processor.process(
+                            frame, need_preview=True
+                        )
+                    else:
+                        time.sleep(0.001)
+                        continue
+                    process_wall_ms = (time.perf_counter() - _proc_t0) * 1000.0
+                except AssertionError as exc:
+                    if self.model_manager.is_using_tensorrt() and self._is_trt_input_size_mismatch_error(exc):
+                        base_name = self.current_model_name
+                        print(f"[TRT] Detected engine/input size mismatch during switch: {exc}")
+                        print(f"[TRT] Queuing safe reload for {base_name}@{self.settings.imgsz}...")
+                        if self.model_manager.engine_exists(base_name):
+                            self._pending_trt_switch = True
+                        else:
+                            self._pending_trt_switch = False
+                            if self.gui:
+                                self.gui.set_trt_checkbox(False)
+                                self.gui.show_toast(
+                                    f"No TRT for {self.settings.imgsz}px, using PyTorch",
+                                    duration=3.0,
+                                    color=(255, 200, 100),
+                                )
+                        self._pending_model_switch = base_name
+                        self._model_loading = True
+                        self._model_loaded = False
+                        time.sleep(0.01)
+                        continue
+                    raise
                 self.last_tracked = tracked
                 self.timing = timing
                 self.latency_ms = latency_ms
             else:
-                # No processing (STANDBY mode) - just enhance for display
-                # Apply same brightness threshold logic as pipeline
+                process_wall_ms = 0.0
+                # No processing (STANDBY mode) - show preview without YOLO.
+                # For IDS GPU-direct: use cached CPU frame instead of expensive
+                # GPU→CPU download which causes PCIe/USB3 contention.
                 if gpu_tensor is not None:
-                    # GPU tensor path without YOLO: convert to BGR for display
-                    # This is a fallback, normally we'd process
-                    display_frame = gpu_tensor.squeeze(0).permute(1, 2, 0).cpu().numpy()
-                    display_frame = (display_frame * 255).astype(np.uint8)
-                    display_frame = cv2.cvtColor(display_frame, cv2.COLOR_RGB2BGR)
+                    # Use CPU-cached frame from read_gpu() — zero GPU download
+                    if self.unified_camera is not None:
+                        cached = self.unified_camera.get_last_cpu_frame()
+                        if cached is not None:
+                            display_frame = cached
+                        else:
+                            display_frame = None
+                    else:
+                        display_frame = None
                 elif frame is not None:
                     should_enhance = self.settings.enhance_enabled
                     if should_enhance and not self.settings.enhance_lite and not self.settings.enhance_force:
@@ -1958,31 +2147,38 @@ class WallDanceApp:
             if self.preview_enabled and (self.frame_count % self.preview_stride == 0):
                 timing = dict(self.timing) if self.timing else {}
                 
-                # Check if GPU pipeline produced a new preview frame
-                # GPU handles rate limiting - we just check the flag
-                preview_new = timing.get('preview_new', True)  # Default True for CPU path
+                # Determine whether a fresh preview frame is available.
+                # GPU pipeline sets timing['preview_new'] based on its rate limiter.
+                # For CPU pipeline or when no timing, fall back to FPS cap check.
+                if 'preview_new' in timing:
+                    preview_new = timing['preview_new']
+                elif self.preview_fps_cap:
+                    now_pv = time.time()
+                    preview_new = (now_pv - self._last_preview_upload_time) >= 0.1
+                else:
+                    preview_new = True
                 
                 if preview_new and display_frame is not None:
                     render_w, render_h = self.preview.width, self.preview.height
                     
-                    # Check if GPU pipeline already resized the preview frame
-                    # In that case, use original dimensions for keypoint scaling
-                    gpu_prescaled = 'original_w' in timing and 'original_h' in timing
-                    if gpu_prescaled:
-                        # GPU pipeline: preview is pre-scaled, use original dims for scale calc
-                        src_w = timing['original_w']
-                        src_h = timing['original_h']
-                        # Ensure frame is contiguous for OpenCV drawing
+                    # Keypoint coordinates are in the GPU tensor space.
+                    # timing['original_w/h'] reflects that space; use it for scaling.
+                    if 'original_w' in timing and 'original_h' in timing:
+                        src_w = int(timing['original_w'])
+                        src_h = int(timing['original_h'])
+                    else:
+                        src_h, src_w = display_frame.shape[:2]
+
+                    # Resize display_frame to render target
+                    dh, dw = display_frame.shape[:2]
+                    if dw == render_w and dh == render_h:
                         preview_frame = np.ascontiguousarray(display_frame)
                     else:
-                        # CPU pipeline: need to resize
-                        src_h, src_w = display_frame.shape[:2]
                         preview_frame = cv2.resize(display_frame, (render_w, render_h))
                     
-                    scale_x = render_w / src_w
-                    scale_y = render_h / src_h
-                    thickness_scale = min(scale_x, scale_y)
-                    
+                    scale_x = render_w / src_w if src_w > 0 else 1.0
+                    scale_y = render_h / src_h if src_h > 0 else 1.0
+
                     if scale_x != 1.0 or scale_y != 1.0:
                         scaled_tracks = []
                         for track in tracked:
@@ -1996,8 +2192,12 @@ class WallDanceApp:
                                     velocity=track.velocity * np.array([scale_x, scale_y]),
                                 )
                             )
+                        thickness_scale = min(scale_x, scale_y)
+                        ruler_scale = scale_x
                     else:
                         scaled_tracks = tracked
+                        thickness_scale = 1.0
+                        ruler_scale = 1.0
 
                     preview_t0 = time.time()
                     for track in scaled_tracks:
@@ -2011,7 +2211,7 @@ class WallDanceApp:
                             show_id=self.show_ids,
                             thickness_scale=thickness_scale,
                         )
-                    self._draw_height_ruler(preview_frame, scale=scale_x, thickness_scale=thickness_scale)
+                    self._draw_height_ruler(preview_frame, scale=ruler_scale, thickness_scale=thickness_scale)
                     preview_draw_ms = (time.time() - preview_t0) * 1000
                     upload_t0 = time.time()
                     self.gui.update_frame(preview_frame)
@@ -2020,10 +2220,38 @@ class WallDanceApp:
                     timing["preview_draw"] = preview_draw_ms
                     timing["preview_upload"] = preview_upload_ms
                     self.timing = timing
+                    self._log_timing_spikes_if_any(self.timing)
+                    self._log_runtime_diag_if_stalled(
+                        camera_read_ms=camera_read_ms if 'camera_read_ms' in locals() else 0.0,
+                        process_wall_ms=process_wall_ms if 'process_wall_ms' in locals() else 0.0,
+                        preview_new=bool(preview_new),
+                        frame_available=display_frame is not None,
+                        gpu_tensor_available=gpu_tensor is not None,
+                        camera_waiting=False,
+                    )
+                else:
+                    # No fresh preview — still log diagnostics
+                    self._log_runtime_diag_if_stalled(
+                        camera_read_ms=camera_read_ms if 'camera_read_ms' in locals() else 0.0,
+                        process_wall_ms=process_wall_ms if 'process_wall_ms' in locals() else 0.0,
+                        preview_new=False,
+                        frame_available=(frame is not None or display_frame is not None),
+                        gpu_tensor_available=gpu_tensor is not None,
+                        camera_waiting=False,
+                    )
             else:
                 if self.timing:
                     self.timing["preview_draw"] = 0.0
                     self.timing["preview_upload"] = 0.0
+                    self._log_timing_spikes_if_any(self.timing)
+                    self._log_runtime_diag_if_stalled(
+                        camera_read_ms=camera_read_ms if 'camera_read_ms' in locals() else 0.0,
+                        process_wall_ms=process_wall_ms if 'process_wall_ms' in locals() else 0.0,
+                        preview_new=False,
+                        frame_available=frame is not None,
+                        gpu_tensor_available=gpu_tensor is not None,
+                        camera_waiting=False,
+                    )
 
             self.frame_count += 1
             now = time.time()
@@ -2031,8 +2259,7 @@ class WallDanceApp:
                 self.fps = self.frame_count / (now - self.last_fps_time)
                 self.frame_count = 0
                 self.last_fps_time = now
-                # Update GPU stats once per second
-                self.gui.update_gpu_stats()
+            self._update_gpu_stats_if_due(now)
 
             # Get brightness from pipeline timing (already calculated there)
             # Fall back to enhancer status if not available
@@ -2061,6 +2288,7 @@ class WallDanceApp:
                 osc_port=self.osc_port,
                 camera_running=self.camera.state.is_open,
                 enhance_bypassed=enhance_bypassed,
+                gpu_fallback_reason=self.processor.gpu_fallback_reason or "",
             )
             
             # Update recording UI periodically (every 10 frames to avoid overhead)

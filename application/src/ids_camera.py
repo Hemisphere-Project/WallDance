@@ -10,10 +10,10 @@ Optimized for lowest glass-to-GPU latency:
 Pipeline:
     IDS Camera (Mono10/12)
         │
-        ▼ [IDS Peak IPL: Mono10→Mono8]
-    Mono8 numpy array
+        ▼ [IDS Peak IPL: Mono10/12→Mono16 when available]
+    Mono16 (or Mono8 fallback) numpy array
         │
-        ▼ [torch: GPU upload + expand to BGR]
+        ▼ [torch: GPU upload + normalize + expand to BGR]
     GPU Tensor (1,3,H,W) float32
         │
         ▼ [existing gpu_pipeline.py]
@@ -38,7 +38,21 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Callable, List, Optional, Tuple
+import cv2
 import numpy as np
+
+try:
+    from config import CAMERA_WIDTH as APP_CAMERA_WIDTH, CAMERA_HEIGHT as APP_CAMERA_HEIGHT, CAMERA_FPS as APP_CAMERA_FPS
+    from config import IDS_USE_FULL_RES as APP_IDS_USE_FULL_RES
+    from config import IDS_CAP_PROCESSING_RES as APP_IDS_CAP_PROCESSING_RES
+    from config import IDS_MAX_FPS as APP_IDS_MAX_FPS
+except Exception:
+    APP_CAMERA_WIDTH = 1920
+    APP_CAMERA_HEIGHT = 1080
+    APP_CAMERA_FPS = 30
+    APP_IDS_USE_FULL_RES = False
+    APP_IDS_CAP_PROCESSING_RES = True
+    APP_IDS_MAX_FPS = 25
 
 # Check for IDS Peak SDK
 IDS_PEAK_AVAILABLE = False
@@ -114,11 +128,15 @@ class IDSCameraSettings:
     gain_auto: bool = False
     
     # Buffer strategy
-    buffer_count: int = 3  # Minimum for smooth acquisition
+    buffer_count: int = 16  # Large pool so camera always has empties to write into
     newest_only: bool = True  # Drop old frames, keep only newest
     
     # Pixel format preference (will try in order)
     prefer_high_bit_depth: bool = True  # Prefer Mono10/12 over Mono8
+
+    # Manual fallbacks when auto controls are unavailable
+    fallback_exposure_us: float = 10000.0
+    fallback_gain_db: float = 6.0
 
 
 class IDSCamera:
@@ -154,17 +172,22 @@ class IDSCamera:
         self._datastream: Optional[ids_peak.DataStream] = None
         self._node_map: Optional[ids_peak.NodeMap] = None
         
-        # Image converter for Mono10/12 → Mono8
+        # Image converter for Mono formats
         self._converter: Optional[ids_peak_ipl.ImageConverter] = None
         
         # Threading
         self._acquire_thread: Optional[threading.Thread] = None
         self._acquire_running: bool = False
         self._frame_lock = threading.Lock()
-        self._latest_frame: Optional[np.ndarray] = None  # Mono8 numpy
+        self._latest_frame: Optional[np.ndarray] = None  # Mono8/Mono16 numpy
         self._latest_timestamp: float = 0.0
         self._frame_ready: bool = False
         self._acquire_error: Optional[str] = None
+
+        # Dynamic normalization cache for high-bit-depth mono frames
+        self._norm_divisor_cache: Optional[float] = None
+        self._norm_probe_every: int = 120
+        self._norm_probe_counter: int = 0
         
         # GPU tensor cache (for read_gpu)
         self._gpu_tensor: Optional[torch.Tensor] = None
@@ -174,6 +197,9 @@ class IDSCamera:
         
         # Initialize IDS Peak library (idempotent)
         self._acquire_library()
+
+        # Watchdog timing
+        self._last_nonempty_read_time: float = time.perf_counter()
     
     def __del__(self):
         """Cleanup on destruction."""
@@ -385,7 +411,19 @@ class IDSCamera:
                 return False
             
             self._datastream = datastreams[0].OpenDataStream()
-            
+
+            # Use NewestOnly buffer handling so the SDK auto-recycles old
+            # filled buffers back to the input queue.  This guarantees the
+            # camera always has empty buffers to write into, preventing the
+            # periodic stream starvation observed at full resolution.
+            try:
+                ds_nodemap = self._datastream.NodeMaps()[0]
+                handling_node = ds_nodemap.FindNode("StreamBufferHandlingMode")
+                handling_node.SetCurrentEntry(handling_node.FindEntry("NewestOnly"))
+                print("[IDSCamera] StreamBufferHandlingMode: NewestOnly")
+            except Exception as e:
+                print(f"[IDSCamera] Could not set NewestOnly buffer handling: {e}")
+
             # Allocate and queue buffers
             self._allocate_buffers()
             
@@ -403,37 +441,98 @@ class IDSCamera:
     def _configure_camera(self) -> None:
         """Configure camera settings (resolution, FPS, exposure, etc.)."""
         nm = self._node_map
+
+        # --- Acquisition Mode / Trigger ---
+        # Force free-running mode (prevents accidental triggered-capture stalls).
+        try:
+            acq_mode = nm.FindNode("AcquisitionMode")
+            acq_mode.SetCurrentEntry(acq_mode.FindEntry("Continuous"))
+            print("[IDSCamera] Acquisition mode: Continuous")
+        except Exception:
+            pass
+
+        try:
+            try:
+                trig_sel = nm.FindNode("TriggerSelector")
+                trig_sel.SetCurrentEntry(trig_sel.FindEntry("FrameStart"))
+            except Exception:
+                pass
+            trig_mode = nm.FindNode("TriggerMode")
+            trig_mode.SetCurrentEntry(trig_mode.FindEntry("Off"))
+            print("[IDSCamera] Trigger: Off (free-running)")
+        except Exception:
+            pass
         
         # --- Pixel Format ---
-        # Try formats in preference order
-        formats_to_try = []
-        if self.settings.prefer_high_bit_depth:
-            formats_to_try = ["Mono12", "Mono10", "Mono8"]
-        else:
-            formats_to_try = ["Mono8", "Mono10", "Mono12"]
-        
+        # ALWAYS prefer Mono8 to avoid packed-format IPL conversion which
+        # holds the acquisition buffer during Convert (causes stream stalls
+        # at full resolution).  Fall back to packed formats only if Mono8 is
+        # truly unavailable.
         pixel_format_node = nm.FindNode("PixelFormat")
+
+        all_entries = []
         available_formats = []
         for entry in pixel_format_node.Entries():
-            if entry.AccessStatus() != ids_peak.NodeAccessStatus_NotAvailable:
-                available_formats.append(entry.SymbolicValue())
-        
+            sym = entry.SymbolicValue()
+            status = entry.AccessStatus()
+            is_available = status != ids_peak.NodeAccessStatus_NotAvailable
+            all_entries.append(f"{sym}({'ok' if is_available else 'N/A'})")
+            if is_available:
+                available_formats.append(sym)
+        print(f"[IDSCamera] All pixel format entries: {all_entries}")
+        print(f"[IDSCamera] Available pixel formats: {available_formats}")
+
         selected_format = None
-        for fmt in formats_to_try:
-            if fmt in available_formats:
-                selected_format = fmt
+
+        # --- Priority 1: Mono8 (zero conversion, instant buffer return) ---
+        for symbolic in available_formats:
+            if symbolic.lower() == "mono8":
+                selected_format = symbolic
+                print(f"[IDSCamera] Mono8 found in available formats!")
                 break
-        
+
+        # --- Priority 2: Try setting Mono8 even if not listed ---
+        if selected_format is None:
+            try:
+                pixel_format_node.SetCurrentEntry(
+                    pixel_format_node.FindEntry("Mono8")
+                )
+                selected_format = "Mono8"
+                print("[IDSCamera] Mono8 set via direct FindEntry (was unlisted)")
+            except Exception as e:
+                print(f"[IDSCamera] Mono8 not available via FindEntry: {e}")
+
+        # --- Priority 3: High-bit-depth preference or fallback ---
+        if selected_format is None:
+            def _pick_by_tokens(token_groups):
+                for tokens in token_groups:
+                    for symbolic in available_formats:
+                        low = symbolic.lower()
+                        if any(token in low for token in tokens):
+                            return symbolic
+                return None
+
+            if self.settings.prefer_high_bit_depth:
+                selected_format = _pick_by_tokens([
+                    ["mono12"], ["mono10"], ["mono8"],
+                ])
+            else:
+                selected_format = _pick_by_tokens([
+                    ["mono8"], ["mono10"], ["mono12"],
+                ])
+
         if selected_format is None and available_formats:
-            # Fallback: pick the first available format
             selected_format = available_formats[0]
 
         if selected_format:
-            pixel_format_node.SetCurrentEntry(
-                pixel_format_node.FindEntry(selected_format)
-            )
+            try:
+                pixel_format_node.SetCurrentEntry(
+                    pixel_format_node.FindEntry(selected_format)
+                )
+            except Exception:
+                pass  # Already set above for the Mono8-direct path
             self.state.pixel_format = selected_format
-            print(f"[IDSCamera] Pixel format: {selected_format}")
+            print(f"[IDSCamera] Pixel format SET: {selected_format}")
         
         # --- Resolution ---
         width_node = nm.FindNode("Width")
@@ -480,6 +579,18 @@ class IDSCamera:
         except Exception as e:
             print(f"[IDSCamera] Could not set frame rate: {e}")
         
+        # --- Device-Link Throughput Limit ---
+        # Log the camera's default value for diagnostics but do NOT change it.
+        # Empirically, both raising (300 → stall/2 s) and lowering (125 →
+        # stall/5 s) made stalls worse than the camera default (162 → 17 s).
+        try:
+            tl_node = nm.FindNode("DeviceLinkThroughputLimit")
+            print(f"[IDSCamera] DeviceLinkThroughputLimit: "
+                  f"{tl_node.Value()/1e6:.0f} MB/s (keeping default, "
+                  f"max {tl_node.Maximum()/1e6:.0f})")
+        except Exception as e:
+            print(f"[IDSCamera] Could not read DeviceLinkThroughputLimit: {e}")
+        
         # --- Exposure ---
         try:
             if self.settings.exposure_auto:
@@ -492,13 +603,17 @@ class IDSCamera:
                     print("[IDSCamera] Auto exposure not available, using manual")
                     self.settings.exposure_auto = False
             
-            if not self.settings.exposure_auto and self.settings.exposure_us > 0:
+            if not self.settings.exposure_auto:
                 exp_node = nm.FindNode("ExposureTime")
-                target_exp = max(exp_node.Minimum(), 
-                               min(self.settings.exposure_us, exp_node.Maximum()))
+                requested_exp = self.settings.exposure_us if self.settings.exposure_us > 0 else self.settings.fallback_exposure_us
+                target_exp = max(exp_node.Minimum(), min(requested_exp, exp_node.Maximum()))
                 exp_node.SetValue(target_exp)
-                self.state.exposure_us = exp_node.Value()
-                print(f"[IDSCamera] Exposure: {self.state.exposure_us:.0f} µs")
+                print(f"[IDSCamera] Exposure: Manual {exp_node.Value():.0f} µs")
+
+            try:
+                self.state.exposure_us = nm.FindNode("ExposureTime").Value()
+            except Exception:
+                pass
         except Exception as e:
             print(f"[IDSCamera] Could not configure exposure: {e}")
         
@@ -510,15 +625,21 @@ class IDSCamera:
                     auto_node.SetCurrentEntry(auto_node.FindEntry("Continuous"))
                     print("[IDSCamera] Gain: Auto (Continuous)")
                 except:
-                    print("[IDSCamera] Auto gain not available")
-            else:
+                    print("[IDSCamera] Auto gain not available, using manual")
+                    self.settings.gain_auto = False
+
+            if not self.settings.gain_auto:
                 gain_node = nm.FindNode("Gain")
-                if self.settings.gain_db > 0:
-                    target_gain = max(gain_node.Minimum(),
-                                    min(self.settings.gain_db, gain_node.Maximum()))
-                    gain_node.SetValue(target_gain)
+                requested_gain = self.settings.gain_db if self.settings.gain_db > 0 else self.settings.fallback_gain_db
+                target_gain = max(gain_node.Minimum(), min(requested_gain, gain_node.Maximum()))
+                gain_node.SetValue(target_gain)
+                print(f"[IDSCamera] Gain: Manual {gain_node.Value():.1f} dB")
+
+            try:
+                gain_node = nm.FindNode("Gain")
                 self.state.gain_db = gain_node.Value()
-                print(f"[IDSCamera] Gain: {self.state.gain_db:.1f} dB")
+            except Exception:
+                pass
         except Exception as e:
             print(f"[IDSCamera] Could not configure gain: {e}")
     
@@ -680,113 +801,192 @@ class IDSCamera:
         print("[IDSCamera] Acquisition stopped")
     
     def _acquisition_loop(self) -> None:
-        """Background thread: continuously acquire frames."""
+        """Background thread: continuously acquire frames.
+
+        Flow: WaitForBuffer → memcpy raw bytes → QueueBuffer → numpy unpack.
+        For packed IDS formats (Mono10g40IDS, Mono12g24IDS) we do a fast
+        numpy-only unpack to Mono8 AFTER the buffer is returned, so the
+        buffer hold time is just the memcpy (~1-2 ms).
+        """
         print("[IDSCamera] Acquisition thread started")
-        
-        # Timeout in ms (slightly longer than frame period)
-        timeout_ms = int(2000.0 / max(1.0, self.state.fps))
-        
+
+        # Timeout = 5 frame periods, clamped to [150, 500] ms.
+        # Shorter timeout → faster stall recovery (retry sooner).
+        frame_period_ms = 1000.0 / max(1.0, self.state.fps)
+        timeout_ms = max(150, min(500, int(5.0 * frame_period_ms)))
+        print(f"[IDSCamera] WaitForBuffer timeout: {timeout_ms} ms")
+        consecutive_errors = 0
+        last_timeout_log = 0.0
+
+        # Detect pixel format once — stays constant for the session.
+        pf_name = self.state.pixel_format.lower()  # e.g. "mono10g40ids"
+        width = self.state.width
+        height = self.state.height
+        print(f"[IDSCamera] Acq loop: pf={self.state.pixel_format}, {width}x{height}")
+
         while self._acquire_running:
             try:
-                # Wait for buffer with timeout
                 buffer = self._datastream.WaitForFinishedBuffer(timeout_ms)
-                
+
                 if not self._acquire_running:
-                    # Re-queue and exit
                     self._datastream.QueueBuffer(buffer)
                     break
-                
-                # Process buffer
-                frame_mono8 = self._process_buffer(buffer)
-                
-                # Re-queue buffer immediately (before any slow operations)
-                self._datastream.QueueBuffer(buffer)
-                
-                if frame_mono8 is not None:
+
+                # === FAST PATH: copy raw bytes, return buffer, unpack ===
+                try:
+                    ipl_image = ids_peak_ipl_extension.BufferToImage(buffer)
+                    raw = ipl_image.get_numpy_1D().copy()      # ~1-2 ms memcpy
+                finally:
+                    self._datastream.QueueBuffer(buffer)       # buffer free!
+
+                # Unpack packed format → (H, W) uint8 using numpy only
+                frame = self._unpack_raw(raw, width, height, pf_name)
+
+                if frame is not None:
+                    consecutive_errors = 0
                     timestamp = time.perf_counter()
-                    
-                    # Update latest frame (thread-safe)
+
                     with self._frame_lock:
-                        # If newest_only and frame exists, count as dropped
                         if self.settings.newest_only and self._frame_ready:
                             self.state.dropped_frames += 1
-                        
-                        self._latest_frame = frame_mono8
+
+                        self._latest_frame = frame
                         self._latest_timestamp = timestamp
                         self._frame_ready = True
                         self.state.frame_count += 1
                         self.state.last_frame_time = timestamp
-                    
-                    # Callback for recording (outside lock)
+
                     if self._frame_callback is not None:
                         try:
-                            # Convert to BGR for callback
-                            bgr = self._mono8_to_bgr_cpu(frame_mono8)
+                            bgr = self._mono_to_bgr_cpu(frame)
                             self._frame_callback(bgr)
                         except Exception as e:
                             print(f"[IDSCamera] Frame callback error: {e}")
-                
+
             except ids_peak.Exception as e:
                 if self._acquire_running:
-                    # Check if it's just a timeout
                     if "timeout" in str(e).lower():
+                        now = time.perf_counter()
+                        if now - last_timeout_log >= 2.0:
+                            last_timeout_log = now
+                            # Log buffer pool health for stall diagnosis
+                            try:
+                                n_announced = len(self._datastream.AnnouncedBuffers())
+                                n_queued = self._datastream.NumBuffersQueued()
+                                print(f"[IDSCamera] Buffer timeout — "
+                                      f"queued={n_queued}/{n_announced}")
+                            except Exception:
+                                print("[IDSCamera] Buffer timeout (waiting…)")
                         continue
-                    print(f"[IDSCamera] Acquisition error: {e}")
-                    self._acquire_error = str(e)
+                    consecutive_errors += 1
+                    if consecutive_errors == 1 or consecutive_errors % 20 == 0:
+                        print(f"[IDSCamera] Acquisition error ({consecutive_errors}): {e}")
+                    if consecutive_errors >= 100:
+                        self._acquire_error = str(e)
+                        break
+                    time.sleep(0.002)
+                    continue
                 break
             except Exception as e:
                 if self._acquire_running:
-                    print(f"[IDSCamera] Unexpected error: {e}")
-                    self._acquire_error = str(e)
+                    consecutive_errors += 1
+                    if consecutive_errors == 1 or consecutive_errors % 20 == 0:
+                        print(f"[IDSCamera] Unexpected error ({consecutive_errors}): {e}")
+                    if consecutive_errors >= 100:
+                        self._acquire_error = str(e)
+                        break
+                    time.sleep(0.002)
+                    continue
                 break
-        
+
         print("[IDSCamera] Acquisition thread finished")
-    
-    def _process_buffer(self, buffer) -> Optional[np.ndarray]:
-        """Convert IDS buffer to Mono8 numpy array.
-        
-        Handles Mono10/Mono12 → Mono8 conversion via IDS IPL.
-        
-        Args:
-            buffer: IDS Peak buffer object
-            
-        Returns:
-            Mono8 numpy array (H, W) or None on error
+
+    # ------------------------------------------------------------------
+    # Fast numpy-only format unpacking (no IPL dependency)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _unpack_raw(
+        raw: np.ndarray, width: int, height: int, pf_name: str
+    ) -> Optional[np.ndarray]:
+        """Unpack raw packed bytes into a (H, W) uint8 mono frame.
+
+        Supports:
+        - mono10g40ids: 5 bytes → 4 pixels (10-bit). Bytes 0-3 are MSBs,
+          byte 4 holds 2-bit LSBs. Taking bytes 0-3 = right-shift by 2 =
+          Mono8 with <1 LSB error.
+        - mono12g24ids: 3 bytes → 2 pixels (12-bit). Byte layout TBD; for
+          now falls back to IPL Convert.
+        - mono8: direct reshape.
+
+        All work happens on a COPY of the buffer data, so no IDS buffer is
+        held during this call.
         """
         try:
-            # Create IPL image from buffer
-            ipl_image = ids_peak_ipl_extension.BufferToImage(buffer)
-            
-            # Get pixel format
-            pixel_format = ipl_image.PixelFormat()
-            
-            # Convert to Mono8 if needed
-            if pixel_format != ids_peak_ipl.PixelFormatName_Mono8:
-                # Use pre-allocated converter for efficiency
-                ipl_image = self._converter.Convert(
-                    ipl_image,
-                    ids_peak_ipl.PixelFormatName_Mono8
-                )
-            
-            # Get numpy array (zero-copy if possible)
-            # IDS IPL provides direct buffer access
-            width = ipl_image.Width()
-            height = ipl_image.Height()
-            
-            # Create numpy array from image data
-            # Note: We need to copy here because buffer will be requeued
-            data = ipl_image.get_numpy_1D()
-            frame = data.reshape((height, width)).copy()
-            
-            return frame
-            
+            pixels = width * height
+
+            if "mono10g40" in pf_name:
+                # Mono10g40IDS: 5 bytes per 4 pixels.
+                # Bytes 0-3 = top 8 bits of pixels 0-3 (identical to >>2).
+                # Just take the first 4 bytes of each 5-byte group.
+                groups = raw.reshape(-1, 5)
+                mono8 = groups[:, :4].reshape(height, width).copy()
+                return mono8
+
+            if "mono12g24" in pf_name:
+                # Mono12g24IDS: 3 bytes per 2 pixels (12-bit packed).
+                # Layout: [MSB_p0, MSB_p1, LSBs] where byte2 holds
+                #   p0_lsb[3:0] in bits 3:0, p1_lsb[3:0] in bits 7:4.
+                # Taking bytes 0,1 = right-shift by 4 = Mono8.
+                groups = raw.reshape(-1, 3)
+                mono8 = groups[:, :2].reshape(height, width).copy()
+                return mono8
+
+            if "mono8" in pf_name:
+                if raw.size == pixels:
+                    return raw.reshape(height, width).copy()
+
+            # Unknown format — try IPL Convert as fallback.
+            return IDSCamera._ipl_convert_fallback(raw, width, height)
+
         except Exception as e:
-            print(f"[IDSCamera] Buffer processing error: {e}")
+            print(f"[IDSCamera] Unpack error ({pf_name}): {e}")
             return None
-    
+
+    @staticmethod
+    def _ipl_convert_fallback(
+        raw: np.ndarray, width: int, height: int
+    ) -> Optional[np.ndarray]:
+        """Last-resort fallback: use IPL to convert from raw bytes."""
+        try:
+            # We don't know the format for sure, so this may fail.
+            print("[IDSCamera] WARNING: falling back to IPL Convert")
+            converter = ids_peak_ipl.ImageConverter()
+            # Try Mono10g40IDS format ID
+            pf_id = 1073741839  # Mono10g40IDS
+            img = ids_peak_ipl.Image.CreateFromSizeAndPythonBuffer(
+                pf_id, bytes(raw), width, height
+            )
+            converted = converter.Convert(img, ids_peak_ipl.PixelFormatName_Mono8)
+            data = converted.get_numpy_1D()
+            return data.reshape(height, width).copy()
+        except Exception as e:
+            print(f"[IDSCamera] IPL fallback failed: {e}")
+            return None
+
     # ------------------------------------------------------------------
     # Frame Reading
     # ------------------------------------------------------------------
+    # CPU frame cache for zero-download preview (Strategy B+).
+    # read_gpu() populates this with the CPU BGR frame produced from the
+    # same mono8 used for the GPU upload.  The main loop can retrieve it
+    # via get_last_cpu_frame() for preview without any GPU→CPU transfer.
+    _cached_cpu_bgr: Optional[np.ndarray] = None
+
+    def get_last_cpu_frame(self) -> Optional[np.ndarray]:
+        """Return the last CPU BGR frame cached during read_gpu()."""
+        return self._cached_cpu_bgr
+
     def read(self) -> Tuple[bool, Optional[np.ndarray]]:
         """Read latest frame as BGR numpy array.
         
@@ -806,24 +1006,27 @@ class IDSCamera:
             if not self._frame_ready or self._latest_frame is None:
                 return True, None  # Open but no frame yet
             
-            # Convert Mono8 to BGR
+            # Convert Mono (8/16-bit) to BGR8 for OpenCV-compatible path
             frame_mono8 = self._latest_frame
             
             if self.settings.newest_only:
                 # Clear the ready flag so we know if we're getting stale frames
                 self._frame_ready = False
+
+        frame_mono8 = self._prepare_mono_for_processing(frame_mono8)
         
-        # Convert to BGR outside lock
-        bgr = self._mono8_to_bgr_cpu(frame_mono8)
+        # Convert to BGR8 outside lock
+        bgr = self._mono_to_bgr_cpu(frame_mono8)
+        self._last_nonempty_read_time = time.perf_counter()
         return True, bgr
     
     def read_mono(self) -> Tuple[bool, Optional[np.ndarray]]:
-        """Read latest frame as Mono8 numpy array.
+        """Read latest frame as Mono numpy array.
         
         More efficient than read() if you don't need BGR.
         
         Returns:
-            (True, Mono8 frame) if available
+            (True, Mono frame) if available
             (False, None) if error or not ready
         """
         if self._acquire_error is not None:
@@ -847,7 +1050,7 @@ class IDSCamera:
         """Read latest frame as GPU tensor (1, 3, H, W) float32.
         
         Optimized path for GPU pipeline:
-        - Mono8 → GPU upload → expand to 3 channels
+        - Mono8/Mono16 → GPU upload → normalize → expand to 3 channels
         - Returns tensor ready for YOLO/enhancement
         
         Returns:
@@ -872,24 +1075,82 @@ class IDSCamera:
             
             if self.settings.newest_only:
                 self._frame_ready = False
+
+        frame_mono8 = self._prepare_mono_for_processing(frame_mono8)
         
-        # Convert Mono8 → GPU tensor (1, 3, H, W) outside lock
-        gpu_tensor = self._mono8_to_gpu_bgr(frame_mono8)
+        # Convert Mono (8/16-bit) → GPU tensor (1, 3, H, W) outside lock
+        gpu_tensor = self._mono_to_gpu_bgr(frame_mono8)
+        
+        # Cache CPU BGR frame for STANDBY preview (avoids 49 MB GPU→CPU download).
+        # The mono→BGR conversion is cheap (~1 ms).
+        self._cached_cpu_bgr = self._mono_to_bgr_cpu(frame_mono8)
+        
+        self._last_nonempty_read_time = time.perf_counter()
         return True, gpu_tensor
-    
-    def _mono8_to_bgr_cpu(self, mono8: np.ndarray) -> np.ndarray:
-        """Convert Mono8 to BGR on CPU.
-        
-        Simply expands single channel to 3 identical channels.
-        """
-        # Stack to create (H, W, 3)
-        return np.stack([mono8, mono8, mono8], axis=-1)
-    
-    def _mono8_to_gpu_bgr(self, mono8: np.ndarray) -> 'torch.Tensor':
-        """Convert Mono8 to GPU tensor (1, 3, H, W) float32 [0, 1].
+
+    def _prepare_mono_for_processing(self, mono: np.ndarray) -> np.ndarray:
+        """Bound full-res IDS frames to app working resolution before heavy conversions."""
+        if not APP_IDS_USE_FULL_RES:
+            return mono
+
+        if not APP_IDS_CAP_PROCESSING_RES:
+            return mono
+
+        if mono is None or mono.ndim < 2:
+            return mono
+
+        h, w = mono.shape[:2]
+        if w <= APP_CAMERA_WIDTH and h <= APP_CAMERA_HEIGHT:
+            return mono
+
+        return cv2.resize(mono, (APP_CAMERA_WIDTH, APP_CAMERA_HEIGHT), interpolation=cv2.INTER_AREA)
+
+    def _get_mono_normalization_divisor(self, mono: np.ndarray) -> float:
+        """Return normalization divisor according to camera bit depth."""
+        if mono.dtype == np.uint8:
+            return 255.0
+
+        pf = (self.state.pixel_format or "").lower()
+        # IDS packed formats converted to Mono16 are typically scaled to full uint16 range.
+        if "g40" in pf or "packed" in pf:
+            return 65535.0
+
+        # Reuse cached divisor and probe occasionally (full-frame max is expensive).
+        if self._norm_divisor_cache is not None and self._norm_probe_counter < self._norm_probe_every:
+            self._norm_probe_counter += 1
+            return self._norm_divisor_cache
+
+        # For uint16 containers, infer effective range from a cheap subsample.
+        sample = mono[::16, ::16] if mono.ndim == 2 else mono
+        max_value = float(np.max(sample)) if sample.size else 65535.0
+        if max_value <= 1023.0:
+            divisor = 1023.0
+        elif max_value <= 4095.0:
+            divisor = 4095.0
+        else:
+            # If values exceed 12-bit range, treat as full 16-bit normalized data.
+            divisor = 65535.0
+
+        self._norm_divisor_cache = divisor
+        self._norm_probe_counter = 0
+        return divisor
+
+    def _mono_to_bgr_cpu(self, mono: np.ndarray) -> np.ndarray:
+        """Convert Mono (8/16-bit) to BGR uint8 for preview/recording."""
+        if mono.dtype != np.uint8:
+            divisor = self._get_mono_normalization_divisor(mono)
+            alpha = 255.0 / max(1.0, divisor)
+            mono8 = cv2.convertScaleAbs(mono, alpha=alpha)
+        else:
+            mono8 = mono
+
+        return cv2.cvtColor(mono8, cv2.COLOR_GRAY2BGR)
+
+    def _mono_to_gpu_bgr(self, mono: np.ndarray) -> 'torch.Tensor':
+        """Convert Mono (8/16-bit) to GPU tensor (1, 3, H, W) float32 [0, 1].
         
         Optimized path:
-        1. Upload Mono8 to GPU via pinned memory (async DMA)
+        1. Upload Mono to GPU via pinned memory (async DMA)
         2. Expand to 3 channels (pseudo-BGR)
         3. Normalize to [0, 1]
         
@@ -898,16 +1159,21 @@ class IDSCamera:
         """
         # Pin+upload: pinned memory enables async DMA on the PCIe bus
         # Allocate/reuse pinned buffer for consistent frame sizes
-        mono_tensor = torch.from_numpy(mono8)  # (H, W) uint8, CPU
-        if not hasattr(self, '_pinned_buffer') or self._pinned_buffer.shape != mono_tensor.shape:
+        mono_tensor = torch.from_numpy(mono)  # (H, W) uint8/uint16, CPU
+        if (
+            not hasattr(self, '_pinned_buffer')
+            or self._pinned_buffer.shape != mono_tensor.shape
+            or self._pinned_buffer.dtype != mono_tensor.dtype
+        ):
             self._pinned_buffer = torch.empty_like(mono_tensor).pin_memory()
         self._pinned_buffer.copy_(mono_tensor)
         
         # Async transfer to GPU (non-blocking allows CPU to continue)
-        gpu_mono = self._pinned_buffer.cuda(non_blocking=True)  # (H, W) uint8
+        gpu_mono = self._pinned_buffer.cuda(non_blocking=True)  # (H, W) uint8/uint16
         
         # Convert to float32 [0, 1] on GPU
-        mono_float = gpu_mono.float().mul_(1.0 / 255.0)  # (H, W), in-place mul
+        divisor = self._get_mono_normalization_divisor(mono)
+        mono_float = gpu_mono.float().mul_(1.0 / divisor).clamp_(0.0, 1.0)  # (H, W)
         
         # Expand to 3 channels: (H, W) → (1, 3, H, W)
         # .expand() is a view (no memory copy), but downstream ops need contiguous
@@ -966,7 +1232,10 @@ class IDSCamera:
             self.settings.exposure_auto = enabled
             return True
         except Exception as e:
-            print(f"[IDSCamera] Failed to set auto exposure: {e}")
+            # Some IDS models do not expose ExposureAuto in this node map.
+            # Keep manual mode without spamming hard errors.
+            self.settings.exposure_auto = False
+            print("[IDSCamera] ExposureAuto node unavailable; staying in manual exposure mode")
             return False
     
     def set_gain(self, gain_db: float) -> bool:
@@ -1018,7 +1287,9 @@ class IDSCamera:
             self.settings.gain_auto = enabled
             return True
         except Exception as e:
-            print(f"[IDSCamera] Failed to set auto gain: {e}")
+            # Some IDS models do not expose GainAuto in this node map.
+            self.settings.gain_auto = False
+            print("[IDSCamera] GainAuto node unavailable; staying in manual gain mode")
             return False
     
     def get_exposure_range(self) -> Tuple[float, float]:
@@ -1070,7 +1341,22 @@ class IDSCamera:
     def get_error(self) -> Optional[str]:
         """Get error message if any."""
         return self._acquire_error
-    
+
+    def get_last_frame_age_s(self) -> float:
+        """Return seconds since the last successfully read frame."""
+        now = time.perf_counter()
+        if self._last_nonempty_read_time <= 0:
+            return float("inf")
+        return max(0.0, now - self._last_nonempty_read_time)
+
+    def get_last_acquired_age_s(self) -> float:
+        """Return seconds since the last frame acquired by IDS thread."""
+        now = time.perf_counter()
+        last = self.state.last_frame_time
+        if last <= 0:
+            return float("inf")
+        return max(0.0, now - last)
+
     def set_frame_callback(self, callback: Optional[Callable[[np.ndarray], None]]) -> None:
         """Set callback to receive every frame (for recording).
         
@@ -1161,10 +1447,13 @@ class UnifiedCamera:
         
         try:
             settings = IDSCameraSettings(
-                target_fps=30.0,
+                width=0 if APP_IDS_USE_FULL_RES else APP_CAMERA_WIDTH,
+                height=0 if APP_IDS_USE_FULL_RES else APP_CAMERA_HEIGHT,
+                target_fps=float(max(1.0, min(float(APP_CAMERA_FPS), float(APP_IDS_MAX_FPS)))),
                 exposure_auto=True,
+                gain_auto=True,
                 newest_only=True,
-                prefer_high_bit_depth=True,
+                prefer_high_bit_depth=False,
             )
             self._ids_camera = IDSCamera(settings)
             
@@ -1265,6 +1554,17 @@ class UnifiedCamera:
             else:
                 return False, None
     
+    def get_last_cpu_frame(self) -> Optional[np.ndarray]:
+        """Return last CPU BGR frame cached during read_gpu() (IDS only).
+        
+        Used for zero-download preview: the GPU tensor goes to YOLO while
+        this cached CPU frame provides preview without any GPU→CPU transfer.
+        Returns None if not IDS or no frame cached yet.
+        """
+        if self._source_type == CameraSource.IDS_PEAK:
+            return self._ids_camera.get_last_cpu_frame()
+        return None
+    
     @property
     def source_type(self) -> Optional[CameraSource]:
         """Get current source type."""
@@ -1305,6 +1605,22 @@ class UnifiedCamera:
         if self._source_type == CameraSource.IDS_PEAK:
             return self._ids_camera.set_gain_auto(enabled)
         return False
+
+    # Diagnostics helpers (no-op values for non-IDS sources)
+    def get_last_frame_age_s(self) -> float:
+        if self._source_type == CameraSource.IDS_PEAK and self._ids_camera is not None:
+            return self._ids_camera.get_last_frame_age_s()
+        return float("inf")
+
+    def get_last_acquired_age_s(self) -> float:
+        if self._source_type == CameraSource.IDS_PEAK and self._ids_camera is not None:
+            return self._ids_camera.get_last_acquired_age_s()
+        return float("inf")
+
+    def get_ids_counters(self) -> Tuple[int, int]:
+        if self._source_type == CameraSource.IDS_PEAK and self._ids_camera is not None:
+            return (int(self._ids_camera.state.frame_count), int(self._ids_camera.state.dropped_frames))
+        return (0, 0)
 
 
 # =============================================================================

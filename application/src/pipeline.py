@@ -94,10 +94,12 @@ class FrameProcessor:
         self.tracker = tracker or DancerTracker()
         self.osc = osc_sender
         self._timing: Dict[str, float] = {}
+        self._extract_transfer_timing: Dict[str, float] = {}
         
         # GPU pipeline (zero-copy path)
         self._gpu_pipeline: Optional[GpuPipeline] = None
         self._gpu_path_active = False
+        self._gpu_fallback_reason: Optional[str] = None
         
         if settings.use_gpu_path and GPU_PIPELINE_AVAILABLE:
             # Create GPU pipeline with settings
@@ -121,6 +123,33 @@ class FrameProcessor:
         else:
             print("[Pipeline] CUDA not available - all processing on CPU")
 
+    @staticmethod
+    def _is_cuda_kernel_compat_error(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return (
+            "no kernel image is available for execution on the device" in msg
+            or "cuda error: no kernel image" in msg
+        )
+
+    def _disable_gpu_path_and_fallback(self, reason: str):
+        if self._gpu_fallback_reason is not None:
+            return
+
+        self._gpu_fallback_reason = reason
+        self._gpu_path_active = False
+        self._gpu_pipeline = None
+        self.settings.use_gpu_path = False
+        self.settings.use_fp16 = False
+
+        try:
+            if hasattr(self.model, "to"):
+                self.model.to("cpu")
+        except Exception as e:
+            print(f"[Pipeline] Warning: could not move model to CPU: {e}")
+
+        print("[Pipeline] GPU path disabled due to CUDA runtime incompatibility; falling back to CPU processing.")
+        print(f"[Pipeline] Reason: {reason}")
+
     # ------------------------------------------------------------------
     # Configuration management
     # ------------------------------------------------------------------
@@ -136,6 +165,23 @@ class FrameProcessor:
     def gpu_path_active(self) -> bool:
         """Check if GPU path is currently active."""
         return self._gpu_path_active
+
+    def force_cpu_pipeline(self):
+        """Force CPU processing path even when GPU pipeline is available.
+
+        YOLO still runs on GPU (Ultralytics handles upload internally).
+        Enhancement and preview rendering stay on CPU.
+        Used by Strategy B to eliminate PCIe contention with USB3 cameras.
+        """
+        if self._gpu_path_active:
+            self._gpu_path_active = False
+            # Keep _gpu_pipeline reference alive for potential re-enable
+            print("[Pipeline] CPU-first mode: enhancement + preview on CPU, YOLO on GPU")
+
+    @property
+    def gpu_fallback_reason(self) -> Optional[str]:
+        """Return CUDA/GPU fallback reason when GPU path was disabled."""
+        return self._gpu_fallback_reason
 
     # ------------------------------------------------------------------
     # Processing
@@ -157,9 +203,14 @@ class FrameProcessor:
             (tracked, enhanced_frame, timing, latency_ms)
         """
         if self._gpu_path_active and self._gpu_pipeline is not None:
-            return self._process_gpu(frame, need_preview)
-        else:
-            return self._process_cpu(frame)
+            try:
+                return self._process_gpu(frame, need_preview)
+            except RuntimeError as e:
+                if self._is_cuda_kernel_compat_error(e):
+                    self._disable_gpu_path_and_fallback(str(e))
+                    return self._process_cpu(frame)
+                raise
+        return self._process_cpu(frame)
     
     def _process_gpu(self, frame: np.ndarray, need_preview: bool = True) -> Tuple[List[ScaledTrack], np.ndarray, Dict[str, float], float]:
         """GPU pipeline: zero-copy enhancement + YOLO."""
@@ -199,6 +250,7 @@ class FrameProcessor:
         detections = self._extract_detections(results)
         detections = self._filter_duplicate_detections(detections)
         timing["extract"] = (time.time() - t0) * 1000
+        timing.update(self._extract_transfer_timing)
         
         # 4. Tracking
         t0 = time.time()
@@ -240,65 +292,76 @@ class FrameProcessor:
         """
         if not self._gpu_path_active or self._gpu_pipeline is None:
             raise RuntimeError("GPU path not active, cannot use process_gpu_direct")
-        
-        frame_start = time.time()
-        _, _, original_h, original_w = gpu_tensor.shape
-        timing: Dict[str, float] = {}
-        
-        # Sync GPU pipeline settings
-        self._sync_gpu_settings()
-        
-        # 1. GPU Pipeline: process_gpu_tensor (skip upload, already on GPU)
-        yolo_tensor, preview_frame, gpu_timing = self._gpu_pipeline.process_gpu_tensor(
-            gpu_tensor, preview_enabled=need_preview
-        )
-        
-        # Merge GPU timing
-        timing.update(gpu_timing)
-        timing["path_enhance"] = "gpu-direct"  # Indicate direct GPU path
-        
-        # 2. YOLO inference with GPU tensor (zero-copy!)
-        t0 = time.time()
-        results = self.model(
-            yolo_tensor,
-            imgsz=self.settings.imgsz,
-            conf=self.settings.confidence,
-            iou=YOLO_IOU_THRESHOLD,
-            max_det=self.settings.max_persons,
-            half=self.settings.use_fp16,
-            verbose=False,
-        )
-        timing["yolo"] = (time.time() - t0) * 1000
-        timing["path_yolo"] = "gpu"
-        
-        # 3. Extract detections
-        t0 = time.time()
-        detections = self._extract_detections(results)
-        detections = self._filter_duplicate_detections(detections)
-        timing["extract"] = (time.time() - t0) * 1000
-        
-        # 4. Tracking
-        t0 = time.time()
-        tracked = self.tracker.update(detections)
-        timing["track"] = (time.time() - t0) * 1000
-        timing["path_track"] = "cpu"
-        
-        # 5. Unscale detections from letterboxed YOLO space to original camera space
-        letterbox = gpu_timing.get('letterbox', {})
-        lb_scale = letterbox.get('scale', 1.0)
-        pad_x = letterbox.get('pad_x', 0)
-        pad_y = letterbox.get('pad_y', 0)
-        scaled_tracks = [self._unscale_letterbox(track, lb_scale, pad_x, pad_y) for track in tracked]
-        
-        # 6. OSC output
-        if self.osc and self.settings.osc_enabled:
-            self.osc.send_frame(scaled_tracks, original_w, original_h)
-        
-        latency_ms = (time.time() - frame_start) * 1000
-        timing["total"] = latency_ms
-        self._timing = timing
-        
-        return scaled_tracks, preview_frame, timing, latency_ms
+
+        try:
+            frame_start = time.time()
+            _, _, original_h, original_w = gpu_tensor.shape
+            timing: Dict[str, float] = {}
+
+            # Sync GPU pipeline settings
+            self._sync_gpu_settings()
+
+            # 1. GPU Pipeline: process_gpu_tensor (skip upload, already on GPU)
+            yolo_tensor, preview_frame, gpu_timing = self._gpu_pipeline.process_gpu_tensor(
+                gpu_tensor, preview_enabled=need_preview
+            )
+
+            # Merge GPU timing
+            timing.update(gpu_timing)
+            timing["path_enhance"] = "gpu-direct"  # Indicate direct GPU path
+
+            # 2. YOLO inference with GPU tensor (zero-copy!)
+            t0 = time.time()
+            results = self.model(
+                yolo_tensor,
+                imgsz=self.settings.imgsz,
+                conf=self.settings.confidence,
+                iou=YOLO_IOU_THRESHOLD,
+                max_det=self.settings.max_persons,
+                half=self.settings.use_fp16,
+                verbose=False,
+            )
+            timing["yolo"] = (time.time() - t0) * 1000
+            timing["path_yolo"] = "gpu"
+
+            # 3. Extract detections
+            t0 = time.time()
+            detections = self._extract_detections(results)
+            detections = self._filter_duplicate_detections(detections)
+            timing["extract"] = (time.time() - t0) * 1000
+            timing.update(self._extract_transfer_timing)
+
+            # 4. Tracking
+            t0 = time.time()
+            tracked = self.tracker.update(detections)
+            timing["track"] = (time.time() - t0) * 1000
+            timing["path_track"] = "cpu"
+
+            # 5. Unscale detections from letterboxed YOLO space to original camera space
+            letterbox = gpu_timing.get('letterbox', {})
+            lb_scale = letterbox.get('scale', 1.0)
+            pad_x = letterbox.get('pad_x', 0)
+            pad_y = letterbox.get('pad_y', 0)
+            scaled_tracks = [self._unscale_letterbox(track, lb_scale, pad_x, pad_y) for track in tracked]
+
+            # 6. OSC output
+            if self.osc and self.settings.osc_enabled:
+                self.osc.send_frame(scaled_tracks, original_w, original_h)
+
+            latency_ms = (time.time() - frame_start) * 1000
+            timing["total"] = latency_ms
+            self._timing = timing
+
+            return scaled_tracks, preview_frame, timing, latency_ms
+        except RuntimeError as e:
+            if not self._is_cuda_kernel_compat_error(e):
+                raise
+
+            self._disable_gpu_path_and_fallback(str(e))
+
+            cpu_rgb = gpu_tensor.squeeze(0).detach().clamp(0, 1).permute(1, 2, 0).cpu().numpy()
+            cpu_bgr = cv2.cvtColor((cpu_rgb * 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
+            return self._process_cpu(cpu_bgr)
 
     def _sync_gpu_settings(self):
         """Sync ProcessingSettings to GpuPipelineSettings."""
@@ -397,6 +460,7 @@ class FrameProcessor:
         detections = self._extract_detections(results)
         detections = self._filter_duplicate_detections(detections)
         timing["extract"] = (time.time() - t0) * 1000
+        timing.update(self._extract_transfer_timing)
 
         # 5. Tracking
         t0 = time.time()
@@ -485,11 +549,21 @@ class FrameProcessor:
     # ------------------------------------------------------------------
     def _extract_detections(self, results) -> List[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
         detections = []
+        kpts_cpu_ms = 0.0
+        boxes_cpu_ms = 0.0
         for result in results:
             if result.keypoints is None or len(result.keypoints) == 0:
                 continue
+            t0 = time.perf_counter()
             keypoints_data = result.keypoints.data.cpu().numpy()
-            boxes = result.boxes.xyxy.cpu().numpy() if result.boxes is not None else None
+            kpts_cpu_ms += (time.perf_counter() - t0) * 1000.0
+
+            if result.boxes is not None:
+                t0 = time.perf_counter()
+                boxes = result.boxes.xyxy.cpu().numpy()
+                boxes_cpu_ms += (time.perf_counter() - t0) * 1000.0
+            else:
+                boxes = None
 
             for i, kpts in enumerate(keypoints_data):
                 keypoints = kpts[:, :2]
@@ -506,6 +580,12 @@ class FrameProcessor:
                     else:
                         continue
                 detections.append((keypoints, confidence, np.array(bbox)))
+
+                self._extract_transfer_timing = {
+                    "extract_kpts_cpu": kpts_cpu_ms,
+                    "extract_boxes_cpu": boxes_cpu_ms,
+                    "extract_cpu_total": kpts_cpu_ms + boxes_cpu_ms,
+                }
         return detections
 
     def _filter_duplicate_detections(self, detections):

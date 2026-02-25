@@ -119,6 +119,7 @@ class GpuFrame:
         self.tensor = tensor  # (1, 3, H, W) on GPU
         self._is_bgr = is_bgr
         self._cpu_cache: Optional[np.ndarray] = None
+        self._last_download_timing: Dict[str, float] = {}
     
     @property
     def shape(self) -> Tuple[int, int]:
@@ -128,6 +129,12 @@ class GpuFrame:
     def to_numpy_bgr(self) -> np.ndarray:
         """Convert to BGR numpy array (HWC, uint8). Caches result."""
         if self._cpu_cache is not None:
+            self._last_download_timing = {
+                "preview_download_total": 0.0,
+                "preview_download_sync": 0.0,
+                "preview_download_numpy": 0.0,
+                "preview_download_cast": 0.0,
+            }
             return self._cpu_cache
         
         # BCHW float [0,1] -> HWC uint8 BGR
@@ -136,10 +143,32 @@ class GpuFrame:
             # RGB -> BGR
             t = t.flip(0)
         
-        # GPU -> CPU, permute, scale
-        arr = (t.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
+        # GPU -> CPU sync + numpy conversion (instrumented)
+        # Convert float32→uint8 ON GPU before transfer: 4× less PCIe bandwidth
+        # (e.g. 960×540×3: 5.93 MB float32 → 1.48 MB uint8)
+        t0 = time.perf_counter()
+        hwc = t.permute(1, 2, 0).contiguous()
+        hwc_u8 = hwc.mul(255).clamp_(0, 255).byte()  # float32→uint8 on GPU
+        t1 = time.perf_counter()
+        cpu_tensor = hwc_u8.cpu()                     # 1.48 MB instead of 5.93 MB
+        t2 = time.perf_counter()
+        arr = cpu_tensor.numpy()
+        t3 = time.perf_counter()
+        t4 = t3  # No CPU-side cast needed anymore
+
+        self._last_download_timing = {
+            "preview_download_total": (t4 - t0) * 1000.0,
+            "preview_download_sync": (t2 - t1) * 1000.0,
+            "preview_download_numpy": (t3 - t2) * 1000.0,
+            "preview_download_cast": (t4 - t3) * 1000.0,
+        }
         self._cpu_cache = arr
         return arr
+
+    @property
+    def last_download_timing(self) -> Dict[str, float]:
+        """Last GPU->CPU conversion timing breakdown in milliseconds."""
+        return self._last_download_timing
     
     def invalidate_cache(self):
         """Call after modifying tensor to clear CPU cache."""
@@ -161,6 +190,13 @@ class GpuEnhancer:
         # Last computed brightness (for status display)
         self.last_brightness: float = 0.0
         self.last_used_gpu: bool = False
+        
+        # Brightness check decimation — .mean().item() forces a CUDA sync
+        # (PCIe round-trip) on every call.  Brightness changes slowly, so we
+        # only recompute every _BRIGHTNESS_CHECK_INTERVAL frames.
+        self._brightness_frame_counter: int = 0
+        _BRIGHTNESS_CHECK_INTERVAL = 10  # recompute every 10th frame
+        self._brightness_interval: int = _BRIGHTNESS_CHECK_INTERVAL
         
         # Temporal denoising state
         self._last_frame_tensor: Optional[torch.Tensor] = None
@@ -209,11 +245,18 @@ class GpuEnhancer:
             gpu_frame = GpuFrame(tensor, is_bgr=gpu_frame._is_bgr)
         
         # Compute brightness from Y channel for auto-bypass check
-        # Only needed if not in force mode
+        # Only needed if not in force mode.
+        # Decimated: .mean().item() forces a CUDA sync (PCIe round-trip)
+        # which competes with USB3 DMA.  Recompute only every N frames.
         blend_factor = 1.0
         if not settings.enhance_force:
-            brightness = self._compute_brightness_gpu(tensor)
-            self.last_brightness = brightness
+            self._brightness_frame_counter += 1
+            if self._brightness_frame_counter >= self._brightness_interval:
+                self._brightness_frame_counter = 0
+                brightness = self._compute_brightness_gpu(tensor)
+                self.last_brightness = brightness
+            else:
+                brightness = self.last_brightness  # reuse cached value
             
             # Progressive Enhancement:
             # If brightness < threshold: factor = 1.0 (Full enhance)
@@ -488,6 +531,7 @@ class GpuPipeline:
             preview_frame = preview_gpu.to_numpy_bgr()
             self._cached_preview = preview_frame  # Cache on CPU
             timing['preview_download'] = (time.time() - t0) * 1000
+            timing.update(preview_gpu.last_download_timing)
             timing['preview_new'] = True
             
             self._last_preview_time = current_time
@@ -564,6 +608,7 @@ class GpuPipeline:
             t0 = time.time()
             preview_frame = preview_tensor.to_numpy_bgr()
             timing['preview_download'] = (time.time() - t0) * 1000
+            timing.update(preview_tensor.last_download_timing)
             timing['preview_new'] = True
             
             # Cache and update timestamp

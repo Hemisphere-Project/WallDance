@@ -130,6 +130,10 @@ class CameraManager:
                 return True, None
             # Return a copy to avoid buffer overwrite issues
             frame = self._latest_frame.copy()
+            # Mark consumed so caller waits for a fresh captured frame next time.
+            # This prevents processing the same frame multiple times when the
+            # main loop runs faster than camera acquisition.
+            self._frame_ready = False
             return True, frame
     
     def has_capture_error(self) -> bool:
