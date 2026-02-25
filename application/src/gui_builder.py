@@ -380,6 +380,11 @@ def build_top_bar(gui: Any):
                 with dpg.tooltip(engine_badge):
                     dpg.add_text("[TRT] = TensorRT (fast, GPU-optimized)\n[PT] = PyTorch (slower, more compatible)")
                 dpg.add_spacer(width=scaled(6))
+                compute_badge = dpg.add_text("[CPU FALLBACK]", tag="badge_compute_mode", color=(255, 120, 120), show=False)
+                with dpg.tooltip(compute_badge):
+                    dpg.add_text("Running on CPU fallback mode", tag="badge_compute_reason_text", color=(255, 180, 120))
+                    dpg.add_text("Action: install a GPU-compatible PyTorch/CUDA build or keep CPU mode.", tag="badge_compute_action_text", color=(180, 180, 180))
+                dpg.add_spacer(width=scaled(6))
                 dpg.add_text("FPS:", color=(180, 180, 180))
                 dpg.add_text("--", tag="badge_fps", color=(150, 200, 255))
                 dpg.add_spacer(width=scaled(6))
@@ -523,7 +528,7 @@ def build_video_panel(gui: Any):
                 dpg.add_text("RUN: Full YOLO inference + OSC output")
         
         # Stats footer - compact line at bottom of video panel
-        dpg.add_spacer(height=scaled(170))
+        dpg.add_spacer(height=scaled(130))
         with dpg.group(horizontal=True):
             dpg.add_text("Dancers:", color=(100, 100, 100))
             dpg.add_text("0", tag="dancers_text", color=(140, 180, 140))

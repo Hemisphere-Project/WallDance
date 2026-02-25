@@ -849,6 +849,7 @@ class WallDanceGUI:
         osc_port: int = 0,
         camera_running: bool = True,
         enhance_bypassed: bool = False,
+        gpu_fallback_reason: str = "",
     ):
         """Update stats display."""
         self.fps = fps
@@ -907,6 +908,8 @@ class WallDanceGUI:
         if dpg.does_item_exist("badge_fps"):
             dpg.set_value("badge_fps", f"{fps:.1f}")
             dpg.configure_item("badge_fps", color=fps_color)
+
+        self.update_compute_mode_badge(gpu_fallback_reason)
 
         # Update timing breakdown
         if timing:
@@ -1108,6 +1111,29 @@ class WallDanceGUI:
         else:
             dpg.set_value("topbar_gpu_util_text", "N/A")
             dpg.set_value("topbar_gpu_vram_text", "N/A")
+
+    def update_compute_mode_badge(self, gpu_fallback_reason: str = ""):
+        """Show/hide CPU fallback indicator with reason and next-step action."""
+        has_fallback = bool(gpu_fallback_reason)
+
+        if dpg.does_item_exist("badge_compute_mode"):
+            dpg.configure_item("badge_compute_mode", show=has_fallback)
+
+        if not has_fallback:
+            return
+
+        reason_text = gpu_fallback_reason.strip().splitlines()[0]
+        reason_text = reason_text[:140]
+
+        action_text = "Action: install a GPU-compatible PyTorch/CUDA build for your GPU, then restart WallDance."
+        reason_lc = gpu_fallback_reason.lower()
+        if "no kernel image is available" in reason_lc or "sm_" in reason_lc:
+            action_text = "Action: current Torch/CUDA build does not support this GPU architecture. Upgrade to a build that supports your GPU (e.g. RTX 50-series / sm_120), then restart."
+
+        if dpg.does_item_exist("badge_compute_reason_text"):
+            dpg.set_value("badge_compute_reason_text", f"Reason: {reason_text}")
+        if dpg.does_item_exist("badge_compute_action_text"):
+            dpg.set_value("badge_compute_action_text", action_text)
     
     def update_camera_sources(self, sources: list, current: str = "", unavailable: list = None):
         """Update camera source dropdown with available/unavailable cameras.
