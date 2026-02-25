@@ -46,6 +46,8 @@ try:
     from config import IDS_USE_FULL_RES as APP_IDS_USE_FULL_RES
     from config import IDS_CAP_PROCESSING_RES as APP_IDS_CAP_PROCESSING_RES
     from config import IDS_MAX_FPS as APP_IDS_MAX_FPS
+    from config import IDS_USER_SET as APP_IDS_USER_SET
+    from config import IDS_CROP as APP_IDS_CROP
 except Exception:
     APP_CAMERA_WIDTH = 1920
     APP_CAMERA_HEIGHT = 1080
@@ -53,6 +55,8 @@ except Exception:
     APP_IDS_USE_FULL_RES = False
     APP_IDS_CAP_PROCESSING_RES = True
     APP_IDS_MAX_FPS = 25
+    APP_IDS_USER_SET = ""
+    APP_IDS_CROP = (0, 0)
 
 # Check for IDS Peak SDK
 IDS_PEAK_AVAILABLE = False
@@ -115,6 +119,9 @@ class IDSCameraSettings:
     # Resolution (0 = max available)
     width: int = 0
     height: int = 0
+
+    # On-device ROI crop (0, 0) = full sensor. (W, H) = center-crop.
+    crop: tuple = (0, 0)
     
     # Frame rate (0 = max available)
     target_fps: float = 30.0
@@ -137,6 +144,10 @@ class IDSCameraSettings:
     # Manual fallbacks when auto controls are unavailable
     fallback_exposure_us: float = 10000.0
     fallback_gain_db: float = 6.0
+
+    # Load a camera UserSet on open (e.g. "UserSet1").
+    # Empty string = don't load any UserSet.
+    user_set: str = ""
 
 
 class IDSCamera:
@@ -191,6 +202,21 @@ class IDSCamera:
         
         # GPU tensor cache (for read_gpu)
         self._gpu_tensor: Optional[torch.Tensor] = None
+
+        # Dedicated CUDA stream for frame uploads — reduces PCIe contention
+        # between USB3 DMA (camera) and GPU DMA (upload/inference).
+        # See docs/IDS_STALL_CONCLUSIONS.md for test data.
+        self._upload_stream: Optional['torch.cuda.Stream'] = None
+        if CUDA_AVAILABLE:
+            self._upload_stream = torch.cuda.Stream()
+
+        # Force 1080p downscale (GUI toggle)
+        self._force_1080p: bool = False
+
+        # Stall detection
+        self._stall_threshold_s: float = 0.4   # gap > this = stall
+        self._stall_count: int = 0
+        self._last_acq_frame_time: float = 0.0
         
         # Callback for recording
         self._frame_callback: Optional[Callable[[np.ndarray], None]] = None
@@ -301,6 +327,25 @@ class IDSCamera:
             if cls._library_refcount == 0 and cls._library_initialized:
                 ids_peak.Library.Close()
                 cls._library_initialized = False
+
+    @classmethod
+    def _release_ids_library_fully(cls) -> None:
+        """Force-close the IDS Peak library regardless of refcount.
+
+        Used before opening the same physical device via a different API
+        (e.g. OpenCV / DirectShow) to release any GenTL transport locks
+        that would otherwise cause a native crash.
+        The library will be lazily re-initialised on next IDS access.
+        """
+        with cls._library_lock:
+            if cls._library_initialized:
+                try:
+                    ids_peak.Library.Close()
+                except Exception:
+                    pass
+                cls._library_initialized = False
+                cls._library_refcount = 0
+                print("[IDSCamera] Library force-closed for OpenCV handover")
     
     # ------------------------------------------------------------------
     # Discovery
@@ -442,6 +487,17 @@ class IDSCamera:
         """Configure camera settings (resolution, FPS, exposure, etc.)."""
         nm = self._node_map
 
+        # --- UserSet (load saved camera configuration) ---
+        if self.settings.user_set:
+            try:
+                us_sel = nm.FindNode("UserSetSelector")
+                us_sel.SetCurrentEntry(us_sel.FindEntry(self.settings.user_set))
+                nm.FindNode("UserSetLoad").Execute()
+                nm.FindNode("UserSetLoad").WaitUntilDone()
+                print(f"[IDSCamera] Loaded UserSet: {self.settings.user_set}")
+            except Exception as e:
+                print(f"[IDSCamera] Could not load UserSet '{self.settings.user_set}': {e}")
+
         # --- Acquisition Mode / Trigger ---
         # Force free-running mode (prevents accidental triggered-capture stalls).
         try:
@@ -534,19 +590,32 @@ class IDSCamera:
             self.state.pixel_format = selected_format
             print(f"[IDSCamera] Pixel format SET: {selected_format}")
         
-        # --- Resolution ---
+        # --- Resolution / ROI ---
         width_node = nm.FindNode("Width")
         height_node = nm.FindNode("Height")
-        
-        if self.settings.width > 0:
+
+        # Reset offset to (0,0) first so we have full range for Width/Height
+        try:
+            nm.FindNode("OffsetX").SetValue(0)
+            nm.FindNode("OffsetY").SetValue(0)
+        except Exception:
+            pass
+
+        # Determine target size: crop takes priority, then explicit w/h, then max
+        crop_w, crop_h = self.settings.crop
+        if crop_w > 0 and crop_h > 0:
+            target_w = min(crop_w, width_node.Maximum())
+            target_h = min(crop_h, height_node.Maximum())
+        elif self.settings.width > 0:
             target_w = min(self.settings.width, width_node.Maximum())
         else:
             target_w = width_node.Maximum()
-        
-        if self.settings.height > 0:
-            target_h = min(self.settings.height, height_node.Maximum())
-        else:
-            target_h = height_node.Maximum()
+
+        if crop_w <= 0 or crop_h <= 0:
+            if self.settings.height > 0:
+                target_h = min(self.settings.height, height_node.Maximum())
+            else:
+                target_h = height_node.Maximum()
         
         # Respect increment
         w_inc = width_node.Increment()
@@ -556,6 +625,25 @@ class IDSCamera:
         
         width_node.SetValue(target_w)
         height_node.SetValue(target_h)
+        
+        # Center the ROI on the sensor
+        if crop_w > 0 and crop_h > 0:
+            try:
+                ox_node = nm.FindNode("OffsetX")
+                oy_node = nm.FindNode("OffsetY")
+                # After setting Width/Height, OffsetX/Y.Maximum() gives the
+                # remaining slack on each axis. Center = half of that slack.
+                max_ox = ox_node.Maximum()
+                max_oy = oy_node.Maximum()
+                ox_inc = ox_node.Increment() if ox_node.Increment() > 0 else 1
+                oy_inc = oy_node.Increment() if oy_node.Increment() > 0 else 1
+                center_ox = (max_ox // 2 // ox_inc) * ox_inc
+                center_oy = (max_oy // 2 // oy_inc) * oy_inc
+                ox_node.SetValue(center_ox)
+                oy_node.SetValue(center_oy)
+                print(f"[IDSCamera] ROI offset: ({center_ox}, {center_oy})")
+            except Exception as e:
+                print(f"[IDSCamera] Could not set ROI offset (crop still active): {e}")
         
         self.state.width = width_node.Value()
         self.state.height = height_node.Value()
@@ -824,6 +912,8 @@ class IDSCamera:
         height = self.state.height
         print(f"[IDSCamera] Acq loop: pf={self.state.pixel_format}, {width}x{height}")
 
+        self._last_acq_frame_time = time.perf_counter()
+
         while self._acquire_running:
             try:
                 buffer = self._datastream.WaitForFinishedBuffer(timeout_ms)
@@ -845,6 +935,21 @@ class IDSCamera:
                 if frame is not None:
                     consecutive_errors = 0
                     timestamp = time.perf_counter()
+
+                    # ---- Stall detection ----
+                    gap = timestamp - self._last_acq_frame_time
+                    self._last_acq_frame_time = timestamp
+                    if gap > self._stall_threshold_s:
+                        self._stall_count += 1
+                        severity = "SEVERE" if gap >= 1.0 else "stall"
+                        try:
+                            n_q = self._datastream.NumBuffersQueued()
+                            n_a = len(self._datastream.AnnouncedBuffers())
+                            pool = f"queued={n_q}/{n_a}"
+                        except Exception:
+                            pool = "?"
+                        print(f"[IDSCamera] USB3 {severity}: {gap*1000:.0f}ms gap "
+                              f"(#{self._stall_count}, {pool})")
 
                     with self._frame_lock:
                         if self.settings.newest_only and self._frame_ready:
@@ -1088,12 +1193,16 @@ class IDSCamera:
         self._last_nonempty_read_time = time.perf_counter()
         return True, gpu_tensor
 
+    def set_force_1080p(self, enabled: bool):
+        """Toggle runtime 1080p downscale (called from GUI)."""
+        self._force_1080p = enabled
+
     def _prepare_mono_for_processing(self, mono: np.ndarray) -> np.ndarray:
         """Bound full-res IDS frames to app working resolution before heavy conversions."""
         if not APP_IDS_USE_FULL_RES:
             return mono
 
-        if not APP_IDS_CAP_PROCESSING_RES:
+        if not APP_IDS_CAP_PROCESSING_RES and not self._force_1080p:
             return mono
 
         if mono is None or mono.ndim < 2:
@@ -1168,8 +1277,15 @@ class IDSCamera:
             self._pinned_buffer = torch.empty_like(mono_tensor).pin_memory()
         self._pinned_buffer.copy_(mono_tensor)
         
-        # Async transfer to GPU (non-blocking allows CPU to continue)
-        gpu_mono = self._pinned_buffer.cuda(non_blocking=True)  # (H, W) uint8/uint16
+        # Async transfer to GPU on a DEDICATED CUDA stream.
+        # This reduces PCIe bus contention with USB3 DMA by scheduling
+        # the H2D copy on a separate hardware queue.  Verified to reduce
+        # stalls from ~3/min → ~0.5/min in isolation tests.
+        if self._upload_stream is not None:
+            with torch.cuda.stream(self._upload_stream):
+                gpu_mono = self._pinned_buffer.cuda(non_blocking=True)
+        else:
+            gpu_mono = self._pinned_buffer.cuda(non_blocking=True)  # fallback
         
         # Convert to float32 [0, 1] on GPU
         divisor = self._get_mono_normalization_divisor(mono)
@@ -1449,11 +1565,13 @@ class UnifiedCamera:
             settings = IDSCameraSettings(
                 width=0 if APP_IDS_USE_FULL_RES else APP_CAMERA_WIDTH,
                 height=0 if APP_IDS_USE_FULL_RES else APP_CAMERA_HEIGHT,
+                crop=APP_IDS_CROP,
                 target_fps=float(max(1.0, min(float(APP_CAMERA_FPS), float(APP_IDS_MAX_FPS)))),
                 exposure_auto=True,
                 gain_auto=True,
                 newest_only=True,
                 prefer_high_bit_depth=False,
+                user_set=APP_IDS_USER_SET,
             )
             self._ids_camera = IDSCamera(settings)
             
@@ -1481,24 +1599,57 @@ class UnifiedCamera:
             return False
     
     def _open_opencv(self, source: str) -> bool:
-        """Open OpenCV camera."""
+        """Open OpenCV camera.
+
+        When the IDS Peak SDK has been loaded (even if no IDS camera is
+        currently open), its GenTL transport layer may hold exclusive
+        access to the USB device.  Attempting to open the same physical
+        camera via DirectShow while GenTL is active can cause a native
+        crash.  To avoid this we fully close the IDS Peak library before
+        touching OpenCV, and re-initialise it lazily on next IDS access.
+        """
+        # --- Release IDS Peak library to free USB transport locks -------
+        if IDS_PEAK_AVAILABLE:
+            try:
+                IDSCamera._release_ids_library_fully()
+            except Exception as exc:
+                print(f"[UnifiedCamera] Warning: could not release IDS library: {exc}")
+            import time as _t
+            _t.sleep(0.3)  # give USB stack time to release device
+
         # Lazy import to avoid circular dependency
         from camera_manager import CameraManager
-        
-        self._cv_camera = CameraManager(threaded=self._threaded)
-        
-        if not self._cv_camera.open(source):
+
+        try:
+            self._cv_camera = CameraManager(threaded=self._threaded)
+
+            if not self._cv_camera.open(source):
+                # Retry with explicit DirectShow backend (Windows)
+                import sys
+                if sys.platform == 'win32':
+                    print("[UnifiedCamera] Default backend failed, retrying with DSHOW...")
+                    self._cv_camera = CameraManager(threaded=self._threaded)
+                    if not self._cv_camera.open(source, backend=cv2.CAP_DSHOW):
+                        self._cv_camera = None
+                        return False
+                else:
+                    self._cv_camera = None
+                    return False
+
+            self._source_type = CameraSource.OPENCV
+            self.is_open = True
+            self.width = self._cv_camera.state.width
+            self.height = self._cv_camera.state.height
+            self.fps = 30.0  # Assumed
+
+            print(f"[UnifiedCamera] Opened OpenCV camera: {self.width}x{self.height}")
+            return True
+
+        except Exception as e:
+            print(f"[UnifiedCamera] Failed to open OpenCV camera: {e}")
+            import traceback; traceback.print_exc()
             self._cv_camera = None
             return False
-        
-        self._source_type = CameraSource.OPENCV
-        self.is_open = True
-        self.width = self._cv_camera.state.width
-        self.height = self._cv_camera.state.height
-        self.fps = 30.0  # Assumed
-        
-        print(f"[UnifiedCamera] Opened OpenCV camera: {self.width}x{self.height}")
-        return True
     
     def close(self) -> None:
         """Close camera."""
@@ -1565,6 +1716,11 @@ class UnifiedCamera:
             return self._ids_camera.get_last_cpu_frame()
         return None
     
+    def set_force_1080p(self, enabled: bool):
+        """Toggle runtime 1080p downscale on the IDS camera."""
+        if self._ids_camera is not None:
+            self._ids_camera.set_force_1080p(enabled)
+    
     @property
     def source_type(self) -> Optional[CameraSource]:
         """Get current source type."""
@@ -1572,9 +1728,9 @@ class UnifiedCamera:
     
     def has_error(self) -> bool:
         """Check for capture errors."""
-        if self._source_type == CameraSource.IDS_PEAK:
+        if self._source_type == CameraSource.IDS_PEAK and self._ids_camera is not None:
             return self._ids_camera.has_error()
-        elif self._source_type == CameraSource.OPENCV:
+        elif self._source_type == CameraSource.OPENCV and self._cv_camera is not None:
             return self._cv_camera.has_capture_error()
         return False
     

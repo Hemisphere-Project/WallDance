@@ -97,6 +97,14 @@ IDS_CAP_PROCESSING_RES = False
 # Cap IDS acquisition FPS (independent from OpenCV camera FPS).
 # Lower values can improve stream stability on full-resolution IDS capture.
 IDS_MAX_FPS = 20
+# On-device ROI crop — reduces USB3 bandwidth at the sensor level.
+# Set to (W, H) to center-crop on the sensor, or (0, 0) for full sensor.
+# The U3-34E0XCP native sensor is 2688×1528 so (1528,1528) gives a square crop.
+IDS_CROP = (1528, 1528)
+# Load camera settings from a stored UserSet on startup.
+# Set in IDS Cockpit: Device → UserSet → Save to UserSet1.
+# "" = don't load (use defaults), "UserSet1", "UserSet2", etc.
+IDS_USER_SET = "UserSet1"
 
 # =============================================================================
 # PERSON SIZE CALIBRATION

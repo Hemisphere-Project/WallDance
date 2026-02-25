@@ -1,0 +1,193 @@
+  Logging to: C:\Users\tango\Documents\GitHub\WallDance\application\test_run.log
+======================================================================
+  IDS + PCIe Contention Isolation Test
+======================================================================
+  Duration per level : 30.0s
+  Warmup (ignored)   : 3s
+  Stall threshold    : 400ms
+  Buffer count       : 16
+  YOLO model         : yolo26x-pose.pt @ imgsz=1280
+  Levels             : [0, 1, 2, 3, 4, 5]
+  Mitigations        : Yes
+  CUDA available     : True
+  YOLO available     : True
+
+[IDS] Opened: U3-34ExXCP-M (SN: 4110042130)
+[IDS] Available formats: ['Mono10g40IDS', 'Mono12g24IDS']
+[IDS] PixelFormat: Mono10g40IDS
+[IDS] Resolution: 2688x1528
+[IDS] FPS: 20.0
+[IDS] DeviceLinkThroughputLimit: 162 MB/s
+[IDS] BufferHandling: NewestOnly
+[IDS] Allocated 16 buffers (5134080 bytes each)
+
+  Camera ready: 2688x1528 @ 20.0fps, Mono10g40IDS
+
+
+============================================================
+  LEVEL 0: L0: Tight IDS loop, no GPU — hardware baseline.
+============================================================
+  [L0_baseline                   ]   18.9 fps | 1 stalls (1 severe ≥1s)    (1 per 568 frames)
+                                     avg_gap=52.8ms  max_gap=1677ms  timeouts=6  frames=568
+                                     NOTE: warmup=3s (59 frames, 0 stalls ignored)
+                                     Tight IDS loop, no GPU
+
+============================================================
+  LEVEL 1: L1: + continuous GPU matmul in background.
+============================================================
+  [L1_gpu_compute                ]   17.9 fps | 2 stalls (2 severe ≥1s)    (1 per 268 frames)
+                                     avg_gap=56.0ms  max_gap=1653ms  timeouts=12  frames=536
+                                     NOTE: warmup=3s (59 frames, 0 stalls ignored)
+                                     Tight IDS + background GPU matmul (2048x2048)
+
+  *** Worst stalling level so far: L1 (2 stalls) ***
+
+============================================================
+  LEVEL 2: L2: + pinned memory upload of each frame to GPU.
+============================================================
+  [L2_pinned_upload              ]   18.9 fps | 1 stalls (1 severe ≥1s)    (1 per 568 frames)
+                                     avg_gap=52.8ms  max_gap=1650ms  timeouts=9  frames=568
+                                     NOTE: warmup=3s (40 frames, 0 stalls ignored)
+                                     IDS + pinned GPU upload (2688x1528, ~4.1 MB/frame)
+
+============================================================
+  LEVEL 3: L3: + GPU→CPU download simulating preview at 10fps.
+============================================================
+  [L3_gpu_download               ]   18.9 fps | 1 stalls (1 severe ≥1s)    (1 per 568 frames)
+                                     avg_gap=52.8ms  max_gap=1673ms  timeouts=6  frames=568
+                                     NOTE: warmup=3s (59 frames, 0 stalls ignored)
+                                     IDS + pinned upload + GPU→CPU preview @10fps (0.35x)
+
+============================================================
+  LEVEL 4: L4: + YOLO inference on uploaded tensor.
+============================================================
+[L4] Loading YOLO model: C:\Users\tango\Documents\GitHub\WallDance\models\yolo26x-pose.pt (imgsz=1280)
+[L4] YOLO warmup complete
+  [L4_yolo                       ]   18.9 fps | 1 stalls (1 severe ≥1s)    (1 per 568 frames)
+                                     avg_gap=52.8ms  max_gap=1678ms  timeouts=6  frames=568
+                                     NOTE: warmup=3s (59 frames, 0 stalls ignored)
+                                     IDS + upload + YOLO (yolo26x-pose.pt @1280) + preview
+
+============================================================
+  LEVEL 5: L5: + simulated DearPyGui texture CPU→GPU upload at 10fps.
+============================================================
+  [L5_full                       ]   19.9 fps | 1 stalls (1 severe ≥1s)    (1 per 596 frames)
+                                     avg_gap=52.7ms  max_gap=1670ms  timeouts=6  frames=596
+                                     NOTE: warmup=3s (31 frames, 0 stalls ignored)
+                                     IDS + upload + YOLO + preview + texture upload (full pipeline sim)
+
+
+######################################################################
+  G3-CHAT MITIGATIONS — re-running Level 1
+######################################################################
+
+============================================================
+  MITIGATION M1: 30 buffers (was 16)
+============================================================
+[IDS] Allocated 30 buffers (5134080 bytes each)
+[IDS] Allocated 16 buffers (5134080 bytes each)
+
+============================================================
+  MITIGATION M2: StreamPipeErrorRecoveryCount = 5
+============================================================
+[IDS] StreamPipeErrorRecoveryCount not available: Error-Code: 4 (PEAK_RETURN_CODE_BAD_ACCESS) | Error-Description: Node is not writable. : AccessException thrown in node 'StreamPipeErrorRecoveryCount' while calling 'StreamPipeErrorRecoveryCount.SetValue()' (file 'IntegerT.h', line 76)
+
+============================================================
+  MITIGATION M3: High-priority acquisition thread
+============================================================
+[MITIGATION] Thread priority set to HIGHEST
+
+============================================================
+  MITIGATION M4: Dedicated CUDA stream
+============================================================
+
+============================================================
+  MITIGATION M5: ALL combined (30 buf + recovery + priority + stream)
+============================================================
+[IDS] Allocated 30 buffers (5134080 bytes each)
+[IDS] StreamPipeErrorRecoveryCount not available: Error-Code: 4 (PEAK_RETURN_CODE_BAD_ACCESS) | Error-Description: Node is not writable. : AccessException thrown in node 'StreamPipeErrorRecoveryCount' while calling 'StreamPipeErrorRecoveryCount.SetValue()' (file 'IntegerT.h', line 76)
+[MITIGATION] Thread priority set to HIGHEST
+[IDS] Allocated 16 buffers (5134080 bytes each)
+  [M1_buf30@L1                   ]   17.8 fps | 2 stalls (2 severe ≥1s)    (1 per 267 frames)
+                                     avg_gap=56.1ms  max_gap=1701ms  timeouts=12  frames=535
+                                     NOTE: warmup=3s (59 frames, 0 stalls ignored)
+                                     30 buffers — Tight IDS + background GPU matmul (2048x2048)
+  [M2_recovery@L1                ]   15.7 fps | 4 stalls (4 severe ≥1s)    (1 per 118 frames)
+                                     avg_gap=63.6ms  max_gap=1677ms  timeouts=24  frames=472
+                                     NOTE: StreamPipeErrorRecoveryCount NOT available on this camera
+                                     StreamPipeRecovery=5 — Tight IDS + background GPU matmul (2048x2048)
+  [M3_priority@L1                ]   19.5 fps | 1 stalls (1 severe ≥1s)    (1 per 585 frames)
+                                     avg_gap=52.8ms  max_gap=1677ms  timeouts=6  frames=585
+                                     NOTE: warmup=3s (42 frames, 0 stalls ignored)
+                                     High-priority thread — upload loop
+  [M4_stream@L1                  ]   20.0 fps | 0 stalls                   (0 in 600 frames)
+                                     avg_gap=50.0ms  max_gap=50ms  timeouts=0  frames=600
+                                     NOTE: warmup=3s (59 frames, 0 stalls ignored)
+                                     Dedicated CUDA stream for upload
+  [M5_all@L1                     ]   16.8 fps | 3 stalls (3 severe ≥1s)    (1 per 168 frames)
+                                     avg_gap=59.5ms  max_gap=1672ms  timeouts=18  frames=504
+                                     NOTE: warmup=3s (59 frames, 0 stalls ignored)
+                                     ALL mitigations: 30buf + recovery + priority + stream
+
+
+====================================================================================================
+  SUMMARY TABLE
+====================================================================================================
+  Level                                  FPS   Stalls   Severe            Rate    MaxGap  Timeouts
+----------------------------------------------------------------------------------------------------
+  L0_baseline                           18.9        1        1       1/568 frm     1677ms         6
+  L1_gpu_compute                        17.9        2        2       1/268 frm     1653ms        12
+  L2_pinned_upload                      18.9        1        1       1/568 frm     1650ms         9
+  L3_gpu_download                       18.9        1        1       1/568 frm     1673ms         6
+  L4_yolo                               18.9        1        1       1/568 frm     1678ms         6
+  L5_full                               19.9        1        1       1/596 frm     1670ms         6
+  M1_buf30@L1                           17.8        2        2       1/267 frm     1701ms        12
+  M2_recovery@L1                        15.7        4        4       1/118 frm     1677ms        24
+  M3_priority@L1                        19.5        1        1       1/585 frm     1677ms         6
+  M4_stream@L1                          20.0        0        0       0/600 frm       50ms         0
+  M5_all@L1                             16.8        3        3       1/168 frm     1672ms        18
+====================================================================================================
+
+  Stall threshold: >400ms gap between frames
+  Severe stall:    >1000ms gap (hardware USB3 hang)
+
+  STALL DETAILS:
+
+  L0_baseline:
+    frame  116: 1677ms [SEVERE]
+
+  L1_gpu_compute:
+    frame  463: 1653ms [SEVERE]
+    frame  511: 1653ms [SEVERE]
+
+  L2_pinned_upload:
+    frame   41: 1650ms [SEVERE]
+
+  L3_gpu_download:
+    frame  526: 1673ms [SEVERE]
+
+  L4_yolo:
+    frame  424: 1678ms [SEVERE]
+
+  L5_full:
+    frame   32: 1670ms [SEVERE]
+
+  M1_buf30@L1:
+    frame  357: 1701ms [SEVERE]
+    frame  404: 1658ms [SEVERE]
+
+  M2_recovery@L1:
+    frame  185: 1664ms [SEVERE]
+    frame  213: 1677ms [SEVERE]
+    frame  361: 1665ms [SEVERE]
+    frame  489: 1665ms [SEVERE]
+
+  M3_priority@L1:
+    frame   43: 1677ms [SEVERE]
+
+  M5_all@L1:
+    frame  338: 1672ms [SEVERE]
+    frame  386: 1662ms [SEVERE]
+    frame  454: 1660ms [SEVERE]
+
+  Done. Camera closed. Log saved to: C:\Users\tango\Documents\GitHub\WallDance\application\test_run.log

@@ -189,6 +189,8 @@ class WallDanceApp:
             height=int(CAMERA_HEIGHT * PREVIEW_RENDER_SCALE),
         )
         self._pending_preview_resize = False
+        self._display_width = 0
+        self._display_height = 0
         self._last_preview_upload_time = 0.0
 
         # Visualization flags
@@ -200,6 +202,7 @@ class WallDanceApp:
 
         # State for metrics
         self.frame_skip = 0
+        self.force_1080p = False
         self.frame_skip_counter = 0
         self.frame_count = 0
         self.last_fps_time = time.time()
@@ -241,8 +244,10 @@ class WallDanceApp:
         
         # Get DPI scale for video display sizing
         dpi_scale = get_display_scale()
-        video_w = int(CAMERA_WIDTH * PREVIEW_DISPLAY_SCALE * dpi_scale)
-        video_h = int(CAMERA_HEIGHT * PREVIEW_DISPLAY_SCALE * dpi_scale)
+        cam_w = state.width if state.width > 0 else CAMERA_WIDTH
+        cam_h = state.height if state.height > 0 else CAMERA_HEIGHT
+        video_w = int(cam_w * PREVIEW_DISPLAY_SCALE * dpi_scale)
+        video_h = int(cam_h * PREVIEW_DISPLAY_SCALE * dpi_scale)
         
         return {
             "video_width": video_w,
@@ -257,6 +262,7 @@ class WallDanceApp:
             "max_persons": self.settings.max_persons,
             "fp16": self.settings.use_fp16,
             "frame_skip": self.frame_skip,
+            "force_1080p": self.force_1080p,
             "yolo_imgsz": self.settings.imgsz,
             "person_height_px": self.settings.person_height_px,
             "enhance_enabled": self.settings.enhance_enabled,
@@ -282,8 +288,8 @@ class WallDanceApp:
             "preview_scale": self.preview.render_scale,
             "texture_width": self.preview.width,
             "texture_height": self.preview.height,
-            "display_width": int(CAMERA_WIDTH * self.preview.display_scale),
-            "display_height": int(CAMERA_HEIGHT * self.preview.display_scale),
+            "display_width": int(cam_w * self.preview.display_scale),
+            "display_height": int(cam_h * self.preview.display_scale),
             "camera_running": self.camera.state.is_open,
         }
 
@@ -304,6 +310,7 @@ class WallDanceApp:
             "on_trt_toggle": self._cb_trt_toggle,
             "on_fp16_toggle": self._cb_fp16_toggle,
             "on_frame_skip_change": self._cb_frame_skip_change,
+            "on_force_1080p_toggle": self._cb_force_1080p_toggle,
             "on_camera_change": self._cb_camera_change,
             "on_camera_toggle": self._cb_camera_toggle,
             "on_camera_refresh": self._cb_camera_refresh,
@@ -351,6 +358,7 @@ class WallDanceApp:
             "max_persons": self.settings.max_persons,
             "fp16": self.settings.use_fp16,
             "frame_skip": self.frame_skip,
+            "force_1080p": self.force_1080p,
             "upscale_factor": self.settings.upscale_factor,
             "person_height_px": self.settings.person_height_px,
             "enhance_enabled": self.settings.enhance_enabled,
@@ -548,6 +556,11 @@ class WallDanceApp:
         if "frame_skip" in config:
             self.frame_skip = config["frame_skip"]
             self.gui and self.gui.sync_slider("frame_skip", self.frame_skip)
+        if "force_1080p" in config:
+            self.force_1080p = config["force_1080p"]
+            if self._use_unified_camera and self.unified_camera is not None:
+                self.unified_camera.set_force_1080p(self.force_1080p)
+            self.gui and self.gui.sync_checkbox("force_1080p", self.force_1080p)
         if "upscale_factor" in config:
             self._cb_upscale_change(config["upscale_factor"])
             self.gui and self.gui.sync_slider("upscale", config["upscale_factor"])
@@ -702,7 +715,20 @@ class WallDanceApp:
         if source == self.camera.state.source:
             return
         print(f"Switching camera to: {source}")
-        self._open_camera(source)
+        try:
+            self._open_camera(source)
+        except Exception as e:
+            print(f"[Camera] Switch to '{source}' crashed: {e}")
+            import traceback; traceback.print_exc()
+            # Mark unavailable so user sees the failure
+            self.camera.state.is_open = False
+            if source not in self.camera.state.unavailable:
+                self.camera.state.unavailable.append(source)
+            if self.gui:
+                all_sources = list(set(self.camera.state.available + self.camera.state.unavailable))
+                all_sources.sort()
+                self.gui.update_camera_sources(all_sources, source, self.camera.state.unavailable)
+                self.gui.update_camera_status(False, source)
 
     def _cb_camera_toggle(self):
         if self.camera.state.is_open:
@@ -788,8 +814,11 @@ class WallDanceApp:
     
     def _open_camera_unified(self, source: str) -> bool:
         """Open camera using UnifiedCamera (supports IDS and OpenCV)."""
-        # Close any existing camera
-        self.unified_camera.close()
+        # Close any existing camera (guarded — close must not prevent re-open)
+        try:
+            self.unified_camera.close()
+        except Exception as e:
+            print(f"[Camera] Warning: close before switch failed: {e}")
         
         # Determine source type
         # "ids" or "ids:SERIAL" for IDS cameras
@@ -804,6 +833,9 @@ class WallDanceApp:
         opened = self.unified_camera.open(camera_source)
         
         if opened:
+            # Propagate Force 1080p toggle to newly opened camera
+            self.unified_camera.set_force_1080p(self.force_1080p)
+            
             # Sync state with legacy CameraManager state (for UI compatibility)
             self.camera.state.is_open = True
             self.camera.state.width = self.unified_camera.width
@@ -817,6 +849,12 @@ class WallDanceApp:
             else:
                 print(f"[Camera] OpenCV camera opened: {self.unified_camera.width}x{self.unified_camera.height}")
             
+            # IDS camera: skip GPU F.interpolate for preview to avoid
+            # USB3 DMA stalls caused by CUDA compute on shared PCIe.
+            is_ids = (source_type == CameraSource.IDS_PEAK)
+            if self.processor:
+                self.processor.set_preview_cpu_resize(is_ids)
+            
             if self.gui:
                 all_sources = list(set(self.camera.state.available + [source]))
                 all_sources.sort()
@@ -828,6 +866,10 @@ class WallDanceApp:
             self.preview.height = int(self.unified_camera.height * self.preview.render_scale)
             if self.processor:
                 self.processor.set_preview_size(self.preview.width, self.preview.height)
+            # Compute display dimensions from actual camera size
+            dpi_scale = get_display_scale()
+            self._display_width = int(self.unified_camera.width * self.preview.display_scale * dpi_scale)
+            self._display_height = int(self.unified_camera.height * self.preview.display_scale * dpi_scale)
             self._pending_preview_resize = True
         else:
             self.camera.state.is_open = False
@@ -858,6 +900,9 @@ class WallDanceApp:
             self.preview.height = int(state.height * self.preview.render_scale)
             if self.processor:
                 self.processor.set_preview_size(self.preview.width, self.preview.height)
+            dpi_scale = get_display_scale()
+            self._display_width = int(state.width * self.preview.display_scale * dpi_scale)
+            self._display_height = int(state.height * self.preview.display_scale * dpi_scale)
             self._pending_preview_resize = True
             print(f"Camera {source} opened: {state.width}x{state.height}")
         else:
@@ -1160,6 +1205,12 @@ class WallDanceApp:
         else:
             print(f"Frame skip: {self.frame_skip} (process every {self.frame_skip + 1} frames)")
 
+    def _cb_force_1080p_toggle(self, enabled: bool):
+        self.force_1080p = enabled
+        if self._use_unified_camera and self.unified_camera is not None:
+            self.unified_camera.set_force_1080p(enabled)
+        print(f"Force 1080p: {'ON — IDS frames downscaled to 1920×1080 before processing' if enabled else 'OFF — native resolution'}")
+
     def _cb_playback_speed_change(self, speed: float):
         """Handle playback speed change."""
         self.recorder.set_playback_speed(speed)
@@ -1201,7 +1252,7 @@ class WallDanceApp:
             print("Preview FPS cap: OFF (uncapped)")
 
     def _apply_preview_scale(self, value: float, force: bool = False):
-        value = max(0.25, min(1.0, float(value)))
+        value = max(0.05, min(1.0, float(value)))
         if not force and abs(value - self.preview.render_scale) < 1e-3:
             return
         self.preview.render_scale = value
@@ -1798,9 +1849,12 @@ class WallDanceApp:
         print("Initializing GUI...")
         self.gui = WallDanceGUI(config=self._get_gui_config(), callbacks=self._get_gui_callbacks())
         dpi_scale = get_display_scale()
+        # Use actual camera dims for window sizing (may be cropped, e.g. 1528x1528)
+        cam_w = self.camera.state.width if self.camera.state.width > 0 else CAMERA_WIDTH
+        cam_h = self.camera.state.height if self.camera.state.height > 0 else CAMERA_HEIGHT
         # Add space for controls: control_panel(320) + video_padding(20) + borders(~10)
-        window_width = int((CAMERA_WIDTH * self.preview.display_scale + 375) * dpi_scale)
-        window_height = max(int((CAMERA_HEIGHT * self.preview.display_scale ) * dpi_scale), int(800 * dpi_scale))
+        window_width = int((cam_w * self.preview.display_scale + 375) * dpi_scale)
+        window_height = max(int((cam_h * self.preview.display_scale) * dpi_scale), int(800 * dpi_scale))
         self.gui.setup(width=window_width, height=window_height)
         with dpg.handler_registry():
             dpg.add_key_press_handler(callback=self._handle_key)
@@ -1933,7 +1987,10 @@ class WallDanceApp:
                 continue
                 
             if self._pending_preview_resize and self.gui:
-                self.gui.resize_preview(self.preview.width, self.preview.height)
+                disp_w = getattr(self, '_display_width', 0)
+                disp_h = getattr(self, '_display_height', 0)
+                self.gui.resize_preview(self.preview.width, self.preview.height,
+                                        display_width=disp_w, display_height=disp_h)
                 self._pending_preview_resize = False
 
             # Get frame from appropriate source

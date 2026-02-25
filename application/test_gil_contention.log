@@ -1,0 +1,224 @@
+==============================================================================
+  GIL-CONTENTION DIAGNOSTIC TEST FOR IDS CAMERA STALLS
+==============================================================================
+  Date             : 2026-02-25 16:03:07
+  Duration/level   : 60.0s
+  Warmup (ignored) : 5s
+  Stall threshold  : 400ms
+  Buffer count     : 16
+  YOLO model       : yolo11m-pose @ imgsz=800
+  Levels           : [0, 1, 2, 3, 4, 5]
+  CUDA available   : True
+  YOLO available   : True
+  Python           : 3.12.12 (main, Feb 12 2026, 00:40:26) [MSC v.1944 64 bit (AMD64)]
+  Log file         : C:\Users\tango\Documents\GitHub\WallDance\application\test_gil_contention.log
+  PyTorch          : 2.10.0+cu130
+  CUDA device      : NVIDIA GeForce RTX 5080 Laptop GPU
+
+  HYPOTHESIS: Python GIL starvation causes IDS USB3 stalls.
+  IDS Cockpit (C++) never shows 1.65s stalls ⟹ not hardware.
+  If GIL-heavy CPU thread (G1) causes more stalls than
+  GIL-free CUDA (G2) or separate-process CPU (G3),
+  then GIL contention is confirmed as the root cause.
+
+[IDS] Opened: U3-34ExXCP-M (SN: 4110042130)
+[IDS] PixelFormat: Mono10g40IDS
+[IDS] Resolution: 2688x1528
+[IDS] FPS: 20.0
+[IDS] DeviceLinkThroughputLimit: 162 MB/s
+[IDS] Allocated 16 buffers (5134080 bytes each)
+
+  Camera: 2688x1528 @ 20.0fps, Mono10g40IDS
+
+
+====================================================================
+  LEVEL G0: G0: Baseline — acq thread only, no contention.
+====================================================================
+
+  [G0] Running 60.0s baseline (no contention)...
+
+  ┌── G0_baseline ─────────────────────────────────────────────
+  │ Baseline: acq thread only, no other work
+  │ Duration: 60s | Frames: 1142 | FPS: 19.0
+  │ Stalls : 2 total, 2 severe (≥1s)
+  │ Gaps   : avg=52.8ms, max=1674ms
+  │ Timeouts: 12
+  │ Notes  : warmup=5s (93 frames, 0 stalls ignored)
+  │
+  │ GIL-instrumented SDK call timings (calls > 5ms):
+  │   BufferToImage  : (all < 5ms — no GIL delays)
+  │   memcpy         : (all < 5ms — no GIL delays)
+  │   QueueBuffer    : (all < 5ms — no GIL delays)
+  └──────────────────────────────────────────────────────────
+
+====================================================================
+  LEVEL G1: G1: GIL-heavy CPU load in a thread (shares GIL).
+====================================================================
+
+  [G1] Running 60.0s with GIL-heavy numpy CPU load in thread...
+
+  ┌── G1_gil_heavy ────────────────────────────────────────────
+  │ GIL-heavy: tight numpy+cv2 loop in thread (holds GIL ~95%)
+  │ Duration: 60s | Frames: 1071 | FPS: 17.9
+  │ Stalls : 4 total, 4 severe (≥1s)
+  │ Gaps   : avg=56.0ms, max=1704ms
+  │ Timeouts: 24
+  │ Notes  : warmup=5s (99 frames, 0 stalls ignored)
+  │
+  │ GIL-instrumented SDK call timings (calls > 5ms):
+  │   BufferToImage  : (all < 5ms — no GIL delays)
+  │   memcpy         : (all < 5ms — no GIL delays)
+  │   QueueBuffer    : (all < 5ms — no GIL delays)
+  └──────────────────────────────────────────────────────────
+
+====================================================================
+  LEVEL G2: G2: GIL-free CUDA load in a thread (GPU releases GIL).
+====================================================================
+
+  [G2] Running 60.0s with GIL-free CUDA matmul in thread...
+
+  ┌── G2_gil_free_cuda ────────────────────────────────────────
+  │ GIL-free: CUDA matmul in thread (releases GIL during GPU work)
+  │ Duration: 60s | Frames: 1039 | FPS: 17.3
+  │ Stalls : 5 total, 5 severe (≥1s)
+  │ Gaps   : avg=57.7ms, max=1701ms
+  │ Timeouts: 30
+  │ Notes  : warmup=5s (99 frames, 0 stalls ignored)
+  │
+  │ GIL-instrumented SDK call timings (calls > 5ms):
+  │   BufferToImage  : (all < 5ms — no GIL delays)
+  │   memcpy         : (all < 5ms — no GIL delays)
+  │   QueueBuffer    : (all < 5ms — no GIL delays)
+  └──────────────────────────────────────────────────────────
+
+====================================================================
+  LEVEL G3: G3: Same CPU load as G1, but in a separate process (own GIL).
+====================================================================
+
+  [G3] Running 60.0s with CPU load in SEPARATE PROCESS...
+[MultiprocessCPU] Started PID=23788
+[MultiprocessCPU] Stopped
+
+  ┌── G3_multiprocess_cpu ─────────────────────────────────────
+  │ Multiprocess CPU: same numpy load in separate process (own GIL)
+  │ Duration: 60s | Frames: 1009 | FPS: 16.8
+  │ Stalls : 6 total, 6 severe (≥1s)
+  │ Gaps   : avg=59.5ms, max=1673ms
+  │ Timeouts: 42
+  │ Notes  : warmup=5s (66 frames, 1 stalls ignored)
+  │
+  │ GIL-instrumented SDK call timings (calls > 5ms):
+  │   BufferToImage  : (all < 5ms — no GIL delays)
+  │   memcpy         : (all < 5ms — no GIL delays)
+  │   QueueBuffer    : (all < 5ms — no GIL delays)
+  └──────────────────────────────────────────────────────────
+
+====================================================================
+  LEVEL G4: G4: Realistic YOLO pipeline in a thread (same GIL).
+====================================================================
+
+  [G4] Loading YOLO model for in-thread inference...
+  [G4] YOLO warmup done. Running 60.0s with YOLO in GPU worker thread...
+
+  ┌── G4_yolo_thread ──────────────────────────────────────────
+  │ YOLO in thread: yolo11m-pose.pt @800 (same GIL — pre/post holds GIL)
+  │ Duration: 60s | Frames: 1136 | FPS: 18.9
+  │ Stalls : 2 total, 2 severe (≥1s)
+  │ Gaps   : avg=52.8ms, max=1677ms
+  │ Timeouts: 12
+  │ Notes  : warmup=5s (99 frames, 0 stalls ignored)
+  │
+  │ GIL-instrumented SDK call timings (calls > 5ms):
+  │   BufferToImage  : (all < 5ms — no GIL delays)
+  │   memcpy         : (all < 5ms — no GIL delays)
+  │   QueueBuffer    : (all < 5ms — no GIL delays)
+  └──────────────────────────────────────────────────────────
+
+====================================================================
+  LEVEL G5: G5: YOLO inference in a subprocess via shared memory (separate GIL).
+====================================================================
+
+  [G5] Starting YOLO subprocess (separate GIL)...
+[YoloSubprocess] Started PID=22500, shm=wnsm_f7013171
+[YoloSubprocess] Warmup wait done
+  [G5] Running 60.0s with YOLO in subprocess...
+[YoloSubprocess] Stopped
+
+  ┌── G5_yolo_subprocess ──────────────────────────────────────
+  │ YOLO in subprocess: yolo11m-pose.pt @800 via shared memory (separate GIL)
+  │ Duration: 60s | Frames: 1136 | FPS: 18.9
+  │ Stalls : 2 total, 2 severe (≥1s)
+  │ Gaps   : avg=52.8ms, max=1671ms
+  │ Timeouts: 12
+  │ Notes  : warmup=5s (99 frames, 0 stalls ignored)
+  │
+  │ GIL-instrumented SDK call timings (calls > 5ms):
+  │   BufferToImage  : (all < 5ms — no GIL delays)
+  │   memcpy         : (all < 5ms — no GIL delays)
+  │   QueueBuffer    : (all < 5ms — no GIL delays)
+  └──────────────────────────────────────────────────────────
+
+==============================================================================
+  GIL CONTENTION DIAGNOSTIC — SUMMARY
+==============================================================================
+  Level                       FPS  Stalls  Severe   MaxGap   MaxGIL
+  ───────────────────────── ───── ─────── ─────── ──────── ────────
+  G0_baseline                19.0       2       2    1674ms        -
+  G1_gil_heavy               17.9       4       4    1704ms        -
+  G2_gil_free_cuda           17.3       5       5    1701ms        -
+  G3_multiprocess_cpu        16.8       6       6    1673ms        -
+  G4_yolo_thread             18.9       2       2    1677ms        -
+  G5_yolo_subprocess         18.9       2       2    1671ms        -
+  ───────────────────────── ───── ─────── ─────── ──────── ────────
+
+  STALL DETAILS:
+
+  G0_baseline:
+    frame    94: 1674ms [SEVERE]
+    frame   823: 1663ms [SEVERE]
+
+  G1_gil_heavy:
+    frame   153: 1678ms [SEVERE]
+    frame   540: 1652ms [SEVERE]
+    frame   719: 1680ms [SEVERE]
+    frame   917: 1704ms [SEVERE]
+
+  G2_gil_free_cuda:
+    frame   452: 1650ms [SEVERE]
+    frame   760: 1664ms [SEVERE]
+    frame   848: 1664ms [SEVERE]
+    frame  1076: 1701ms [SEVERE]
+    frame  1123: 1652ms [SEVERE]
+
+  G3_multiprocess_cpu:
+    frame    67: 1656ms [SEVERE]
+    frame    75: 1656ms [SEVERE]
+    frame   184: 1656ms [SEVERE]
+    frame   573: 1670ms [SEVERE]
+    frame   581: 1673ms [SEVERE]
+    frame  1070: 1671ms [SEVERE]
+
+  G4_yolo_thread:
+    frame   206: 1677ms [SEVERE]
+    frame   874: 1677ms [SEVERE]
+
+  G5_yolo_subprocess:
+    frame   142: 1671ms [SEVERE]
+    frame   270: 1671ms [SEVERE]
+
+==============================================================================
+  VERDICT
+==============================================================================
+
+  ✓ GIL-heavy CPU work does NOT increase stalls: G0=2 → G1=4  (GIL not the bottleneck)
+  ~ GIL-free CUDA similar to GIL-heavy: G1=4 → G2=5
+  ~ Separate process similar: G1=4 → G3=6
+  ~ YOLO subprocess similar: G4=2 → G5=2
+
+
+  ══════════════════════════════════════════════════════════
+  CONCLUSION: Mixed results. GIL may contribute but is not
+  the sole factor. Further investigation needed.
+  ══════════════════════════════════════════════════════════
+
+  Done. Camera closed. Log: C:\Users\tango\Documents\GitHub\WallDance\application\test_gil_contention.log

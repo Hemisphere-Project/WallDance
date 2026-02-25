@@ -205,8 +205,14 @@ class CameraManager:
                     break
             time.sleep(0.01)
     
-    def open(self, source: str) -> bool:
-        """Open or switch to a camera source."""
+    def open(self, source: str, backend: int | None = None) -> bool:
+        """Open or switch to a camera source.
+
+        Args:
+            source: Camera index (as string) or device path.
+            backend: Optional OpenCV backend ID (e.g. cv2.CAP_DSHOW).
+                     When *None*, the default backend is used.
+        """
         # Stop any existing capture thread first
         self._stop_capture_thread()
         
@@ -216,9 +222,15 @@ class CameraManager:
 
         try:
             idx = int(source)
-            self.cap = cv2.VideoCapture(idx)
+            if backend is not None:
+                self.cap = cv2.VideoCapture(idx, backend)
+            else:
+                self.cap = cv2.VideoCapture(idx)
         except ValueError:
-            self.cap = cv2.VideoCapture(source)
+            if backend is not None:
+                self.cap = cv2.VideoCapture(source, backend)
+            else:
+                self.cap = cv2.VideoCapture(source)
 
         if self.cap is None or not self.cap.isOpened():
             self.state.is_open = False

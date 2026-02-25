@@ -942,6 +942,14 @@ def build_input_section(gui: Any):
             callback=gui._on_frame_skip_change,
         )
 
+        dpg.add_spacer(height=scaled(4))
+        dpg.add_checkbox(
+            label="Force 1080p",
+            tag="adv_force_1080p_checkbox",
+            default_value=gui.config.get("force_1080p", False),
+            callback=gui._on_force_1080p_toggle,
+        )
+
 
 def build_preview_section(gui: Any):
     """Preview settings - open by default."""
@@ -964,7 +972,7 @@ def build_preview_section(gui: Any):
         dpg.add_slider_float(
             tag="adv_preview_scale_slider",
             default_value=gui.config.get("preview_scale", 0.5),
-            min_value=0.25,
+            min_value=0.05,
             max_value=1.0,
             format="%.2f",
             callback=gui._on_preview_scale_change,

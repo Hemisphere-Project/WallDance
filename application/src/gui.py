@@ -412,6 +412,10 @@ class WallDanceGUI:
         if 'on_frame_skip_change' in self.callbacks:
             self.callbacks['on_frame_skip_change'](value)
     
+    def _on_force_1080p_toggle(self, sender, value):
+        if 'on_force_1080p_toggle' in self.callbacks:
+            self.callbacks['on_force_1080p_toggle'](value)
+    
     def _on_camera_change(self, sender, value):
         if 'on_camera_change' in self.callbacks:
             self.callbacks['on_camera_change'](value)
@@ -758,40 +762,62 @@ class WallDanceGUI:
     
     # === Public Methods ===
 
-    def resize_preview(self, width: int, height: int):
-        """Resize preview texture and image when preview scale changes."""
-        # Compare against current texture dimensions, not display dimensions
-        if width == self.texture_width and height == self.texture_height:
+    def resize_preview(self, width: int, height: int,
+                       display_width: int = 0, display_height: int = 0):
+        """Resize preview texture and image when preview scale changes.
+
+        Args:
+            width, height: texture (render) dimensions.
+            display_width, display_height: on-screen image size.
+                If 0, keep existing display size.
+        """
+        texture_changed = (width != self.texture_width or height != self.texture_height)
+        display_changed = (display_width > 0 and display_height > 0 and
+                           (display_width != self.video_width or display_height != self.video_height))
+
+        if not texture_changed and not display_changed:
             return
-        
-        print(f"GUI resize_preview: {self.texture_width}x{self.texture_height} -> {width}x{height}")
-        
-        # Delete old texture to avoid alias collisions
-        if dpg.does_item_exist(self.frame_texture_tag):
-            dpg.delete_item(self.frame_texture_tag)
 
-        # Create new unique texture tag
-        import time
-        self.frame_texture_tag = f"video_texture_{int(time.time()*1000)}"
+        print(f"GUI resize_preview: tex {self.texture_width}x{self.texture_height} -> {width}x{height}"
+              f"  disp {self.video_width}x{self.video_height} -> {display_width or self.video_width}x{display_height or self.video_height}")
 
-        self.texture_width = width
-        self.texture_height = height
-        self.frame_buffer = np.zeros(
-            self.texture_height * self.texture_width * 4,
-            dtype=np.float32
-        )
+        # --- Update display dimensions ---
+        if display_changed:
+            self.video_width = display_width
+            self.video_height = display_height
+            # Resize the video_panel child window to match new aspect ratio
+            if dpg.does_item_exist("video_panel"):
+                from gui_builder import scaled
+                dpg.configure_item("video_panel", width=self.video_width + scaled(20))
 
-        # Recreate texture inside registry
-        with dpg.texture_registry(show=False):
-            self.frame_texture_id = dpg.add_raw_texture(
-                width=self.texture_width,
-                height=self.texture_height,
-                default_value=self.frame_buffer,
-                format=dpg.mvFormat_Float_rgba,
-                tag=self.frame_texture_tag
+        # --- Recreate texture if render size changed ---
+        if texture_changed:
+            # Delete old texture to avoid alias collisions
+            if dpg.does_item_exist(self.frame_texture_tag):
+                dpg.delete_item(self.frame_texture_tag)
+
+            # Create new unique texture tag
+            import time
+            self.frame_texture_tag = f"video_texture_{int(time.time()*1000)}"
+
+            self.texture_width = width
+            self.texture_height = height
+            self.frame_buffer = np.zeros(
+                self.texture_height * self.texture_width * 4,
+                dtype=np.float32
             )
 
-        # Update image widget to use new texture (display size stays the same)
+            # Recreate texture inside registry
+            with dpg.texture_registry(show=False):
+                self.frame_texture_id = dpg.add_raw_texture(
+                    width=self.texture_width,
+                    height=self.texture_height,
+                    default_value=self.frame_buffer,
+                    format=dpg.mvFormat_Float_rgba,
+                    tag=self.frame_texture_tag
+                )
+
+        # Update image widget (display size + texture binding)
         if dpg.does_item_exist("video_image"):
             dpg.configure_item(
                 "video_image",
@@ -987,6 +1013,7 @@ class WallDanceGUI:
             'enhance_lite': ['adv_enhance_lite_checkbox', 'tbl_enhance_lite_checkbox'],
             'enhance_force': ['adv_enhance_force_checkbox', 'tbl_enhance_force_checkbox'],
             'greyscale': ['adv_greyscale_checkbox'],
+            'force_1080p': ['adv_force_1080p_checkbox'],
             'preview': ['adv_preview_checkbox', 'tbl_preview_checkbox'],
             'preview_cap': ['adv_preview_cap_checkbox', 'tbl_preview_cap_checkbox'],
             'fp16': ['adv_fp16_checkbox', 'tbl_fp16_checkbox'],
