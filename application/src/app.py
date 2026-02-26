@@ -1501,15 +1501,35 @@ class WallDanceApp:
             "extract_boxes_cpu",
             "yolo",
             "total",
+            "dpg_render",
+            "gui_stats",
+            "camera_read",
+            "preview_upload",
         ]
         spikes = []
         for key in watch_keys:
             value = timing.get(key)
             if value is None:
                 continue
-            threshold = 20.0 if key not in ("yolo", "total") else 35.0
+            threshold = 20.0 if key not in ("yolo", "total", "dpg_render", "process_wall") else 35.0
             if float(value) >= threshold:
                 spikes.append((key, float(value)))
+
+        # Periodic full budget breakdown (every 5s regardless of spikes)
+        if not hasattr(self, '_last_budget_log_time'):
+            self._last_budget_log_time = 0.0
+        if now - self._last_budget_log_time >= 5.0:
+            self._last_budget_log_time = now
+            budget_keys = ["camera_read", "process_wall", "yolo", "preview_upload",
+                           "preview_draw", "dpg_render", "gui_stats",
+                           "preview_download", "extract_cpu_total"]
+            parts = []
+            for k in budget_keys:
+                v = timing.get(k)
+                if v is not None and float(v) > 0.1:
+                    parts.append(f"{k}={float(v):.1f}")
+            if parts:
+                print(f"[Budget] {', '.join(parts)}  (FPS={self.fps:.1f})")
 
         if not spikes:
             return
@@ -2189,6 +2209,8 @@ class WallDanceApp:
                     raise
                 self.last_tracked = tracked
                 self.timing = timing
+                self.timing["camera_read"] = camera_read_ms
+                self.timing["process_wall"] = process_wall_ms
                 self.latency_ms = latency_ms
             else:
                 process_wall_ms = 0.0
@@ -2352,6 +2374,7 @@ class WallDanceApp:
                 and not self.settings.enhance_lite
                 and brightness >= self.settings.brightness_threshold
             )
+            _stats_t0 = time.perf_counter()
             self.gui.update_stats(
                 fps=self.fps,
                 num_dancers=len(tracked),
@@ -2372,6 +2395,7 @@ class WallDanceApp:
                 enhance_bypassed=enhance_bypassed,
                 gpu_fallback_reason=self.processor.gpu_fallback_reason or "",
             )
+            _gui_stats_ms = (time.perf_counter() - _stats_t0) * 1000.0
             
             # Update recording UI periodically (every 10 frames to avoid overhead)
             rec_ui_update_counter += 1
@@ -2379,7 +2403,16 @@ class WallDanceApp:
                 rec_ui_update_counter = 0
                 self._update_recording_ui()
             
+            _dpg_t0 = time.perf_counter()
             dpg.render_dearpygui_frame()
+            _dpg_render_ms = (time.perf_counter() - _dpg_t0) * 1000.0
+
+            # Inject GUI overhead into timing dict for spike logging
+            if self.timing:
+                self.timing["dpg_render"] = _dpg_render_ms
+                self.timing["gui_stats"] = _gui_stats_ms
+                if 'camera_read_ms' not in self.timing:
+                    self.timing["camera_read"] = camera_read_ms if 'camera_read_ms' in dir() else 0.0
 
         self.recorder.close()
         if self.camera.cap is not None:

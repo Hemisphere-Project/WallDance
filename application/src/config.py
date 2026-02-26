@@ -82,13 +82,18 @@ IDS_USE_GPU_DIRECT = True
 # Cap IDS acquisition FPS (independent from OpenCV camera FPS).
 # Lower values can improve stream stability on full-resolution IDS capture.
 IDS_MAX_FPS = 20
+# Upper limit on auto-exposure (µs). Prevents the camera from choosing
+# exposure times so long that the frame rate drops below IDS_MAX_FPS.
+# Rule of thumb: (1_000_000 / IDS_MAX_FPS) - 5000  (readout headroom).
+# 0 = no limit (camera decides; may drop to ~10 FPS in the dark).
+IDS_AUTO_EXPOSURE_LIMIT_US = 45000   # 45 ms → guarantees ≥ 20 FPS
 # On-device ROI crop — reduces USB3 bandwidth at the sensor level.
 # Fixed pixel budget: the crop area will never exceed this many pixels.
 # The U3-34E0XCP native sensor is 2688×1528; budget of 1528*1528 ≈ 2.3 MP.
 # The actual W×H is derived from IDS_CROP_PIXELS and IDS_RATIO.
 # Set to 0 to disable on-device crop (full sensor).
 # IDS_CROP_PIXELS =  1528 * 1528 # SAFE
-IDS_CROP_PIXELS =  2000 * 1528 # SEEMS STABLE
+IDS_CROP_PIXELS =  1528 * 1528 # SEEMS STABLE
 # Aspect ratio (W/H) of the on-device crop. Adjustable at runtime via GUI.
 # Range: 0.5 – 2.0.  Values outside sensor bounds are clamped automatically.
 IDS_RATIO = 1.0
@@ -150,11 +155,11 @@ OSC_IP = "127.0.0.1"                # Target IP address
 OSC_PORT = 9000                     # Target port
 
 # OSC message format:
-# /walldance/dancer/centroid    [id, x, y]           (normalized 0-1)
-# /walldance/dancer/bbox        [id, x, y, w, h]     (normalized 0-1)
-# /walldance/dancer/keypoints   [id, x0,y0,c0, ...]  (17 keypoints, normalized)
-# /walldance/dancer/velocity    [id, vx, vy]         (normalized per frame)
-# /walldance/count              [n, id0, id1, ...]   (count + active track IDs)
+# /walldance/dancer/<id>/centroid    [x, y]           (normalized 0-1)
+# /walldance/dancer/<id>/bbox        [x, y, w, h]     (normalized 0-1)
+# /walldance/dancer/<id>/keypoints   [x0,y0,c0, ...]  (17 keypoints, normalized)
+# /walldance/dancer/<id>/velocity    [vx, vy]         (normalized per frame)
+# /walldance/count                   [n]              (number of tracked dancers)
 
 # =============================================================================
 # VISUALIZATION

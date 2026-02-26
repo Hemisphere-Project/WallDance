@@ -44,6 +44,7 @@ try:
     from config import IDS_USER_SET as APP_IDS_USER_SET
     from config import IDS_CROP_PIXELS as APP_IDS_CROP_PIXELS
     from config import IDS_RATIO as APP_IDS_RATIO
+    from config import IDS_AUTO_EXPOSURE_LIMIT_US as APP_IDS_AUTO_EXPOSURE_LIMIT_US
 except Exception:
     APP_CAMERA_WIDTH = 1920
     APP_CAMERA_HEIGHT = 1080
@@ -52,6 +53,7 @@ except Exception:
     APP_IDS_USER_SET = ""
     APP_IDS_CROP_PIXELS = 0
     APP_IDS_RATIO = 1.0
+    APP_IDS_AUTO_EXPOSURE_LIMIT_US = 0
 
 # Check for IDS Peak SDK
 IDS_PEAK_AVAILABLE = False
@@ -163,6 +165,11 @@ class IDSCameraSettings:
     
     # Pixel format preference (will try in order)
     prefer_high_bit_depth: bool = True  # Prefer Mono10/12 over Mono8
+
+    # Auto-exposure upper limit (µs). 0 = no limit.
+    # Prevents auto-exposure from choosing values so long that
+    # the frame rate drops below target_fps.
+    auto_exposure_limit_us: float = 0.0
 
     # Manual fallbacks when auto controls are unavailable
     fallback_exposure_us: float = 10000.0
@@ -666,6 +673,44 @@ class IDSCamera:
                 except:
                     print("[IDSCamera] Auto exposure not available, using manual")
                     self.settings.exposure_auto = False
+
+                # Apply upper limit on auto-exposure to guarantee minimum FPS
+                if self.settings.exposure_auto and self.settings.auto_exposure_limit_us > 0:
+                    limit_us = self.settings.auto_exposure_limit_us
+                    applied = False
+                    # Try GenICam standard nodes for auto-exposure upper bound
+                    for node_name in ("ExposureAutoUpperLimit",
+                                      "AutoExposureTimeUpperLimit",
+                                      "ExposureAutoMax"):
+                        try:
+                            limit_node = nm.FindNode(node_name)
+                            clamped = max(limit_node.Minimum(),
+                                          min(limit_us, limit_node.Maximum()))
+                            limit_node.SetValue(clamped)
+                            print(f"[IDSCamera] Auto-exposure upper limit: "
+                                  f"{clamped:.0f} µs (via {node_name})")
+                            applied = True
+                            break
+                        except Exception:
+                            continue
+                    if not applied:
+                        # Fallback: disable auto, clamp manual exposure to limit
+                        try:
+                            exp_node = nm.FindNode("ExposureTime")
+                            clamped = max(exp_node.Minimum(),
+                                          min(limit_us, exp_node.Maximum()))
+                            exp_node.SetValue(clamped)
+                            print(f"[IDSCamera] Auto-exposure limit node not found; "
+                                  f"set manual exposure to {clamped:.0f} µs as upper bound")
+                            # Re-enable auto — on many IDS cameras, setting
+                            # ExposureTime while auto is active acts as a hint/cap.
+                            try:
+                                auto_re = nm.FindNode("ExposureAuto")
+                                auto_re.SetCurrentEntry(auto_re.FindEntry("Continuous"))
+                            except Exception:
+                                pass
+                        except Exception as e:
+                            print(f"[IDSCamera] Could not apply exposure limit: {e}")
             
             if not self.settings.exposure_auto:
                 exp_node = nm.FindNode("ExposureTime")
@@ -676,6 +721,9 @@ class IDSCamera:
 
             try:
                 self.state.exposure_us = nm.FindNode("ExposureTime").Value()
+                print(f"[IDSCamera] Current exposure reading: {self.state.exposure_us:.0f} µs "
+                      f"({self.state.exposure_us/1000:.1f} ms, "
+                      f"max FPS from exposure: {1_000_000/max(1,self.state.exposure_us):.1f})")
             except Exception:
                 pass
         except Exception as e:
@@ -1543,6 +1591,7 @@ class UnifiedCamera:
                 newest_only=True,
                 prefer_high_bit_depth=False,
                 user_set=APP_IDS_USER_SET,
+                auto_exposure_limit_us=float(APP_IDS_AUTO_EXPOSURE_LIMIT_US),
             )
             self._ids_camera = IDSCamera(settings)
             
