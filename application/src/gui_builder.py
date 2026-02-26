@@ -942,14 +942,6 @@ def build_input_section(gui: Any):
             callback=gui._on_frame_skip_change,
         )
 
-        dpg.add_spacer(height=scaled(4))
-        dpg.add_checkbox(
-            label="Force 1080p",
-            tag="adv_force_1080p_checkbox",
-            default_value=gui.config.get("force_1080p", False),
-            callback=gui._on_force_1080p_toggle,
-        )
-
 
 def build_preview_section(gui: Any):
     """Preview settings - open by default."""

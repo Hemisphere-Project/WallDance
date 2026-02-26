@@ -81,13 +81,6 @@ except ImportError:
     torch = None
 
 
-class PixelFormat(Enum):
-    """Supported pixel formats in priority order."""
-    MONO12 = auto()  # Best dynamic range
-    MONO10 = auto()  # Good dynamic range
-    MONO8 = auto()   # Fastest, least dynamic range
-
-
 @dataclass
 class IDSCameraInfo:
     """Information about a detected IDS camera."""
@@ -200,18 +193,12 @@ class IDSCamera:
         self._norm_probe_every: int = 120
         self._norm_probe_counter: int = 0
         
-        # GPU tensor cache (for read_gpu)
-        self._gpu_tensor: Optional[torch.Tensor] = None
-
         # Dedicated CUDA stream for frame uploads — reduces PCIe contention
         # between USB3 DMA (camera) and GPU DMA (upload/inference).
         # See docs/IDS_STALL_CONCLUSIONS.md for test data.
         self._upload_stream: Optional['torch.cuda.Stream'] = None
         if CUDA_AVAILABLE:
             self._upload_stream = torch.cuda.Stream()
-
-        # Force 1080p downscale (GUI toggle)
-        self._force_1080p: bool = False
 
         # Stall detection
         self._stall_threshold_s: float = 0.4   # gap > this = stall
@@ -1191,16 +1178,12 @@ class IDSCamera:
         self._last_nonempty_read_time = time.perf_counter()
         return True, gpu_tensor
 
-    def set_force_1080p(self, enabled: bool):
-        """Toggle runtime 1080p downscale (called from GUI)."""
-        self._force_1080p = enabled
-
     def _prepare_mono_for_processing(self, mono: np.ndarray) -> np.ndarray:
         """Bound full-res IDS frames to app working resolution before heavy conversions."""
         if not APP_IDS_USE_FULL_RES:
             return mono
 
-        if not APP_IDS_CAP_PROCESSING_RES and not self._force_1080p:
+        if not APP_IDS_CAP_PROCESSING_RES:
             return mono
 
         if mono is None or mono.ndim < 2:
@@ -1282,6 +1265,9 @@ class IDSCamera:
         if self._upload_stream is not None:
             with torch.cuda.stream(self._upload_stream):
                 gpu_mono = self._pinned_buffer.cuda(non_blocking=True)
+            # Wait for async upload to complete before downstream ops on the
+            # default stream — prevents reading stale/partial data.
+            self._upload_stream.synchronize()
         else:
             gpu_mono = self._pinned_buffer.cuda(non_blocking=True)  # fallback
         
@@ -1713,11 +1699,6 @@ class UnifiedCamera:
         if self._source_type == CameraSource.IDS_PEAK:
             return self._ids_camera.get_last_cpu_frame()
         return None
-    
-    def set_force_1080p(self, enabled: bool):
-        """Toggle runtime 1080p downscale on the IDS camera."""
-        if self._ids_camera is not None:
-            self._ids_camera.set_force_1080p(enabled)
     
     @property
     def source_type(self) -> Optional[CameraSource]:

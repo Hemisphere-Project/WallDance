@@ -53,7 +53,6 @@ class ProcessingSettings:
     imgsz: int
     max_persons: int
     use_fp16: bool
-    upscale_factor: float
     enhance_enabled: bool
     enhance_lite: bool
     enhance_force: bool  # Force enhancement even when brightness > threshold
@@ -442,21 +441,10 @@ class FrameProcessor:
         timing["path_enhance"] = "gpu" if enhance_on_gpu else "cpu"
         timing["brightness"] = brightness
 
-        # 2. Upscale (optional)
-        t0 = time.time()
-        if self.settings.upscale_factor != 1.0:
-            new_w = int(original_w * self.settings.upscale_factor)
-            new_h = int(original_h * self.settings.upscale_factor)
-            process_frame = cv2.resize(enhanced, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-        else:
-            process_frame = enhanced
-        timing["upscale"] = (time.time() - t0) * 1000
-        timing["path_resize"] = "cpu"
-
-        # 3. YOLO inference
+        # 2. YOLO inference
         t0 = time.time()
         results = self.model(
-            process_frame,
+            enhanced,
             imgsz=self.settings.imgsz,
             conf=self.settings.confidence,
             iou=YOLO_IOU_THRESHOLD,
@@ -467,24 +455,32 @@ class FrameProcessor:
         timing["yolo"] = (time.time() - t0) * 1000
         timing["path_yolo"] = "gpu"
 
-        # 4. Extract detections
+        # 3. Extract detections
         t0 = time.time()
         detections = self._extract_detections(results)
         detections = self._filter_duplicate_detections(detections)
         timing["extract"] = (time.time() - t0) * 1000
         timing.update(self._extract_transfer_timing)
 
-        # 5. Tracking
+        # 4. Tracking
         t0 = time.time()
         tracked = self.tracker.update(detections)
         timing["track"] = (time.time() - t0) * 1000
         timing["path_track"] = "cpu"
 
-        # 6. Scale back
-        scale = 1.0 / self.settings.upscale_factor if self.settings.upscale_factor != 1.0 else 1.0
-        scaled_tracks = [self._scale_track(track, scale) for track in tracked]
+        # 5. Convert tracks to ScaledTrack (identity scale)
+        scaled_tracks = [
+            ScaledTrack(
+                track_id=t.track_id,
+                keypoints=t.keypoints.copy(),
+                confidence=t.confidence.copy(),
+                bbox=t.bbox.copy(),
+                history=[pt.copy() for pt in t.history],
+                velocity=t.get_velocity().copy(),
+            ) for t in tracked
+        ]
 
-        # 7. OSC output
+        # 6. OSC output
         if self.osc and self.settings.osc_enabled:
             self.osc.send_frame(scaled_tracks, original_w, original_h)
 
@@ -493,29 +489,6 @@ class FrameProcessor:
         self._timing = timing
         return scaled_tracks, enhanced, timing, latency_ms
 
-    def _scale_track(self, track: DancerTrack, scale: float) -> ScaledTrack:
-        return ScaledTrack(
-            track_id=track.track_id,
-            keypoints=track.keypoints * scale,
-            confidence=track.confidence.copy(),
-            bbox=track.bbox * scale,
-            history=[pt * scale for pt in track.history],
-            velocity=track.get_velocity() * scale,
-        )
-    
-    def _scale_track_xy(self, track: DancerTrack, scale_x: float, scale_y: float) -> ScaledTrack:
-        """Scale track with different X and Y factors (for non-square YOLO input)."""
-        scale_xy = np.array([scale_x, scale_y])
-        scale_bbox = np.array([scale_x, scale_y, scale_x, scale_y])
-        return ScaledTrack(
-            track_id=track.track_id,
-            keypoints=track.keypoints * scale_xy,
-            confidence=track.confidence.copy(),
-            bbox=track.bbox * scale_bbox,
-            history=[pt * scale_xy for pt in track.history],
-            velocity=track.get_velocity() * scale_xy,
-        )
-    
     def _unscale_letterbox(self, track: DancerTrack, lb_scale: float, pad_x: int, pad_y: int) -> ScaledTrack:
         """
         Unscale track from letterboxed YOLO space to original camera space.

@@ -36,7 +36,6 @@ from config import (
     DENOISE_STRENGTH,
     ENHANCE_ENABLED,
     GAMMA_CORRECTION,
-    KEYPOINT_CONFIDENCE,
     MAX_PERSONS,
     MODELS_DIR,
     OSC_ENABLED,
@@ -55,7 +54,6 @@ from config import (
     SHOW_TRAILS,
     TRACKER_DISTANCE_THRESHOLD,
     TRACKER_MAX_AGE,
-    UPSCALE_FACTOR,
     IDS_CAP_PROCESSING_RES,
     IDS_USE_FULL_RES,
     IDS_USE_GPU_DIRECT,
@@ -121,7 +119,6 @@ class WallDanceApp:
             imgsz=YOLO_IMGSZ,
             max_persons=MAX_PERSONS,
             use_fp16=False,
-            upscale_factor=UPSCALE_FACTOR,
             enhance_enabled=ENHANCE_ENABLED,
             enhance_lite=False,
             enhance_force=False,
@@ -199,7 +196,6 @@ class WallDanceApp:
 
         # State for metrics
         self.frame_skip = 0
-        self.force_1080p = False
         self.frame_skip_counter = 0
         self.frame_count = 0
         self.last_fps_time = time.time()
@@ -259,7 +255,6 @@ class WallDanceApp:
             "max_persons": self.settings.max_persons,
             "fp16": self.settings.use_fp16,
             "frame_skip": self.frame_skip,
-            "force_1080p": self.force_1080p,
             "yolo_imgsz": self.settings.imgsz,
             "person_height_px": self.settings.person_height_px,
             "enhance_enabled": self.settings.enhance_enabled,
@@ -268,7 +263,6 @@ class WallDanceApp:
             "greyscale": self.settings.greyscale,
             "clahe_clip": CLAHE_CLIP_LIMIT,
             "gamma": GAMMA_CORRECTION,
-            "upscale_factor": self.settings.upscale_factor,
             "show_skeleton": self.show_skeleton,
             "show_keypoints": self.show_keypoints,
             "show_bbox": self.show_bbox,
@@ -297,7 +291,6 @@ class WallDanceApp:
             "on_enhance_force_toggle": self._cb_enhance_force_toggle,
             "on_greyscale_toggle": self._cb_greyscale_toggle,
             "on_brightness_threshold_change": self._cb_brightness_threshold_change,
-            "on_upscale_change": self._cb_upscale_change,
             "on_clahe_change": self._cb_clahe_change,
             "on_gamma_change": self._cb_gamma_change,
             "on_denoise_change": self._cb_denoise_change,
@@ -307,7 +300,6 @@ class WallDanceApp:
             "on_trt_toggle": self._cb_trt_toggle,
             "on_fp16_toggle": self._cb_fp16_toggle,
             "on_frame_skip_change": self._cb_frame_skip_change,
-            "on_force_1080p_toggle": self._cb_force_1080p_toggle,
             "on_camera_change": self._cb_camera_change,
             "on_camera_toggle": self._cb_camera_toggle,
             "on_camera_refresh": self._cb_camera_refresh,
@@ -355,8 +347,6 @@ class WallDanceApp:
             "max_persons": self.settings.max_persons,
             "fp16": self.settings.use_fp16,
             "frame_skip": self.frame_skip,
-            "force_1080p": self.force_1080p,
-            "upscale_factor": self.settings.upscale_factor,
             "person_height_px": self.settings.person_height_px,
             "enhance_enabled": self.settings.enhance_enabled,
             "enhance_lite": self.settings.enhance_lite,
@@ -553,14 +543,6 @@ class WallDanceApp:
         if "frame_skip" in config:
             self.frame_skip = config["frame_skip"]
             self.gui and self.gui.sync_slider("frame_skip", self.frame_skip)
-        if "force_1080p" in config:
-            self.force_1080p = config["force_1080p"]
-            if self._use_unified_camera and self.unified_camera is not None:
-                self.unified_camera.set_force_1080p(self.force_1080p)
-            self.gui and self.gui.sync_checkbox("force_1080p", self.force_1080p)
-        if "upscale_factor" in config:
-            self._cb_upscale_change(config["upscale_factor"])
-            self.gui and self.gui.sync_slider("upscale", config["upscale_factor"])
         if "person_height_px" in config:
             self.settings.person_height_px = config["person_height_px"]
             self.gui and self.gui.sync_slider("person_height", config["person_height_px"])
@@ -676,10 +658,6 @@ class WallDanceApp:
     def _cb_greyscale_toggle(self, enabled: bool):
         self.settings.greyscale = enabled
         print(f"Greyscale: {'ON (mono camera simulation)' if enabled else 'OFF'}")
-
-    def _cb_upscale_change(self, factor: float):
-        self.settings.upscale_factor = factor
-        print(f"Upscale: {factor:.1f}x")
 
     def _cb_clahe_change(self, value: float):
         self.enhancer.clahe_clip = value
@@ -830,9 +808,6 @@ class WallDanceApp:
         opened = self.unified_camera.open(camera_source)
         
         if opened:
-            # Propagate Force 1080p toggle to newly opened camera
-            self.unified_camera.set_force_1080p(self.force_1080p)
-            
             # Sync state with legacy CameraManager state (for UI compatibility)
             self.camera.state.is_open = True
             self.camera.state.width = self.unified_camera.width
@@ -1196,12 +1171,6 @@ class WallDanceApp:
         else:
             print(f"Frame skip: {self.frame_skip} (process every {self.frame_skip + 1} frames)")
 
-    def _cb_force_1080p_toggle(self, enabled: bool):
-        self.force_1080p = enabled
-        if self._use_unified_camera and self.unified_camera is not None:
-            self.unified_camera.set_force_1080p(enabled)
-        print(f"Force 1080p: {'ON — IDS frames downscaled to 1920×1080 before processing' if enabled else 'OFF — native resolution'}")
-
     def _cb_playback_speed_change(self, speed: float):
         """Handle playback speed change."""
         self.recorder.set_playback_speed(speed)
@@ -1561,14 +1530,6 @@ class WallDanceApp:
             print(f"Preview: {'ON' if self.preview_enabled else 'OFF (measure raw FPS)'}")
         elif key == dpg.mvKey_R:
             self._cb_tracker_reset()
-        elif key == dpg.mvKey_Add or key == 61:
-            self.settings.upscale_factor = min(4.0, self.settings.upscale_factor + 0.5)
-            self.gui and self.gui.sync_slider("upscale", self.settings.upscale_factor)
-            print(f"Upscale: {self.settings.upscale_factor}x")
-        elif key == dpg.mvKey_Subtract or key == 45:
-            self.settings.upscale_factor = max(1.0, self.settings.upscale_factor - 0.5)
-            self.gui and self.gui.sync_slider("upscale", self.settings.upscale_factor)
-            print(f"Upscale: {self.settings.upscale_factor}x")
         if key == dpg.mvKey_S and (dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)):
             self._cb_save_config()
 
@@ -2090,13 +2051,6 @@ class WallDanceApp:
                 # Must happen here (not just in diag callback) because the diag
                 # heartbeat may fire from a "waiting" iteration where frame=None.
                 self._last_fresh_frame_time = time.time()
-
-                # Stabilization: bound IDS processing resolution to app working size.
-                # Full-res IDS frames can intermittently block the main loop and freeze UI/stats.
-                if frame is not None and self._is_ids_camera_active():
-                    fh, fw = frame.shape[:2]
-                    if fw > CAMERA_WIDTH or fh > CAMERA_HEIGHT:
-                        frame = cv2.resize(frame, (CAMERA_WIDTH, CAMERA_HEIGHT), interpolation=cv2.INTER_AREA)
                 
                 # Recording is handled via camera callback thread - no write_frame here
 

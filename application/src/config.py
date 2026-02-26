@@ -24,14 +24,6 @@ CAMERA_HEIGHT = 1080                # Input resolution height
 CAMERA_FPS = 30                     # Target camera FPS
 
 # =============================================================================
-# IMAGE PROCESSING - UPSCALING (DEPRECATED - use YOLO imgsz instead)
-# =============================================================================
-# NOTE: YOLO's imgsz parameter is more efficient than pre-upscaling
-# Set to 1.0 and use YOLO_IMGSZ for small figure detection
-UPSCALE_FACTOR = 1.0                # 1.0 = native (recommended)
-                                    # Use YOLO_IMGSZ=1280 instead of upscaling
-
-# =============================================================================
 # IMAGE PROCESSING - LOW LIGHT ENHANCEMENT
 # =============================================================================
 ENHANCE_ENABLED = True              # Enable adaptive enhancement

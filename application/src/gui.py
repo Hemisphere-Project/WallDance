@@ -193,7 +193,6 @@ class WallDanceGUI:
             config: Initial configuration values
             callbacks: Dict of callback functions for parameter changes
                 - on_enhance_toggle(enabled)
-                - on_upscale_change(factor)
                 - on_clahe_change(clip_limit)
                 - on_gamma_change(gamma)
                 - on_confidence_change(conf)
@@ -372,14 +371,6 @@ class WallDanceGUI:
         if 'on_preview_scale_change' in self.callbacks:
             self.callbacks['on_preview_scale_change'](value)
     
-    def _on_upscale_change(self, sender, value):
-        if 'on_upscale_change' in self.callbacks:
-            self.callbacks['on_upscale_change'](value)
-    
-    def _set_upscale(self, value):
-        dpg.set_value("upscale_slider", value)
-        self._on_upscale_change(None, value)
-    
     def _on_clahe_change(self, sender, value):
         if 'on_clahe_change' in self.callbacks:
             self.callbacks['on_clahe_change'](value)
@@ -411,10 +402,6 @@ class WallDanceGUI:
     def _on_frame_skip_change(self, sender, value):
         if 'on_frame_skip_change' in self.callbacks:
             self.callbacks['on_frame_skip_change'](value)
-    
-    def _on_force_1080p_toggle(self, sender, value):
-        if 'on_force_1080p_toggle' in self.callbacks:
-            self.callbacks['on_force_1080p_toggle'](value)
     
     def _on_camera_change(self, sender, value):
         if 'on_camera_change' in self.callbacks:
@@ -1013,7 +1000,6 @@ class WallDanceGUI:
             'enhance_lite': ['adv_enhance_lite_checkbox', 'tbl_enhance_lite_checkbox'],
             'enhance_force': ['adv_enhance_force_checkbox', 'tbl_enhance_force_checkbox'],
             'greyscale': ['adv_greyscale_checkbox'],
-            'force_1080p': ['adv_force_1080p_checkbox'],
             'preview': ['adv_preview_checkbox', 'tbl_preview_checkbox'],
             'preview_cap': ['adv_preview_cap_checkbox', 'tbl_preview_cap_checkbox'],
             'fp16': ['adv_fp16_checkbox', 'tbl_fp16_checkbox'],
