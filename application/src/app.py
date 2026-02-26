@@ -2056,11 +2056,13 @@ class WallDanceApp:
                 # Read from video file
                 frame = self.recorder.read_frame()
                 if frame is None:
-                    # Decoder thread still starting up — wait for first frame
+                    # No new frame yet — decoder paces at video FPS, so we
+                    # wait briefly to avoid spinning and re-processing the
+                    # same frame (which would speed up playback and waste GPU).
                     if self.recorder.is_playback_active:
                         if self.gui:
                             self.gui.render_frame()
-                        time.sleep(0.01)
+                        time.sleep(0.005)
                         continue
                     # Decoder thread exited — playback truly ended
                     self.recorder.go_live()

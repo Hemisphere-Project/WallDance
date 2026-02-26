@@ -87,6 +87,7 @@ class VideoRecorder:
         self._playback_running: bool = False
         self._playback_paused: bool = False
         self._frame_buffer: Optional[np.ndarray] = None
+        self._frame_new: bool = False  # True when decoder wrote a new frame not yet consumed
         self._frame_lock = threading.Lock()
         self._playback_frame_count: int = 0
     
@@ -389,6 +390,7 @@ class VideoRecorder:
             # Update buffer (latest frame overwrites previous)
             with self._frame_lock:
                 self._frame_buffer = frame.copy()
+                self._frame_new = True
                 self._playback_frame_count = frame_count
             
             frame_count += 1
@@ -448,6 +450,7 @@ class VideoRecorder:
             return False
 
         self._frame_buffer = first_frame.copy()
+        self._frame_new = True  # Mark first frame as available for consumption
 
         self._playback_thread = threading.Thread(target=self._playback_decoder_thread, daemon=True)
         self._playback_thread.start()
@@ -465,17 +468,22 @@ class VideoRecorder:
     def read_frame(self, respect_fps: bool = True) -> Optional[np.ndarray]:
         """Get the latest decoded frame from the buffer.
         
-        The decoder thread runs independently, so this always returns
-        the most recent frame without blocking.
+        The decoder thread paces frame decoding at the video's native FPS.
+        This method returns the newest frame only once; subsequent calls
+        return None until the decoder thread produces a fresh frame.
+        This prevents the main loop from re-processing the same frame and
+        keeps playback speed faithful to the recorded FPS.
         """
         if not self.is_playing:
             return None
         
         with self._frame_lock:
-            if self._frame_buffer is None:
+            if self._frame_buffer is None or not self._frame_new:
                 return None
             # Update status
             self._status.playback_frame = self._playback_frame_count
+            # Mark consumed so we don't re-process the same frame
+            self._frame_new = False
             return self._frame_buffer.copy()
     
     def set_playback_speed(self, speed: float):
@@ -517,6 +525,7 @@ class VideoRecorder:
         if ret:
             with self._frame_lock:
                 self._frame_buffer = frame.copy()
+                self._frame_new = True
                 self._playback_frame_count = int(self._reader.get(cv2.CAP_PROP_POS_FRAMES)) - 1
     
     def prev_frame(self):
@@ -534,6 +543,7 @@ class VideoRecorder:
         if ret:
             with self._frame_lock:
                 self._frame_buffer = frame.copy()
+                self._frame_new = True
                 self._playback_frame_count = int(self._reader.get(cv2.CAP_PROP_POS_FRAMES)) - 1
     
     def stop_playback(self):
@@ -560,6 +570,7 @@ class VideoRecorder:
         
         with self._frame_lock:
             self._frame_buffer = None
+            self._frame_new = False
         
         self._playback_path = None
         self._status.state = RecorderState.LIVE
