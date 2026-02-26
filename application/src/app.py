@@ -54,9 +54,8 @@ from config import (
     SHOW_TRAILS,
     TRACKER_DISTANCE_THRESHOLD,
     TRACKER_MAX_AGE,
-    IDS_CAP_PROCESSING_RES,
-    IDS_USE_FULL_RES,
     IDS_USE_GPU_DIRECT,
+    IDS_RATIO,
     USE_TENSORRT,
     YOLO_CONFIDENCE,
     YOLO_IMGSZ,
@@ -132,6 +131,7 @@ class WallDanceApp:
 
         # Camera: Use UnifiedCamera (IDS + OpenCV fallback) if available
         self._use_unified_camera = UNIFIED_CAMERA_AVAILABLE
+        self.ids_ratio: float = IDS_RATIO  # Current IDS crop ratio (W/H)
         if self._use_unified_camera:
             self.unified_camera = UnifiedCamera(prefer_ids=True)
             self.camera = CameraManager()  # Keep for compatibility with camera state
@@ -277,6 +277,7 @@ class WallDanceApp:
             "preview_enabled": self.preview_enabled,
             "preview_fps_cap": self.preview_fps_cap,
             "preview_scale": self.preview.render_scale,
+            "ids_ratio": self.ids_ratio,
             "texture_width": self.preview.width,
             "texture_height": self.preview.height,
             "display_width": int(cam_w * self.preview.display_scale),
@@ -300,6 +301,7 @@ class WallDanceApp:
             "on_trt_toggle": self._cb_trt_toggle,
             "on_fp16_toggle": self._cb_fp16_toggle,
             "on_frame_skip_change": self._cb_frame_skip_change,
+            "on_ids_ratio_change": self._cb_ids_ratio_change,
             "on_camera_change": self._cb_camera_change,
             "on_camera_toggle": self._cb_camera_toggle,
             "on_camera_refresh": self._cb_camera_refresh,
@@ -370,6 +372,7 @@ class WallDanceApp:
             "preview_enabled": self.preview_enabled,
             "preview_fps_cap": self.preview_fps_cap,
             "preview_scale": self.preview.render_scale,
+            "ids_ratio": self.ids_ratio,
         }
 
     def _update_topbar_state(self, selected_filepath: Optional[str] = None):
@@ -625,20 +628,22 @@ class WallDanceApp:
             self.preview_enabled = config["preview_enabled"]
             self.gui and self.gui.sync_checkbox("preview", config["preview_enabled"])
         if "preview_fps_cap" in config:
-            # When IDS full-res: always force cap ON to reduce PCIe
-            # contention — DearPyGui texture upload is always CPU→GPU PCIe.
-            if IDS_USE_FULL_RES:
-                self.preview_fps_cap = True
-            else:
-                self.preview_fps_cap = config["preview_fps_cap"]
+            # Always force cap ON to reduce PCIe contention —
+            # DearPyGui texture upload is always CPU→GPU PCIe.
+            self.preview_fps_cap = True
             self.gui and self.gui.sync_checkbox("preview_cap", self.preview_fps_cap)
         if "preview_scale" in config:
             scale = config["preview_scale"]
-            # Cap preview scale for IDS: smaller texture = less PCIe traffic
-            if IDS_USE_FULL_RES:
-                scale = min(scale, PREVIEW_RENDER_SCALE)
+            # Cap preview scale: smaller texture = less PCIe traffic
+            scale = min(scale, PREVIEW_RENDER_SCALE)
             self._apply_preview_scale(scale, force=True)
             self.gui and self.gui.sync_slider("preview_scale", scale)
+
+        # IDS crop ratio
+        if "ids_ratio" in config:
+            ratio = max(0.5, min(2.0, float(config["ids_ratio"])))
+            self._cb_ids_ratio_change(ratio)
+            self.gui and self.gui.sync_slider("ids_ratio", ratio)
 
     # ------------------------------------------------------------------
     # GUI callbacks
@@ -1170,6 +1175,28 @@ class WallDanceApp:
             print("Frame skip: OFF (process every frame)")
         else:
             print(f"Frame skip: {self.frame_skip} (process every {self.frame_skip + 1} frames)")
+
+    def _cb_ids_ratio_change(self, value: float):
+        """Handle IDS crop-ratio slider change."""
+        ratio = max(0.5, min(2.0, float(value)))
+        self.ids_ratio = ratio
+        if self._use_unified_camera and self.unified_camera is not None:
+            ok = self.unified_camera.update_crop_ratio(ratio)
+            if ok:
+                # Propagate new resolution to legacy state, preview geometry
+                self.camera.state.width = self.unified_camera.width
+                self.camera.state.height = self.unified_camera.height
+                dpi_scale = get_display_scale()
+                self.preview.width = int(self.unified_camera.width * self.preview.render_scale)
+                self.preview.height = int(self.unified_camera.height * self.preview.render_scale)
+                self._display_width = int(self.unified_camera.width * self.preview.display_scale * dpi_scale)
+                self._display_height = int(self.unified_camera.height * self.preview.display_scale * dpi_scale)
+                self._pending_preview_resize = True
+                if self.processor:
+                    self.processor.set_preview_size(self.preview.width, self.preview.height)
+                print(f"[IDS Ratio] {ratio:.2f} → {self.unified_camera.width}x{self.unified_camera.height}")
+            else:
+                print(f"[IDS Ratio] update_crop_ratio failed for ratio={ratio:.2f}")
 
     def _cb_playback_speed_change(self, speed: float):
         """Handle playback speed change."""
@@ -1984,10 +2011,7 @@ class WallDanceApp:
                 try:
                     _cam_t0 = time.perf_counter()
                     if self._use_unified_camera and self.unified_camera is not None:
-                        use_ids_gpu_direct = (
-                            IDS_USE_GPU_DIRECT
-                            and not (IDS_USE_FULL_RES and IDS_CAP_PROCESSING_RES)
-                        )
+                        use_ids_gpu_direct = IDS_USE_GPU_DIRECT
                         if (
                             use_ids_gpu_direct
                             and self._is_ids_camera_active()

@@ -43,20 +43,18 @@ import numpy as np
 
 try:
     from config import CAMERA_WIDTH as APP_CAMERA_WIDTH, CAMERA_HEIGHT as APP_CAMERA_HEIGHT, CAMERA_FPS as APP_CAMERA_FPS
-    from config import IDS_USE_FULL_RES as APP_IDS_USE_FULL_RES
-    from config import IDS_CAP_PROCESSING_RES as APP_IDS_CAP_PROCESSING_RES
     from config import IDS_MAX_FPS as APP_IDS_MAX_FPS
     from config import IDS_USER_SET as APP_IDS_USER_SET
-    from config import IDS_CROP as APP_IDS_CROP
+    from config import IDS_CROP_PIXELS as APP_IDS_CROP_PIXELS
+    from config import IDS_RATIO as APP_IDS_RATIO
 except Exception:
     APP_CAMERA_WIDTH = 1920
     APP_CAMERA_HEIGHT = 1080
     APP_CAMERA_FPS = 30
-    APP_IDS_USE_FULL_RES = False
-    APP_IDS_CAP_PROCESSING_RES = True
     APP_IDS_MAX_FPS = 25
     APP_IDS_USER_SET = ""
-    APP_IDS_CROP = (0, 0)
+    APP_IDS_CROP_PIXELS = 0
+    APP_IDS_RATIO = 1.0
 
 # Check for IDS Peak SDK
 IDS_PEAK_AVAILABLE = False
@@ -106,6 +104,37 @@ class IDSCameraState:
     last_frame_time: float = 0.0
 
 
+import math as _math
+
+
+def compute_crop_from_budget(pixel_budget: int, ratio: float,
+                             sensor_w: int = 0, sensor_h: int = 0) -> Tuple[int, int]:
+    """Derive crop (W, H) from a pixel budget and aspect ratio.
+
+    Args:
+        pixel_budget: Maximum number of pixels (W*H).  0 = no crop.
+        ratio:        Desired W / H.
+        sensor_w:     Sensor width for clamping (0 = unclamped).
+        sensor_h:     Sensor height for clamping (0 = unclamped).
+
+    Returns:
+        (crop_w, crop_h) – both > 0 when budget > 0, else (0, 0).
+    """
+    if pixel_budget <= 0:
+        return (0, 0)
+    ratio = max(0.01, float(ratio))
+    h = _math.sqrt(pixel_budget / ratio)
+    w = ratio * h
+    crop_w = int(w)
+    crop_h = int(h)
+    # Clamp to sensor bounds if provided
+    if sensor_w > 0:
+        crop_w = min(crop_w, sensor_w)
+    if sensor_h > 0:
+        crop_h = min(crop_h, sensor_h)
+    return (max(1, crop_w), max(1, crop_h))
+
+
 @dataclass 
 class IDSCameraSettings:
     """Settings for IDS camera acquisition."""
@@ -113,8 +142,12 @@ class IDSCameraSettings:
     width: int = 0
     height: int = 0
 
-    # On-device ROI crop (0, 0) = full sensor. (W, H) = center-crop.
-    crop: tuple = (0, 0)
+    # On-device ROI crop — pixel-budget model.
+    # crop_pixels = max W*H pixel count (0 = full sensor).
+    # crop_ratio  = desired W/H (1.0 = square).
+    # Actual (W, H) derived via compute_crop_from_budget().
+    crop_pixels: int = 0
+    crop_ratio: float = 1.0
     
     # Frame rate (0 = max available)
     target_fps: float = 30.0
@@ -187,11 +220,6 @@ class IDSCamera:
         self._latest_timestamp: float = 0.0
         self._frame_ready: bool = False
         self._acquire_error: Optional[str] = None
-
-        # Dynamic normalization cache for high-bit-depth mono frames
-        self._norm_divisor_cache: Optional[float] = None
-        self._norm_probe_every: int = 120
-        self._norm_probe_counter: int = 0
         
         # Dedicated CUDA stream for frame uploads — reduces PCIe contention
         # between USB3 DMA (camera) and GPU DMA (upload/inference).
@@ -204,7 +232,11 @@ class IDSCamera:
         self._stall_threshold_s: float = 0.4   # gap > this = stall
         self._stall_count: int = 0
         self._last_acq_frame_time: float = 0.0
-        
+
+        # Set during update_crop_ratio so read()/read_gpu() return
+        # (True, None) instead of (False, None) while reconfiguring.
+        self._reconfiguring: bool = False
+
         # Callback for recording
         self._frame_callback: Optional[Callable[[np.ndarray], None]] = None
         
@@ -369,29 +401,6 @@ class IDSCamera:
             print(f"[IDSCamera] Error listing cameras: {e}")
         
         return cameras
-    
-    @staticmethod
-    def find_camera(serial: Optional[str] = None) -> Optional[IDSCameraInfo]:
-        """Find a specific camera or the first available.
-        
-        Args:
-            serial: Serial number to find. If None, returns first camera.
-            
-        Returns:
-            IDSCameraInfo if found, None otherwise.
-        """
-        cameras = IDSCamera.list_cameras()
-        if not cameras:
-            return None
-        
-        if serial is None:
-            return cameras[0]
-        
-        for cam in cameras:
-            if cam.serial == serial:
-                return cam
-        
-        return None
     
     # ------------------------------------------------------------------
     # Connection
@@ -591,9 +600,15 @@ class IDSCamera:
         # Query full sensor size (with offsets at minimum, max W/H = sensor size)
         sensor_w = width_node.Maximum()
         sensor_h = height_node.Maximum()
+        # Cache sensor size for runtime crop-ratio changes
+        self._sensor_w = sensor_w
+        self._sensor_h = sensor_h
 
-        # Determine target size: crop takes priority, then explicit w/h, then max
-        crop_w, crop_h = self.settings.crop
+        # Determine target size: budget+ratio crop takes priority, then explicit w/h, then max
+        crop_w, crop_h = compute_crop_from_budget(
+            self.settings.crop_pixels, self.settings.crop_ratio,
+            sensor_w, sensor_h,
+        )
         if crop_w > 0 and crop_h > 0:
             target_w = min(crop_w, sensor_w)
             target_h = min(crop_h, sensor_h)
@@ -612,23 +627,7 @@ class IDSCamera:
 
         # Center the ROI on the sensor
         if crop_w > 0 and crop_h > 0:
-            try:
-                ox_node = nm.FindNode("OffsetX")
-                oy_node = nm.FindNode("OffsetY")
-                # Ideal center offset = (sensor_size - roi_size) / 2
-                ideal_ox = (sensor_w - target_w) // 2
-                ideal_oy = (sensor_h - target_h) // 2
-                # Snap to offset increment and clamp to valid range
-                ox_inc = max(1, ox_node.Increment())
-                oy_inc = max(1, oy_node.Increment())
-                center_ox = max(ox_node.Minimum(), min((ideal_ox // ox_inc) * ox_inc, ox_node.Maximum()))
-                center_oy = max(oy_node.Minimum(), min((ideal_oy // oy_inc) * oy_inc, oy_node.Maximum()))
-                ox_node.SetValue(center_ox)
-                oy_node.SetValue(center_oy)
-                print(f"[IDSCamera] ROI: {target_w}x{target_h} centered at offset ({center_ox}, {center_oy})"
-                      f"  [sensor {sensor_w}x{sensor_h}]")
-            except Exception as e:
-                print(f"[IDSCamera] Could not center ROI offset: {e}")
+            self._center_roi(nm, sensor_w, sensor_h, target_w, target_h)
 
         self.state.width = width_node.Value()
         self.state.height = height_node.Value()
@@ -715,7 +714,119 @@ class IDSCamera:
                 pass
         except Exception as e:
             print(f"[IDSCamera] Could not configure gain: {e}")
-    
+
+    # ------------------------------------------------------------------
+    # ROI helpers (shared by _configure_camera and update_crop_ratio)
+    # ------------------------------------------------------------------
+    def _center_roi(self, nm, sensor_w: int, sensor_h: int,
+                    target_w: int, target_h: int) -> None:
+        """Center the ROI on the sensor after Width/Height have been set."""
+        try:
+            ox_node = nm.FindNode("OffsetX")
+            oy_node = nm.FindNode("OffsetY")
+            ideal_ox = (sensor_w - target_w) // 2
+            ideal_oy = (sensor_h - target_h) // 2
+            ox_inc = max(1, ox_node.Increment())
+            oy_inc = max(1, oy_node.Increment())
+            center_ox = max(ox_node.Minimum(), min((ideal_ox // ox_inc) * ox_inc, ox_node.Maximum()))
+            center_oy = max(oy_node.Minimum(), min((ideal_oy // oy_inc) * oy_inc, oy_node.Maximum()))
+            ox_node.SetValue(center_ox)
+            oy_node.SetValue(center_oy)
+            print(f"[IDSCamera] ROI: {target_w}x{target_h} centered at offset ({center_ox}, {center_oy})"
+                  f"  [sensor {sensor_w}x{sensor_h}]")
+        except Exception as e:
+            print(f"[IDSCamera] Could not center ROI offset: {e}")
+
+    def update_crop_ratio(self, ratio: float) -> bool:
+        """Change the crop aspect ratio at runtime (stop → reconfigure → restart).
+
+        The pixel budget (self.settings.crop_pixels) is kept constant; only
+        the W/H derived from *ratio* change.
+
+        Args:
+            ratio: New W/H ratio (clamped to 0.5 – 2.0).
+
+        Returns:
+            True if the camera is now acquiring at the new resolution.
+        """
+        ratio = max(0.5, min(2.0, float(ratio)))
+        if not self.state.is_open or self._node_map is None:
+            self.settings.crop_ratio = ratio
+            return False
+
+        if self.settings.crop_pixels <= 0:
+            print("[IDSCamera] update_crop_ratio: no pixel budget set, ignoring")
+            return False
+
+        self.settings.crop_ratio = ratio
+
+        nm = self._node_map
+        sensor_w = getattr(self, '_sensor_w', 0)
+        sensor_h = getattr(self, '_sensor_h', 0)
+        if sensor_w <= 0 or sensor_h <= 0:
+            print("[IDSCamera] update_crop_ratio: sensor size unknown")
+            return False
+
+        # 1. Stop acquisition (thread, datastream, camera)
+        was_acquiring = self.state.is_acquiring
+        self._reconfiguring = True
+        if was_acquiring:
+            self.stop_acquisition()
+
+        try:
+            # 2. Reset offsets so Width/Height have full range
+            try:
+                nm.FindNode("OffsetX").SetValue(nm.FindNode("OffsetX").Minimum())
+                nm.FindNode("OffsetY").SetValue(nm.FindNode("OffsetY").Minimum())
+            except Exception:
+                pass
+
+            # 3. Compute new crop dimensions
+            crop_w, crop_h = compute_crop_from_budget(
+                self.settings.crop_pixels, ratio, sensor_w, sensor_h,
+            )
+            target_w = min(crop_w, sensor_w)
+            target_h = min(crop_h, sensor_h)
+
+            width_node = nm.FindNode("Width")
+            height_node = nm.FindNode("Height")
+            w_inc = max(1, width_node.Increment())
+            h_inc = max(1, height_node.Increment())
+            target_w = max(width_node.Minimum(), (target_w // w_inc) * w_inc)
+            target_h = max(height_node.Minimum(), (target_h // h_inc) * h_inc)
+
+            width_node.SetValue(target_w)
+            height_node.SetValue(target_h)
+
+            # 4. Center ROI
+            self._center_roi(nm, sensor_w, sensor_h, target_w, target_h)
+
+            self.state.width = width_node.Value()
+            self.state.height = height_node.Value()
+            print(f"[IDSCamera] Crop ratio {ratio:.2f} → {self.state.width}x{self.state.height}")
+
+            # 5. Re-allocate buffers (payload size may have changed)
+            self._allocate_buffers()
+
+            # 6. Restart acquisition
+            if was_acquiring:
+                ok = self.start_acquisition()
+                self._reconfiguring = False
+                return ok
+            self._reconfiguring = False
+            return True
+
+        except Exception as e:
+            print(f"[IDSCamera] update_crop_ratio failed: {e}")
+            self._reconfiguring = False
+            # Best-effort restart
+            if was_acquiring:
+                try:
+                    self.start_acquisition()
+                except Exception:
+                    pass
+            return False
+
     def _allocate_buffers(self) -> None:
         """Allocate and queue acquisition buffers."""
         if self._datastream is None:
@@ -1089,7 +1200,7 @@ class IDSCamera:
         if self._acquire_error is not None:
             return False, None
         
-        if not self.state.is_open or not self.state.is_acquiring:
+        if not self.state.is_open or (not self.state.is_acquiring and not self._reconfiguring):
             return False, None
         
         with self._frame_lock:
@@ -1102,39 +1213,11 @@ class IDSCamera:
             if self.settings.newest_only:
                 # Clear the ready flag so we know if we're getting stale frames
                 self._frame_ready = False
-
-        frame_mono8 = self._prepare_mono_for_processing(frame_mono8)
         
         # Convert to BGR8 outside lock
         bgr = self._mono_to_bgr_cpu(frame_mono8)
         self._last_nonempty_read_time = time.perf_counter()
         return True, bgr
-    
-    def read_mono(self) -> Tuple[bool, Optional[np.ndarray]]:
-        """Read latest frame as Mono numpy array.
-        
-        More efficient than read() if you don't need BGR.
-        
-        Returns:
-            (True, Mono frame) if available
-            (False, None) if error or not ready
-        """
-        if self._acquire_error is not None:
-            return False, None
-        
-        if not self.state.is_open or not self.state.is_acquiring:
-            return False, None
-        
-        with self._frame_lock:
-            if not self._frame_ready or self._latest_frame is None:
-                return True, None
-            
-            frame = self._latest_frame.copy()
-            
-            if self.settings.newest_only:
-                self._frame_ready = False
-        
-        return True, frame
     
     def read_gpu(self) -> Tuple[bool, Optional['torch.Tensor']]:
         """Read latest frame as GPU tensor (1, 3, H, W) float32.
@@ -1154,7 +1237,7 @@ class IDSCamera:
         if self._acquire_error is not None:
             return False, None
         
-        if not self.state.is_open or not self.state.is_acquiring:
+        if not self.state.is_open or (not self.state.is_acquiring and not self._reconfiguring):
             return False, None
         
         with self._frame_lock:
@@ -1165,8 +1248,6 @@ class IDSCamera:
             
             if self.settings.newest_only:
                 self._frame_ready = False
-
-        frame_mono8 = self._prepare_mono_for_processing(frame_mono8)
         
         # Convert Mono (8/16-bit) → GPU tensor (1, 3, H, W) outside lock
         gpu_tensor = self._mono_to_gpu_bgr(frame_mono8)
@@ -1178,78 +1259,25 @@ class IDSCamera:
         self._last_nonempty_read_time = time.perf_counter()
         return True, gpu_tensor
 
-    def _prepare_mono_for_processing(self, mono: np.ndarray) -> np.ndarray:
-        """Bound full-res IDS frames to app working resolution before heavy conversions."""
-        if not APP_IDS_USE_FULL_RES:
-            return mono
-
-        if not APP_IDS_CAP_PROCESSING_RES:
-            return mono
-
-        if mono is None or mono.ndim < 2:
-            return mono
-
-        h, w = mono.shape[:2]
-        if w <= APP_CAMERA_WIDTH and h <= APP_CAMERA_HEIGHT:
-            return mono
-
-        return cv2.resize(mono, (APP_CAMERA_WIDTH, APP_CAMERA_HEIGHT), interpolation=cv2.INTER_AREA)
-
-    def _get_mono_normalization_divisor(self, mono: np.ndarray) -> float:
-        """Return normalization divisor according to camera bit depth."""
-        if mono.dtype == np.uint8:
-            return 255.0
-
-        pf = (self.state.pixel_format or "").lower()
-        # IDS packed formats converted to Mono16 are typically scaled to full uint16 range.
-        if "g40" in pf or "packed" in pf:
-            return 65535.0
-
-        # Reuse cached divisor and probe occasionally (full-frame max is expensive).
-        if self._norm_divisor_cache is not None and self._norm_probe_counter < self._norm_probe_every:
-            self._norm_probe_counter += 1
-            return self._norm_divisor_cache
-
-        # For uint16 containers, infer effective range from a cheap subsample.
-        sample = mono[::16, ::16] if mono.ndim == 2 else mono
-        max_value = float(np.max(sample)) if sample.size else 65535.0
-        if max_value <= 1023.0:
-            divisor = 1023.0
-        elif max_value <= 4095.0:
-            divisor = 4095.0
-        else:
-            # If values exceed 12-bit range, treat as full 16-bit normalized data.
-            divisor = 65535.0
-
-        self._norm_divisor_cache = divisor
-        self._norm_probe_counter = 0
-        return divisor
-
     def _mono_to_bgr_cpu(self, mono: np.ndarray) -> np.ndarray:
-        """Convert Mono (8/16-bit) to BGR uint8 for preview/recording."""
+        """Convert Mono8 to BGR uint8 for preview/recording."""
         if mono.dtype != np.uint8:
-            divisor = self._get_mono_normalization_divisor(mono)
-            alpha = 255.0 / max(1.0, divisor)
-            mono8 = cv2.convertScaleAbs(mono, alpha=alpha)
-        else:
-            mono8 = mono
-
-        return cv2.cvtColor(mono8, cv2.COLOR_GRAY2BGR)
+            mono = cv2.convertScaleAbs(mono, alpha=255.0 / 65535.0)
+        return cv2.cvtColor(mono, cv2.COLOR_GRAY2BGR)
 
     def _mono_to_gpu_bgr(self, mono: np.ndarray) -> 'torch.Tensor':
-        """Convert Mono (8/16-bit) to GPU tensor (1, 3, H, W) float32 [0, 1].
+        """Convert Mono8 to GPU tensor (1, 3, H, W) float32 [0, 1].
         
         Optimized path:
         1. Upload Mono to GPU via pinned memory (async DMA)
         2. Expand to 3 channels (pseudo-BGR)
         3. Normalize to [0, 1]
         
-        This is faster than CPU BGR conversion + upload.
         Uses pinned memory + non_blocking=True for async H2D transfer.
         """
         # Pin+upload: pinned memory enables async DMA on the PCIe bus
         # Allocate/reuse pinned buffer for consistent frame sizes
-        mono_tensor = torch.from_numpy(mono)  # (H, W) uint8/uint16, CPU
+        mono_tensor = torch.from_numpy(mono)  # (H, W) uint8, CPU
         if (
             not hasattr(self, '_pinned_buffer')
             or self._pinned_buffer.shape != mono_tensor.shape
@@ -1271,9 +1299,8 @@ class IDSCamera:
         else:
             gpu_mono = self._pinned_buffer.cuda(non_blocking=True)  # fallback
         
-        # Convert to float32 [0, 1] on GPU
-        divisor = self._get_mono_normalization_divisor(mono)
-        mono_float = gpu_mono.float().mul_(1.0 / divisor).clamp_(0.0, 1.0)  # (H, W)
+        # Convert to float32 [0, 1] on GPU (always Mono8 → /255)
+        mono_float = gpu_mono.float().mul_(1.0 / 255.0).clamp_(0.0, 1.0)  # (H, W)
         
         # Expand to 3 channels: (H, W) → (1, 3, H, W)
         # .expand() is a view (no memory copy), but downstream ops need contiguous
@@ -1425,22 +1452,9 @@ class IDSCamera:
     # ------------------------------------------------------------------
     # Status
     # ------------------------------------------------------------------
-    def get_actual_fps(self) -> float:
-        """Calculate actual FPS from frame timestamps.
-        
-        Returns:
-            Measured FPS or 0 if not enough data.
-        """
-        # This could be enhanced with a rolling window
-        return self.state.fps
-    
     def has_error(self) -> bool:
         """Check if acquisition has encountered an error."""
         return self._acquire_error is not None
-    
-    def get_error(self) -> Optional[str]:
-        """Get error message if any."""
-        return self._acquire_error
 
     def get_last_frame_age_s(self) -> float:
         """Return seconds since the last successfully read frame."""
@@ -1547,9 +1561,10 @@ class UnifiedCamera:
         
         try:
             settings = IDSCameraSettings(
-                width=0 if APP_IDS_USE_FULL_RES else APP_CAMERA_WIDTH,
-                height=0 if APP_IDS_USE_FULL_RES else APP_CAMERA_HEIGHT,
-                crop=APP_IDS_CROP,
+                width=0,
+                height=0,
+                crop_pixels=APP_IDS_CROP_PIXELS,
+                crop_ratio=APP_IDS_RATIO,
                 target_fps=float(max(1.0, min(float(APP_CAMERA_FPS), float(APP_IDS_MAX_FPS)))),
                 exposure_auto=True,
                 gain_auto=True,
@@ -1740,6 +1755,20 @@ class UnifiedCamera:
         if self._source_type == CameraSource.IDS_PEAK:
             return self._ids_camera.set_gain_auto(enabled)
         return False
+
+    def update_crop_ratio(self, ratio: float) -> bool:
+        """Change on-device crop ratio at runtime (IDS only).
+
+        Returns True if successful.  After success the caller should
+        re-read self.width / self.height and update the preview.
+        """
+        if self._source_type != CameraSource.IDS_PEAK or self._ids_camera is None:
+            return False
+        ok = self._ids_camera.update_crop_ratio(ratio)
+        if ok:
+            self.width = self._ids_camera.state.width
+            self.height = self._ids_camera.state.height
+        return ok
 
     # Diagnostics helpers (no-op values for non-IDS sources)
     def get_last_frame_age_s(self) -> float:

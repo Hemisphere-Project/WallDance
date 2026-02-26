@@ -402,6 +402,10 @@ class WallDanceGUI:
     def _on_frame_skip_change(self, sender, value):
         if 'on_frame_skip_change' in self.callbacks:
             self.callbacks['on_frame_skip_change'](value)
+
+    def _on_ids_ratio_change(self, sender, value):
+        if 'on_ids_ratio_change' in self.callbacks:
+            self.callbacks['on_ids_ratio_change'](float(value))
     
     def _on_camera_change(self, sender, value):
         if 'on_camera_change' in self.callbacks:
@@ -1047,6 +1051,7 @@ class WallDanceGUI:
             'tracker_distance': ['tracker_dist_slider'],
             'tracker_max_age': ['tracker_age_slider'],
             'tracker_smoothing': ['tracker_smoothing_slider'],
+            'ids_ratio': ['adv_ids_ratio_slider'],
         }
         if name in tag_map:
             for tag in tag_map[name]:

@@ -97,7 +97,6 @@ class GpuPipelineSettings:
     preview_width: int = 960        # Target preview width
     preview_height: int = 540       # Target preview height
     preview_fps_cap: Optional[float] = None  # None = no cap, e.g. 10.0 = 10fps
-    preview_cpu_resize: bool = False  # Skip GPU F.interpolate; download full-res, CPU resize
     
     # Processing
     yolo_imgsz: int = 960
@@ -519,30 +518,19 @@ class GpuPipeline:
                 should_generate = False
         
         if should_generate:
-            if self.settings.preview_cpu_resize:
-                # Skip F.interpolate — download full-res enhanced frame to CPU.
-                # Avoids CUDA compute kernel that correlates with USB3 DMA stalls
-                # on shared PCIe root complex (IDS camera).  App-side cv2.resize
-                # handles the downscale instead.
-                timing['preview_resize'] = 0.0
-                t0 = time.time()
-                preview_frame = enhanced_frame.to_numpy_bgr()
-                timing['preview_download'] = (time.time() - t0) * 1000
-                timing.update(enhanced_frame.last_download_timing)
-            else:
-                t0 = time.time()
-                # Resize to exact preview dimensions on GPU
-                preview_gpu = self._resizer.resize(
-                    enhanced_frame, 
-                    target_size=(self.settings.preview_width, self.settings.preview_height)
-                )
-                timing['preview_resize'] = (time.time() - t0) * 1000
-                
-                # GPU→CPU download
-                t0 = time.time()
-                preview_frame = preview_gpu.to_numpy_bgr()
-                timing['preview_download'] = (time.time() - t0) * 1000
-                timing.update(preview_gpu.last_download_timing)
+            t0 = time.time()
+            # Resize to exact preview dimensions on GPU
+            preview_gpu = self._resizer.resize(
+                enhanced_frame, 
+                target_size=(self.settings.preview_width, self.settings.preview_height)
+            )
+            timing['preview_resize'] = (time.time() - t0) * 1000
+            
+            # GPU→CPU download
+            t0 = time.time()
+            preview_frame = preview_gpu.to_numpy_bgr()
+            timing['preview_download'] = (time.time() - t0) * 1000
+            timing.update(preview_gpu.last_download_timing)
             self._cached_preview = preview_frame  # Cache on CPU
             timing['preview_new'] = True
             
@@ -609,29 +597,18 @@ class GpuPipeline:
             should_generate = time_since_last >= self._preview_interval
         
         if should_generate:
-            if self.settings.preview_cpu_resize:
-                # Skip F.interpolate — download full-res enhanced frame to CPU.
-                # Avoids CUDA compute kernel that correlates with USB3 DMA stalls
-                # on shared PCIe root complex (IDS camera).  App-side cv2.resize
-                # handles the downscale instead.
-                timing['preview_resize'] = 0.0
-                t0 = time.time()
-                preview_frame = enhanced_frame.to_numpy_bgr()
-                timing['preview_download'] = (time.time() - t0) * 1000
-                timing.update(enhanced_frame.last_download_timing)
-            else:
-                t0 = time.time()
-                preview_tensor = self._resizer.resize(
-                    enhanced_frame,
-                    target_size=(self.settings.preview_width, self.settings.preview_height)
-                )
-                timing['preview_resize'] = (time.time() - t0) * 1000
-                
-                # GPU→CPU download (included in to_numpy_bgr)
-                t0 = time.time()
-                preview_frame = preview_tensor.to_numpy_bgr()
-                timing['preview_download'] = (time.time() - t0) * 1000
-                timing.update(preview_tensor.last_download_timing)
+            t0 = time.time()
+            preview_tensor = self._resizer.resize(
+                enhanced_frame,
+                target_size=(self.settings.preview_width, self.settings.preview_height)
+            )
+            timing['preview_resize'] = (time.time() - t0) * 1000
+            
+            # GPU→CPU download (included in to_numpy_bgr)
+            t0 = time.time()
+            preview_frame = preview_tensor.to_numpy_bgr()
+            timing['preview_download'] = (time.time() - t0) * 1000
+            timing.update(preview_tensor.last_download_timing)
             timing['preview_new'] = True
             
             # Cache and update timestamp

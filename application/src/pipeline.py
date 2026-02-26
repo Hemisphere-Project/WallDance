@@ -398,18 +398,6 @@ class FrameProcessor:
             self._gpu_pipeline.settings.preview_fps_cap = fps_cap
             self._gpu_pipeline.update_settings(self._gpu_pipeline.settings)
     
-    def set_preview_cpu_resize(self, enabled: bool):
-        """Skip GPU F.interpolate for preview; download full-res, CPU resize.
-        
-        When True, the GPU pipeline skips the bilinear resize kernel for
-        preview and returns the full-resolution enhanced frame.  The app-side
-        cv2.resize handles the downscale.  This eliminates CUDA compute
-        kernels that correlate with USB3 DMA stalls on shared PCIe root
-        complex (IDS camera).
-        """
-        if self._gpu_pipeline is not None:
-            self._gpu_pipeline.settings.preview_cpu_resize = enabled
-    
     def _process_cpu(self, frame: np.ndarray) -> Tuple[List[ScaledTrack], np.ndarray, Dict[str, float], float]:
         """CPU pipeline: traditional enhancement + YOLO."""
         frame_start = time.time()

@@ -942,6 +942,17 @@ def build_input_section(gui: Any):
             callback=gui._on_frame_skip_change,
         )
 
+        dpg.add_spacer(height=scaled(4))
+        dpg.add_text("IDS Crop Ratio (W/H)", color=(180, 180, 180))
+        dpg.add_slider_float(
+            tag="adv_ids_ratio_slider",
+            default_value=gui.config.get("ids_ratio", 1.0),
+            min_value=0.5,
+            max_value=2.0,
+            format="%.2f",
+            callback=gui._on_ids_ratio_change,
+        )
+
 
 def build_preview_section(gui: Any):
     """Preview settings - open by default."""

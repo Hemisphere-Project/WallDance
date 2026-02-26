@@ -82,17 +82,19 @@ USE_GPU_PATH = True                 # Enable GPU frame buffer and GPU-accelerate
 # Preview is rate-limited to reduce GPU→CPU PCIe traffic.
 # Full investigation: docs/IDS_CAMERA_STALL_INVESTIGATION.md
 IDS_USE_GPU_DIRECT = True
-IDS_USE_FULL_RES = True
-# Keep native capture but cap processing resolution to avoid UI stalls.
-# When True, IDS frames are downscaled to CAMERA_WIDTH/HEIGHT before heavy conversion.
-IDS_CAP_PROCESSING_RES = False
 # Cap IDS acquisition FPS (independent from OpenCV camera FPS).
 # Lower values can improve stream stability on full-resolution IDS capture.
 IDS_MAX_FPS = 20
 # On-device ROI crop — reduces USB3 bandwidth at the sensor level.
-# Set to (W, H) to center-crop on the sensor, or (0, 0) for full sensor.
-# The U3-34E0XCP native sensor is 2688×1528 so (1528,1528) gives a square crop.
-IDS_CROP = (1528, 1528)
+# Fixed pixel budget: the crop area will never exceed this many pixels.
+# The U3-34E0XCP native sensor is 2688×1528; budget of 1528*1528 ≈ 2.3 MP.
+# The actual W×H is derived from IDS_CROP_PIXELS and IDS_RATIO.
+# Set to 0 to disable on-device crop (full sensor).
+IDS_CROP_PIXELS = 1528 * 1528
+# Aspect ratio (W/H) of the on-device crop. Adjustable at runtime via GUI.
+# 1.0 = square (1528×1528), 1.76 = sensor native (2688×1528).
+# Range: 0.5 – 2.0.  Values outside sensor bounds are clamped automatically.
+IDS_RATIO = 1.0
 # Load camera settings from a stored UserSet on startup.
 # Set in IDS Cockpit: Device → UserSet → Save to UserSet1.
 # "" = don't load (use defaults), "UserSet1", "UserSet2", etc.
