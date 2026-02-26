@@ -469,9 +469,11 @@ class FrameProcessor:
         bbox[2] = bbox[2] * inv_scale  # w
         bbox[3] = bbox[3] * inv_scale  # h
         
-        # History and velocity
+        # History and velocity (guard against overflow from inf/NaN in tracker)
         history = [(pt - pad_xy) * inv_scale for pt in track.history]
         velocity = track.get_velocity() * inv_scale
+        if not np.all(np.isfinite(velocity)):
+            velocity = np.zeros(2, dtype=np.float64)
         
         return ScaledTrack(
             track_id=track.track_id,

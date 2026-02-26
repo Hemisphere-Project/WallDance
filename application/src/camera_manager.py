@@ -142,11 +142,38 @@ class CameraManager:
     @staticmethod
     def detect_cameras(max_index: int = 10) -> List[str]:
         available = []
-        for i in range(max_index):
-            cap = cv2.VideoCapture(i)
-            if cap.isOpened():
-                available.append(str(i))
-                cap.release()
+        # Suppress native stderr spam from obsensor/MSMF backends during probing
+        import os, sys
+        if sys.platform == 'win32':
+            _old_stderr_fd = None
+            _devnull_fd = None
+            try:
+                _old_stderr_fd = os.dup(2)
+                _devnull_fd = os.open(os.devnull, os.O_WRONLY)
+                os.dup2(_devnull_fd, 2)
+            except Exception:
+                _old_stderr_fd = None
+        try:
+            for i in range(max_index):
+                try:
+                    cap = cv2.VideoCapture(i)
+                    if cap.isOpened():
+                        available.append(str(i))
+                        cap.release()
+                except Exception:
+                    break  # no point probing higher indices
+        finally:
+            if sys.platform == 'win32' and _old_stderr_fd is not None:
+                try:
+                    os.dup2(_old_stderr_fd, 2)
+                    os.close(_old_stderr_fd)
+                except Exception:
+                    pass
+                if _devnull_fd is not None:
+                    try:
+                        os.close(_devnull_fd)
+                    except Exception:
+                        pass
         return available if available else ["0"]
 
     @staticmethod

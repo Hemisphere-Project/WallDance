@@ -762,14 +762,13 @@ class WallDanceApp:
             self.camera.state.is_open = False
         
         # Detect all cameras (OpenCV + IDS)
+        # ORDER MATTERS: probe IDS first (initialises GenTL), then release
+        # the IDS library, THEN probe OpenCV.  If we probe OpenCV while
+        # GenTL is active, the GenTL transport layer can hold USB locks
+        # that cause a native crash when OpenCV opens the same device.
         available_sources = []
         
-        # OpenCV cameras
-        opencv_cameras = CameraManager.detect_cameras()
-        available_sources.extend(opencv_cameras)
-        print(f"OpenCV cameras: {opencv_cameras}")
-        
-        # IDS cameras (if available)
+        # IDS cameras first (if available)
         if IDS_PEAK_AVAILABLE:
             try:
                 ids_cameras = IDSCamera.list_cameras()
@@ -779,6 +778,18 @@ class WallDanceApp:
                     print(f"IDS camera: {cam.model} (SN: {cam.serial})")
             except Exception as e:
                 print(f"IDS camera detection error: {e}")
+            # Release IDS library NOW so OpenCV doesn't fight GenTL for USB
+            try:
+                IDSCamera._release_ids_library_fully()
+            except Exception:
+                pass
+            import time as _t
+            _t.sleep(0.5)  # USB stack settle time
+
+        # OpenCV cameras (with IDS library released)
+        opencv_cameras = CameraManager.detect_cameras()
+        available_sources.extend(opencv_cameras)
+        print(f"OpenCV cameras: {opencv_cameras}")
         
         # Add "auto" option for automatic detection
         if "auto" not in available_sources:
