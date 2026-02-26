@@ -148,6 +148,12 @@ TRACKER_DISTANCE_THRESHOLD = 500    # Initial fallback only — overridden at st
                                     #   match gate      = height × 1.2
                                     #   new-track gate  = height × 0.4
                                     #   duplicate gate  = height × 0.2
+TRACKER_DORMANT_MAX_AGE = 150       # Max frames to remember a lost track for re-ID
+                                    # (~10 sec at 15 FPS).  When a track expires
+                                    # from active tracking (max_age), it moves to
+                                    # a dormant pool.  If a new detection appears
+                                    # near the dormant position with matching
+                                    # skeleton shape, the old ID is resurrected.
 TRACKER_VELOCITY_WEIGHT = 0.6       # Trust in velocity prediction (0-1)
 TRACKER_PROCESS_NOISE = 2.5         # Kalman Q - velocity adaptation
 TRACKER_MEASUREMENT_NOISE = 2.0     # Kalman R - smoothing

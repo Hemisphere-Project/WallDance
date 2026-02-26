@@ -9,12 +9,32 @@ from filterpy.kalman import KalmanFilter
 from collections import deque
 from config import (
     TRACKER_MAX_AGE, TRACKER_MIN_HITS, TRACKER_DISTANCE_THRESHOLD,
+    TRACKER_DORMANT_MAX_AGE,
     TRACKER_VELOCITY_WEIGHT, TRACKER_PROCESS_NOISE, TRACKER_MEASUREMENT_NOISE,
     KEYPOINT_CONFIDENCE
 )
 
 # Set to True for detailed tracking debug output
 TRACKER_DEBUG = False
+
+
+class DormantSnapshot:
+    """Frozen snapshot of a track that has left the active pool.
+
+    Stored in the dormant ("graveyard") pool so that if the same person
+    reappears we can resurrect the original track ID instead of minting
+    a new one.  Matching uses position + bbox height + keypoint shape.
+    """
+    __slots__ = ('track_id', 'last_position', 'keypoints', 'confidence',
+                 'bbox_height', 'age')
+
+    def __init__(self, track: 'DancerTrack'):
+        self.track_id: int = track.track_id
+        self.last_position: np.ndarray = track.get_last_known_position().copy()
+        self.keypoints: np.ndarray = track.keypoints.copy()
+        self.confidence: np.ndarray = track.confidence.copy()
+        self.bbox_height: float = float(track.bbox[3])
+        self.age: int = 0  # frames since entering dormant pool
 
 
 class DancerTrack:
@@ -191,6 +211,10 @@ class DancerTracker:
         self.new_track_min_distance = max(30, int(TRACKER_DISTANCE_THRESHOLD * 0.33))
         self.duplicate_distance = max(15, int(TRACKER_DISTANCE_THRESHOLD * 0.17))
 
+        # Dormant pool for re-ID after occlusion
+        self._dormant: list[DormantSnapshot] = []
+        self.dormant_max_age = TRACKER_DORMANT_MAX_AGE
+
     # ------------------------------------------------------------------
     # Person-height master dial
     # ------------------------------------------------------------------
@@ -220,8 +244,9 @@ class DancerTracker:
             track.set_smoothing_depth(self._smoothing_depth)
     
     def reset(self):
-        """Reset all tracks."""
+        """Reset all tracks and dormant pool."""
         self.tracks = []
+        self._dormant = []
         self.frame_count = 0
         DancerTrack._id_counter = 0
     
@@ -296,7 +321,83 @@ class DancerTracker:
                     cost_matrix[d, t] = 0.85 * pos_cost + 0.15 * size_cost
         
         return cost_matrix
-    
+
+    # ------------------------------------------------------------------
+    # Dormant pool re-identification
+    # ------------------------------------------------------------------
+    def _try_resurrect(self, keypoints, confidence, bbox, det_centroid) -> 'DancerTrack | None':
+        """Check the dormant pool for a matching snapshot.
+
+        All three criteria must hold (AND logic):
+        1. Position: detection centroid within ``distance_threshold`` of
+           the dormant snapshot's last position.
+        2. Size: bbox height within 40 % of the snapshot's bbox height.
+        3. Shape (when ≥ 3 co-visible keypoints): mean keypoint distance
+           < ``distance_threshold × 0.5``.
+
+        If a match is found the dormant entry is consumed, a *new*
+        ``DancerTrack`` is created with the fresh detection data, **but
+        its ``track_id`` is overwritten** with the old ID so the OSC
+        consumer sees continuity.
+
+        Returns:
+            A resurrected ``DancerTrack`` or ``None``.
+        """
+        if not self._dormant:
+            return None
+
+        det_height = float(bbox[3])
+        best_idx = None
+        best_score = float('inf')
+
+        for i, snap in enumerate(self._dormant):
+            # --- 1. Position gate ---
+            dist = np.linalg.norm(det_centroid - snap.last_position)
+            if dist > self.distance_threshold:
+                continue
+
+            # --- 2. Size gate (±40 %) ---
+            if snap.bbox_height > 0:
+                height_ratio = det_height / snap.bbox_height
+                if height_ratio < 0.6 or height_ratio > 1.4:
+                    continue
+
+            # --- 3. Keypoint-shape gate ---
+            mask_det = confidence > KEYPOINT_CONFIDENCE
+            mask_snap = snap.confidence > KEYPOINT_CONFIDENCE
+            both = mask_det & mask_snap
+            n_both = int(np.sum(both))
+            if n_both >= 3:
+                kpt_dist = float(np.mean(
+                    np.linalg.norm(keypoints[both] - snap.keypoints[both], axis=1)
+                ))
+                if kpt_dist > self.distance_threshold * 0.5:
+                    continue
+                # Score: blend of position + keypoint distance (lower is better)
+                score = 0.5 * dist + 0.5 * kpt_dist
+            else:
+                # Not enough keypoints to compare shape — rely on position + size
+                score = dist
+
+            if score < best_score:
+                best_score = score
+                best_idx = i
+
+        if best_idx is None:
+            return None
+
+        snap = self._dormant.pop(best_idx)
+
+        # Create fresh track with the new detection data but the OLD id
+        new_track = DancerTrack(keypoints, confidence, bbox, self.smoothing_depth)
+        new_track.track_id = snap.track_id  # ← resurrect the old ID
+
+        if TRACKER_DEBUG:
+            print(f"[TRACKER] Resurrected track #{snap.track_id} from dormant "
+                  f"(dormant_age={snap.age}, score={best_score:.1f})")
+
+        return new_track
+
     def update(self, detections):
         """
         Update tracker with new detections.
@@ -368,12 +469,16 @@ class DancerTracker:
                         closest_track = track
                         closest_track_idx = idx
                 
-                # Gate 1: far enough from every track → new person
+                # Gate 1: far enough from every track → new person (or resurrect)
                 if min_dist > self.new_track_min_distance:
-                    if TRACKER_DEBUG:
-                        print(f"[TRACKER] New track #{DancerTrack._id_counter + 1}: "
-                              f"min_dist={min_dist:.1f} > gate={self.new_track_min_distance}")
-                    self.tracks.append(DancerTrack(kpts, conf, bbox, self.smoothing_depth))
+                    resurrected = self._try_resurrect(kpts, conf, bbox, det_centroid)
+                    if resurrected is not None:
+                        self.tracks.append(resurrected)
+                    else:
+                        if TRACKER_DEBUG:
+                            print(f"[TRACKER] New track #{DancerTrack._id_counter + 1}: "
+                                  f"min_dist={min_dist:.1f} > gate={self.new_track_min_distance}")
+                        self.tracks.append(DancerTrack(kpts, conf, bbox, self.smoothing_depth))
                 elif closest_track is not None and closest_track_idx not in matched_trk:
                     # Close to an unmatched track → force-update it
                     if TRACKER_DEBUG:
@@ -402,11 +507,24 @@ class DancerTracker:
                             print(f"[TRACKER] Ignoring ambiguous det near track "
                                   f"#{closest_track.track_id if closest_track else 'None'}: dist={min_dist:.1f}")
         
-        # Remove old tracks
-        removed = [t for t in self.tracks if t.time_since_update >= self.max_age]
-        if removed and TRACKER_DEBUG:
-            print(f"[TRACKER] Removed tracks: {[t.track_id for t in removed]}")
-        self.tracks = [t for t in self.tracks if t.time_since_update < self.max_age]
+        # Move expired tracks to the dormant pool (for later re-ID)
+        still_alive = []
+        for t in self.tracks:
+            if t.time_since_update >= self.max_age:
+                self._dormant.append(DormantSnapshot(t))
+                if TRACKER_DEBUG:
+                    print(f"[TRACKER] Track #{t.track_id} → dormant pool")
+            else:
+                still_alive.append(t)
+        self.tracks = still_alive
+
+        # Age out the dormant pool
+        for snap in self._dormant:
+            snap.age += 1
+        expired = [s for s in self._dormant if s.age >= self.dormant_max_age]
+        if expired and TRACKER_DEBUG:
+            print(f"[TRACKER] Dormant expired: {[s.track_id for s in expired]}")
+        self._dormant = [s for s in self._dormant if s.age < self.dormant_max_age]
         
         # Return confirmed tracks
         confirmed = []
