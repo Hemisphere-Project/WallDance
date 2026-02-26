@@ -194,7 +194,7 @@ SHOW_ID = True                      # Draw track ID
 #              but NOT in Windows Media Player / Movies & TV natively.
 #              Best for archival or analysis where quality is critical.
 #
-RECORDING_CODEC = "MJPG"
+RECORDING_CODEC = "FFV1"
 
 # MJPG quality (1-100). Only affects MJPG codec; ignored for FFV1/mp4v.
 # Default OpenCV is ~95 which causes visible artifacts in dark scenes.
