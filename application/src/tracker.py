@@ -105,10 +105,17 @@ class DancerTrack:
         MAX_VELOCITY = 100.0
         vel = self.kf.x[2:4].flatten()
         speed = np.linalg.norm(vel)
-        if speed > MAX_VELOCITY:
-            scale = MAX_VELOCITY / speed
+        if not np.isfinite(speed) or speed > MAX_VELOCITY:
+            if speed > 0 and np.isfinite(speed):
+                scale = MAX_VELOCITY / speed
+            else:
+                scale = 0.0  # reset to zero if NaN/inf
             self.kf.x[2:4] *= scale
             self.kf.x[4:6] *= scale  # Also clamp acceleration
+        
+        # Final safety: kill any remaining NaN/inf in state
+        if not np.all(np.isfinite(self.kf.x)):
+            self.kf.x = np.nan_to_num(self.kf.x, nan=0.0, posinf=0.0, neginf=0.0)
         
         return self.kf.x[:2].flatten()
     
@@ -254,6 +261,11 @@ class DancerTracker:
         matched_trk = set()
         
         if cost_matrix.size > 0:
+            # Sanitize cost matrix: NaN/inf entries crash linear_sum_assignment
+            if not np.all(np.isfinite(cost_matrix)):
+                cost_matrix = np.nan_to_num(
+                    cost_matrix, nan=1e6, posinf=1e6, neginf=1e6
+                )
             row_idx, col_idx = linear_sum_assignment(cost_matrix)
             
             for row, col in zip(row_idx, col_idx):

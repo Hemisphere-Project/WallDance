@@ -1635,7 +1635,9 @@ class UnifiedCamera:
             except Exception as exc:
                 print(f"[UnifiedCamera] Warning: could not release IDS library: {exc}")
             import time as _t
-            _t.sleep(0.3)  # give USB stack time to release device
+            # USB stack needs time to release device handles after GenTL closes.
+            # 0.3 s was too short on some machines — 0.8 s is safer.
+            _t.sleep(0.8)
 
         # Lazy import to avoid circular dependency
         from camera_manager import CameraManager
@@ -1648,6 +1650,8 @@ class UnifiedCamera:
                 import sys
                 if sys.platform == 'win32':
                     print("[UnifiedCamera] Default backend failed, retrying with DSHOW...")
+                    import time as _t2
+                    _t2.sleep(0.3)  # extra settle before retry
                     self._cv_camera = CameraManager(threaded=self._threaded)
                     if not self._cv_camera.open(source, backend=cv2.CAP_DSHOW):
                         self._cv_camera = None
