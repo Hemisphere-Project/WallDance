@@ -174,26 +174,10 @@ def setup_theme(gui: Any):
 
     # === PHASE 2: Live Control State Themes ===
     
-    # State badge themes (for SETUP/STANDBY/LIVE/PAUSED/ERROR)
-    with dpg.theme() as gui._state_setup_theme:
-        with dpg.theme_component(dpg.mvText):
-            dpg.add_theme_color(dpg.mvThemeCol_Text, (200, 200, 200, 255))
-    
-    with dpg.theme() as gui._state_standby_theme:
-        with dpg.theme_component(dpg.mvText):
-            dpg.add_theme_color(dpg.mvThemeCol_Text, (255, 220, 100, 255))
-    
+    # State badge theme for LIVE state
     with dpg.theme() as gui._state_live_theme:
         with dpg.theme_component(dpg.mvText):
             dpg.add_theme_color(dpg.mvThemeCol_Text, (100, 255, 100, 255))
-    
-    with dpg.theme() as gui._state_paused_theme:
-        with dpg.theme_component(dpg.mvText):
-            dpg.add_theme_color(dpg.mvThemeCol_Text, (100, 180, 255, 255))
-    
-    with dpg.theme() as gui._state_error_theme:
-        with dpg.theme_component(dpg.mvText):
-            dpg.add_theme_color(dpg.mvThemeCol_Text, (255, 100, 100, 255))
 
     # Live control button themes - 2-state system with clear active/inactive styling
     # STANDBY button: Yellow/Amber when active, greyed when inactive

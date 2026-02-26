@@ -318,15 +318,11 @@ class WallDanceGUI:
     
     def _update_preview_row_state(self, enabled: bool):
         """Grey out PREVIEW row controls when disabled."""
-        color = (200, 200, 200) if enabled else (80, 80, 80)
         if dpg.does_item_exist("preview_tex_text"):
+            color = (200, 200, 200) if enabled else (80, 80, 80)
             dpg.configure_item("preview_tex_text", color=color)
-        if dpg.does_item_exist("preview_scale_label"):
-            dpg.configure_item("preview_scale_label", color=color)
         if dpg.does_item_exist("adv_preview_scale_slider"):
             dpg.configure_item("adv_preview_scale_slider", enabled=enabled)
-        if dpg.does_item_exist("preview_cap_label"):
-            dpg.configure_item("preview_cap_label", color=color)
         if dpg.does_item_exist("adv_preview_cap_checkbox"):
             dpg.configure_item("adv_preview_cap_checkbox", enabled=enabled)
     
@@ -340,30 +336,13 @@ class WallDanceGUI:
         # When force is enabled, bypass is ignored
         effective_bypass = bypass and not force_enabled
         
-        color = (200, 200, 200) if enabled else (80, 80, 80)
-        # Clahe and Gamma are greyed when: disabled, lite mode, or bypass (bright enough) unless forced
-        clahe_color = (80, 80, 80) if (not enabled or lite_mode or effective_bypass) else (200, 200, 200)
-        gamma_color = (80, 80, 80) if (not enabled or effective_bypass) else (200, 200, 200)
-        # Threshold is greyed when enhancement is disabled or Force is enabled (threshold ignored)
-        threshold_color = (80, 80, 80) if (not enabled or force_enabled) else (200, 200, 200)
-        
-        # Labels may not exist in new layout - check existence
-        if dpg.does_item_exist("enhance_lite_label"):
-            dpg.configure_item("enhance_lite_label", color=color)
         if dpg.does_item_exist("adv_enhance_lite_checkbox"):
             dpg.configure_item("adv_enhance_lite_checkbox", enabled=enabled)
-        if dpg.does_item_exist("enhance_gamma_label"):
-            dpg.configure_item("enhance_gamma_label", color=gamma_color)
         # User requested to be able to move sliders even when disabled
         if dpg.does_item_exist("adv_gamma_slider"):
             dpg.configure_item("adv_gamma_slider", enabled=True)
-        if dpg.does_item_exist("enhance_threshold_label"):
-            dpg.configure_item("enhance_threshold_label", color=threshold_color)
         if dpg.does_item_exist("adv_brightness_threshold_slider"):
             dpg.configure_item("adv_brightness_threshold_slider", enabled=(enabled and not force_enabled))
-        
-        if dpg.does_item_exist("enhance_clahe_label"):
-            dpg.configure_item("enhance_clahe_label", color=clahe_color)
         if dpg.does_item_exist("adv_clahe_slider"):
             dpg.configure_item("adv_clahe_slider", enabled=True)
 
@@ -1480,15 +1459,6 @@ class WallDanceGUI:
                 self.callbacks['on_do_load_config'](filepath)
             dpg.delete_item("load_config_dialog")
     
-    def _on_config_file_select(self, sender, value, user_data):
-        """Handle config file selection (legacy - kept for compatibility)."""
-        import os
-        filename = user_data
-        filepath = os.path.join(self._load_config_dir, filename)
-        if 'on_do_load_config' in self.callbacks:
-            self.callbacks['on_do_load_config'](filepath)
-        dpg.delete_item("load_config_dialog")
-    
     # === Model Loading Progress Modal ===
     
     def _cleanup_model_modals(self):
@@ -1741,10 +1711,3 @@ class WallDanceGUI:
     def is_running(self) -> bool:
         """Check if GUI is still running."""
         return dpg.is_dearpygui_running()
-    
-    def get_key_press(self) -> Optional[str]:
-        """
-        Check for keyboard input (basic support).
-        Note: DearPyGui keyboard handling is different, we'll handle this in main loop.
-        """
-        return None

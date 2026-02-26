@@ -27,15 +27,12 @@ CAMERA_FPS = 30                     # Target camera FPS
 # IMAGE PROCESSING - LOW LIGHT ENHANCEMENT
 # =============================================================================
 ENHANCE_ENABLED = True              # Enable adaptive enhancement
-ENHANCE_AUTO_DETECT = True          # Auto-detect when enhancement is needed
 
 # CLAHE (Contrast Limited Adaptive Histogram Equalization)
 CLAHE_CLIP_LIMIT = 3.0              # Higher = more contrast (1.0-5.0)
-CLAHE_TILE_SIZE = 8                 # Tile grid size (4-16)
 
 # Gamma correction for dark scenes
 GAMMA_CORRECTION = 1.2              # >1.0 brightens, <1.0 darkens (0.5-2.0)
-GAMMA_AUTO = True                   # Auto-adjust gamma based on brightness
 
 # Brightness threshold for auto-enhancement
 BRIGHTNESS_THRESHOLD = 60           # Below this (0-255), apply enhancement
@@ -162,20 +159,17 @@ OSC_PORT = 9000                     # Target port
 # =============================================================================
 # VISUALIZATION
 # =============================================================================
-DISPLAY_ENABLED = True              # Show visualization window
 PREVIEW_ENABLED = True              # Push video to GUI (disable to measure FPS impact)
 # Render at lower resolution to save GPU/CPU, but keep the on-screen area size.
 PREVIEW_RENDER_SCALE = 0.35         # Texture resolution scale (0.3-1.0); lower = faster
                                     # IDS 2688×1528 @ 0.35 → 940×535 (~1.5 MB uint8 transfer)
                                     # IDS 2688×1528 @ 0.50 → 1344×764 (~3.1 MB — too heavy)
 PREVIEW_DISPLAY_SCALE = 0.5        # On-screen preview area scale relative to camera
-PREVIEW_SCALE = PREVIEW_DISPLAY_SCALE  # Backward compatibility alias
 SHOW_SKELETON = True                # Draw skeleton
 SHOW_KEYPOINTS = True               # Draw keypoints
 SHOW_BBOX = True                    # Draw bounding box
 SHOW_TRAILS = True                  # Draw motion trails
 SHOW_ID = True                      # Draw track ID
-SHOW_INFO = True                    # Show FPS, enhancement status, etc.
 
 # Colors for different dancers (BGR)
 DANCER_COLORS = [

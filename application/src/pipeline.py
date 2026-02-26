@@ -209,59 +209,19 @@ class FrameProcessor:
         self._sync_gpu_settings()
         
         # 1. GPU Pipeline: Upload + Enhance + YOLO prep
-        # GPU pipeline handles rate limiting internally, returns preview_new flag
         yolo_tensor, preview_frame, gpu_timing = self._gpu_pipeline.process(frame, preview_enabled=need_preview)
         
         # Merge GPU timing
         timing.update(gpu_timing)
-        # GPU pipeline is always "gpu" path - enhancement may be active or bypassed
-        # Show "gpu" to indicate we're using GPU pipeline (even if enhancement bypassed)
         timing["path_enhance"] = "gpu"
         
-        # 2. YOLO inference with GPU tensor (zero-copy!)
-        t0 = time.time()
-        results = self.model(
-            yolo_tensor,  # Pass GPU tensor directly!
-            imgsz=self.settings.imgsz,
-            conf=self.settings.confidence,
-            iou=YOLO_IOU_THRESHOLD,
-            max_det=self.settings.max_persons,
-            half=self.settings.use_fp16,
-            verbose=False,
-        )
-        timing["yolo"] = (time.time() - t0) * 1000
-        timing["path_yolo"] = "gpu"
-        
-        # 3. Extract detections
-        t0 = time.time()
-        detections = self._extract_detections(results)
-        detections = self._filter_duplicate_detections(detections)
-        timing["extract"] = (time.time() - t0) * 1000
-        timing.update(self._extract_transfer_timing)
-        
-        # 4. Tracking
-        t0 = time.time()
-        tracked = self.tracker.update(detections)
-        timing["track"] = (time.time() - t0) * 1000
-        timing["path_track"] = "cpu"
-        
-        # 5. Unscale detections from letterboxed YOLO space to original camera space
-        # Letterbox info tells us: scale factor and padding applied
-        letterbox = gpu_timing.get('letterbox', {})
-        lb_scale = letterbox.get('scale', 1.0)
-        pad_x = letterbox.get('pad_x', 0)
-        pad_y = letterbox.get('pad_y', 0)
-        scaled_tracks = [self._unscale_letterbox(track, lb_scale, pad_x, pad_y) for track in tracked]
-        
-        # 6. OSC output
-        if self.osc and self.settings.osc_enabled:
-            self.osc.send_frame(scaled_tracks, original_w, original_h)
+        # 2-6. YOLO → Track → OSC
+        scaled_tracks = self._run_yolo_and_track(yolo_tensor, gpu_timing, timing, original_w, original_h)
         
         latency_ms = (time.time() - frame_start) * 1000
         timing["total"] = latency_ms
         self._timing = timing
         
-        # preview_frame is always generated in GPU path (never None)
         return scaled_tracks, preview_frame, timing, latency_ms
     
     def process_gpu_direct(self, gpu_tensor: 'torch.Tensor', need_preview: bool = True) -> Tuple[List[ScaledTrack], np.ndarray, Dict[str, float], float]:
@@ -295,45 +255,10 @@ class FrameProcessor:
 
             # Merge GPU timing
             timing.update(gpu_timing)
-            timing["path_enhance"] = "gpu-direct"  # Indicate direct GPU path
+            timing["path_enhance"] = "gpu-direct"
 
-            # 2. YOLO inference with GPU tensor (zero-copy!)
-            t0 = time.time()
-            results = self.model(
-                yolo_tensor,
-                imgsz=self.settings.imgsz,
-                conf=self.settings.confidence,
-                iou=YOLO_IOU_THRESHOLD,
-                max_det=self.settings.max_persons,
-                half=self.settings.use_fp16,
-                verbose=False,
-            )
-            timing["yolo"] = (time.time() - t0) * 1000
-            timing["path_yolo"] = "gpu"
-
-            # 3. Extract detections
-            t0 = time.time()
-            detections = self._extract_detections(results)
-            detections = self._filter_duplicate_detections(detections)
-            timing["extract"] = (time.time() - t0) * 1000
-            timing.update(self._extract_transfer_timing)
-
-            # 4. Tracking
-            t0 = time.time()
-            tracked = self.tracker.update(detections)
-            timing["track"] = (time.time() - t0) * 1000
-            timing["path_track"] = "cpu"
-
-            # 5. Unscale detections from letterboxed YOLO space to original camera space
-            letterbox = gpu_timing.get('letterbox', {})
-            lb_scale = letterbox.get('scale', 1.0)
-            pad_x = letterbox.get('pad_x', 0)
-            pad_y = letterbox.get('pad_y', 0)
-            scaled_tracks = [self._unscale_letterbox(track, lb_scale, pad_x, pad_y) for track in tracked]
-
-            # 6. OSC output
-            if self.osc and self.settings.osc_enabled:
-                self.osc.send_frame(scaled_tracks, original_w, original_h)
+            # 2-6. YOLO → Track → OSC
+            scaled_tracks = self._run_yolo_and_track(yolo_tensor, gpu_timing, timing, original_w, original_h)
 
             latency_ms = (time.time() - frame_start) * 1000
             timing["total"] = latency_ms
@@ -349,6 +274,58 @@ class FrameProcessor:
             cpu_rgb = gpu_tensor.squeeze(0).detach().clamp(0, 1).permute(1, 2, 0).cpu().numpy()
             cpu_bgr = cv2.cvtColor((cpu_rgb * 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
             return self._process_cpu(cpu_bgr)
+
+    def _run_yolo_and_track(
+        self,
+        yolo_tensor: 'torch.Tensor',
+        gpu_timing: Dict[str, float],
+        timing: Dict[str, float],
+        original_w: int,
+        original_h: int,
+    ) -> List[ScaledTrack]:
+        """Shared YOLO inference → extract → track → unscale → OSC pipeline.
+
+        Mutates *timing* in place and returns the final scaled tracks.
+        """
+        # YOLO inference
+        t0 = time.time()
+        results = self.model(
+            yolo_tensor,
+            imgsz=self.settings.imgsz,
+            conf=self.settings.confidence,
+            iou=YOLO_IOU_THRESHOLD,
+            max_det=self.settings.max_persons,
+            half=self.settings.use_fp16,
+            verbose=False,
+        )
+        timing["yolo"] = (time.time() - t0) * 1000
+        timing["path_yolo"] = "gpu"
+
+        # Extract detections
+        t0 = time.time()
+        detections = self._extract_detections(results)
+        detections = self._filter_duplicate_detections(detections)
+        timing["extract"] = (time.time() - t0) * 1000
+        timing.update(self._extract_transfer_timing)
+
+        # Tracking
+        t0 = time.time()
+        tracked = self.tracker.update(detections)
+        timing["track"] = (time.time() - t0) * 1000
+        timing["path_track"] = "cpu"
+
+        # Unscale from letterboxed YOLO space to original camera space
+        letterbox = gpu_timing.get('letterbox', {})
+        lb_scale = letterbox.get('scale', 1.0)
+        pad_x = letterbox.get('pad_x', 0)
+        pad_y = letterbox.get('pad_y', 0)
+        scaled_tracks = [self._unscale_letterbox(track, lb_scale, pad_x, pad_y) for track in tracked]
+
+        # OSC output
+        if self.osc and self.settings.osc_enabled:
+            self.osc.send_frame(scaled_tracks, original_w, original_h)
+
+        return scaled_tracks
 
     def _sync_gpu_settings(self):
         """Sync ProcessingSettings to GpuPipelineSettings."""

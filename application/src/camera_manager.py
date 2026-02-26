@@ -56,10 +56,6 @@ class CameraManager:
         """Background thread that continuously captures frames."""
         print("[CameraThread] Capture thread started")
         while self._capture_running:
-            # Check if we should stop before attempting capture
-            if not self._capture_running:
-                break
-                
             if self.cap is None or not self.cap.isOpened():
                 self._capture_error = True
                 break

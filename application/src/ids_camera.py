@@ -3,15 +3,12 @@ IDS Peak Camera Integration for WallDance.
 
 Optimized for lowest glass-to-GPU latency:
 - IDS U3-34E0XCP-M-GL (4MP Sony IMX664 Starvis 2, Monochrome)
-- Mono10/Mono12 acquisition for maximum dynamic range in IR low-light
+- Mono8 preferred; packed Mono10/12 unpacked to Mono8 when needed
 - Newest-frame-only buffer strategy (drop stale frames)
-- Zero-copy where possible, GPU-accelerated Mono→BGR conversion
+- GPU-accelerated Mono8 → BGR expansion via pinned-memory async DMA
 
 Pipeline:
-    IDS Camera (Mono10/12)
-        │
-        ▼ [IDS Peak IPL: Mono10/12→Mono16 when available]
-    Mono16 (or Mono8 fallback) numpy array
+    IDS Camera (Mono8, or Mono10/12 → unpacked to Mono8)
         │
         ▼ [torch: GPU upload + normalize + expand to BGR]
     GPU Tensor (1,3,H,W) float32
@@ -182,8 +179,8 @@ class IDSCamera:
     
     Features:
     - Automatic camera discovery and connection
-    - Mono10/12 → Mono8 conversion via IDS IPL
-    - GPU-accelerated Mono8 → BGR expansion
+    - Mono8 preferred; packed Mono10/12 unpacked to Mono8 when needed
+    - GPU-accelerated Mono8 → BGR expansion via pinned-memory async DMA
     - Newest-frame-only buffer strategy
     - Threaded acquisition for consistent frame rate
     """
@@ -318,7 +315,7 @@ class IDSCamera:
 
     @classmethod
     def _ensure_library_initialized(cls) -> None:
-        """Initialize IDS Peak library once per process."""
+        """Initialize IDS Peak library once per process (idempotent)."""
         with cls._library_lock:
             if not cls._library_initialized:
                 cls._ensure_gentl_path()
@@ -328,11 +325,8 @@ class IDSCamera:
     @classmethod
     def _acquire_library(cls) -> None:
         """Ensure library is initialized and bump refcount."""
+        cls._ensure_library_initialized()
         with cls._library_lock:
-            if not cls._library_initialized:
-                cls._ensure_gentl_path()
-                ids_peak.Library.Initialize()
-                cls._library_initialized = True
             cls._library_refcount += 1
 
     @classmethod
