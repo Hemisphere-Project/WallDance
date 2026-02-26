@@ -162,22 +162,29 @@ def get_display_scale() -> float:
         except Exception as e:
             print(f"[GUI] Could not detect system DPI scale: {e}")
     
-    # Calculate final scale based on resolution and system settings
-    # For high-DPI displays, we need to scale UI to be readable
-    if screen_width >= 3840:  # 4K or higher
-        # Base scale of 2.0 for 4K, adjusted by system scale
-        # If system is already at 125% (1.25), effective pixels are 3072 logical
-        # We want fonts to appear ~same physical size as on 1080p
+    # Calculate final scale based on resolution and system settings.
+    #
+    # On Windows with DPI awareness, GetSystemMetrics returns *physical* pixels
+    # while the OS already applies its own scaling (e.g. 125%).  DearPyGui
+    # respects the OS scale for window/widget sizes, so we must NOT re-apply it.
+    #
+    # Strategy:
+    #   1. Determine the "logical" resolution the user actually sees:
+    #        logical_width = screen_width / system_scale
+    #   2. Pick a base scale for that logical resolution.
+    #   3. Return base_scale directly — the OS handles the rest.
+    logical_width = screen_width / system_scale if system_scale > 0 else screen_width
+
+    if logical_width >= 3200:       # 4K logical (e.g. 3840 @ 100 %, or 5120 @ 125 %)
         base_scale = 2.0
-    elif screen_width >= 2560:  # QHD
-        base_scale = 1.5
-    else:
+    elif logical_width >= 2200:     # QHD logical (e.g. 2560 @ 100 %)
+        base_scale = 1.25
+    else:                            # 1080p or anything ≤ FHD
         base_scale = 1.0
-    
-    # If system scale is > 1.0, the system is already scaling things
-    # but DearPyGui may not respect it, so we apply our own
+
     final_scale = base_scale
-    print(f"[GUI] Screen width: {screen_width}, System scale: {system_scale}, Using UI scale: {final_scale}")
+    print(f"[GUI] Screen width: {screen_width}, System scale: {system_scale}, "
+          f"Logical width: {logical_width:.0f}, Using UI scale: {final_scale}")
     
     return final_scale
 
