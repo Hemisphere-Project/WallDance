@@ -15,20 +15,25 @@ dependencies = [
     "filterpy>=1.4.5",
     "python-osc>=1.8.0",
     "dearpygui>=2.0.0",
+]
+
+[project.optional-dependencies]
+# GPU-only packages (require NVIDIA GPU + CUDA drivers)
+gpu = [
     "nvidia-ml-py>=13.580.82",
     "tensorrt>=10.0.0",
     "kornia>=0.8.2",
+]
+# IDS industrial camera SDK (requires IDS Peak installed on system)
+ids = [
     "ids-peak>=1.13.0.0.6",
     "ids-peak-ipl>=1.17.1.0.5",
 ]
 
 [tool.uv]
-extra-index-url = ["https://download.pytorch.org/whl/cu130"]
+# NOTE: index-url is set dynamically by install.sh / install.bat
+# in application/uv.toml based on GPU detection. Do not hardcode here.
 index-strategy = "unsafe-best-match"
 
 [dependency-groups]
 dev = ["pytest"]
-ids = [
-    "ids-peak",
-    "ids-peak-ipl",
-]
