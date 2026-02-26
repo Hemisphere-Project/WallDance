@@ -369,6 +369,7 @@ class VideoRecorder:
             
             frame_count += 1
         
+        # self._playback_running = False
         print("Playback decoder thread stopped")
     
     def start_playback(self, slot: int, recording_index: int = 0) -> bool:
@@ -492,11 +493,16 @@ class VideoRecorder:
     def stop_playback(self):
         """Stop playback and return to live mode."""
         # Stop decoder thread
-        if self._playback_running:
-            self._playback_running = False
-            if self._playback_thread is not None:
-                self._playback_thread.join(timeout=2.0)
-                self._playback_thread = None
+        self._playback_running = False
+        if self._playback_thread is not None:
+            thread = self._playback_thread
+            self._playback_thread = None
+            # Only join if the thread was actually started (avoids RuntimeError)
+            try:
+                if thread.is_alive() or thread._started.is_set():  # type: ignore[attr-defined]
+                    thread.join(timeout=2.0)
+            except (RuntimeError, AttributeError):
+                pass
         
         # Clean up reader
         if self._reader is not None:
