@@ -56,18 +56,23 @@ if "%HAS_GPU%"=="1" (
     echo [WallDance] No NVIDIA GPU detected - installing CPU-only ^(lower FPS, but works for dev/test^).
 )
 
-rem ── Generate uv.toml with the right PyTorch index ─────────────────────────
+rem ── Generate uv.toml – override the "pytorch" named index URL ──────────────
+rem pyproject.toml declares a named index "pytorch" (explicit = true) so only
+rem torch and torchvision are fetched from it; everything else uses PyPI.
 if "%HAS_GPU%"=="1" (
-    (
-        echo index-url = "https://download.pytorch.org/whl/cu130"
-        echo extra-index-url = ["https://pypi.org/simple/"]
-    ) > uv.toml
+    set "PYTORCH_INDEX=https://download.pytorch.org/whl/cu130"
 ) else (
-    (
-        echo index-url = "https://download.pytorch.org/whl/cpu"
-        echo extra-index-url = ["https://pypi.org/simple/"]
-    ) > uv.toml
+    set "PYTORCH_INDEX=https://download.pytorch.org/whl/cpu"
 )
+
+(
+    echo index-strategy = "unsafe-best-match"
+    echo.
+    echo [[index]]
+    echo name = "pytorch"
+    echo url = "!PYTORCH_INDEX!"
+    echo explicit = true
+) > uv.toml
 
 rem ── Remove stale lock file (index URLs may have changed) ──────────────────
 if exist "uv.lock" del /q uv.lock
@@ -76,7 +81,9 @@ rem ── Sync dependencies ─────────────────
 set "UV_EXTRAS="
 if "%HAS_GPU%"=="1" set "UV_EXTRAS=--extra gpu"
 
-%UV_CMD% sync %UV_EXTRAS% --extra ids >nul 2>nul
+echo [WallDance] Resolving and installing dependencies (this may take a few minutes)...
+
+%UV_CMD% sync %UV_EXTRAS% --extra ids
 if errorlevel 1 (
     echo [WallDance] IDS camera SDK not available - installing without IDS support.
     echo [WallDance] ^(This is normal on laptops / dev machines.^)

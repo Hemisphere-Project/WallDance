@@ -52,23 +52,26 @@ else
     echo "[WallDance] No NVIDIA GPU detected → installing CPU-only (lower FPS, but works for dev/test)."
 fi
 
-# ── Generate uv.toml with the right PyTorch index ───────────────────────────
-# The pytorch wheel indexes carry torch builds with/without CUDA.
-# We make the appropriate index the *default* so torch resolves from it first,
-# and keep PyPI as a fallback for every other package.
+# ── Generate uv.toml – override the "pytorch" named index URL ────────────────
+# pyproject.toml declares a named index "pytorch" (explicit = true) so only
+# torch and torchvision are fetched from it; everything else uses PyPI.
+# We just need to point it at the right variant (CPU vs CUDA).
 if [ "$HAS_GPU" -eq 1 ]; then
-    cat > uv.toml <<'EOF'
-index-url = "https://download.pytorch.org/whl/cu130"
-extra-index-url = ["https://pypi.org/simple/"]
-EOF
+    PYTORCH_INDEX="https://download.pytorch.org/whl/cu130"
 else
-    cat > uv.toml <<'EOF'
-index-url = "https://download.pytorch.org/whl/cpu"
-extra-index-url = ["https://pypi.org/simple/"]
-EOF
+    PYTORCH_INDEX="https://download.pytorch.org/whl/cpu"
 fi
 
-# ── Remove stale lock file (index URLs may have changed) ────────────────────
+cat > uv.toml <<UVEOF
+index-strategy = "unsafe-best-match"
+
+[[index]]
+name = "pytorch"
+url = "$PYTORCH_INDEX"
+explicit = true
+UVEOF
+
+# ── Remove stale venv + lock (index URLs may have changed) ──────────────────
 rm -f uv.lock
 
 # ── Sync dependencies ───────────────────────────────────────────────────────
@@ -77,8 +80,11 @@ if [ "$HAS_GPU" -eq 1 ]; then
     UV_EXTRAS="--extra gpu"
 fi
 
+echo "[WallDance] Resolving and installing dependencies (this may take a few minutes)..."
+
 # Try with IDS camera support; fall back without it
-if ! uv sync $UV_EXTRAS --extra ids 2>/dev/null; then
+if ! uv sync $UV_EXTRAS --extra ids; then
+    echo ""
     echo "[WallDance] IDS camera SDK not available — installing without IDS support."
     echo "[WallDance] (This is normal on laptops / dev machines.)"
     uv sync $UV_EXTRAS
