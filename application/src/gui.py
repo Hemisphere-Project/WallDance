@@ -378,14 +378,26 @@ class WallDanceGUI:
         if 'on_fp16_toggle' in self.callbacks:
             self.callbacks['on_fp16_toggle'](value)
     
-    def _on_frame_skip_change(self, sender, value):
-        if 'on_frame_skip_change' in self.callbacks:
-            self.callbacks['on_frame_skip_change'](value)
-
     def _on_ids_ratio_change(self, sender, value):
         if 'on_ids_ratio_change' in self.callbacks:
             self.callbacks['on_ids_ratio_change'](float(value))
-    
+
+    def _on_ids_gain_change(self, sender, value):
+        if 'on_ids_gain_change' in self.callbacks:
+            self.callbacks['on_ids_gain_change'](float(value))
+
+    def _on_ids_gain_auto_toggle(self, sender, value):
+        if 'on_ids_gain_auto_toggle' in self.callbacks:
+            self.callbacks['on_ids_gain_auto_toggle'](bool(value))
+
+    def _on_ids_exposure_change(self, sender, value):
+        if 'on_ids_exposure_change' in self.callbacks:
+            self.callbacks['on_ids_exposure_change'](float(value))
+
+    def _on_ids_exposure_auto_toggle(self, sender, value):
+        if 'on_ids_exposure_auto_toggle' in self.callbacks:
+            self.callbacks['on_ids_exposure_auto_toggle'](bool(value))
+
     def _on_camera_change(self, sender, value):
         if 'on_camera_change' in self.callbacks:
             self.callbacks['on_camera_change'](value)
@@ -986,6 +998,8 @@ class WallDanceGUI:
             'fp16': ['adv_fp16_checkbox'],
             'trt': ['adv_trt_checkbox'],
             'osc': ['osc_checkbox'],
+            'ids_gain_auto': ['adv_ids_gain_auto_checkbox'],
+            'ids_exposure_auto': ['adv_ids_exposure_auto_checkbox'],
         }
         # Visualization toggles - update toolbar button themes instead of checkboxes
         vis_toggles = ['skeleton', 'keypoints', 'bbox', 'trails', 'ids']
@@ -1020,13 +1034,14 @@ class WallDanceGUI:
             'brightness_threshold': ['adv_brightness_threshold_slider'],
             'denoise_strength': ['adv_denoise_slider'],
             'preview_scale': ['adv_preview_scale_slider'],
-            'frame_skip': ['adv_frame_skip_slider'],
             'max_persons': ['max_persons_slider'],
             'person_height': ['person_height_slider'],
             'tracker_distance': ['tracker_dist_slider'],
             'tracker_max_age': ['tracker_age_slider'],
             'tracker_smoothing': ['tracker_smoothing_slider'],
             'ids_ratio': ['adv_ids_ratio_slider'],
+            'ids_gain_db': ['adv_ids_gain_slider'],
+            'ids_exposure_us': ['adv_ids_exposure_slider'],
         }
         if name in tag_map:
             for tag in tag_map[name]:

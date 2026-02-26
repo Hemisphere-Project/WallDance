@@ -131,6 +131,10 @@ class WallDanceApp:
         # Camera: Use UnifiedCamera (IDS + OpenCV fallback) if available
         self._use_unified_camera = UNIFIED_CAMERA_AVAILABLE
         self.ids_ratio: float = IDS_RATIO  # Current IDS crop ratio (W/H)
+        self.ids_gain_db: float = 0.0        # Current IDS gain (dB), 0 = default
+        self.ids_gain_auto: bool = True      # IDS auto gain
+        self.ids_exposure_us: float = 10000.0  # Current IDS exposure (µs)
+        self.ids_exposure_auto: bool = True    # IDS auto exposure
         if self._use_unified_camera:
             self.unified_camera = UnifiedCamera(prefer_ids=True)
             self.camera = CameraManager()  # Keep for compatibility with camera state
@@ -194,8 +198,6 @@ class WallDanceApp:
         self.show_ids = SHOW_ID
 
         # State for metrics
-        self.frame_skip = 0
-        self.frame_skip_counter = 0
         self.frame_count = 0
         self.last_fps_time = time.time()
         self._last_gpu_stats_time = self.last_fps_time
@@ -253,7 +255,6 @@ class WallDanceApp:
             "confidence": self.settings.confidence,
             "max_persons": self.settings.max_persons,
             "fp16": self.settings.use_fp16,
-            "frame_skip": self.frame_skip,
             "yolo_imgsz": self.settings.imgsz,
             "person_height_px": self.settings.person_height_px,
             "enhance_enabled": self.settings.enhance_enabled,
@@ -277,6 +278,10 @@ class WallDanceApp:
             "preview_fps_cap": self.preview_fps_cap,
             "preview_scale": self.preview.render_scale,
             "ids_ratio": self.ids_ratio,
+            "ids_gain_db": self.ids_gain_db,
+            "ids_gain_auto": self.ids_gain_auto,
+            "ids_exposure_us": self.ids_exposure_us,
+            "ids_exposure_auto": self.ids_exposure_auto,
             "texture_width": self.preview.width,
             "texture_height": self.preview.height,
             "display_width": int(cam_w * self.preview.display_scale),
@@ -299,8 +304,11 @@ class WallDanceApp:
             "on_model_change": self._cb_model_change,
             "on_trt_toggle": self._cb_trt_toggle,
             "on_fp16_toggle": self._cb_fp16_toggle,
-            "on_frame_skip_change": self._cb_frame_skip_change,
             "on_ids_ratio_change": self._cb_ids_ratio_change,
+            "on_ids_gain_change": self._cb_ids_gain_change,
+            "on_ids_gain_auto_toggle": self._cb_ids_gain_auto_toggle,
+            "on_ids_exposure_change": self._cb_ids_exposure_change,
+            "on_ids_exposure_auto_toggle": self._cb_ids_exposure_auto_toggle,
             "on_camera_change": self._cb_camera_change,
             "on_camera_toggle": self._cb_camera_toggle,
             "on_camera_refresh": self._cb_camera_refresh,
@@ -347,7 +355,6 @@ class WallDanceApp:
             "yolo_imgsz": self.settings.imgsz,
             "max_persons": self.settings.max_persons,
             "fp16": self.settings.use_fp16,
-            "frame_skip": self.frame_skip,
             "person_height_px": self.settings.person_height_px,
             "enhance_enabled": self.settings.enhance_enabled,
             "enhance_lite": self.settings.enhance_lite,
@@ -372,6 +379,10 @@ class WallDanceApp:
             "preview_fps_cap": self.preview_fps_cap,
             "preview_scale": self.preview.render_scale,
             "ids_ratio": self.ids_ratio,
+            "ids_gain_db": self.ids_gain_db,
+            "ids_gain_auto": self.ids_gain_auto,
+            "ids_exposure_us": self.ids_exposure_us,
+            "ids_exposure_auto": self.ids_exposure_auto,
         }
 
     def _update_topbar_state(self, selected_filepath: Optional[str] = None):
@@ -542,9 +553,6 @@ class WallDanceApp:
         if "fp16" in config:
             self.settings.use_fp16 = config["fp16"]
             self.gui and self.gui.sync_checkbox("fp16", config["fp16"])
-        if "frame_skip" in config:
-            self.frame_skip = config["frame_skip"]
-            self.gui and self.gui.sync_slider("frame_skip", self.frame_skip)
         if "person_height_px" in config:
             self.settings.person_height_px = config["person_height_px"]
             self.gui and self.gui.sync_slider("person_height", config["person_height_px"])
@@ -639,6 +647,22 @@ class WallDanceApp:
             ratio = max(0.5, min(2.0, float(config["ids_ratio"])))
             self._cb_ids_ratio_change(ratio)
             self.gui and self.gui.sync_slider("ids_ratio", ratio)
+
+        # IDS gain
+        if "ids_gain_auto" in config:
+            self._cb_ids_gain_auto_toggle(config["ids_gain_auto"])
+            self.gui and self.gui.sync_checkbox("ids_gain_auto", config["ids_gain_auto"])
+        if "ids_gain_db" in config and not config.get("ids_gain_auto", True):
+            self._cb_ids_gain_change(config["ids_gain_db"])
+            self.gui and self.gui.sync_slider("ids_gain_db", config["ids_gain_db"])
+
+        # IDS exposure
+        if "ids_exposure_auto" in config:
+            self._cb_ids_exposure_auto_toggle(config["ids_exposure_auto"])
+            self.gui and self.gui.sync_checkbox("ids_exposure_auto", config["ids_exposure_auto"])
+        if "ids_exposure_us" in config and not config.get("ids_exposure_auto", True):
+            self._cb_ids_exposure_change(config["ids_exposure_us"])
+            self.gui and self.gui.sync_slider("ids_exposure_us", config["ids_exposure_us"])
 
     # ------------------------------------------------------------------
     # GUI callbacks
@@ -1164,13 +1188,6 @@ class WallDanceApp:
         self.settings.use_fp16 = enabled
         print(f"FP16 inference: {'ON' if enabled else 'OFF'}")
 
-    def _cb_frame_skip_change(self, value: int):
-        self.frame_skip = max(0, int(value))
-        if self.frame_skip == 0:
-            print("Frame skip: OFF (process every frame)")
-        else:
-            print(f"Frame skip: {self.frame_skip} (process every {self.frame_skip + 1} frames)")
-
     def _cb_ids_ratio_change(self, value: float):
         """Handle IDS crop-ratio slider change."""
         ratio = max(0.5, min(2.0, float(value)))
@@ -1192,6 +1209,40 @@ class WallDanceApp:
                 print(f"[IDS Ratio] {ratio:.2f} → {self.unified_camera.width}x{self.unified_camera.height}")
             else:
                 print(f"[IDS Ratio] update_crop_ratio failed for ratio={ratio:.2f}")
+
+    def _cb_ids_gain_change(self, value: float):
+        """Handle IDS gain slider change."""
+        self.ids_gain_db = float(value)
+        self.ids_gain_auto = False
+        if self._use_unified_camera and self.unified_camera is not None:
+            self.unified_camera.set_gain(self.ids_gain_db)
+            print(f"[IDS Gain] {self.ids_gain_db:.1f} dB")
+        if self.gui:
+            self.gui.sync_checkbox("ids_gain_auto", False)
+
+    def _cb_ids_gain_auto_toggle(self, enabled: bool):
+        """Handle IDS gain auto checkbox toggle."""
+        self.ids_gain_auto = enabled
+        if self._use_unified_camera and self.unified_camera is not None:
+            self.unified_camera.set_gain_auto(enabled)
+            print(f"[IDS Gain] Auto {'ON' if enabled else 'OFF'}")
+
+    def _cb_ids_exposure_change(self, value: float):
+        """Handle IDS exposure slider change."""
+        self.ids_exposure_us = float(value)
+        self.ids_exposure_auto = False
+        if self._use_unified_camera and self.unified_camera is not None:
+            self.unified_camera.set_exposure(self.ids_exposure_us)
+            print(f"[IDS Exposure] {self.ids_exposure_us:.0f} µs")
+        if self.gui:
+            self.gui.sync_checkbox("ids_exposure_auto", False)
+
+    def _cb_ids_exposure_auto_toggle(self, enabled: bool):
+        """Handle IDS exposure auto checkbox toggle."""
+        self.ids_exposure_auto = enabled
+        if self._use_unified_camera and self.unified_camera is not None:
+            self.unified_camera.set_exposure_auto(enabled)
+            print(f"[IDS Exposure] Auto {'ON' if enabled else 'OFF'}")
 
     def _cb_playback_speed_change(self, speed: float):
         """Handle playback speed change."""
@@ -2072,13 +2123,7 @@ class WallDanceApp:
                 
                 # Recording is handled via camera callback thread - no write_frame here
 
-            if self.frame_skip == 0:
-                should_process = True
-            else:
-                self.frame_skip_counter += 1
-                should_process = self.frame_skip_counter > self.frame_skip
-                if should_process:
-                    self.frame_skip_counter = 0
+            should_process = True
 
             # Skip YOLO inference if model not loaded
             if not self._model_loaded or self.model is None:

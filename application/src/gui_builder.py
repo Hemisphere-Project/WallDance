@@ -917,16 +917,6 @@ def build_input_section(gui: Any):
             )
         
         dpg.add_spacer(height=scaled(4))
-        dpg.add_text("Frame Skip", color=(180, 180, 180))
-        dpg.add_slider_int(
-            tag="adv_frame_skip_slider",
-            default_value=gui.config.get("frame_skip", 0),
-            min_value=0,
-            max_value=4,
-            callback=gui._on_frame_skip_change,
-        )
-
-        dpg.add_spacer(height=scaled(4))
         dpg.add_text("IDS Crop Ratio (W/H)", color=(180, 180, 180))
         dpg.add_slider_float(
             tag="adv_ids_ratio_slider",
@@ -936,6 +926,42 @@ def build_input_section(gui: Any):
             format="%.2f",
             callback=gui._on_ids_ratio_change,
         )
+
+        dpg.add_spacer(height=scaled(4))
+        dpg.add_text("IDS Gain (dB)", color=(180, 180, 180))
+        with dpg.group(horizontal=True):
+            dpg.add_slider_float(
+                tag="adv_ids_gain_slider",
+                default_value=gui.config.get("ids_gain_db", 0.0),
+                min_value=0.0,
+                max_value=48.0,
+                format="%.1f",
+                callback=gui._on_ids_gain_change,
+            )
+            dpg.add_checkbox(
+                label="Auto",
+                tag="adv_ids_gain_auto_checkbox",
+                default_value=gui.config.get("ids_gain_auto", True),
+                callback=gui._on_ids_gain_auto_toggle,
+            )
+
+        dpg.add_spacer(height=scaled(4))
+        dpg.add_text("IDS Exposure (\u00b5s)", color=(180, 180, 180))
+        with dpg.group(horizontal=True):
+            dpg.add_slider_float(
+                tag="adv_ids_exposure_slider",
+                default_value=gui.config.get("ids_exposure_us", 10000.0),
+                min_value=100.0,
+                max_value=100000.0,
+                format="%.0f",
+                callback=gui._on_ids_exposure_change,
+            )
+            dpg.add_checkbox(
+                label="Auto",
+                tag="adv_ids_exposure_auto_checkbox",
+                default_value=gui.config.get("ids_exposure_auto", True),
+                callback=gui._on_ids_exposure_auto_toggle,
+            )
 
 
 def build_preview_section(gui: Any):
