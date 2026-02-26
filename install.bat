@@ -36,10 +36,51 @@ if not defined UV_CMD (
     exit /b 1
 )
 
-if exist "uv.lock" (
-    %UV_CMD% sync --frozen
+rem ── Detect NVIDIA GPU ──────────────────────────────────────────────────────
+set "HAS_GPU=0"
+where nvidia-smi >nul 2>nul
+if not errorlevel 1 (
+    nvidia-smi >nul 2>nul
+    if not errorlevel 1 set "HAS_GPU=1"
+)
+
+rem Allow manual override: install.bat --cpu  or  install.bat --gpu
+for %%A in (%*) do (
+    if /I "%%A"=="--cpu" set "HAS_GPU=0"
+    if /I "%%A"=="--gpu" set "HAS_GPU=1"
+)
+
+if "%HAS_GPU%"=="1" (
+    echo [WallDance] NVIDIA GPU detected - installing with CUDA support.
 ) else (
-    %UV_CMD% sync
+    echo [WallDance] No NVIDIA GPU detected - installing CPU-only ^(lower FPS, but works for dev/test^).
+)
+
+rem ── Generate uv.toml with the right PyTorch index ─────────────────────────
+if "%HAS_GPU%"=="1" (
+    (
+        echo index-url = "https://download.pytorch.org/whl/cu130"
+        echo extra-index-url = ["https://pypi.org/simple/"]
+    ) > uv.toml
+) else (
+    (
+        echo index-url = "https://download.pytorch.org/whl/cpu"
+        echo extra-index-url = ["https://pypi.org/simple/"]
+    ) > uv.toml
+)
+
+rem ── Remove stale lock file (index URLs may have changed) ──────────────────
+if exist "uv.lock" del /q uv.lock
+
+rem ── Sync dependencies ─────────────────────────────────────────────────────
+set "UV_EXTRAS="
+if "%HAS_GPU%"=="1" set "UV_EXTRAS=--extra gpu"
+
+%UV_CMD% sync %UV_EXTRAS% --extra ids >nul 2>nul
+if errorlevel 1 (
+    echo [WallDance] IDS camera SDK not available - installing without IDS support.
+    echo [WallDance] ^(This is normal on laptops / dev machines.^)
+    %UV_CMD% sync %UV_EXTRAS%
 )
 
 if errorlevel 1 (
@@ -50,6 +91,7 @@ if errorlevel 1 (
 echo [WallDance] Checking PyTorch/CUDA compatibility...
 call :check_torch_cuda
 
+echo.
 echo Installation complete!
 echo Run run.bat to start WallDance pose detection.
 exit /b 0
@@ -92,38 +134,42 @@ if errorlevel 1 (
     exit /b 0
 )
 
-set "CUDA_OK="
-for /f "usebackq delims=" %%A in (`%UV_CMD% run --no-sync python -c "import torch; print('1' if torch.cuda.is_available() else '0')" 2^>nul`) do set "CUDA_OK=%%A"
+if "%HAS_GPU%"=="1" (
+    set "CUDA_OK="
+    for /f "usebackq delims=" %%A in (`%UV_CMD% run --no-sync python -c "import torch; print('1' if torch.cuda.is_available() else '0')" 2^>nul`) do set "CUDA_OK=%%A"
 
-if not "%CUDA_OK%"=="1" (
-    echo WARNING: CUDA is not available to PyTorch. WallDance will run in CPU fallback mode ^(low FPS^).
-    echo Fix: install a GPU-compatible PyTorch/CUDA build, then run install.bat again.
-    exit /b 0
-)
-
-set "CUDA_PROBE="
-for /f "usebackq tokens=1,2,3,* delims=|" %%A in (`%UV_CMD% run --no-sync python -c "import torch; n=torch.cuda.get_device_name(0); cc=torch.cuda.get_device_capability(0); need=f'sm_{cc[0]}{cc[1]}'; arch=torch.cuda.get_arch_list() if hasattr(torch.cuda,'get_arch_list') else []; ok=(not arch) or (need in arch); print(('OK' if ok else 'MISMATCH') + '|' + n + '|' + need + '|' + ','.join(arch))" 2^>nul`) do (
-    set "CUDA_PROBE=1"
-    if /I "%%A"=="MISMATCH" (
-        echo WARNING: GPU architecture mismatch: %%B requires %%C.
-        echo Current PyTorch build supports: %%D
-        echo WallDance will fall back to CPU ^(low FPS^).
-        echo Fix: install a newer PyTorch build that supports your GPU architecture.
-        echo Note: installing NVIDIA CUDA Toolkit alone ^(for example CUDA 13.x^) usually does NOT fix this.
-        if defined WALLDANCE_SKIP_TORCH_AUTOFIX (
-            echo Auto-fix skipped due to WALLDANCE_SKIP_TORCH_AUTOFIX.
-            echo Use the command from https://pytorch.org/get-started/locally/ and then re-run install.bat.
-        ) else (
-            call :auto_fix_torch %%C
-        )
-    ) else (
-        echo OK: PyTorch CUDA is available on %%B ^(%%C^).
+    if not "!CUDA_OK!"=="1" (
+        echo WARNING: CUDA not available to PyTorch despite NVIDIA GPU being present.
+        echo Fix: ensure CUDA drivers are installed, then run install.bat again.
+        exit /b 0
     )
-)
 
-if not defined CUDA_PROBE (
-    echo WARNING: Could not fully validate CUDA architecture support.
-    echo If run.bat falls back to CPU, update PyTorch/CUDA for your GPU.
+    set "CUDA_PROBE="
+    for /f "usebackq tokens=1,2,3,* delims=|" %%A in (`%UV_CMD% run --no-sync python -c "import torch; n=torch.cuda.get_device_name(0); cc=torch.cuda.get_device_capability(0); need=f'sm_{cc[0]}{cc[1]}'; arch=torch.cuda.get_arch_list() if hasattr(torch.cuda,'get_arch_list') else []; ok=(not arch) or (need in arch); print(('OK' if ok else 'MISMATCH') + '|' + n + '|' + need + '|' + ','.join(arch))" 2^>nul`) do (
+        set "CUDA_PROBE=1"
+        if /I "%%A"=="MISMATCH" (
+            echo WARNING: GPU architecture mismatch: %%B requires %%C.
+            echo Current PyTorch build supports: %%D
+            echo WallDance will fall back to CPU ^(low FPS^).
+            echo Fix: install a newer PyTorch build that supports your GPU architecture.
+            if defined WALLDANCE_SKIP_TORCH_AUTOFIX (
+                echo Auto-fix skipped due to WALLDANCE_SKIP_TORCH_AUTOFIX.
+            ) else (
+                call :auto_fix_torch %%C
+            )
+        ) else (
+            echo OK: PyTorch CUDA is available on %%B ^(%%C^).
+        )
+    )
+
+    if not defined CUDA_PROBE (
+        echo WARNING: Could not fully validate CUDA architecture support.
+        echo If run.bat falls back to CPU, update PyTorch/CUDA for your GPU.
+    )
+) else (
+    echo OK: PyTorch ^(CPU^) is ready.
+    echo Tip: use a smaller model for better CPU performance:
+    echo      In config.py set YOLO_MODEL = "yolo11n-pose.pt" and YOLO_IMGSZ = 640
 )
 exit /b 0
 
