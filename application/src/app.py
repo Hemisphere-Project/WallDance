@@ -50,7 +50,6 @@ from config import (
     SHOW_KEYPOINTS,
     SHOW_SKELETON,
     SHOW_TRAILS,
-    TRACKER_DISTANCE_THRESHOLD,
     TRACKER_MAX_AGE,
     IDS_USE_GPU_DIRECT,
     IDS_RATIO,
@@ -147,6 +146,7 @@ class WallDanceApp:
 
         self.enhancer = ImageEnhancer()
         self.tracker = DancerTracker()
+        self.tracker.set_person_height(PERSON_HEIGHT_PX)
         self.processor = FrameProcessor(
             model=self.model,
             settings=self.settings,
@@ -262,7 +262,6 @@ class WallDanceApp:
             "show_bbox": self.show_bbox,
             "show_trails": self.show_trails,
             "show_ids": self.show_ids,
-            "tracker_distance": TRACKER_DISTANCE_THRESHOLD,
             "tracker_max_age": TRACKER_MAX_AGE,
             "tracker_smoothing": 1,
             "osc_enabled": self.osc_enabled,
@@ -303,7 +302,6 @@ class WallDanceApp:
             "on_imgsz_change": self._cb_imgsz_change,
             "on_person_height_change": self._cb_person_height_change,
             "on_visualization_toggle": self._cb_visualization_toggle,
-            "on_tracker_distance_change": self._cb_tracker_distance_change,
             "on_tracker_age_change": self._cb_tracker_age_change,
             "on_tracker_smoothing_change": self._cb_tracker_smoothing_change,
             "on_tracker_reset": self._cb_tracker_reset,
@@ -357,7 +355,6 @@ class WallDanceApp:
             "show_bbox": self.show_bbox,
             "show_trails": self.show_trails,
             "show_ids": self.show_ids,
-            "tracker_distance": self.tracker.distance_threshold,
             "tracker_max_age": self.tracker.max_age,
             "tracker_smoothing": self.tracker.smoothing_depth,
             "osc_enabled": self.osc_enabled,
@@ -552,6 +549,7 @@ class WallDanceApp:
             self.gui and self.gui.sync_checkbox("fp16", config["fp16"])
         if "person_height_px" in config:
             self.settings.person_height_px = config["person_height_px"]
+            self.tracker.set_person_height(config["person_height_px"])
             self.gui and self.gui.sync_slider("person_height", config["person_height_px"])
         if "yolo_imgsz" in config:
             # Just sync UI, don't trigger callback (imgsz already set)
@@ -604,8 +602,7 @@ class WallDanceApp:
 
         # Tracker
         if "tracker_distance" in config:
-            self.tracker.distance_threshold = config["tracker_distance"]
-            self.gui and self.gui.sync_slider("tracker_distance", config["tracker_distance"])
+            pass  # Legacy: distance is now auto-derived from person_height_px
         if "tracker_max_age" in config:
             self.tracker.max_age = config["tracker_max_age"]
             self.gui and self.gui.sync_slider("tracker_max_age", config["tracker_max_age"])
@@ -965,7 +962,7 @@ class WallDanceApp:
 
     def _cb_person_height_change(self, value: int):
         self.settings.person_height_px = int(value)
-        self.tracker.distance_threshold = max(200, int(self.settings.person_height_px * 1.5))
+        self.tracker.set_person_height(int(value))
 
     def _cb_visualization_toggle(self, name: str, enabled: bool):
         if name == "skeleton":
@@ -981,8 +978,9 @@ class WallDanceApp:
         print(f"{name.capitalize()}: {'ON' if enabled else 'OFF'}")
 
     def _cb_tracker_distance_change(self, value: int):
-        self.tracker.distance_threshold = value
-        print(f"Tracker distance: {value}px")
+        # Legacy: distance threshold is now auto-derived from person_height_px.
+        # This callback is kept for backward compatibility but is a no-op.
+        pass
 
     def _cb_tracker_age_change(self, value: int):
         self.tracker.max_age = value
@@ -1563,9 +1561,8 @@ class WallDanceApp:
         stall_age_s = now - self._last_fresh_frame_time
         stalled = stall_age_s >= 0.25
         state_changed = stalled != self._last_preview_stalled_state
-        heartbeat_due = (now - self._last_diag_log_time) >= 1.0
-        if not state_changed and not heartbeat_due:
-            return
+        if not state_changed:
+            return  # only log on STALL ↔ OK transitions
 
         self._last_diag_log_time = now
         self._last_preview_stalled_state = stalled

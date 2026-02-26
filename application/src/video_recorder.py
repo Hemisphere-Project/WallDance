@@ -466,7 +466,16 @@ class VideoRecorder:
                           f"(container says {container_fps:.2f})")
             except Exception as e:
                 print(f"[Playback] Warning: could not read meta file: {e}")
-        self._playback_fps = sidecar_fps if (sidecar_fps and sidecar_fps > 0) else container_fps
+        if sidecar_fps and sidecar_fps > 0:
+            self._playback_fps = sidecar_fps
+        else:
+            # Legacy recording without .meta — cap to 20 FPS since the
+            # container header often stores a nominal value that is too high.
+            legacy_cap = 20.0
+            effective = min(container_fps, legacy_cap)
+            print(f"[Playback] No .meta sidecar — capping FPS to {effective:.1f} "
+                  f"(container says {container_fps:.1f})")
+            self._playback_fps = effective
         self._playback_speed = 1.0  # Reset speed on new playback
         
         self._status.state = RecorderState.PLAYING

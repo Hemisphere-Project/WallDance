@@ -19,7 +19,6 @@ from config import (
     KEYPOINT_CONFIDENCE,
     PERSON_HEIGHT_MAX_RATIO,
     PERSON_HEIGHT_MIN_RATIO,
-    TRACKER_DISTANCE_THRESHOLD,
     YOLO_IOU_THRESHOLD,
     USE_GPU_PATH,
 )
@@ -532,8 +531,10 @@ class FrameProcessor:
         if len(detections) <= 1:
             return detections
 
-        centroid_dist_thresh = self.settings.person_height_px * 0.75
-        keypoint_dist_thresh = self.settings.person_height_px * 0.25
+        # Conservative thresholds — require strong evidence before merging.
+        # Centroid AND keypoint must BOTH be close (except for very-high IoU).
+        centroid_dist_thresh = self.settings.person_height_px * 0.3
+        keypoint_dist_thresh = self.settings.person_height_px * 0.1
         min_height = self.settings.person_height_px * self.settings.person_height_min_ratio
         max_height = self.settings.person_height_px * self.settings.person_height_max_ratio
 
@@ -592,24 +593,29 @@ class FrameProcessor:
         return [size_filtered[i] for i in sorted(kept_indices)]
 
     def _should_merge(self, bbox_i, bbox_j, kpts_i, conf_i, kpts_j, conf_j, centroid_dist_thresh, keypoint_dist_thresh) -> bool:
+        # 1. Very high IoU → almost certainly the same person detected twice
         iou = self._compute_iou(bbox_i, bbox_j)
-        if iou > 0.3:
+        if iou > 0.7:
             return True
+        # 2. One bbox fully contained in the other (sub-detection / body part)
         if self._bbox_contains(bbox_i, bbox_j):
             return True
+        # 3. Centroid AND keypoint proximity — both must hold (AND, not OR).
+        #    This prevents merging two real people whose centroids happen to
+        #    be close but whose skeletons clearly differ.
         mask_i = conf_i > KEYPOINT_CONFIDENCE
         mask_j = conf_j > KEYPOINT_CONFIDENCE
         if np.any(mask_i) and np.any(mask_j):
             cent_i = np.average(kpts_i[mask_i], axis=0, weights=conf_i[mask_i])
             cent_j = np.average(kpts_j[mask_j], axis=0, weights=conf_j[mask_j])
-            dist = np.linalg.norm(cent_i - cent_j)
-            if dist < centroid_dist_thresh:
-                return True
+            centroid_close = np.linalg.norm(cent_i - cent_j) < centroid_dist_thresh
+            keypoints_close = False
             if np.sum(mask_i & mask_j) >= 5:
                 both_valid = mask_i & mask_j
                 kpt_dists = np.linalg.norm(kpts_i[both_valid] - kpts_j[both_valid], axis=1)
-                if np.median(kpt_dists) < keypoint_dist_thresh:
-                    return True
+                keypoints_close = np.median(kpt_dists) < keypoint_dist_thresh
+            if centroid_close and keypoints_close:
+                return True
         return False
 
     @staticmethod
@@ -639,7 +645,7 @@ class FrameProcessor:
         in_x = x1 <= cx <= x1 + w1
         in_y = y1 <= cy <= y1 + h1
         size_ratio = (w2 * h2) / (w1 * h1) if w1 * h1 > 0 else 1.0
-        return in_x and in_y and size_ratio < 0.7
+        return in_x and in_y and size_ratio < 0.5
 
     # ------------------------------------------------------------------
     # Introspection

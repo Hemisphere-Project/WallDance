@@ -180,9 +180,33 @@ class DancerTracker:
         self.frame_count = 0
         self.max_age = TRACKER_MAX_AGE
         self.min_hits = TRACKER_MIN_HITS
-        self.distance_threshold = TRACKER_DISTANCE_THRESHOLD
         self.velocity_weight = TRACKER_VELOCITY_WEIGHT
         self._smoothing_depth = 1  # Temporal confidence smoothing depth
+
+        # Scale-dependent thresholds — all derived from person_height_px.
+        # Call set_person_height() to update; the master dial in config.py
+        # is PERSON_HEIGHT_PX.  TRACKER_DISTANCE_THRESHOLD is only used as
+        # the initial fallback before the app callback fires.
+        self.distance_threshold = TRACKER_DISTANCE_THRESHOLD
+        self.new_track_min_distance = max(30, int(TRACKER_DISTANCE_THRESHOLD * 0.33))
+        self.duplicate_distance = max(15, int(TRACKER_DISTANCE_THRESHOLD * 0.17))
+
+    # ------------------------------------------------------------------
+    # Person-height master dial
+    # ------------------------------------------------------------------
+    def set_person_height(self, height_px: int):
+        """Derive all scale-dependent thresholds from expected person height.
+
+        This is the **single knob** that adjusts tracker behaviour for
+        capture distance.  All three thresholds scale linearly:
+
+        * distance_threshold      = height × 1.2  (match gate)
+        * new_track_min_distance  = height × 0.4  (create-track gate)
+        * duplicate_distance      = height × 0.2  (ignore-duplicate gate)
+        """
+        self.distance_threshold = max(50, int(height_px * 1.2))
+        self.new_track_min_distance = max(20, int(height_px * 0.4))
+        self.duplicate_distance = max(10, int(height_px * 0.2))
     
     @property
     def smoothing_depth(self):
@@ -287,7 +311,8 @@ class DancerTracker:
                     if TRACKER_DEBUG:
                         print(f"[TRACKER] Match rejected: cost={cost_matrix[row, col]:.1f} > thresh={dynamic_thresh:.1f} (t_miss={track.time_since_update})")
         
-        # Create new tracks - but be more careful
+        # Create new tracks — use separate, tighter gate for new-track
+        # creation vs. matching so two close dancers can coexist.
         for d, (kpts, conf, bbox) in enumerate(detections):
             if d not in matched_det:
                 det_centroid = self._compute_centroid(kpts, conf, bbox)
@@ -297,7 +322,6 @@ class DancerTracker:
                 closest_track = None
                 closest_track_idx = None
                 for idx, track in enumerate(self.tracks):
-                    # Use last known position for matching unmatched detections
                     last_pos = track.get_last_known_position()
                     dist = np.linalg.norm(det_centroid - last_pos)
                     if dist < min_dist:
@@ -305,26 +329,25 @@ class DancerTracker:
                         closest_track = track
                         closest_track_idx = idx
                 
-                # Only create new track if REALLY far from all existing tracks
-                if min_dist > self.distance_threshold:
+                # Gate 1: far enough from every track → new person
+                if min_dist > self.new_track_min_distance:
                     if TRACKER_DEBUG:
-                        print(f"[TRACKER] New track #{DancerTrack._id_counter + 1}: min_dist={min_dist:.1f} > thresh={self.distance_threshold}")
+                        print(f"[TRACKER] New track #{DancerTrack._id_counter + 1}: "
+                              f"min_dist={min_dist:.1f} > gate={self.new_track_min_distance}")
                     self.tracks.append(DancerTrack(kpts, conf, bbox, self.smoothing_depth))
                 elif closest_track is not None and closest_track_idx not in matched_trk:
-                    # This detection is close to an unmatched track - force update it
+                    # Close to an unmatched track → force-update it
                     if TRACKER_DEBUG:
                         print(f"[TRACKER] Force update track #{closest_track.track_id}: dist={min_dist:.1f}")
                     closest_track.update(kpts, conf, bbox)
-                    matched_trk.add(closest_track_idx)  # Mark as matched now
-                elif closest_track is not None and min_dist < self.distance_threshold * 0.3:
-                    # Detection is VERY close to an already-matched track (< 30% threshold)
-                    # This is definitely a duplicate (same person detected twice)
+                    matched_trk.add(closest_track_idx)
+                elif closest_track is not None and min_dist < self.duplicate_distance:
+                    # Very close to an already-matched track → duplicate, drop
                     if TRACKER_DEBUG:
-                        print(f"[TRACKER] Ignoring close duplicate near track #{closest_track.track_id}: dist={min_dist:.1f}")
+                        print(f"[TRACKER] Ignoring duplicate near track "
+                              f"#{closest_track.track_id}: dist={min_dist:.1f}")
                 else:
-                    # Detection is moderately close to a matched track
-                    # Could be a different person or a duplicate - log but don't ignore
-                    # Actually update the closest unmatched track if there is one
+                    # Moderately close — try any remaining unmatched track
                     for idx, track in enumerate(self.tracks):
                         if idx not in matched_trk:
                             last_pos = track.get_last_known_position()
@@ -336,9 +359,9 @@ class DancerTracker:
                                 matched_trk.add(idx)
                                 break
                     else:
-                        # No unmatched track close enough - ignore as duplicate
                         if TRACKER_DEBUG:
-                            print(f"[TRACKER] Ignoring duplicate det near track #{closest_track.track_id if closest_track else 'None'}: dist={min_dist:.1f}")
+                            print(f"[TRACKER] Ignoring ambiguous det near track "
+                                  f"#{closest_track.track_id if closest_track else 'None'}: dist={min_dist:.1f}")
         
         # Remove old tracks
         removed = [t for t in self.tracks if t.time_since_update >= self.max_age]

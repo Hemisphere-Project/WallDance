@@ -1115,7 +1115,6 @@ class WallDanceGUI:
             'denoise_strength': ['adv_denoise_slider'],
             'max_persons': ['max_persons_slider'],
             'person_height': ['person_height_slider'],
-            'tracker_distance': ['tracker_dist_slider'],
             'tracker_max_age': ['tracker_age_slider'],
             'tracker_smoothing': ['tracker_smoothing_slider'],
             'ids_ratio': ['adv_ids_ratio_slider'],

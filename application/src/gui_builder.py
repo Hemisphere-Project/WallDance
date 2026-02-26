@@ -724,18 +724,7 @@ def build_visualization_toolbar(gui: Any):
 def build_tracker_section(gui: Any):
     """Tracker settings - open by default."""
     with dpg.collapsing_header(label="Tracker", default_open=False, tag="section_tracker", closable=False):
-        dpg.add_text("Distance Threshold")
-        dist_slider = dpg.add_slider_int(
-            tag="tracker_dist_slider",
-            default_value=gui.config.get("tracker_distance", 300),
-            min_value=100,
-            max_value=500,
-            format="%d px",
-            callback=gui._on_tracker_distance_change,
-        )
-        with dpg.tooltip(dist_slider):
-            dpg.add_text("Max distance for matching detections to tracks")
-        
+
         dpg.add_text("Max Age (frames)")
         age_slider = dpg.add_slider_int(
             tag="tracker_age_slider",

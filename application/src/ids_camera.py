@@ -521,16 +521,12 @@ class IDSCamera:
         # truly unavailable.
         pixel_format_node = nm.FindNode("PixelFormat")
 
-        all_entries = []
         available_formats = []
         for entry in pixel_format_node.Entries():
             sym = entry.SymbolicValue()
             status = entry.AccessStatus()
-            is_available = status != ids_peak.NodeAccessStatus_NotAvailable
-            all_entries.append(f"{sym}({'ok' if is_available else 'N/A'})")
-            if is_available:
+            if status != ids_peak.NodeAccessStatus_NotAvailable:
                 available_formats.append(sym)
-        print(f"[IDSCamera] All pixel format entries: {all_entries}")
         print(f"[IDSCamera] Available pixel formats: {available_formats}")
 
         selected_format = None
@@ -542,18 +538,7 @@ class IDSCamera:
                 print(f"[IDSCamera] Mono8 found in available formats!")
                 break
 
-        # --- Priority 2: Try setting Mono8 even if not listed ---
-        if selected_format is None:
-            try:
-                pixel_format_node.SetCurrentEntry(
-                    pixel_format_node.FindEntry("Mono8")
-                )
-                selected_format = "Mono8"
-                print("[IDSCamera] Mono8 set via direct FindEntry (was unlisted)")
-            except Exception as e:
-                print(f"[IDSCamera] Mono8 not available via FindEntry: {e}")
-
-        # --- Priority 3: High-bit-depth preference or fallback ---
+        # --- Priority 2: High-bit-depth preference or fallback ---
         if selected_format is None:
             def _pick_by_tokens(token_groups):
                 for tokens in token_groups:

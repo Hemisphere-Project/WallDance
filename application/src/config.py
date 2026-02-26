@@ -141,8 +141,13 @@ SKELETON = [
 # =============================================================================
 TRACKER_MAX_AGE = 45                # Frames to keep lost track (~3 sec at 15 FPS)
 TRACKER_MIN_HITS = 2                # Hits to confirm track
-TRACKER_DISTANCE_THRESHOLD = 500    # Max match distance (pixels, at 1280 imgsz)
-                                    # Increase for fast-moving dancers or camera far away
+TRACKER_DISTANCE_THRESHOLD = 500    # Initial fallback only — overridden at startup
+                                    # by set_person_height(PERSON_HEIGHT_PX).
+                                    # All distance thresholds now auto-derive from
+                                    # PERSON_HEIGHT_PX (the single master dial):
+                                    #   match gate      = height × 1.2
+                                    #   new-track gate  = height × 0.4
+                                    #   duplicate gate  = height × 0.2
 TRACKER_VELOCITY_WEIGHT = 0.6       # Trust in velocity prediction (0-1)
 TRACKER_PROCESS_NOISE = 2.5         # Kalman Q - velocity adaptation
 TRACKER_MEASUREMENT_NOISE = 2.0     # Kalman R - smoothing
