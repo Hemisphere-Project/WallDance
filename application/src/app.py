@@ -177,10 +177,7 @@ class WallDanceApp:
 
         # Preview/display state
         self.preview_enabled = PREVIEW_ENABLED
-        # Preview FPS cap: always ON for IDS to limit GPU→CPU preview PCIe traffic.
-        self.preview_fps_cap = bool(IDS_USE_FULL_RES)
-        if self.preview_fps_cap and self.processor:
-            self.processor.set_preview_fps_cap(10.0)
+        self.preview_fps_cap = False
         self.preview_stride = 1
         self.preview = PreviewGeometry(
             display_scale=PREVIEW_DISPLAY_SCALE,
@@ -848,12 +845,6 @@ class WallDanceApp:
                 print(f"[Camera] IDS camera opened: {self.unified_camera.width}x{self.unified_camera.height}")
             else:
                 print(f"[Camera] OpenCV camera opened: {self.unified_camera.width}x{self.unified_camera.height}")
-            
-            # IDS camera: skip GPU F.interpolate for preview to avoid
-            # USB3 DMA stalls caused by CUDA compute on shared PCIe.
-            is_ids = (source_type == CameraSource.IDS_PEAK)
-            if self.processor:
-                self.processor.set_preview_cpu_resize(is_ids)
             
             if self.gui:
                 all_sources = list(set(self.camera.state.available + [source]))

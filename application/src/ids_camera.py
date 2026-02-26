@@ -594,57 +594,55 @@ class IDSCamera:
         width_node = nm.FindNode("Width")
         height_node = nm.FindNode("Height")
 
-        # Reset offset to (0,0) first so we have full range for Width/Height
+        # Reset offset to (0,0) first so Width/Height have full range
         try:
-            nm.FindNode("OffsetX").SetValue(0)
-            nm.FindNode("OffsetY").SetValue(0)
+            nm.FindNode("OffsetX").SetValue(nm.FindNode("OffsetX").Minimum())
+            nm.FindNode("OffsetY").SetValue(nm.FindNode("OffsetY").Minimum())
         except Exception:
             pass
+
+        # Query full sensor size (with offsets at minimum, max W/H = sensor size)
+        sensor_w = width_node.Maximum()
+        sensor_h = height_node.Maximum()
 
         # Determine target size: crop takes priority, then explicit w/h, then max
         crop_w, crop_h = self.settings.crop
         if crop_w > 0 and crop_h > 0:
-            target_w = min(crop_w, width_node.Maximum())
-            target_h = min(crop_h, height_node.Maximum())
-        elif self.settings.width > 0:
-            target_w = min(self.settings.width, width_node.Maximum())
+            target_w = min(crop_w, sensor_w)
+            target_h = min(crop_h, sensor_h)
         else:
-            target_w = width_node.Maximum()
+            target_w = min(self.settings.width, sensor_w) if self.settings.width > 0 else sensor_w
+            target_h = min(self.settings.height, sensor_h) if self.settings.height > 0 else sensor_h
 
-        if crop_w <= 0 or crop_h <= 0:
-            if self.settings.height > 0:
-                target_h = min(self.settings.height, height_node.Maximum())
-            else:
-                target_h = height_node.Maximum()
-        
-        # Respect increment
-        w_inc = width_node.Increment()
-        h_inc = height_node.Increment()
-        target_w = (target_w // w_inc) * w_inc
-        target_h = (target_h // h_inc) * h_inc
-        
+        # Snap to increment and clamp to [Minimum, Maximum]
+        w_inc = max(1, width_node.Increment())
+        h_inc = max(1, height_node.Increment())
+        target_w = max(width_node.Minimum(), (target_w // w_inc) * w_inc)
+        target_h = max(height_node.Minimum(), (target_h // h_inc) * h_inc)
+
         width_node.SetValue(target_w)
         height_node.SetValue(target_h)
-        
+
         # Center the ROI on the sensor
         if crop_w > 0 and crop_h > 0:
             try:
                 ox_node = nm.FindNode("OffsetX")
                 oy_node = nm.FindNode("OffsetY")
-                # After setting Width/Height, OffsetX/Y.Maximum() gives the
-                # remaining slack on each axis. Center = half of that slack.
-                max_ox = ox_node.Maximum()
-                max_oy = oy_node.Maximum()
-                ox_inc = ox_node.Increment() if ox_node.Increment() > 0 else 1
-                oy_inc = oy_node.Increment() if oy_node.Increment() > 0 else 1
-                center_ox = (max_ox // 2 // ox_inc) * ox_inc
-                center_oy = (max_oy // 2 // oy_inc) * oy_inc
+                # Ideal center offset = (sensor_size - roi_size) / 2
+                ideal_ox = (sensor_w - target_w) // 2
+                ideal_oy = (sensor_h - target_h) // 2
+                # Snap to offset increment and clamp to valid range
+                ox_inc = max(1, ox_node.Increment())
+                oy_inc = max(1, oy_node.Increment())
+                center_ox = max(ox_node.Minimum(), min((ideal_ox // ox_inc) * ox_inc, ox_node.Maximum()))
+                center_oy = max(oy_node.Minimum(), min((ideal_oy // oy_inc) * oy_inc, oy_node.Maximum()))
                 ox_node.SetValue(center_ox)
                 oy_node.SetValue(center_oy)
-                print(f"[IDSCamera] ROI offset: ({center_ox}, {center_oy})")
+                print(f"[IDSCamera] ROI: {target_w}x{target_h} centered at offset ({center_ox}, {center_oy})"
+                      f"  [sensor {sensor_w}x{sensor_h}]")
             except Exception as e:
-                print(f"[IDSCamera] Could not set ROI offset (crop still active): {e}")
-        
+                print(f"[IDSCamera] Could not center ROI offset: {e}")
+
         self.state.width = width_node.Value()
         self.state.height = height_node.Value()
         print(f"[IDSCamera] Resolution: {self.state.width}x{self.state.height}")
