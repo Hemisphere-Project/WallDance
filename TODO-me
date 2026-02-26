@@ -1,9 +1,6 @@
 - Increment / decrement ratio button
-- Fix preview / window size
 - Check standard webcam path
-- update docs/TODO
 - proper windows launcher / Nuitka build ?
 - remove static background
-- standalone rec/play osc
 - check updates on start
 - remote CTRL windows

@@ -235,7 +235,20 @@ class DancerTracker:
         return np.array([bbox[0] + bbox[2]/2, bbox[1] + bbox[3]/2])
     
     def _compute_cost_matrix(self, detections, tracks):
-        """Compute assignment cost matrix."""
+        """Compute assignment cost matrix.
+        
+        Cost blends three signals so that skeleton shape and size help
+        disambiguate when centroids alone are ambiguous (= ID-swap scenario):
+        
+        1. **Position cost** — weighted blend of distances to predicted,
+           velocity-adjusted, and last-known positions.
+        2. **Keypoint-shape cost** — mean distance between co-visible
+           keypoints of the detection and the track's last keypoints.
+        3. **Bbox-size cost** — absolute height difference between detection
+           and track bbox.
+        
+        All three are in pixel units and combined as a weighted sum.
+        """
         if len(detections) == 0 or len(tracks) == 0:
             return np.empty((len(detections), len(tracks)))
         
@@ -243,22 +256,44 @@ class DancerTracker:
         
         for d, (kpts, conf, bbox) in enumerate(detections):
             det_centroid = self._compute_centroid(kpts, conf, bbox)
+            det_height = bbox[3]  # bbox (x, y, w, h)
             
             for t, track in enumerate(tracks):
                 predicted_pos = track.get_centroid()
                 last_known_pos = track.get_last_known_position()
                 velocity = track.get_velocity()
                 
-                # Velocity-adjusted position (where we expect them to be)
+                # --- 1. Position cost (weighted blend, not min) ---
                 velocity_adjusted = predicted_pos + velocity * self.velocity_weight
-                
-                # Calculate distances to different reference points
                 dist_pred = np.linalg.norm(det_centroid - predicted_pos)
-                dist_vel = np.linalg.norm(det_centroid - velocity_adjusted)
+                dist_vel  = np.linalg.norm(det_centroid - velocity_adjusted)
                 dist_last = np.linalg.norm(det_centroid - last_known_pos)
+                pos_cost = 0.5 * dist_pred + 0.3 * dist_vel + 0.2 * dist_last
                 
-                # Use the smallest distance - helps when prediction drifts
-                cost_matrix[d, t] = min(dist_pred, dist_vel, dist_last)
+                # --- 2. Keypoint-shape cost ---
+                # Mean distance between co-visible keypoints of detection
+                # vs. track.  Powerful disambiguator when two dancers are
+                # close but their skeletons differ.
+                kpt_cost = 0.0
+                mask_det = conf > KEYPOINT_CONFIDENCE
+                mask_trk = track.confidence > KEYPOINT_CONFIDENCE
+                both = mask_det & mask_trk
+                n_both = int(np.sum(both))
+                if n_both >= 3:
+                    diffs = np.linalg.norm(kpts[both] - track.keypoints[both], axis=1)
+                    kpt_cost = float(np.mean(diffs))
+                
+                # --- 3. Bbox-size cost ---
+                trk_height = track.bbox[3]
+                size_cost = abs(det_height - trk_height)
+                
+                # --- Combined cost ---
+                # Weights:  position=0.5  keypoints=0.35  size=0.15
+                # When no co-visible keypoints exist, position dominates.
+                if n_both >= 3:
+                    cost_matrix[d, t] = 0.50 * pos_cost + 0.35 * kpt_cost + 0.15 * size_cost
+                else:
+                    cost_matrix[d, t] = 0.85 * pos_cost + 0.15 * size_cost
         
         return cost_matrix
     
@@ -297,9 +332,13 @@ class DancerTracker:
                 track_speed = track.get_speed()
                 
                 # Dynamic threshold: base + velocity bonus + time bonus
-                # As time since update increases, we're more lenient about matching
-                time_bonus = track.time_since_update * 15.0  # 15 px per frame missed
-                dynamic_thresh = self.distance_threshold + track_speed * 2.0 + time_bonus
+                # Time bonus is capped to prevent runaway expansion that
+                # would accept cross-matches after a few missed frames.
+                time_bonus = min(
+                    track.time_since_update * 10.0,
+                    self.distance_threshold * 0.5,
+                )
+                dynamic_thresh = self.distance_threshold + track_speed * 1.5 + time_bonus
                 
                 if cost_matrix[row, col] < dynamic_thresh:
                     matched_det.add(row)
