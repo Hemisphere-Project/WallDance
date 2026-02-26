@@ -1595,12 +1595,18 @@ class UnifiedCamera:
             self._cv_camera = CameraManager(threaded=self._threaded)
 
             if not self._cv_camera.open(source):
-                # Retry with explicit DirectShow backend (Windows)
+                # Retry with explicit backend based on OS
                 import sys
                 if sys.platform == 'win32':
                     print("[UnifiedCamera] Default backend failed, retrying with DSHOW...")
                     self._cv_camera = CameraManager(threaded=self._threaded)
                     if not self._cv_camera.open(source, backend=cv2.CAP_DSHOW):
+                        self._cv_camera = None
+                        return False
+                elif sys.platform.startswith('linux'):
+                    print("[UnifiedCamera] Default backend failed, retrying with V4L2...")
+                    self._cv_camera = CameraManager(threaded=self._threaded)
+                    if not self._cv_camera.open(source, backend=cv2.CAP_V4L2):
                         self._cv_camera = None
                         return False
                 else:
