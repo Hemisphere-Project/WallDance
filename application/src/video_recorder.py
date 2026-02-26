@@ -19,6 +19,7 @@ import cv2
 import numpy as np
 
 from config_store import PROJECTS_DIR, sanitize_project_name
+from config import RECORDING_CODEC
 
 
 class RecorderState(Enum):
@@ -64,8 +65,9 @@ class VideoRecorder:
         self._status = RecorderStatus()
         
         # Recording state
-        self._writer: Optional[cv2.VideoWriter] = None
+        self._writer: Optional[cv2.VideoWriter] = None  # kept for compatibility, unused
         self._recording_path: Optional[str] = None
+        self._recording_fourcc: str = "MJPG"
         self._recording_fps: float = 30.0
         self._recording_size: Tuple[int, int] = (1920, 1080)
         
@@ -134,9 +136,9 @@ class VideoRecorder:
         recordings = []
         
         for filename in os.listdir(recordings_dir):
-            if filename.startswith(pattern) and filename.endswith(".avi"):
+            if filename.startswith(pattern) and filename.endswith((".avi", ".mp4")):
                 filepath = os.path.join(recordings_dir, filename)
-                # Parse timestamp from filename: slot_N_YYYYMMDD_HHMMSS.avi
+                # Parse timestamp from filename: slot_N_YYYYMMDD_HHMMSS.<ext>
                 display = self._format_recording_display(filename)
                 recordings.append((display, filepath))
         
@@ -150,8 +152,8 @@ class VideoRecorder:
     
     def _format_recording_display(self, filename: str) -> str:
         """Convert recording filename to human-readable display."""
-        # slot_N_YYYYMMDD_HHMMSS.avi -> YYYY-MM-DD HH:MM:SS
-        name = filename.replace(".avi", "")
+        # slot_N_YYYYMMDD_HHMMSS.<ext> -> YYYY-MM-DD HH:MM:SS
+        name = os.path.splitext(filename)[0]  # strip extension regardless of type
         parts = name.split("_")
         if len(parts) >= 4:
             date_str = parts[2]
@@ -169,27 +171,40 @@ class VideoRecorder:
         """Background thread that writes frames from queue to disk."""
         print("[RecorderThread] Recording encoder thread started")
         frames_written = 0
-        
+
+        # Create the VideoWriter on THIS thread - required on Windows where some
+        # codecs (MJPG, mp4v) use COM/GDI objects that are thread-affine and
+        # silently fail when write() is called from a different thread than open().
+        writer = cv2.VideoWriter(
+            self._recording_path,
+            cv2.VideoWriter_fourcc(*self._recording_fourcc),
+            self._recording_fps,
+            self._recording_size,
+        )
+        if not writer.isOpened():
+            print(f"[RecorderThread] ERROR: VideoWriter failed to open in encoder thread")
+            return
+
+        print(f"[RecorderThread] VideoWriter opened: {self._recording_fourcc} -> {self._recording_path}")
+
         while self._recording_running:
             try:
-                # Wait for frame with timeout to allow checking _recording_running
                 frame = self._recording_queue.get(timeout=0.1)
                 
                 if frame is None:
                     # Sentinel value - stop signal
                     break
                 
-                if self._writer is not None:
-                    self._writer.write(frame)
-                    frames_written += 1
+                writer.write(frame)
+                frames_written += 1
                     
             except Empty:
-                # Timeout - just loop and check if still running
                 continue
             except Exception as e:
                 print(f"[RecorderThread] Error writing frame: {e}")
                 break
-        
+
+        writer.release()
         print(f"[RecorderThread] Recording encoder thread finished, wrote {frames_written} frames")
     
     def start_recording(self, slot: int, fps: float = 30.0, size: Tuple[int, int] = (1920, 1080)) -> bool:
@@ -211,21 +226,28 @@ class VideoRecorder:
         
         # Generate filename with timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"slot_{slot}_{timestamp}.avi"
+
+        # Codec / container selection driven by RECORDING_CODEC in config.py.
+        # Keys are the exact fourcc strings (case-sensitive for cv2).
+        _CODEC_CONTAINER = {
+            "MJPG": ".avi",
+            "FFV1": ".avi",
+            "mp4v": ".mp4",
+        }
+        # Match case-insensitively against the known keys, but keep the
+        # original casing for the fourcc (cv2 is case-sensitive here).
+        _lookup = {k.lower(): k for k in _CODEC_CONTAINER}
+        codec = _lookup.get(RECORDING_CODEC.lower(), "MJPG")
+        ext = _CODEC_CONTAINER[codec]
+        filename = f"slot_{slot}_{timestamp}{ext}"
         filepath = os.path.join(recordings_dir, filename)
-        
-        # Use FFV1 codec for lossless compression (or MJPG for near-lossless)
-        # FFV1 is lossless but slower, MJPG is faster but slightly lossy
-        # Using raw/uncompressed would be too large
-        fourcc = cv2.VideoWriter_fourcc(*'MJPG')  # Good quality, reasonable size
-        
-        self._writer = cv2.VideoWriter(filepath, fourcc, fps, size)
-        if not self._writer.isOpened():
-            print(f"Failed to create video writer for {filepath}")
-            self._writer = None
-            return False
-        
+        print(f"[Recorder] Codec: {codec}  container: {ext}  -> {filename}")
+
+        # Store params for the encoder thread - VideoWriter is created there,
+        # not here. On Windows, MJPG/mp4v use COM/GDI objects that are
+        # thread-affine: open() and write() must happen on the same thread.
         self._recording_path = filepath
+        self._recording_fourcc = codec
         self._recording_fps = fps
         self._recording_size = size
         self._status.state = RecorderState.RECORDING
@@ -288,17 +310,12 @@ class VideoRecorder:
         except Exception:
             pass
         
-        # Wait for thread to finish (with timeout)
+        # Wait for thread to finish (with timeout) - the thread owns and releases the writer
         if self._recording_thread is not None:
             self._recording_thread.join(timeout=5.0)
             if self._recording_thread.is_alive():
                 print("[Recorder] Warning: recording thread did not finish in time")
             self._recording_thread = None
-        
-        # Release writer after thread has stopped
-        if self._writer is not None:
-            self._writer.release()
-            self._writer = None
         
         frames = self._status.recording_frames
         self._status.state = RecorderState.LIVE

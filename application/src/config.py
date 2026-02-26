@@ -171,6 +171,26 @@ SHOW_BBOX = True                    # Draw bounding box
 SHOW_TRAILS = True                  # Draw motion trails
 SHOW_ID = True                      # Draw track ID
 
+# =============================================================================
+# VIDEO RECORDING
+# =============================================================================
+# Codec used when recording to a slot.
+#
+#   "MJPG"  – Motion JPEG, .avi container. Near-lossless at high quality,
+#              reasonable file size. Plays on Windows with K-Lite codec pack.
+#              Good balance of quality and compatibility. DEFAULT.
+#
+#   "mp4v"  – MPEG-4 Part 2, .mp4 container. Lossy, smaller files.
+#              Plays natively on Windows/macOS without any extra codec.
+#              Use if you need files that open anywhere out of the box.
+#
+#   "FFV1"  – Lossless, .avi container. No artifacts whatsoever.
+#              Large files (~1-2 GB/min at 1080p). Plays in VLC or the app,
+#              but NOT in Windows Media Player / Movies & TV natively.
+#              Best for archival or analysis where quality is critical.
+#
+RECORDING_CODEC = "MJPG"
+
 # Colors for different dancers (BGR)
 DANCER_COLORS = [
     (0, 255, 0),      # Green
