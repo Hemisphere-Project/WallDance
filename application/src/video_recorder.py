@@ -5,6 +5,7 @@ Manages 9 recording slots per project with timestamped history.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
@@ -75,6 +76,7 @@ class VideoRecorder:
         self._recording_queue: Queue[Optional[np.ndarray]] = Queue(maxsize=300)  # ~10 sec buffer at 30fps
         self._recording_thread: Optional[threading.Thread] = None
         self._recording_running: bool = False
+        self._actual_recording_fps: float = 0.0  # Measured real FPS (set by encoder thread)
         
         # Playback state
         self._reader: Optional[cv2.VideoCapture] = None
@@ -172,6 +174,7 @@ class VideoRecorder:
         """Background thread that writes frames from queue to disk."""
         print("[RecorderThread] Recording encoder thread started")
         frames_written = 0
+        rec_start_time = time.monotonic()
 
         # Create the VideoWriter on THIS thread - required on Windows where some
         # codecs (MJPG, mp4v) use COM/GDI objects that are thread-affine and
@@ -210,6 +213,15 @@ class VideoRecorder:
             except Exception as e:
                 print(f"[RecorderThread] Error writing frame: {e}")
                 break
+
+        # Measure actual FPS from wall-clock time
+        rec_elapsed = time.monotonic() - rec_start_time
+        if rec_elapsed > 0 and frames_written > 1:
+            self._actual_recording_fps = frames_written / rec_elapsed
+        else:
+            self._actual_recording_fps = self._recording_fps  # fallback
+        print(f"[RecorderThread] Actual recording FPS: {self._actual_recording_fps:.2f} "
+              f"({frames_written} frames in {rec_elapsed:.1f}s)")
 
         writer.release()
         print(f"[RecorderThread] Recording encoder thread finished, wrote {frames_written} frames")
@@ -325,6 +337,20 @@ class VideoRecorder:
             self._recording_thread = None
         
         frames = self._status.recording_frames
+
+        # Write sidecar .meta with measured FPS so playback uses the real
+        # frame rate rather than the nominal CAMERA_FPS baked into the container.
+        actual_fps = self._actual_recording_fps
+        if filepath and actual_fps > 0:
+            meta_path = filepath + ".meta"
+            try:
+                with open(meta_path, "w") as f:
+                    json.dump({"actual_fps": round(actual_fps, 3),
+                               "frames": frames}, f)
+                print(f"[Recorder] Saved sidecar: {meta_path} (fps={actual_fps:.2f})")
+            except Exception as e:
+                print(f"[Recorder] Warning: could not write meta file: {e}")
+
         self._status.state = RecorderState.LIVE
         self._status.current_slot = 0
         self._status.recording_frames = 0
@@ -422,7 +448,25 @@ class VideoRecorder:
             return False
         
         self._playback_path = filepath
-        self._playback_fps = self._reader.get(cv2.CAP_PROP_FPS) or 30.0
+
+        # Try to read actual FPS from sidecar .meta (written at recording
+        # time with the real measured frame rate).  Fall back to the FPS
+        # stored in the container header, which may be the nominal
+        # CAMERA_FPS rather than the true capture rate.
+        container_fps = self._reader.get(cv2.CAP_PROP_FPS) or 30.0
+        meta_path = filepath + ".meta"
+        sidecar_fps: Optional[float] = None
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, "r") as f:
+                    meta = json.load(f)
+                sidecar_fps = meta.get("actual_fps")
+                if sidecar_fps and sidecar_fps > 0:
+                    print(f"[Playback] Using sidecar FPS: {sidecar_fps:.2f} "
+                          f"(container says {container_fps:.2f})")
+            except Exception as e:
+                print(f"[Playback] Warning: could not read meta file: {e}")
+        self._playback_fps = sidecar_fps if (sidecar_fps and sidecar_fps > 0) else container_fps
         self._playback_speed = 1.0  # Reset speed on new playback
         
         self._status.state = RecorderState.PLAYING
