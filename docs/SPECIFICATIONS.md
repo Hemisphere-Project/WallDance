@@ -406,11 +406,11 @@ F = [1  0  dt  0   0.5dt²   0     ]
 
 | Address | Arguments | Type | Description |
 |---|---|---|---|
-| `/walldance/count` | `[n]` | int | Number of active dancers |
-| `/walldance/dancer/<id>/centroid` | `[x, y]` | float | Normalized 0-1 |
-| `/walldance/dancer/<id>/bbox` | `[x, y, w, h]` | float | Normalized 0-1 |
-| `/walldance/dancer/<id>/velocity` | `[vx, vy]` | float | Normalized per frame |
-| `/walldance/dancer/<id>/keypoints` | `[x0,y0,c0, ...]` | float | 51 values (17×3) |
+| `/walldance/count` | `[n, id0, id1, ...]` | int | Count + active track IDs |
+| `/walldance/dancer/centroid` | `[id, x, y]` | int, float | Normalized 0-1 |
+| `/walldance/dancer/bbox` | `[id, x, y, w, h]` | int, float | Normalized 0-1 |
+| `/walldance/dancer/velocity` | `[id, vx, vy]` | int, float | Normalized per frame |
+| `/walldance/dancer/keypoints` | `[id, x0,y0,c0, ...]` | int, float | 1 + 51 values (id + 17×3) |
 | `/walldance/clear` | `[1]` | int | Reset signal |
 
 **Coordinate System:**
@@ -1187,11 +1187,11 @@ oscdump 9000
 Expected output:
 
 ```
-/walldance/count i 2
-/walldance/dancer/1/centroid ff 0.350000 0.450000
-/walldance/dancer/1/bbox ffff 0.300000 0.400000 0.100000 0.200000
-/walldance/dancer/1/velocity ff 0.005000 -0.002000
-/walldance/dancer/1/keypoints fff... (51 values)
+/walldance/count ii 2 1
+/walldance/dancer/centroid if 1 0.350000 0.450000
+/walldance/dancer/bbox iffff 1 0.300000 0.400000 0.100000 0.200000
+/walldance/dancer/velocity iff 1 0.005000 -0.002000
+/walldance/dancer/keypoints ifff... 1 (51 float values)
 ```
 
 ---

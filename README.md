@@ -173,11 +173,11 @@ All coordinates are normalized (0–1) to the input frame.
 
 | Address | Arguments | Description |
 |---------|-----------|-------------|
-| `/walldance/count` | `[n]` | Number of tracked dancers |
-| `/walldance/dancer/<id>/centroid` | `[x, y]` | Dancer center |
-| `/walldance/dancer/<id>/bbox` | `[x, y, w, h]` | Bounding box |
-| `/walldance/dancer/<id>/velocity` | `[vx, vy]` | Velocity |
-| `/walldance/dancer/<id>/keypoints` | `[x0,y0,c0, ...]` | 17 keypoints (51 floats) |
+| `/walldance/count` | `[n, id0, id1, ...]` | Count + active track IDs |
+| `/walldance/dancer/centroid` | `[id, x, y]` | Dancer center |
+| `/walldance/dancer/bbox` | `[id, x, y, w, h]` | Bounding box |
+| `/walldance/dancer/velocity` | `[id, vx, vy]` | Velocity |
+| `/walldance/dancer/keypoints` | `[id, x0,y0,c0, ...]` | 17 keypoints (52 values) |
 | `/walldance/clear` | `[1]` | Tracker reset event |
 
 ## Troubleshooting

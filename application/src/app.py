@@ -1309,6 +1309,13 @@ class WallDanceApp:
     # ------------------------------------------------------------------
     # Recording callbacks
     # ------------------------------------------------------------------
+    def _set_camera_frame_callback(self, callback):
+        """Set frame callback on the ACTIVE camera (unified or legacy)."""
+        if self._use_unified_camera and self.unified_camera is not None:
+            self.unified_camera.set_frame_callback(callback)
+        else:
+            self.camera.set_frame_callback(callback)
+
     def _camera_frame_callback(self, frame: np.ndarray):
         """Called from camera thread for each captured frame. Used for recording."""
         if self.recorder.is_recording:
@@ -1316,7 +1323,7 @@ class WallDanceApp:
     
     def _cb_rec_live(self):
         """Switch to live camera mode."""
-        self.camera.set_frame_callback(None)  # Clear recording callback
+        self._set_camera_frame_callback(None)  # Clear recording callback
         self.recorder.go_live()
         self._pending_rec_slot = None
         self._rec_armed = False
@@ -1327,7 +1334,7 @@ class WallDanceApp:
         """Toggle recording mode."""
         if self.recorder.is_recording:
             # Stop recording - clear callback first
-            self.camera.set_frame_callback(None)
+            self._set_camera_frame_callback(None)
             filepath = self.recorder.stop_recording()
             self._pending_rec_slot = None
             self._rec_armed = False
@@ -1375,7 +1382,7 @@ class WallDanceApp:
             fps = CAMERA_FPS
             size = (self.camera.state.width, self.camera.state.height)
             # Wire up camera callback BEFORE starting recording
-            self.camera.set_frame_callback(self._camera_frame_callback)
+            self._set_camera_frame_callback(self._camera_frame_callback)
             if self.recorder.start_recording(slot, fps, size):
                 self._rec_armed = False
                 self._pending_rec_slot = slot
@@ -1383,7 +1390,7 @@ class WallDanceApp:
                 print(f"Recording to slot {slot}...")
             else:
                 print(f"Failed to start recording to slot {slot}")
-                self.camera.set_frame_callback(None)  # Remove callback on failure
+                self._set_camera_frame_callback(None)  # Remove callback on failure
                 self._rec_armed = False
                 self._update_recording_ui()
             return
@@ -2029,7 +2036,13 @@ class WallDanceApp:
                 # Read from video file
                 frame = self.recorder.read_frame()
                 if frame is None:
-                    # Playback ended or error
+                    # Decoder thread still starting up — wait for first frame
+                    if self.recorder.is_playback_active:
+                        if self.gui:
+                            self.gui.render_frame()
+                        time.sleep(0.01)
+                        continue
+                    # Decoder thread exited — playback truly ended
                     self.recorder.go_live()
                     self._update_recording_ui()
                     continue

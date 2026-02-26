@@ -150,11 +150,11 @@ OSC_IP = "127.0.0.1"                # Target IP address
 OSC_PORT = 9000                     # Target port
 
 # OSC message format:
-# /walldance/dancer/<id>/centroid    [x, y]           (normalized 0-1)
-# /walldance/dancer/<id>/bbox        [x, y, w, h]     (normalized 0-1)
-# /walldance/dancer/<id>/keypoints   [x0,y0,c0, ...]  (17 keypoints, normalized)
-# /walldance/dancer/<id>/velocity    [vx, vy]         (normalized per frame)
-# /walldance/count                   [n]              (number of tracked dancers)
+# /walldance/dancer/centroid    [id, x, y]           (normalized 0-1)
+# /walldance/dancer/bbox        [id, x, y, w, h]     (normalized 0-1)
+# /walldance/dancer/keypoints   [id, x0,y0,c0, ...]  (17 keypoints, normalized)
+# /walldance/dancer/velocity    [id, vx, vy]         (normalized per frame)
+# /walldance/count              [n, id0, id1, ...]   (count + active track IDs)
 
 # =============================================================================
 # VISUALIZATION
@@ -190,6 +190,11 @@ SHOW_ID = True                      # Draw track ID
 #              Best for archival or analysis where quality is critical.
 #
 RECORDING_CODEC = "MJPG"
+
+# MJPG quality (1-100). Only affects MJPG codec; ignored for FFV1/mp4v.
+# Default OpenCV is ~95 which causes visible artifacts in dark scenes.
+# 98-100 is near-lossless but produces larger files (~3-5× vs default).
+RECORDING_QUALITY = 100
 
 # Colors for different dancers (BGR)
 DANCER_COLORS = [

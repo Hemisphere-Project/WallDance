@@ -19,7 +19,7 @@ import cv2
 import numpy as np
 
 from config_store import PROJECTS_DIR, sanitize_project_name
-from config import RECORDING_CODEC
+from config import RECORDING_CODEC, RECORDING_QUALITY
 
 
 class RecorderState(Enum):
@@ -185,6 +185,12 @@ class VideoRecorder:
             print(f"[RecorderThread] ERROR: VideoWriter failed to open in encoder thread")
             return
 
+        # Set MJPG quality (1-100). Higher = less compression artifacts.
+        # Only effective for MJPG codec; silently ignored by others.
+        if self._recording_fourcc == "MJPG":
+            writer.set(cv2.VIDEOWRITER_PROP_QUALITY, RECORDING_QUALITY)
+            print(f"[RecorderThread] MJPG quality set to {RECORDING_QUALITY}")
+
         print(f"[RecorderThread] VideoWriter opened: {self._recording_fourcc} -> {self._recording_path}")
 
         while self._recording_running:
@@ -336,7 +342,8 @@ class VideoRecorder:
         
         frame_interval = 1.0 / self._playback_fps
         start_time = time.time()
-        frame_count = 0
+        # Frame 0 was pre-decoded in start_playback(); continue from frame 1
+        frame_count = 1
         paused_time = 0.0
         last_speed = self._playback_speed
         
@@ -386,7 +393,7 @@ class VideoRecorder:
             
             frame_count += 1
         
-        # self._playback_running = False
+        self._playback_running = False
         print("Playback decoder thread stopped")
     
     def start_playback(self, slot: int, recording_index: int = 0) -> bool:
@@ -425,14 +432,36 @@ class VideoRecorder:
         # Start decoder thread
         self._playback_running = True
         self._playback_paused = False
-        self._frame_buffer = None
         self._playback_frame_count = 0
+
+        # Pre-decode first frame on THIS thread so _frame_buffer is
+        # immediately non-None.  Eliminates the race where the main loop
+        # sees frame_buffer=None before the decoder thread wakes up.
+        ret, first_frame = self._reader.read()
+        if not ret or first_frame is None:
+            print(f"Failed to decode first frame of {filepath}")
+            self._reader.release()
+            self._reader = None
+            self._playback_running = False
+            self._status.state = RecorderState.LIVE
+            self._status.current_slot = 0
+            return False
+
+        self._frame_buffer = first_frame.copy()
+
         self._playback_thread = threading.Thread(target=self._playback_decoder_thread, daemon=True)
         self._playback_thread.start()
         
         print(f"Started playback from slot {slot}: {filepath} ({self._status.playback_total} frames @ {self._playback_fps:.1f} FPS)")
         return True
     
+    @property
+    def is_playback_active(self) -> bool:
+        """True if the playback decoder thread is still running."""
+        # Use the running flag rather than thread.is_alive() to avoid
+        # the brief window between thread.start() and thread bootstrap.
+        return self._playback_running
+
     def read_frame(self, respect_fps: bool = True) -> Optional[np.ndarray]:
         """Get the latest decoded frame from the buffer.
         
