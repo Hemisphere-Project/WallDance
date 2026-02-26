@@ -43,7 +43,6 @@ from config import (
     PERSON_HEIGHT_MAX_RATIO,
     PERSON_HEIGHT_MIN_RATIO,
     PERSON_HEIGHT_PX,
-    PREVIEW_DISPLAY_SCALE,
     PREVIEW_ENABLED,
     PREVIEW_RENDER_SCALE,
     SHOW_BBOX,
@@ -85,7 +84,6 @@ except ImportError:
 
 @dataclass
 class PreviewGeometry:
-    display_scale: float = PREVIEW_DISPLAY_SCALE
     render_scale: float = PREVIEW_RENDER_SCALE
     width: int = int(CAMERA_WIDTH * PREVIEW_RENDER_SCALE)
     height: int = int(CAMERA_HEIGHT * PREVIEW_RENDER_SCALE)
@@ -178,14 +176,11 @@ class WallDanceApp:
         self.preview_fps_cap = False
         self.preview_stride = 1
         self.preview = PreviewGeometry(
-            display_scale=PREVIEW_DISPLAY_SCALE,
             render_scale=PREVIEW_RENDER_SCALE,
             width=int(CAMERA_WIDTH * PREVIEW_RENDER_SCALE),
             height=int(CAMERA_HEIGHT * PREVIEW_RENDER_SCALE),
         )
         self._pending_preview_resize = False
-        self._display_width = 0
-        self._display_height = 0
         self._last_preview_upload_time = 0.0
 
         # Visualization flags
@@ -238,14 +233,15 @@ class WallDanceApp:
         dpi_scale = get_display_scale()
         cam_w = state.width if state.width > 0 else CAMERA_WIDTH
         cam_h = state.height if state.height > 0 else CAMERA_HEIGHT
-        video_w = int(cam_w * PREVIEW_DISPLAY_SCALE * dpi_scale)
-        video_h = int(cam_h * PREVIEW_DISPLAY_SCALE * dpi_scale)
+        # Initial estimates – will be recomputed by gui._recompute_layout()
+        video_w = int(cam_w * 0.5 * dpi_scale)
+        video_h = int(cam_h * 0.5 * dpi_scale)
         
         return {
             "video_width": video_w,
             "video_height": video_h,
-            "camera_width": state.width,
-            "camera_height": state.height,
+            "camera_width": cam_w,
+            "camera_height": cam_h,
             "camera_source": state.source,
             "camera_sources": all_sources if all_sources else ["0"],
             "model": self.current_model_name,
@@ -280,8 +276,6 @@ class WallDanceApp:
             "ids_exposure_us": self.ids_exposure_us,
             "texture_width": self.preview.width,
             "texture_height": self.preview.height,
-            "display_width": int(cam_w * self.preview.display_scale),
-            "display_height": int(cam_h * self.preview.display_scale),
             "camera_running": self.camera.state.is_open,
         }
 
@@ -641,9 +635,9 @@ class WallDanceApp:
             self.preview_fps_cap = config["preview_fps_cap"]
             self.gui and self.gui.sync_checkbox("preview_cap", self.preview_fps_cap)
         if "preview_scale" in config:
-            scale = config["preview_scale"]
-            self._apply_preview_scale(scale, force=True)
-            self.gui and self.gui.sync_slider("preview_scale", scale)
+            # Legacy config value – render scale is now auto-computed from layout.
+            # Just store it; actual scale will be overridden by next layout recompute.
+            pass
 
         # IDS crop ratio
         if "ids_ratio" in config:
@@ -867,10 +861,9 @@ class WallDanceApp:
             self.preview.height = int(self.unified_camera.height * self.preview.render_scale)
             if self.processor:
                 self.processor.set_preview_size(self.preview.width, self.preview.height)
-            # Compute display dimensions from actual camera size
-            dpi_scale = get_display_scale()
-            self._display_width = int(self.unified_camera.width * self.preview.display_scale * dpi_scale)
-            self._display_height = int(self.unified_camera.height * self.preview.display_scale * dpi_scale)
+            # Notify GUI of new camera dimensions – layout will recompute
+            if self.gui:
+                self.gui.set_camera_dimensions(self.unified_camera.width, self.unified_camera.height)
             self._pending_preview_resize = True
         else:
             self.camera.state.is_open = False
@@ -903,9 +896,9 @@ class WallDanceApp:
             self.preview.height = int(state.height * self.preview.render_scale)
             if self.processor:
                 self.processor.set_preview_size(self.preview.width, self.preview.height)
-            dpi_scale = get_display_scale()
-            self._display_width = int(state.width * self.preview.display_scale * dpi_scale)
-            self._display_height = int(state.height * self.preview.display_scale * dpi_scale)
+            # Notify GUI of new camera dimensions – layout will recompute
+            if self.gui:
+                self.gui.set_camera_dimensions(state.width, state.height)
             self._pending_preview_resize = True
             print(f"Camera {source} opened: {state.width}x{state.height}")
         else:
@@ -1209,15 +1202,12 @@ class WallDanceApp:
         if self._use_unified_camera and self.unified_camera is not None:
             ok = self.unified_camera.update_crop_ratio(ratio)
             if ok:
-                # Propagate new resolution to legacy state, preview geometry
+                # Propagate new resolution to legacy state
                 self.camera.state.width = self.unified_camera.width
                 self.camera.state.height = self.unified_camera.height
-                dpi_scale = get_display_scale()
-                self.preview.width = int(self.unified_camera.width * self.preview.render_scale)
-                self.preview.height = int(self.unified_camera.height * self.preview.render_scale)
-                self._display_width = int(self.unified_camera.width * self.preview.display_scale * dpi_scale)
-                self._display_height = int(self.unified_camera.height * self.preview.display_scale * dpi_scale)
-                self._pending_preview_resize = True
+                # Notify GUI of new dimensions – layout auto-recomputes
+                if self.gui:
+                    self.gui.set_camera_dimensions(self.unified_camera.width, self.unified_camera.height)
                 if self.processor:
                     self.processor.set_preview_size(self.preview.width, self.preview.height)
                 print(f"[IDS Ratio] {ratio:.2f} → {self.unified_camera.width}x{self.unified_camera.height}")
@@ -1303,8 +1293,10 @@ class WallDanceApp:
         if not force and abs(value - self.preview.render_scale) < 1e-3:
             return
         self.preview.render_scale = value
-        self.preview.width = int(self.camera.state.width * self.preview.render_scale)
-        self.preview.height = int(self.camera.state.height * self.preview.render_scale)
+        cam_w = self.camera.state.width if self.camera.state.width > 0 else CAMERA_WIDTH
+        cam_h = self.camera.state.height if self.camera.state.height > 0 else CAMERA_HEIGHT
+        self.preview.width = int(cam_w * self.preview.render_scale)
+        self.preview.height = int(cam_h * self.preview.render_scale)
         self._pending_preview_resize = True
         # Sync to GPU pipeline if active (exact dimensions for GPU resize)
         if self.processor:
@@ -1314,8 +1306,8 @@ class WallDanceApp:
         )
 
     def _cb_preview_scale_change(self, value: float):
-        print(f"[GUI] Preview scale slider changed to {value} (camera: {self.camera.state.width}x{self.camera.state.height})")
-        self._apply_preview_scale(value, force=False)
+        # Manual slider removed; kept for backward compat with configs
+        pass
 
     # ------------------------------------------------------------------
     # Recording callbacks
@@ -1915,12 +1907,9 @@ class WallDanceApp:
         print("Initializing GUI...")
         self.gui = WallDanceGUI(config=self._get_gui_config(), callbacks=self._get_gui_callbacks())
         dpi_scale = get_display_scale()
-        # Use actual camera dims for window sizing (may be cropped, e.g. 1528x1528)
-        cam_w = self.camera.state.width if self.camera.state.width > 0 else CAMERA_WIDTH
-        cam_h = self.camera.state.height if self.camera.state.height > 0 else CAMERA_HEIGHT
-        # Add space for controls: control_panel(320) + video_padding(20) + borders(~10)
-        window_width = int((cam_w * self.preview.display_scale + 375) * dpi_scale)
-        window_height = max(int((cam_h * self.preview.display_scale) * dpi_scale), int(800 * dpi_scale))
+        # Fixed viewport size – layout engine fits the preview to whatever space is available
+        window_width = int(1340 * dpi_scale)
+        window_height = int(850 * dpi_scale)
         self.gui.setup(width=window_width, height=window_height)
         with dpg.handler_registry():
             dpg.add_key_press_handler(callback=self._handle_key)
@@ -2053,11 +2042,21 @@ class WallDanceApp:
                 continue
                 
             if self._pending_preview_resize and self.gui:
-                disp_w = getattr(self, '_display_width', 0)
-                disp_h = getattr(self, '_display_height', 0)
-                self.gui.resize_preview(self.preview.width, self.preview.height,
-                                        display_width=disp_w, display_height=disp_h)
+                self.gui.resize_preview(self.preview.width, self.preview.height)
                 self._pending_preview_resize = False
+
+            # Process layout changes (viewport resize or camera dimension change)
+            if self.gui and self.gui._layout_dirty:
+                self.gui._layout_dirty = False
+                new_scale = self.gui._fitted_render_scale
+                cam_w = self.gui._camera_width or CAMERA_WIDTH
+                cam_h = self.gui._camera_height or CAMERA_HEIGHT
+                self.preview.render_scale = new_scale
+                self.preview.width = max(1, int(cam_w * new_scale))
+                self.preview.height = max(1, int(cam_h * new_scale))
+                if self.processor:
+                    self.processor.set_preview_size(self.preview.width, self.preview.height)
+                self._pending_preview_resize = True
 
             # Get frame from appropriate source
             frame = None
