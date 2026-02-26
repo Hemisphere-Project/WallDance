@@ -10,7 +10,7 @@ from typing import Any, Callable, Dict, Optional
 import dearpygui.dearpygui as dpg
 import numpy as np
 
-from gui_builder import build_ui, create_texture, setup_theme, load_icon_font, SystemState
+from gui_builder import build_ui, create_texture, setup_theme, load_icon_font, SystemState, scaled, CONTROL_PANEL_WIDTH
 from gui_icons import Icons
 
 # GPU monitoring (optional - works with NVIDIA GPUs)
@@ -209,12 +209,25 @@ class WallDanceGUI:
         self.texture_registry = None
         self.camera_running = config.get('camera_running', True)
         
-        # Display dimensions (on-screen area)
+        # Camera native dimensions (for aspect ratio computation)
+        self._camera_width = config.get('camera_width', 1920) or 1920
+        self._camera_height = config.get('camera_height', 1080) or 1080
+
+        # Display dimensions (on-screen area) - will be recomputed by _recompute_layout
         self.video_width = config.get('video_width', 960)
         self.video_height = config.get('video_height', 540)
         # Texture/render dimensions (actual resolution uploaded)
         self.texture_width = config.get('texture_width', self.video_width)
         self.texture_height = config.get('texture_height', self.video_height)
+
+        # Layout state – computed by _recompute_layout()
+        self._middle_height = self.video_height + scaled(8)
+        self._fitted_render_scale = min(
+            self.video_width / max(self._camera_width, 1),
+            self.video_height / max(self._camera_height, 1),
+            1.0,
+        )
+        self._layout_dirty = False
         
         # Stats
         self.fps = 0
@@ -321,8 +334,6 @@ class WallDanceGUI:
         if dpg.does_item_exist("preview_tex_text"):
             color = (200, 200, 200) if enabled else (80, 80, 80)
             dpg.configure_item("preview_tex_text", color=color)
-        if dpg.does_item_exist("adv_preview_scale_slider"):
-            dpg.configure_item("adv_preview_scale_slider", enabled=enabled)
         if dpg.does_item_exist("adv_preview_cap_checkbox"):
             dpg.configure_item("adv_preview_cap_checkbox", enabled=enabled)
     
@@ -736,62 +747,122 @@ class WallDanceGUI:
     
     # === Public Methods ===
 
+    # === Layout recomputation ===
+
+    def set_camera_dimensions(self, width: int, height: int):
+        """Update camera native dimensions and recompute layout."""
+        if width > 0 and height > 0:
+            self._camera_width = width
+            self._camera_height = height
+            self._recompute_layout()
+
+    def _on_viewport_resize(self, sender=None, app_data=None):
+        """Called by DearPyGui when the viewport is resized."""
+        self._recompute_layout()
+
+    def _recompute_layout(self):
+        """Recompute layout dimensions based on viewport size and camera aspect ratio.
+
+        Updates:
+        - video_panel / control_panel heights (middle section)
+        - video_image display size (fitted to available area)
+        - _fitted_render_scale (optimal texture scale, capped at 1.0)
+        - _layout_dirty flag (so app.py can sync pipeline)
+        """
+        try:
+            vp_w = dpg.get_viewport_width()
+            vp_h = dpg.get_viewport_height()
+        except Exception:
+            return  # Viewport not ready
+        if vp_w <= 0 or vp_h <= 0:
+            return
+
+        ctrl_w = scaled(CONTROL_PANEL_WIDTH)
+        h_pad = scaled(28)       # left(6) + right(6) + window padding + gap
+        v_overhead = scaled(155)  # top bar + bottom bar + window padding + spacing
+
+        mid_h = max(scaled(200), vp_h - v_overhead)
+        vid_w = max(scaled(200), vp_w - ctrl_w - h_pad)
+        vid_h = mid_h - scaled(4)  # internal margin
+
+        # Fit camera image within available area keeping aspect ratio
+        cam_w = self._camera_width or 1920
+        cam_h = self._camera_height or 1080
+        cam_aspect = cam_w / cam_h
+
+        if vid_w / max(vid_h, 1) > cam_aspect:
+            img_h = vid_h
+            img_w = int(vid_h * cam_aspect)
+        else:
+            img_w = vid_w
+            img_h = int(vid_w / cam_aspect)
+
+        img_w = max(img_w, 100)
+        img_h = max(img_h, 100)
+
+        # Apply to DPG items
+        if dpg.does_item_exist("video_panel"):
+            dpg.configure_item("video_panel", width=vid_w, height=mid_h)
+        if dpg.does_item_exist("control_panel"):
+            dpg.configure_item("control_panel", height=mid_h)
+        if dpg.does_item_exist("video_image"):
+            dpg.configure_item("video_image", width=img_w, height=img_h)
+
+        self.video_width = img_w
+        self.video_height = img_h
+        self._middle_height = mid_h
+
+        # Compute optimal render scale (capped at 1.0)
+        self._fitted_render_scale = min(img_w / cam_w, img_h / cam_h, 1.0)
+        self._layout_dirty = True
+
+        # Update the read-only scale indicator in Preview section
+        if dpg.does_item_exist("preview_autofit_scale_text"):
+            dpg.set_value("preview_autofit_scale_text", f"{self._fitted_render_scale:.2f}x")
+
     def resize_preview(self, width: int, height: int,
                        display_width: int = 0, display_height: int = 0):
-        """Resize preview texture and image when preview scale changes.
+        """Resize preview texture when render resolution changes.
+
+        Display dimensions are managed by _recompute_layout(), so the
+        display_width/display_height args are accepted for backward
+        compatibility but no longer resize the video panel.
 
         Args:
             width, height: texture (render) dimensions.
-            display_width, display_height: on-screen image size.
-                If 0, keep existing display size.
+            display_width, display_height: (ignored – kept for compat)
         """
         texture_changed = (width != self.texture_width or height != self.texture_height)
-        display_changed = (display_width > 0 and display_height > 0 and
-                           (display_width != self.video_width or display_height != self.video_height))
 
-        if not texture_changed and not display_changed:
+        if not texture_changed:
             return
 
-        print(f"GUI resize_preview: tex {self.texture_width}x{self.texture_height} -> {width}x{height}"
-              f"  disp {self.video_width}x{self.video_height} -> {display_width or self.video_width}x{display_height or self.video_height}")
+        print(f"GUI resize_preview: tex {self.texture_width}x{self.texture_height} -> {width}x{height}")
 
-        # --- Update display dimensions ---
-        if display_changed:
-            self.video_width = display_width
-            self.video_height = display_height
-            # Resize the video_panel child window to match new aspect ratio
-            if dpg.does_item_exist("video_panel"):
-                from gui_builder import scaled
-                dpg.configure_item("video_panel", width=self.video_width + scaled(20))
+        # --- Recreate texture ---
+        if dpg.does_item_exist(self.frame_texture_tag):
+            dpg.delete_item(self.frame_texture_tag)
 
-        # --- Recreate texture if render size changed ---
-        if texture_changed:
-            # Delete old texture to avoid alias collisions
-            if dpg.does_item_exist(self.frame_texture_tag):
-                dpg.delete_item(self.frame_texture_tag)
+        import time
+        self.frame_texture_tag = f"video_texture_{int(time.time()*1000)}"
 
-            # Create new unique texture tag
-            import time
-            self.frame_texture_tag = f"video_texture_{int(time.time()*1000)}"
+        self.texture_width = width
+        self.texture_height = height
+        self.frame_buffer = np.zeros(
+            self.texture_height * self.texture_width * 4,
+            dtype=np.float32,
+        )
 
-            self.texture_width = width
-            self.texture_height = height
-            self.frame_buffer = np.zeros(
-                self.texture_height * self.texture_width * 4,
-                dtype=np.float32
+        with dpg.texture_registry(show=False):
+            self.frame_texture_id = dpg.add_raw_texture(
+                width=self.texture_width,
+                height=self.texture_height,
+                default_value=self.frame_buffer,
+                format=dpg.mvFormat_Float_rgba,
+                tag=self.frame_texture_tag,
             )
 
-            # Recreate texture inside registry
-            with dpg.texture_registry(show=False):
-                self.frame_texture_id = dpg.add_raw_texture(
-                    width=self.texture_width,
-                    height=self.texture_height,
-                    default_value=self.frame_buffer,
-                    format=dpg.mvFormat_Float_rgba,
-                    tag=self.frame_texture_tag
-                )
-
-        # Update image widget (display size + texture binding)
+        # Re-bind texture to image widget (display size unchanged)
         if dpg.does_item_exist("video_image"):
             dpg.configure_item(
                 "video_image",
@@ -1035,7 +1106,6 @@ class WallDanceGUI:
             'gamma': ['adv_gamma_slider'],
             'brightness_threshold': ['adv_brightness_threshold_slider'],
             'denoise_strength': ['adv_denoise_slider'],
-            'preview_scale': ['adv_preview_scale_slider'],
             'max_persons': ['max_persons_slider'],
             'person_height': ['person_height_slider'],
             'tracker_distance': ['tracker_dist_slider'],
@@ -1681,7 +1751,10 @@ class WallDanceGUI:
         )
         dpg.setup_dearpygui()
         dpg.set_primary_window("main_window", True)
-    
+        dpg.set_viewport_resize_callback(self._on_viewport_resize)
+        # Compute initial layout now that viewport dimensions are known
+        self._recompute_layout()
+
     def start(self):
         """Start the GUI (blocking)."""
         dpg.show_viewport()

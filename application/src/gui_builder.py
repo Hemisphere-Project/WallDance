@@ -43,6 +43,9 @@ STATE_LABELS = {
 # Global DPI scale factor - set by setup_theme based on gui._dpi_scale
 _dpi_scale = 1.0
 
+# Layout constants (in unscaled pixels, use scaled() for actual values)
+CONTROL_PANEL_WIDTH = 320
+
 
 def scaled(value: int) -> int:
     """Scale a pixel value by the DPI factor."""
@@ -268,15 +271,25 @@ def create_texture(gui: Any):
 
 
 def build_ui(gui: Any):
-    """Build the main UI layout."""
+    """Build the main UI layout with fixed regions.
+
+    Layout:
+    - Top bar: project/config, system badges (full width, fixed height)
+    - Middle: video preview (flexible) + control panel (fixed width)
+    - Bottom bar: SOURCE/playback, STANDBY/RUN, perf stats (full width)
+
+    The middle section height is computed to fill the space between top
+    and bottom.  The preview image is scaled to fit the available area.
+    """
     with dpg.window(tag="main_window", label="WallDance Control Panel"):
         build_top_bar(gui)
-        dpg.add_spacer(height=1)
-        with dpg.group(horizontal=True):
+        dpg.add_spacer(height=scaled(2))
+        with dpg.group(horizontal=True, tag="middle_group"):
             dpg.add_spacer(width=scaled(6))  # Left padding
             build_video_panel(gui)
             build_control_panel(gui)
-            dpg.add_spacer(width=scaled(6))  # Right padding to match left
+            dpg.add_spacer(width=scaled(6))  # Right padding
+        build_bottom_bar(gui)
 
 
 def build_top_bar(gui: Any):
@@ -384,177 +397,179 @@ def build_top_bar(gui: Any):
 
 
 def build_video_panel(gui: Any):
-    """Video preview with SOURCE controls."""
-    with dpg.child_window(width=gui.video_width + scaled(20), autosize_y=True, border=False, tag="video_panel"):
-        dpg.add_image(gui.frame_texture_tag, width=gui.video_width, height=gui.video_height, tag="video_image")
-        dpg.add_separator()
-        
-        # SOURCE row - unified source control with dynamic right section
-        # Layout: SOURCE | LIVE/REC + slots | status/playback controls
-        with dpg.table(
-            header_row=False,
-            policy=dpg.mvTable_SizingStretchProp,
-            borders_innerH=True,
-            borders_innerV=True,
-            borders_outerH=True,
-            borders_outerV=True,
-            pad_outerX=True,
-            row_background=True,
-        ):
-            dpg.add_table_column(init_width_or_weight=0.6)   # SOURCE label
-            dpg.add_table_column(init_width_or_weight=3.0)   # LIVE/REC + slots
-            dpg.add_table_column(init_width_or_weight=2.4)   # Status/controls
-            with dpg.table_row():
-                dpg.add_text("SOURCE", color=(120, 200, 140))
-                
-                # Center: LIVE/REC buttons + slot buttons
-                with dpg.group(horizontal=True):
-                    live_btn = dpg.add_button(
-                        label="LIVE",
-                        tag="rec_live_btn",
-                        width=scaled(45),
-                        callback=gui._on_rec_live,
+    """Video preview area - just the image, dynamically sized."""
+    with dpg.child_window(
+        width=gui.video_width + scaled(8),
+        height=gui._middle_height,
+        border=False,
+        no_scrollbar=True,
+        tag="video_panel",
+    ):
+        dpg.add_image(
+            gui.frame_texture_tag,
+            width=gui.video_width,
+            height=gui.video_height,
+            tag="video_image",
+        )
+
+
+def build_bottom_bar(gui: Any):
+    """Bottom bar: SOURCE/playback controls, state buttons, and performance stats.
+
+    Always at the bottom of the window, fixed height.
+    """
+    dpg.add_separator()
+
+    # SOURCE + STANDBY/RUN in a single row
+    with dpg.table(
+        header_row=False,
+        policy=dpg.mvTable_SizingStretchProp,
+        borders_innerH=True,
+        borders_innerV=True,
+        borders_outerH=True,
+        borders_outerV=True,
+        pad_outerX=True,
+        row_background=True,
+        tag="bottom_source_table",
+    ):
+        dpg.add_table_column(init_width_or_weight=0.4)   # SOURCE label
+        dpg.add_table_column(init_width_or_weight=2.8)   # LIVE/REC + slots
+        dpg.add_table_column(init_width_or_weight=2.0)   # Status/controls
+        dpg.add_table_column(init_width_or_weight=0.0, width_fixed=True, width_stretch=False)  # STANDBY/RUN
+        with dpg.table_row():
+            dpg.add_text("SOURCE", color=(120, 200, 140))
+
+            # LIVE/REC buttons + slot buttons
+            with dpg.group(horizontal=True):
+                live_btn = dpg.add_button(
+                    label="LIVE",
+                    tag="rec_live_btn",
+                    width=scaled(45),
+                    callback=gui._on_rec_live,
+                )
+                dpg.bind_item_theme(live_btn, gui._rec_live_active_theme)
+                rec_btn = dpg.add_button(
+                    label="REC",
+                    tag="rec_rec_btn",
+                    width=scaled(45),
+                    callback=gui._on_rec_toggle,
+                )
+                dpg.bind_item_theme(rec_btn, gui._rec_btn_theme)
+                dpg.add_spacer(width=scaled(4))
+                for slot in range(1, 11):
+                    slot_btn = dpg.add_button(
+                        label=str(slot),
+                        tag=f"rec_slot_{slot}_btn",
+                        width=scaled(23),
+                        callback=lambda s, a, u: gui._on_rec_slot_click(u),
+                        user_data=slot,
                     )
-                    dpg.bind_item_theme(live_btn, gui._rec_live_active_theme)
-                    rec_btn = dpg.add_button(
-                        label="REC",
-                        tag="rec_rec_btn",
-                        width=scaled(45),
-                        callback=gui._on_rec_toggle,
+                    dpg.bind_item_theme(slot_btn, gui._slot_empty_theme)
+
+            # Dynamic status / playback controls
+            with dpg.group(horizontal=False):
+                with dpg.group(horizontal=True, tag="source_status_group"):
+                    dpg.add_text("", tag="rec_status_text", color=(80, 200, 80))
+                    dpg.add_text("", tag="rec_frame_counter", color=(255, 100, 100))
+                with dpg.group(horizontal=True, tag="source_playback_group", show=False):
+                    dpg.add_text("", tag="rec_playback_progress", color=(100, 180, 220))
+                    dpg.add_combo(
+                        items=["x0.25", "x0.5", "x0.75", "x1.0", "x1.5", "x2.0", "x4.0"],
+                        tag="rec_speed_combo",
+                        default_value="x1.0",
+                        width=scaled(65),
+                        callback=gui._on_playback_speed_change,
                     )
-                    dpg.bind_item_theme(rec_btn, gui._rec_btn_theme)
-                    dpg.add_spacer(width=scaled(4))
-                    for slot in range(1, 11):
-                        slot_btn = dpg.add_button(
-                            label=str(slot),
-                            tag=f"rec_slot_{slot}_btn",
-                            width=scaled(23),
-                            callback=lambda s, a, u: gui._on_rec_slot_click(u),
-                            user_data=slot,
-                        )
-                        dpg.bind_item_theme(slot_btn, gui._slot_empty_theme)
-                
-                # Right: Dynamic status area (changes based on mode)
-                with dpg.group(horizontal=False):
-                    # LIVE/REC status (shown when not playing)
-                    with dpg.group(horizontal=True, tag="source_status_group"):
-                        dpg.add_text("", tag="rec_status_text", color=(80, 200, 80))
-                        dpg.add_text("", tag="rec_frame_counter", color=(255, 100, 100))
-                    
-                    # Playback controls (shown when playing)
-                    with dpg.group(horizontal=True, tag="source_playback_group", show=False):
-                        dpg.add_text("", tag="rec_playback_progress", color=(100, 180, 220))
-                        dpg.add_combo(
-                            items=["x0.25", "x0.5", "x0.75", "x1.0", "x1.5", "x2.0", "x4.0"],
-                            tag="rec_speed_combo",
-                            default_value="x1.0",
-                            width=scaled(65),
-                            callback=gui._on_playback_speed_change,
-                        )
-                        pause_btn = dpg.add_button(
-                            label=Icons.PAUSE,
-                            tag="rec_pause_btn",
-                            width=scaled(24),
-                            callback=gui._on_playback_pause,
-                        )
-                        if gui._icon_font:
-                            dpg.bind_item_font(pause_btn, gui._icon_font)
-                        prev_btn = dpg.add_button(
-                            label=Icons.STEP_BACKWARD,
-                            tag="rec_prev_frame_btn",
-                            width=scaled(24),
-                            callback=gui._on_playback_prev_frame,
-                        )
-                        if gui._icon_font:
-                            dpg.bind_item_font(prev_btn, gui._icon_font)
-                        next_btn = dpg.add_button(
-                            label=Icons.STEP_FORWARD,
-                            tag="rec_next_frame_btn",
-                            width=scaled(24),
-                            callback=gui._on_playback_next_frame,
-                        )
-                        if gui._icon_font:
-                            dpg.bind_item_font(next_btn, gui._icon_font)
-        
-        # Spacer to push STANDBY/RUN to bottom
-        dpg.add_spacer(height=-1)
-        
-        # Extra space above buttons
-        dpg.add_spacer(height=scaled(12))
-        
-        # STANDBY / RUN buttons at bottom, centered
-        # Active state = highlighted color, inactive = greyed out
-        with dpg.group(horizontal=True):
-            # Calculate centering offset
-            btn_width = scaled(100)
-            total_btns_width = btn_width * 2 + scaled(10)  # 2 buttons + gap
-            offset = (gui.video_width - total_btns_width) // 2
-            dpg.add_spacer(width=offset)
-            
-            standby_btn = dpg.add_button(
-                label="STANDBY",
-                tag="state_standby_btn",
-                width=btn_width,
-                height=scaled(32),
-                callback=gui._on_state_standby,
-            )
-            dpg.bind_item_theme(standby_btn, gui._btn_standby_theme)  # Start inactive
-            with dpg.tooltip(standby_btn):
-                dpg.add_text("STANDBY: Preview + enhancement, no YOLO, no OSC")
-            
-            dpg.add_spacer(width=scaled(10))
-            
-            run_btn = dpg.add_button(
-                label="RUN",
-                tag="state_run_btn",
-                width=btn_width,
-                height=scaled(32),
-                callback=gui._on_state_run,
-            )
-            dpg.bind_item_theme(run_btn, gui._btn_run_active_theme)  # Start active
-            with dpg.tooltip(run_btn):
-                dpg.add_text("RUN: Full YOLO inference + OSC output")
-        
-        # Stats footer - compact line at bottom of video panel
-        dpg.add_spacer(height=scaled(130))
-        with dpg.group(horizontal=True):
-            dpg.add_text("Dancers:", color=(100, 100, 100))
-            dpg.add_text("0", tag="dancers_text", color=(140, 180, 140))
-            dpg.add_spacer(width=scaled(6))
-            dpg.add_text("In:", color=(100, 100, 100))
-            dpg.add_text("--", tag="input_res_text", color=(140, 180, 140))
-            dpg.add_spacer(width=scaled(4))
-            dpg.add_text("Prev:", color=(80, 80, 80))
-            dpg.add_text("--", tag="preview_tex_text", color=(90, 90, 90))
-            dpg.add_spacer(width=scaled(6))
-            dpg.add_text("Bright:", color=(100, 100, 100))
-            dpg.add_text("--", tag="brightness_text", color=(120, 120, 120))
-            dpg.add_spacer(width=scaled(8))
-            dpg.add_text("|", color=(60, 60, 60))
-            dpg.add_spacer(width=scaled(8))
-            dpg.add_text("FPS:", color=(100, 100, 100))
-            dpg.add_text("--", tag="fps_text", color=(140, 180, 140))
-            dpg.add_spacer(width=scaled(6))
-            dpg.add_text("Enh:", color=(80, 80, 80))
-            dpg.add_text("--", tag="time_enhance", color=(100, 100, 100))
-            dpg.add_spacer(width=scaled(3))
-            dpg.add_text("YOLO:", color=(80, 80, 80))
-            dpg.add_text("--", tag="time_yolo", color=(100, 100, 100))
-            dpg.add_spacer(width=scaled(3))
-            dpg.add_text("Trk:", color=(80, 80, 80))
-            dpg.add_text("--", tag="time_track", color=(100, 100, 100))
-            dpg.add_spacer(width=scaled(3))
-            dpg.add_text("Prev:", color=(80, 80, 80))
-            dpg.add_text("--", tag="time_preview", color=(100, 100, 100))
-            dpg.add_spacer(width=scaled(6))
-            dpg.add_text("Tot:", color=(100, 100, 100))
-            dpg.add_text("--", tag="time_total", color=(140, 180, 140))
-        
-        # Hidden tags (for code compatibility)
-        with dpg.group(show=False):
-            dpg.add_text("", tag="path_enhance")
-            dpg.add_text("", tag="path_yolo")
-            dpg.add_text("", tag="path_track")
+                    pause_btn = dpg.add_button(
+                        label=Icons.PAUSE,
+                        tag="rec_pause_btn",
+                        width=scaled(24),
+                        callback=gui._on_playback_pause,
+                    )
+                    if gui._icon_font:
+                        dpg.bind_item_font(pause_btn, gui._icon_font)
+                    prev_btn = dpg.add_button(
+                        label=Icons.STEP_BACKWARD,
+                        tag="rec_prev_frame_btn",
+                        width=scaled(24),
+                        callback=gui._on_playback_prev_frame,
+                    )
+                    if gui._icon_font:
+                        dpg.bind_item_font(prev_btn, gui._icon_font)
+                    next_btn = dpg.add_button(
+                        label=Icons.STEP_FORWARD,
+                        tag="rec_next_frame_btn",
+                        width=scaled(24),
+                        callback=gui._on_playback_next_frame,
+                    )
+                    if gui._icon_font:
+                        dpg.bind_item_font(next_btn, gui._icon_font)
+
+            # STANDBY / RUN buttons
+            with dpg.group(horizontal=True):
+                standby_btn = dpg.add_button(
+                    label="STANDBY",
+                    tag="state_standby_btn",
+                    width=scaled(85),
+                    height=scaled(28),
+                    callback=gui._on_state_standby,
+                )
+                dpg.bind_item_theme(standby_btn, gui._btn_standby_theme)
+                with dpg.tooltip(standby_btn):
+                    dpg.add_text("STANDBY: Preview + enhancement, no YOLO, no OSC")
+                dpg.add_spacer(width=scaled(6))
+                run_btn = dpg.add_button(
+                    label="RUN",
+                    tag="state_run_btn",
+                    width=scaled(85),
+                    height=scaled(28),
+                    callback=gui._on_state_run,
+                )
+                dpg.bind_item_theme(run_btn, gui._btn_run_active_theme)
+                with dpg.tooltip(run_btn):
+                    dpg.add_text("RUN: Full YOLO inference + OSC output")
+
+    dpg.add_spacer(height=scaled(3))
+
+    # Performance stats row
+    with dpg.group(horizontal=True, tag="bottom_stats_group"):
+        dpg.add_text("Dancers:", color=(100, 100, 100))
+        dpg.add_text("0", tag="dancers_text", color=(140, 180, 140))
+        dpg.add_spacer(width=scaled(6))
+        dpg.add_text("In:", color=(100, 100, 100))
+        dpg.add_text("--", tag="input_res_text", color=(140, 180, 140))
+        dpg.add_spacer(width=scaled(4))
+        dpg.add_text("Prev:", color=(80, 80, 80))
+        dpg.add_text("--", tag="preview_tex_text", color=(90, 90, 90))
+        dpg.add_spacer(width=scaled(6))
+        dpg.add_text("Bright:", color=(100, 100, 100))
+        dpg.add_text("--", tag="brightness_text", color=(120, 120, 120))
+        dpg.add_spacer(width=scaled(8))
+        dpg.add_text("|", color=(60, 60, 60))
+        dpg.add_spacer(width=scaled(8))
+        dpg.add_text("FPS:", color=(100, 100, 100))
+        dpg.add_text("--", tag="fps_text", color=(140, 180, 140))
+        dpg.add_spacer(width=scaled(6))
+        dpg.add_text("Enh:", color=(80, 80, 80))
+        dpg.add_text("--", tag="time_enhance", color=(100, 100, 100))
+        dpg.add_spacer(width=scaled(3))
+        dpg.add_text("YOLO:", color=(80, 80, 80))
+        dpg.add_text("--", tag="time_yolo", color=(100, 100, 100))
+        dpg.add_spacer(width=scaled(3))
+        dpg.add_text("Trk:", color=(80, 80, 80))
+        dpg.add_text("--", tag="time_track", color=(100, 100, 100))
+        dpg.add_spacer(width=scaled(3))
+        dpg.add_text("Prev:", color=(80, 80, 80))
+        dpg.add_text("--", tag="time_preview", color=(100, 100, 100))
+        dpg.add_spacer(width=scaled(6))
+        dpg.add_text("Tot:", color=(100, 100, 100))
+        dpg.add_text("--", tag="time_total", color=(140, 180, 140))
+
+    # Hidden tags (for code compatibility)
+    with dpg.group(show=False):
+        dpg.add_text("", tag="path_enhance")
+        dpg.add_text("", tag="path_yolo")
+        dpg.add_text("", tag="path_track")
 
 
 def build_control_panel(gui: Any):
@@ -565,7 +580,7 @@ def build_control_panel(gui: Any):
     2. Visualization - S/K/B/T/I toggles
     3. Input/Enhancement/Model/Preview/Tracker - collapsed, mutually exclusive
     """
-    with dpg.child_window(width=scaled(320), autosize_y=True, border=False, tag="control_panel"):
+    with dpg.child_window(width=scaled(CONTROL_PANEL_WIDTH), height=gui._middle_height, border=False, tag="control_panel"):
         # === SHOW SETTINGS (Visible, per-venue) ===
         build_show_settings(gui)
         dpg.add_spacer(height=scaled(8))
@@ -955,7 +970,7 @@ def build_input_section(gui: Any):
 
 
 def build_preview_section(gui: Any):
-    """Preview settings - open by default."""
+    """Preview settings."""
     with dpg.collapsing_header(label="Preview", default_open=False, tag="section_preview", closable=False):
         with dpg.group(horizontal=True):
             dpg.add_checkbox(
@@ -970,13 +985,7 @@ def build_preview_section(gui: Any):
                 default_value=gui.config.get("preview_fps_cap", True),
                 callback=gui._on_preview_cap_toggle,
             )
-        
-        dpg.add_text("Preview Scale", color=(180, 180, 180))
-        dpg.add_slider_float(
-            tag="adv_preview_scale_slider",
-            default_value=gui.config.get("preview_scale", 0.5),
-            min_value=0.05,
-            max_value=1.0,
-            format="%.2f",
-            callback=gui._on_preview_scale_change,
-        )
+        dpg.add_spacer(height=scaled(4))
+        with dpg.group(horizontal=True):
+            dpg.add_text("Auto-fit scale:", color=(120, 120, 120))
+            dpg.add_text("--", tag="preview_autofit_scale_text", color=(140, 180, 140))
