@@ -133,7 +133,6 @@ class GpuFrame:
                 "preview_download_total": 0.0,
                 "preview_download_sync": 0.0,
                 "preview_download_numpy": 0.0,
-                "preview_download_cast": 0.0,
             }
             return self._cpu_cache
         
@@ -154,13 +153,11 @@ class GpuFrame:
         t2 = time.perf_counter()
         arr = cpu_tensor.numpy()
         t3 = time.perf_counter()
-        t4 = t3  # No CPU-side cast needed anymore
 
         self._last_download_timing = {
-            "preview_download_total": (t4 - t0) * 1000.0,
+            "preview_download_total": (t3 - t0) * 1000.0,
             "preview_download_sync": (t2 - t1) * 1000.0,
             "preview_download_numpy": (t3 - t2) * 1000.0,
-            "preview_download_cast": (t4 - t3) * 1000.0,
         }
         self._cpu_cache = arr
         return arr
@@ -700,16 +697,6 @@ class GpuPipeline:
             tensor = F.pad(tensor, (pad_x, pad_right, pad_y, pad_bottom), value=0.5)  # Gray padding
         
         return tensor, letterbox_info
-    
-    @property
-    def enhancer_brightness(self) -> float:
-        """Get last computed brightness value."""
-        return self._enhancer.last_brightness
-    
-    @property
-    def enhancer_used_gpu(self) -> bool:
-        """Check if last enhancement used GPU."""
-        return self._enhancer.last_used_gpu
 
 
 # =============================================================================

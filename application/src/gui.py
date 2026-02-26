@@ -254,7 +254,7 @@ class WallDanceGUI:
             "section_input", "section_enhancement", "section_model",
             "section_preview", "section_tracker", "section_osc"
         ]
-        self._last_open_section = None  # Track which section was open last frame
+        self._last_open_section = "section_input"  # Input section starts open
         
         # Set initial grey state for disabled rows
         self._update_preview_row_state(self.config.get('preview_enabled', True))
@@ -997,17 +997,15 @@ class WallDanceGUI:
     
     def sync_checkbox(self, name: str, value: bool):
         """Sync checkbox state (when changed via keyboard or config load)."""
-        # Map to both video panel (tbl_) and control panel (adv_) tags
         tag_map = {
-            # Control panel (adv_) and video panel (tbl_) duplicates
-            'enhance': ['adv_enhance_checkbox', 'tbl_enhance_checkbox'],
-            'enhance_lite': ['adv_enhance_lite_checkbox', 'tbl_enhance_lite_checkbox'],
-            'enhance_force': ['adv_enhance_force_checkbox', 'tbl_enhance_force_checkbox'],
+            'enhance': ['adv_enhance_checkbox'],
+            'enhance_lite': ['adv_enhance_lite_checkbox'],
+            'enhance_force': ['adv_enhance_force_checkbox'],
             'greyscale': ['adv_greyscale_checkbox'],
-            'preview': ['adv_preview_checkbox', 'tbl_preview_checkbox'],
-            'preview_cap': ['adv_preview_cap_checkbox', 'tbl_preview_cap_checkbox'],
-            'fp16': ['adv_fp16_checkbox', 'tbl_fp16_checkbox'],
-            'trt': ['adv_trt_checkbox', 'tbl_trt_checkbox'],
+            'preview': ['adv_preview_checkbox'],
+            'preview_cap': ['adv_preview_cap_checkbox'],
+            'fp16': ['adv_fp16_checkbox'],
+            'trt': ['adv_trt_checkbox'],
             'osc': ['osc_checkbox'],
         }
         # Visualization toggles - update toolbar button themes instead of checkboxes
@@ -1027,9 +1025,8 @@ class WallDanceGUI:
         if name == 'preview':
             self._update_preview_row_state(value)
         elif name == 'enhance':
-            # Check both possible tag locations
             lite_val = False
-            for tag in ['adv_enhance_lite_checkbox', 'tbl_enhance_lite_checkbox']:
+            for tag in ['adv_enhance_lite_checkbox']:
                 if dpg.does_item_exist(tag):
                     lite_val = dpg.get_value(tag)
                     break
@@ -1037,15 +1034,14 @@ class WallDanceGUI:
     
     def sync_slider(self, name: str, value: float):
         """Sync slider state (when changed via keyboard or config load)."""
-        # Map to both video panel (tbl_) and control panel (adv_/show_) tags
         tag_map = {
-            'confidence': ['show_conf_slider', 'tbl_conf_slider'],
-            'clahe': ['adv_clahe_slider', 'tbl_clahe_slider'],
-            'gamma': ['adv_gamma_slider', 'tbl_gamma_slider'],
-            'brightness_threshold': ['adv_brightness_threshold_slider', 'tbl_brightness_threshold_slider'],
-            'denoise_strength': ['adv_denoise_slider', 'tbl_denoise_slider'],
-            'preview_scale': ['adv_preview_scale_slider', 'tbl_preview_scale_slider'],
-            'frame_skip': ['adv_frame_skip_slider', 'tbl_frame_skip_slider'],
+            'confidence': ['show_conf_slider'],
+            'clahe': ['adv_clahe_slider'],
+            'gamma': ['adv_gamma_slider'],
+            'brightness_threshold': ['adv_brightness_threshold_slider'],
+            'denoise_strength': ['adv_denoise_slider'],
+            'preview_scale': ['adv_preview_scale_slider'],
+            'frame_skip': ['adv_frame_skip_slider'],
             'max_persons': ['max_persons_slider'],
             'person_height': ['person_height_slider'],
             'tracker_distance': ['tracker_dist_slider'],
@@ -1060,11 +1056,10 @@ class WallDanceGUI:
     
     def sync_combo(self, name: str, value: str):
         """Sync combo box state."""
-        # Map to both video panel (tbl_) and control panel (adv_) tags
         tag_map = {
-            'model': ['adv_model_combo', 'tbl_model_combo'],
-            'imgsz': ['adv_imgsz_combo', 'tbl_imgsz_combo'],
-            'camera': ['adv_camera_combo', 'tbl_camera_combo'],
+            'model': ['adv_model_combo'],
+            'imgsz': ['adv_imgsz_combo'],
+            'camera': ['adv_camera_combo'],
         }
         if name in tag_map:
             for tag in tag_map[name]:
@@ -1073,7 +1068,7 @@ class WallDanceGUI:
     
     def update_model_dropdown(self, model_name: str):
         """Update model dropdown to show current model."""
-        for tag in ["adv_model_combo", "tbl_model_combo"]:
+        for tag in ["adv_model_combo"]:
             if dpg.does_item_exist(tag):
                 dpg.set_value(tag, model_name)
     
@@ -1097,7 +1092,7 @@ class WallDanceGUI:
         Args:
             enabled: True to check, False to uncheck
         """
-        for tag in ["adv_trt_checkbox", "tbl_trt_checkbox"]:
+        for tag in ["adv_trt_checkbox"]:
             if dpg.does_item_exist(tag):
                 dpg.set_value(tag, enabled)
     
@@ -1172,8 +1167,8 @@ class WallDanceGUI:
             else:
                 display_items.append(src)
         
-        # Update both video panel and control panel camera combos
-        for combo_tag in ["adv_camera_combo", "tbl_camera_combo"]:
+        # Update camera combo
+        for combo_tag in ["adv_camera_combo"]:
             if dpg.does_item_exist(combo_tag):
                 dpg.configure_item(combo_tag, items=display_items)
                 # Set current value
@@ -1183,17 +1178,17 @@ class WallDanceGUI:
                     dpg.set_value(combo_tag, current)
 
         # Disable toggle if current source is unavailable
-        if dpg.does_item_exist("camera_toggle_btn"):
+        if dpg.does_item_exist("adv_camera_toggle_btn"):
             disabled = current in unavailable
-            dpg.configure_item("camera_toggle_btn", enabled=not disabled)
+            dpg.configure_item("adv_camera_toggle_btn", enabled=not disabled)
             if disabled:
-                dpg.configure_item("camera_toggle_btn", label="Start")
+                dpg.configure_item("adv_camera_toggle_btn", label="Start")
 
     def update_camera_status(self, running: bool, source: str = ""):
         """Update camera toggle label and badge color."""
         self.camera_running = running
-        if dpg.does_item_exist("camera_toggle_btn"):
-            dpg.configure_item("camera_toggle_btn", label="Stop" if running else "Start")
+        if dpg.does_item_exist("adv_camera_toggle_btn"):
+            dpg.configure_item("adv_camera_toggle_btn", label="Stop" if running else "Start")
         cam_color = (120, 255, 120) if running else (255, 120, 120)
         if dpg.does_item_exist("badge_cam"):
             dpg.set_value("badge_cam", "ON" if running else "OFF")

@@ -165,18 +165,6 @@ class FrameProcessor:
         """Check if GPU path is currently active."""
         return self._gpu_path_active
 
-    def force_cpu_pipeline(self):
-        """Force CPU processing path even when GPU pipeline is available.
-
-        YOLO still runs on GPU (Ultralytics handles upload internally).
-        Enhancement and preview rendering stay on CPU.
-        Used by Strategy B to eliminate PCIe contention with USB3 cameras.
-        """
-        if self._gpu_path_active:
-            self._gpu_path_active = False
-            # Keep _gpu_pipeline reference alive for potential re-enable
-            print("[Pipeline] CPU-first mode: enhancement + preview on CPU, YOLO on GPU")
-
     @property
     def gpu_fallback_reason(self) -> Optional[str]:
         """Return CUDA/GPU fallback reason when GPU path was disabled."""
@@ -680,6 +668,3 @@ class FrameProcessor:
     @property
     def timing(self) -> Dict[str, float]:
         return self._timing
-
-    def get_brightness(self) -> float:
-        return self.enhancer.get_status().get("brightness", 0.0)

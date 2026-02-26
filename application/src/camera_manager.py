@@ -273,9 +273,3 @@ class CameraManager:
             self.cap.release()
             self.cap = None
         self.state.is_open = False
-
-    def mark_unavailable(self, source: str) -> None:
-        if source not in self.state.unavailable:
-            self.state.unavailable.append(source)
-        self.state.unavailable.sort()
-        self.state.is_open = False

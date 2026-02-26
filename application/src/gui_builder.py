@@ -720,7 +720,7 @@ def build_visualization_toolbar(gui: Any):
 
 def build_tracker_section(gui: Any):
     """Tracker settings - open by default."""
-    with dpg.collapsing_header(label="Tracker", default_open=True, tag="section_tracker", closable=False):
+    with dpg.collapsing_header(label="Tracker", default_open=False, tag="section_tracker", closable=False):
         dpg.add_text("Distance Threshold")
         dist_slider = dpg.add_slider_int(
             tag="tracker_dist_slider",
@@ -760,7 +760,7 @@ def build_tracker_section(gui: Any):
 
 def build_osc_section(gui: Any):
     """OSC output settings - open by default."""
-    with dpg.collapsing_header(label="OSC", default_open=True, tag="section_osc", closable=False):
+    with dpg.collapsing_header(label="OSC", default_open=False, tag="section_osc", closable=False):
         with dpg.group(horizontal=True):
             osc_chk = dpg.add_checkbox(
                 label="Enable OSC",
@@ -794,7 +794,7 @@ def build_osc_section(gui: Any):
 
 def build_model_section(gui: Any):
     """Model settings - open by default."""
-    with dpg.collapsing_header(label="Model", default_open=True, tag="section_model", closable=False):
+    with dpg.collapsing_header(label="Model", default_open=False, tag="section_model", closable=False):
         dpg.add_text("YOLO Model", color=(180, 180, 180))
         with dpg.group(horizontal=True):
             dpg.add_combo(
@@ -838,7 +838,7 @@ def build_model_section(gui: Any):
 
 def build_enhancement_section(gui: Any):
     """Enhancement settings - open by default."""
-    with dpg.collapsing_header(label="Enhancement", default_open=True, tag="section_enhancement", closable=False):
+    with dpg.collapsing_header(label="Enhancement", default_open=False, tag="section_enhancement", closable=False):
         with dpg.group(horizontal=True):
             dpg.add_checkbox(
                 label="Enable",
@@ -956,7 +956,7 @@ def build_input_section(gui: Any):
 
 def build_preview_section(gui: Any):
     """Preview settings - open by default."""
-    with dpg.collapsing_header(label="Preview", default_open=True, tag="section_preview", closable=False):
+    with dpg.collapsing_header(label="Preview", default_open=False, tag="section_preview", closable=False):
         with dpg.group(horizontal=True):
             dpg.add_checkbox(
                 label="Enable Preview",

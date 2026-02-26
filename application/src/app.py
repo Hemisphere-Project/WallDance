@@ -23,7 +23,6 @@ import numpy as np
 # Force unbuffered output so we see logs before crashes
 sys.stdout.reconfigure(line_buffering=True)
 sys.stderr.reconfigure(line_buffering=True)
-from ultralytics import YOLO
 
 from camera_manager import CameraManager
 from config import (
@@ -628,14 +627,10 @@ class WallDanceApp:
             self.preview_enabled = config["preview_enabled"]
             self.gui and self.gui.sync_checkbox("preview", config["preview_enabled"])
         if "preview_fps_cap" in config:
-            # Always force cap ON to reduce PCIe contention —
-            # DearPyGui texture upload is always CPU→GPU PCIe.
-            self.preview_fps_cap = True
+            self.preview_fps_cap = config["preview_fps_cap"]
             self.gui and self.gui.sync_checkbox("preview_cap", self.preview_fps_cap)
         if "preview_scale" in config:
             scale = config["preview_scale"]
-            # Cap preview scale: smaller texture = less PCIe traffic
-            scale = min(scale, PREVIEW_RENDER_SCALE)
             self._apply_preview_scale(scale, force=True)
             self.gui and self.gui.sync_slider("preview_scale", scale)
 
@@ -2011,9 +2006,8 @@ class WallDanceApp:
                 try:
                     _cam_t0 = time.perf_counter()
                     if self._use_unified_camera and self.unified_camera is not None:
-                        use_ids_gpu_direct = IDS_USE_GPU_DIRECT
                         if (
-                            use_ids_gpu_direct
+                            IDS_USE_GPU_DIRECT
                             and self._is_ids_camera_active()
                             and self.processor.gpu_path_active
                             and self._model_loaded

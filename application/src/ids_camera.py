@@ -261,7 +261,6 @@ class IDSCamera:
     _library_initialized = False
     _library_refcount = 0
     _gentl_checked = False
-    _gentl_paths_cached: Optional[str] = None
 
     @classmethod
     def _ensure_gentl_path(cls) -> None:
@@ -310,7 +309,6 @@ class IDSCamera:
         if cti_dirs:
             value = ":".join(sorted(cti_dirs))
             os.environ["GENICAM_GENTL64_PATH"] = value
-            cls._gentl_paths_cached = value
             print(f"[IDSCamera] GENICAM_GENTL64_PATH set to: {value}")
         else:
             print(
@@ -1147,32 +1145,12 @@ class IDSCamera:
                 if raw.size == pixels:
                     return raw.reshape(height, width).copy()
 
-            # Unknown format — try IPL Convert as fallback.
-            return IDSCamera._ipl_convert_fallback(raw, width, height)
+            # Unknown format
+            print(f"[IDSCamera] Unknown pixel format: {pf_name}")
+            return None
 
         except Exception as e:
             print(f"[IDSCamera] Unpack error ({pf_name}): {e}")
-            return None
-
-    @staticmethod
-    def _ipl_convert_fallback(
-        raw: np.ndarray, width: int, height: int
-    ) -> Optional[np.ndarray]:
-        """Last-resort fallback: use IPL to convert from raw bytes."""
-        try:
-            # We don't know the format for sure, so this may fail.
-            print("[IDSCamera] WARNING: falling back to IPL Convert")
-            converter = ids_peak_ipl.ImageConverter()
-            # Try Mono10g40IDS format ID
-            pf_id = 1073741839  # Mono10g40IDS
-            img = ids_peak_ipl.Image.CreateFromSizeAndPythonBuffer(
-                pf_id, bytes(raw), width, height
-            )
-            converted = converter.Convert(img, ids_peak_ipl.PixelFormatName_Mono8)
-            data = converted.get_numpy_1D()
-            return data.reshape(height, width).copy()
-        except Exception as e:
-            print(f"[IDSCamera] IPL fallback failed: {e}")
             return None
 
     # ------------------------------------------------------------------
