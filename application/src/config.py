@@ -87,9 +87,9 @@ IDS_MAX_FPS = 20
 # The U3-34E0XCP native sensor is 2688×1528; budget of 1528*1528 ≈ 2.3 MP.
 # The actual W×H is derived from IDS_CROP_PIXELS and IDS_RATIO.
 # Set to 0 to disable on-device crop (full sensor).
-IDS_CROP_PIXELS = 1528 * 1528
+# IDS_CROP_PIXELS =  1528 * 1528 # SAFE
+IDS_CROP_PIXELS =  2000 * 1528 # SEEMS STABLE
 # Aspect ratio (W/H) of the on-device crop. Adjustable at runtime via GUI.
-# 1.0 = square (1528×1528), 1.76 = sensor native (2688×1528).
 # Range: 0.5 – 2.0.  Values outside sensor bounds are clamped automatically.
 IDS_RATIO = 1.0
 # Load camera settings from a stored UserSet on startup.

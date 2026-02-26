@@ -386,17 +386,9 @@ class WallDanceGUI:
         if 'on_ids_gain_change' in self.callbacks:
             self.callbacks['on_ids_gain_change'](float(value))
 
-    def _on_ids_gain_auto_toggle(self, sender, value):
-        if 'on_ids_gain_auto_toggle' in self.callbacks:
-            self.callbacks['on_ids_gain_auto_toggle'](bool(value))
-
     def _on_ids_exposure_change(self, sender, value):
         if 'on_ids_exposure_change' in self.callbacks:
             self.callbacks['on_ids_exposure_change'](float(value))
-
-    def _on_ids_exposure_auto_toggle(self, sender, value):
-        if 'on_ids_exposure_auto_toggle' in self.callbacks:
-            self.callbacks['on_ids_exposure_auto_toggle'](bool(value))
 
     def _on_camera_change(self, sender, value):
         if 'on_camera_change' in self.callbacks:
@@ -856,6 +848,7 @@ class WallDanceGUI:
         osc_ip: str = "",
         osc_port: int = 0,
         camera_running: bool = True,
+        camera_type: str = "",
         enhance_bypassed: bool = False,
         gpu_fallback_reason: str = "",
     ):
@@ -896,6 +889,17 @@ class WallDanceGUI:
         if dpg.does_item_exist("badge_cam"):
             dpg.set_value("badge_cam", "ON" if camera_running else "OFF")
             dpg.configure_item("badge_cam", color=cam_color)
+            
+        if dpg.does_item_exist("badge_cam_type"):
+            if camera_type == "IDS_PEAK":
+                dpg.set_value("badge_cam_type", "[IDS]")
+                dpg.configure_item("badge_cam_type", color=(100, 200, 255))
+            elif camera_type == "OPENCV":
+                dpg.set_value("badge_cam_type", "[CV]")
+                dpg.configure_item("badge_cam_type", color=(255, 200, 100))
+            else:
+                dpg.set_value("badge_cam_type", "[--]")
+                dpg.configure_item("badge_cam_type", color=(150, 150, 150))
 
         osc_color = (120, 255, 120) if osc_enabled else (255, 120, 120)
         if dpg.does_item_exist("badge_osc"):
@@ -998,8 +1002,6 @@ class WallDanceGUI:
             'fp16': ['adv_fp16_checkbox'],
             'trt': ['adv_trt_checkbox'],
             'osc': ['osc_checkbox'],
-            'ids_gain_auto': ['adv_ids_gain_auto_checkbox'],
-            'ids_exposure_auto': ['adv_ids_exposure_auto_checkbox'],
         }
         # Visualization toggles - update toolbar button themes instead of checkboxes
         vis_toggles = ['skeleton', 'keypoints', 'bbox', 'trails', 'ids']

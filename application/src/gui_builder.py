@@ -351,6 +351,10 @@ def build_top_bar(gui: Any):
                 cam_badge = dpg.add_text("OFF", tag="badge_cam", color=(255, 120, 120))
                 with dpg.tooltip(cam_badge):
                     dpg.add_text("Camera status: ON (green) or OFF (red)")
+                dpg.add_spacer(width=scaled(3))
+                cam_type_badge = dpg.add_text("[--]", tag="badge_cam_type", color=(150, 150, 150))
+                with dpg.tooltip(cam_type_badge):
+                    dpg.add_text("Camera Source Type:\n[IDS] = IDS Peak SDK\n[CV] = OpenCV Fallback")
                 dpg.add_spacer(width=scaled(6))
                 dpg.add_text("OSC:", color=(180, 180, 180))
                 osc_badge = dpg.add_text("OFF", tag="badge_osc", color=(255, 120, 120))
@@ -929,39 +933,25 @@ def build_input_section(gui: Any):
 
         dpg.add_spacer(height=scaled(4))
         dpg.add_text("IDS Gain (dB)", color=(180, 180, 180))
-        with dpg.group(horizontal=True):
-            dpg.add_slider_float(
-                tag="adv_ids_gain_slider",
-                default_value=gui.config.get("ids_gain_db", 0.0),
-                min_value=0.0,
-                max_value=48.0,
-                format="%.1f",
-                callback=gui._on_ids_gain_change,
-            )
-            dpg.add_checkbox(
-                label="Auto",
-                tag="adv_ids_gain_auto_checkbox",
-                default_value=gui.config.get("ids_gain_auto", True),
-                callback=gui._on_ids_gain_auto_toggle,
-            )
+        dpg.add_slider_float(
+            tag="adv_ids_gain_slider",
+            default_value=gui.config.get("ids_gain_db", 0.0),
+            min_value=0.0,
+            max_value=48.0,
+            format="%.1f",
+            callback=gui._on_ids_gain_change,
+        )
 
         dpg.add_spacer(height=scaled(4))
         dpg.add_text("IDS Exposure (\u00b5s)", color=(180, 180, 180))
-        with dpg.group(horizontal=True):
-            dpg.add_slider_float(
-                tag="adv_ids_exposure_slider",
-                default_value=gui.config.get("ids_exposure_us", 10000.0),
-                min_value=100.0,
-                max_value=100000.0,
-                format="%.0f",
-                callback=gui._on_ids_exposure_change,
-            )
-            dpg.add_checkbox(
-                label="Auto",
-                tag="adv_ids_exposure_auto_checkbox",
-                default_value=gui.config.get("ids_exposure_auto", True),
-                callback=gui._on_ids_exposure_auto_toggle,
-            )
+        dpg.add_slider_float(
+            tag="adv_ids_exposure_slider",
+            default_value=gui.config.get("ids_exposure_us", 10000.0),
+            min_value=100.0,
+            max_value=100000.0,
+            format="%.0f",
+            callback=gui._on_ids_exposure_change,
+        )
 
 
 def build_preview_section(gui: Any):

@@ -132,9 +132,7 @@ class WallDanceApp:
         self._use_unified_camera = UNIFIED_CAMERA_AVAILABLE
         self.ids_ratio: float = IDS_RATIO  # Current IDS crop ratio (W/H)
         self.ids_gain_db: float = 0.0        # Current IDS gain (dB), 0 = default
-        self.ids_gain_auto: bool = True      # IDS auto gain
         self.ids_exposure_us: float = 10000.0  # Current IDS exposure (µs)
-        self.ids_exposure_auto: bool = True    # IDS auto exposure
         if self._use_unified_camera:
             self.unified_camera = UnifiedCamera(prefer_ids=True)
             self.camera = CameraManager()  # Keep for compatibility with camera state
@@ -279,9 +277,7 @@ class WallDanceApp:
             "preview_scale": self.preview.render_scale,
             "ids_ratio": self.ids_ratio,
             "ids_gain_db": self.ids_gain_db,
-            "ids_gain_auto": self.ids_gain_auto,
             "ids_exposure_us": self.ids_exposure_us,
-            "ids_exposure_auto": self.ids_exposure_auto,
             "texture_width": self.preview.width,
             "texture_height": self.preview.height,
             "display_width": int(cam_w * self.preview.display_scale),
@@ -306,9 +302,7 @@ class WallDanceApp:
             "on_fp16_toggle": self._cb_fp16_toggle,
             "on_ids_ratio_change": self._cb_ids_ratio_change,
             "on_ids_gain_change": self._cb_ids_gain_change,
-            "on_ids_gain_auto_toggle": self._cb_ids_gain_auto_toggle,
             "on_ids_exposure_change": self._cb_ids_exposure_change,
-            "on_ids_exposure_auto_toggle": self._cb_ids_exposure_auto_toggle,
             "on_camera_change": self._cb_camera_change,
             "on_camera_toggle": self._cb_camera_toggle,
             "on_camera_refresh": self._cb_camera_refresh,
@@ -380,9 +374,7 @@ class WallDanceApp:
             "preview_scale": self.preview.render_scale,
             "ids_ratio": self.ids_ratio,
             "ids_gain_db": self.ids_gain_db,
-            "ids_gain_auto": self.ids_gain_auto,
             "ids_exposure_us": self.ids_exposure_us,
-            "ids_exposure_auto": self.ids_exposure_auto,
         }
 
     def _update_topbar_state(self, selected_filepath: Optional[str] = None):
@@ -532,6 +524,17 @@ class WallDanceApp:
             all_sources = list(set(self.camera.state.available + self.camera.state.unavailable))
             all_sources.sort()
             self.gui.update_camera_sources(all_sources, self.camera.state.source, self.camera.state.unavailable)
+            
+            cam_type_str = ""
+            if self._use_unified_camera and self.unified_camera is not None and self.unified_camera.is_open:
+                if self.unified_camera.source_type == CameraSource.IDS_PEAK:
+                    cam_type_str = "IDS_PEAK"
+                else:
+                    cam_type_str = "OPENCV"
+            elif self.camera.state.is_open:
+                cam_type_str = "OPENCV"
+            self.gui.config['camera_type'] = cam_type_str
+            
             self.gui.update_camera_status(self.camera.state.is_open, self.camera.state.source)
         
         # 15. Resume processing
@@ -649,18 +652,12 @@ class WallDanceApp:
             self.gui and self.gui.sync_slider("ids_ratio", ratio)
 
         # IDS gain
-        if "ids_gain_auto" in config:
-            self._cb_ids_gain_auto_toggle(config["ids_gain_auto"])
-            self.gui and self.gui.sync_checkbox("ids_gain_auto", config["ids_gain_auto"])
-        if "ids_gain_db" in config and not config.get("ids_gain_auto", True):
+        if "ids_gain_db" in config:
             self._cb_ids_gain_change(config["ids_gain_db"])
             self.gui and self.gui.sync_slider("ids_gain_db", config["ids_gain_db"])
 
         # IDS exposure
-        if "ids_exposure_auto" in config:
-            self._cb_ids_exposure_auto_toggle(config["ids_exposure_auto"])
-            self.gui and self.gui.sync_checkbox("ids_exposure_auto", config["ids_exposure_auto"])
-        if "ids_exposure_us" in config and not config.get("ids_exposure_auto", True):
+        if "ids_exposure_us" in config:
             self._cb_ids_exposure_change(config["ids_exposure_us"])
             self.gui and self.gui.sync_slider("ids_exposure_us", config["ids_exposure_us"])
 
@@ -842,14 +839,17 @@ class WallDanceApp:
             source_type = self.unified_camera.source_type
             if source_type == CameraSource.IDS_PEAK:
                 print(f"[Camera] IDS camera opened: {self.unified_camera.width}x{self.unified_camera.height}")
+                cam_type_str = "IDS_PEAK"
             else:
                 print(f"[Camera] OpenCV camera opened: {self.unified_camera.width}x{self.unified_camera.height}")
+                cam_type_str = "OPENCV"
             
             if self.gui:
                 all_sources = list(set(self.camera.state.available + [source]))
                 all_sources.sort()
                 self.gui.update_camera_sources(all_sources, source, self.camera.state.unavailable)
                 self.gui.update_camera_status(True, source)
+                self.gui.config['camera_type'] = cam_type_str
             
             # Update preview geometry
             self.preview.width = int(self.unified_camera.width * self.preview.render_scale)
@@ -871,6 +871,7 @@ class WallDanceApp:
                 all_sources.sort()
                 self.gui.update_camera_sources(all_sources, source, self.camera.state.unavailable)
                 self.gui.update_camera_status(False, source)
+                self.gui.config['camera_type'] = ""
             print(f"[Camera] Failed to open: {source}")
         
         return opened
@@ -885,6 +886,7 @@ class WallDanceApp:
                 all_sources.sort()
                 self.gui.update_camera_sources(all_sources, source, state.unavailable)
                 self.gui.update_camera_status(True, source)
+                self.gui.config['camera_type'] = "OPENCV"
             # Update preview geometry to match actual camera size
             self.preview.width = int(state.width * self.preview.render_scale)
             self.preview.height = int(state.height * self.preview.render_scale)
@@ -901,6 +903,7 @@ class WallDanceApp:
                 all_sources.sort()
                 self.gui.update_camera_sources(all_sources, source, state.unavailable)
                 self.gui.update_camera_status(False, source)
+                self.gui.config['camera_type'] = ""
             print(f"Camera {source} unavailable")
         return opened
     
@@ -2352,6 +2355,7 @@ class WallDanceApp:
                 osc_ip=self.osc_ip,
                 osc_port=self.osc_port,
                 camera_running=self.camera.state.is_open,
+                camera_type=self.gui.config.get('camera_type', ''),
                 enhance_bypassed=enhance_bypassed,
                 gpu_fallback_reason=self.processor.gpu_fallback_reason or "",
             )
