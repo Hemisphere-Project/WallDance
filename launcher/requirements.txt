@@ -1,0 +1,5 @@
+customtkinter
+dulwich
+pyinstaller
+winshell
+pypiwin32
