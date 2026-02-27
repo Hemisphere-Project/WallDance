@@ -605,20 +605,16 @@ def build_control_panel(gui: Any):
     """Right-side control stack - mutually exclusive dropdowns.
     
     Structure:
-    1. Show Settings - per-venue adjustments (default open)
-    2. Visualization - S/K/B/T/I toggles
-    3. Input/Enhancement/Model/Preview/Tracker - collapsed, mutually exclusive
+    1. Input
+    2. Background
+    3. Enhancement
+    4. Model
+    5. Detection (person height, confidence, max dancers, tracker max age)
+    6. Preview
+    7. OSC
+    8. View toolbar (S/K/B/T/I toggles)
     """
     with dpg.child_window(width=scaled(CONTROL_PANEL_WIDTH), height=gui._middle_height, border=False, tag="control_panel"):
-        # === SHOW SETTINGS (Visible, per-venue) ===
-        build_show_settings(gui)
-        dpg.add_spacer(height=scaled(8))
-        
-        # === VISUALIZATION TOOLBAR (Compact) ===
-        build_visualization_toolbar(gui)
-        dpg.add_spacer(height=scaled(8))
-        
-        # === DETAIL SECTIONS (Open by default with spacing) ===
         build_input_section(gui)
         dpg.add_spacer(height=scaled(8))
         build_background_section(gui)
@@ -627,55 +623,33 @@ def build_control_panel(gui: Any):
         dpg.add_spacer(height=scaled(8))
         build_model_section(gui)
         dpg.add_spacer(height=scaled(8))
+        build_detection_section(gui)
+        dpg.add_spacer(height=scaled(8))
         build_preview_section(gui)
         dpg.add_spacer(height=scaled(8))
-        build_tracker_section(gui)
-        dpg.add_spacer(height=scaled(8))
         build_osc_section(gui)
-        
-        dpg.add_spacer(height=scaled(20))
-        quit_btn = dpg.add_button(label="Quit [Q]", width=-1, callback=gui._on_quit)
-        with dpg.tooltip(quit_btn):
-            dpg.add_text("Exit WallDance (Ctrl+Q or Q)")
+        dpg.add_spacer(height=scaled(12))
+        build_visualization_toolbar(gui)
 
 
-def build_show_settings(gui: Any):
-    """Show settings - per-venue adjustments that operators adjust frequently."""
-    with dpg.collapsing_header(label="SHOW SETTINGS", default_open=True, tag="show_settings_header"):
-        # Person Height and Max Dancers on same row
+def build_detection_section(gui: Any):
+    """Detection settings - person height, confidence, max dancers."""
+    with dpg.collapsing_header(label="Detection", default_open=False, tag="section_detection"):
+        # Person Height
+        dpg.add_text("Person Height", color=(180, 180, 180))
         with dpg.group(horizontal=True):
-            with dpg.group():
-                dpg.add_text("Person Height", color=(180, 180, 180))
-                with dpg.group(horizontal=True):
-                    height_slider = dpg.add_slider_int(
-                        tag="person_height_slider",
-                        default_value=gui.config.get("person_height_px", 200),
-                        min_value=50,
-                        max_value=800,
-                        format="%d px",
-                        width=scaled(90),
-                        callback=gui._on_person_height_change,
-                    )
-                    _add_slider_row("person_height_slider", 10, 50, 800, gui._on_person_height_change)
-                with dpg.tooltip(height_slider):
-                    dpg.add_text("Expected person height in pixels.\nCalibrate for each venue/distance.")
-            
-            dpg.add_spacer(width=scaled(10))
-            
-            with dpg.group():
-                dpg.add_text("Max Dancers", color=(180, 180, 180))
-                with dpg.group(horizontal=True):
-                    max_p_slider = dpg.add_slider_int(
-                        tag="max_persons_slider",
-                        default_value=gui.config.get("max_persons", 6),
-                        min_value=1,
-                        max_value=12,
-                        width=scaled(60),
-                        callback=gui._on_max_persons_change,
-                    )
-                    _add_slider_row("max_persons_slider", 1, 1, 12, gui._on_max_persons_change)
-                with dpg.tooltip(max_p_slider):
-                    dpg.add_text("Maximum dancers to track")
+            height_slider = dpg.add_slider_int(
+                tag="person_height_slider",
+                default_value=gui.config.get("person_height_px", 200),
+                min_value=50,
+                max_value=800,
+                format="%d px",
+                width=scaled(90),
+                callback=gui._on_person_height_change,
+            )
+            _add_slider_row("person_height_slider", 10, 50, 800, gui._on_person_height_change)
+        with dpg.tooltip(height_slider):
+            dpg.add_text("Expected person height in pixels.\nCalibrate for each venue/distance.")
         
         dpg.add_spacer(height=scaled(6))
         
@@ -694,6 +668,23 @@ def build_show_settings(gui: Any):
             _add_slider_row("show_conf_slider", 0.05, 0.1, 0.9, gui._on_confidence_change)
         with dpg.tooltip(conf_slider):
             dpg.add_text("Lower = more detections (may include false positives)\nHigher = fewer, more certain detections")
+
+        dpg.add_spacer(height=scaled(6))
+
+        # Tracker Max Age
+        dpg.add_text("Tracker Max Age (frames)", color=(180, 180, 180))
+        with dpg.group(horizontal=True):
+            age_slider = dpg.add_slider_int(
+                tag="tracker_age_slider",
+                default_value=gui.config.get("tracker_max_age", 20),
+                min_value=5,
+                max_value=60,
+                width=scaled(-90),
+                callback=gui._on_tracker_age_change,
+            )
+            _add_slider_row("tracker_age_slider", 1, 5, 60, gui._on_tracker_age_change)
+        with dpg.tooltip(age_slider):
+            dpg.add_text("Frames to keep a lost track")
 
 
 def build_visualization_toolbar(gui: Any):
@@ -756,41 +747,6 @@ def build_visualization_toolbar(gui: Any):
         dpg.bind_item_theme(ids_btn, gui._vis_btn_on_theme if gui.config.get("show_ids", True) else gui._vis_btn_off_theme)
         with dpg.tooltip(ids_btn):
             dpg.add_text("Dancer IDs [I]")
-
-
-def build_tracker_section(gui: Any):
-    """Tracker settings - open by default."""
-    with dpg.collapsing_header(label="Tracker", default_open=False, tag="section_tracker", closable=False):
-
-        dpg.add_text("Max Age (frames)")
-        with dpg.group(horizontal=True):
-            age_slider = dpg.add_slider_int(
-                tag="tracker_age_slider",
-                default_value=gui.config.get("tracker_max_age", 20),
-                min_value=5,
-                max_value=60,
-                width=scaled(-90),
-                callback=gui._on_tracker_age_change,
-            )
-            _add_slider_row("tracker_age_slider", 1, 5, 60, gui._on_tracker_age_change)
-        with dpg.tooltip(age_slider):
-            dpg.add_text("Frames to keep a lost track")
-        
-        dpg.add_text("Smoothing")
-        with dpg.group(horizontal=True):
-            smooth_slider = dpg.add_slider_int(
-                tag="tracker_smoothing_slider",
-                default_value=gui.config.get("tracker_smoothing", 1),
-                min_value=1,
-                max_value=10,
-                width=scaled(-90),
-                callback=gui._on_tracker_smoothing_change,
-            )
-            _add_slider_row("tracker_smoothing_slider", 1, 1, 10, gui._on_tracker_smoothing_change)
-        with dpg.tooltip(smooth_slider):
-            dpg.add_text("Temporal smoothing of keypoint positions.\n1 = No smoothing (raw detections)\nHigher = Smoother but more latency")
-        dpg.add_spacer(height=scaled(5))
-        dpg.add_button(label="Reset Tracker [R]", width=-1, callback=gui._on_tracker_reset)
 
 
 def build_osc_section(gui: Any):
@@ -882,12 +838,6 @@ def build_enhancement_section(gui: Any):
                 callback=gui._on_enhance_toggle,
             )
             dpg.add_checkbox(
-                label="Lite",
-                tag="adv_enhance_lite_checkbox",
-                default_value=gui.config.get("enhance_lite", False),
-                callback=gui._on_enhance_lite_toggle,
-            )
-            dpg.add_checkbox(
                 label="Force",
                 tag="adv_enhance_force_checkbox",
                 default_value=gui.config.get("enhance_force", False),
@@ -937,19 +887,6 @@ def build_enhancement_section(gui: Any):
                 callback=gui._on_gamma_change,
             )
             _add_slider_row("adv_gamma_slider", 0.05, 0.5, 2.5, gui._on_gamma_change)
-        
-        dpg.add_text("Temporal Denoise", color=(180, 180, 180))
-        with dpg.group(horizontal=True):
-            dpg.add_slider_float(
-                tag="adv_denoise_slider",
-                default_value=gui.config.get("denoise_strength", 0.0),
-                min_value=0.0,
-                max_value=0.9,
-                format="%.2f",
-                width=scaled(-90),
-                callback=gui._on_denoise_change,
-            )
-            _add_slider_row("adv_denoise_slider", 0.05, 0.0, 0.9, gui._on_denoise_change)
 
 
 def build_background_section(gui: Any):

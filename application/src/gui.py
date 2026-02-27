@@ -164,15 +164,15 @@ def get_display_scale() -> float:
     
     # Calculate final scale based on resolution and system settings.
     #
-    # On Windows with DPI awareness, GetSystemMetrics returns *physical* pixels
-    # while the OS already applies its own scaling (e.g. 125%).  DearPyGui
-    # respects the OS scale for window/widget sizes, so we must NOT re-apply it.
+    # With SetProcessDpiAwareness(2), the app is DPI-aware and renders at
+    # physical pixel resolution.  Windows will NOT auto-scale our window.
+    # We must therefore apply the system DPI factor ourselves.
     #
     # Strategy:
-    #   1. Determine the "logical" resolution the user actually sees:
-    #        logical_width = screen_width / system_scale
-    #   2. Pick a base scale for that logical resolution.
-    #   3. Return base_scale directly — the OS handles the rest.
+    #   1. Compute the "logical" resolution to pick a resolution-tier base.
+    #   2. Take the max of (resolution-tier base, system DPI scale).
+    #      This ensures both high-resolution monitors AND user DPI
+    #      preferences (e.g. 125 %) are respected.
     logical_width = screen_width / system_scale if system_scale > 0 else screen_width
 
     if logical_width >= 3200:       # 4K logical (e.g. 3840 @ 100 %, or 5120 @ 125 %)
@@ -182,9 +182,11 @@ def get_display_scale() -> float:
     else:                            # 1080p or anything ≤ FHD
         base_scale = 1.0
 
-    final_scale = base_scale
+    # Honour the user's OS scaling preference: on FHD @ 125 % the base_scale
+    # would be 1.0 but the user expects 25 % larger UI elements.
+    final_scale = max(base_scale, system_scale)
     print(f"[GUI] Screen width: {screen_width}, System scale: {system_scale}, "
-          f"Logical width: {logical_width:.0f}, Using UI scale: {final_scale}")
+          f"Logical width: {logical_width:.0f}, Base: {base_scale}, Using UI scale: {final_scale}")
     
     return final_scale
 
@@ -271,8 +273,9 @@ class WallDanceGUI:
         
         # Section headers for mutual exclusion
         self._section_headers = [
-            "section_input", "section_enhancement", "section_model",
-            "section_preview", "section_tracker", "section_osc"
+            "section_input", "section_background", "section_enhancement",
+            "section_model", "section_detection",
+            "section_preview", "section_osc"
         ]
         self._last_open_section = "section_input"  # Input section starts open
         
@@ -280,7 +283,6 @@ class WallDanceGUI:
         self._update_preview_row_state(self.config.get('preview_enabled', True))
         self._update_enhance_row_state(
             self.config.get('enhance_enabled', False),
-            self.config.get('enhance_lite', False),
             bypass=False
         )
         
@@ -298,8 +300,7 @@ class WallDanceGUI:
     def _on_enhance_toggle(self, sender, value):
         if 'on_enhance_toggle' in self.callbacks:
             self.callbacks['on_enhance_toggle'](value)
-        lite_val = dpg.get_value('adv_enhance_lite_checkbox') if dpg.does_item_exist('adv_enhance_lite_checkbox') else False
-        self._update_enhance_row_state(value, lite_val, bypass=False)
+        self._update_enhance_row_state(value, bypass=False)
     
     def _on_enhance_lite_toggle(self, sender, value):
         if 'on_enhance_lite_toggle' in self.callbacks:
@@ -312,8 +313,7 @@ class WallDanceGUI:
             self.callbacks['on_enhance_force_toggle'](value)
         # Update row state: when Force is enabled, threshold slider should be greyed out
         en_val = dpg.get_value('adv_enhance_checkbox') if dpg.does_item_exist('adv_enhance_checkbox') else False
-        lite_val = dpg.get_value('adv_enhance_lite_checkbox') if dpg.does_item_exist('adv_enhance_lite_checkbox') else False
-        self._update_enhance_row_state(en_val, lite_val, bypass=False)
+        self._update_enhance_row_state(en_val, bypass=False)
 
     def _on_greyscale_toggle(self, sender, value):
         if 'on_greyscale_toggle' in self.callbacks:
@@ -385,8 +385,8 @@ class WallDanceGUI:
         if dpg.does_item_exist("adv_preview_cap_checkbox"):
             dpg.configure_item("adv_preview_cap_checkbox", enabled=enabled)
     
-    def _update_enhance_row_state(self, enabled: bool, lite_mode: bool, bypass: bool = False):
-        """Grey out ENHANCE row controls when disabled, lite mode, or bypassed due to high brightness."""
+    def _update_enhance_row_state(self, enabled: bool, lite_mode: bool = False, bypass: bool = False):
+        """Grey out ENHANCE row controls when disabled or bypassed due to high brightness."""
         # Check if Force is engaged - if so, ignore bypass
         force_enabled = False
         if dpg.does_item_exist("adv_enhance_force_checkbox"):
@@ -395,8 +395,6 @@ class WallDanceGUI:
         # When force is enabled, bypass is ignored
         effective_bypass = bypass and not force_enabled
         
-        if dpg.does_item_exist("adv_enhance_lite_checkbox"):
-            dpg.configure_item("adv_enhance_lite_checkbox", enabled=enabled)
         # User requested to be able to move sliders even when disabled
         if dpg.does_item_exist("adv_gamma_slider"):
             dpg.configure_item("adv_gamma_slider", enabled=True)
@@ -788,7 +786,7 @@ class WallDanceGUI:
             for display, filepath in recordings:
                 dpg.add_button(
                     label=display,
-                    width=200,
+                    width=scaled(200),
                     callback=lambda s, a, u: (callback(u), dpg.delete_item(menu_tag)),
                     user_data=filepath,
                 )
@@ -969,6 +967,24 @@ class WallDanceGUI:
         if dpg.does_item_exist(self.frame_texture_tag):
             dpg.set_value(self.frame_texture_tag, self.frame_buffer)
     
+    @staticmethod
+    def _fps_color(fps: float):
+        """Return an (R, G, B) color for an FPS value.
+
+        >= 19  → green (120, 255, 120)
+        <= 10  → red   (255, 80, 80)
+        Between 10 and 19 → smooth gradient from red to green.
+        """
+        if fps >= 19:
+            return (120, 255, 120)
+        if fps <= 10:
+            return (255, 80, 80)
+        t = (fps - 10) / 9.0  # 0..1
+        r = int(255 + (120 - 255) * t)
+        g = int(80 + (255 - 80) * t)
+        b = int(80 + (120 - 80) * t)
+        return (r, g, b)
+
     def update_stats(
         self,
         fps: float,
@@ -1019,8 +1035,7 @@ class WallDanceGUI:
 
         # Update enhance row grey state based on bypass
         enhance_enabled = dpg.get_value('adv_enhance_checkbox') if dpg.does_item_exist('adv_enhance_checkbox') else False
-        lite_mode = dpg.get_value('adv_enhance_lite_checkbox') if dpg.does_item_exist('adv_enhance_lite_checkbox') else False
-        self._update_enhance_row_state(enhance_enabled, lite_mode, bypass=enhance_bypassed)
+        self._update_enhance_row_state(enhance_enabled, bypass=enhance_bypassed)
 
         # Status badges
         cam_color = (120, 255, 120) if camera_running else (255, 120, 120)
@@ -1051,14 +1066,7 @@ class WallDanceGUI:
         if dpg.does_item_exist("badge_model"):
             dpg.set_value("badge_model", model_name or "--")
 
-        if fps >= 25:
-            fps_color = (120, 255, 120)      # green
-        elif fps >= 20:
-            fps_color = (255, 220, 120)      # yellow
-        elif fps >= 15:
-            fps_color = (255, 170, 80)       # orange
-        else:
-            fps_color = (255, 120, 120)      # red
+        fps_color = self._fps_color(fps)
         if dpg.does_item_exist("badge_fps"):
             dpg.set_value("badge_fps", f"{fps:.1f}")
             dpg.configure_item("badge_fps", color=fps_color)
@@ -1125,18 +1133,13 @@ class WallDanceGUI:
             _colorize("time_preview", self._last_preview_time, g=5, y=15)
 
         # Update FPS color based on performance
-        if fps >= 25:
-            dpg.configure_item("fps_text", color=(0, 255, 100))
-        elif fps >= 15:
-            dpg.configure_item("fps_text", color=(255, 200, 0))
-        else:
-            dpg.configure_item("fps_text", color=(255, 80, 80))
+        dpg.configure_item("fps_text", color=self._fps_color(fps))
     
     def sync_checkbox(self, name: str, value: bool):
         """Sync checkbox state (when changed via keyboard or config load)."""
         tag_map = {
             'enhance': ['adv_enhance_checkbox'],
-            'enhance_lite': ['adv_enhance_lite_checkbox'],
+            'enhance_lite': [],
             'enhance_force': ['adv_enhance_force_checkbox'],
             'greyscale': ['adv_greyscale_checkbox'],
             'preview': ['adv_preview_checkbox'],
@@ -1164,12 +1167,7 @@ class WallDanceGUI:
         if name == 'preview':
             self._update_preview_row_state(value)
         elif name == 'enhance':
-            lite_val = False
-            for tag in ['adv_enhance_lite_checkbox']:
-                if dpg.does_item_exist(tag):
-                    lite_val = dpg.get_value(tag)
-                    break
-            self._update_enhance_row_state(value, lite_val, bypass=False)
+            self._update_enhance_row_state(value, bypass=False)
     
     def sync_slider(self, name: str, value: float):
         """Sync slider state (when changed via keyboard or config load)."""
@@ -1178,11 +1176,9 @@ class WallDanceGUI:
             'clahe': ['adv_clahe_slider'],
             'gamma': ['adv_gamma_slider'],
             'brightness_threshold': ['adv_brightness_threshold_slider'],
-            'denoise_strength': ['adv_denoise_slider'],
-            'max_persons': ['max_persons_slider'],
+            'denoise_strength': [],
             'person_height': ['person_height_slider'],
             'tracker_max_age': ['tracker_age_slider'],
-            'tracker_smoothing': ['tracker_smoothing_slider'],
             'ids_ratio': ['adv_ids_ratio_slider'],
             'ids_gain_db': ['adv_ids_gain_slider'],
             'ids_exposure_us': ['adv_ids_exposure_slider'],
@@ -1405,35 +1401,37 @@ class WallDanceGUI:
         if dpg.does_item_exist("save_config_dialog"):
             dpg.delete_item("save_config_dialog")
         
+        dlg_w = scaled(400)
+        dlg_h = scaled(200)
         with dpg.window(
             label="Save Configuration",
             modal=True,
             tag="save_config_dialog",
-            width=400,
-            height=200,
-            pos=[dpg.get_viewport_width() // 2 - 200, dpg.get_viewport_height() // 2 - 80],
+            width=dlg_w,
+            height=dlg_h,
+            pos=[dpg.get_viewport_width() // 2 - dlg_w // 2, dpg.get_viewport_height() // 2 - dlg_h // 2],
             no_resize=True,
             no_move=False,
         ):
             dpg.add_text("Enter project name:")
             dpg.add_text("(Config will be saved with timestamp in project folder)", color=(150, 150, 150))
-            dpg.add_spacer(height=5)
+            dpg.add_spacer(height=scaled(5))
             dpg.add_input_text(
                 tag="save_config_name_input",
                 default_value=default_name,
                 width=-1,
                 hint="project name"
             )
-            dpg.add_spacer(height=10)
+            dpg.add_spacer(height=scaled(10))
             with dpg.group(horizontal=True):
                 dpg.add_button(
                     label="Save",
-                    width=180,
+                    width=scaled(180),
                     callback=self._do_save_config
                 )
                 dpg.add_button(
                     label="Cancel",
-                    width=180,
+                    width=scaled(180),
                     callback=lambda: dpg.delete_item("save_config_dialog")
                 )
     
@@ -1473,13 +1471,15 @@ class WallDanceGUI:
                     if json_files:
                         projects.append((item, len(json_files)))
         
+        load_w = scaled(500)
+        load_h = scaled(480)
         with dpg.window(
             label="Load Configuration",
             modal=True,
             tag="load_config_dialog",
-            width=500,
-            height=480,
-            pos=[dpg.get_viewport_width() // 2 - 250, dpg.get_viewport_height() // 2 - 240],
+            width=load_w,
+            height=load_h,
+            pos=[dpg.get_viewport_width() // 2 - load_w // 2, dpg.get_viewport_height() // 2 - load_h // 2],
             no_resize=True,
             no_move=False,
         ):
@@ -1488,12 +1488,12 @@ class WallDanceGUI:
                 dpg.add_text("Save a config first to create a project.", color=(150, 150, 150))
             else:
                 dpg.add_text("Select a project:", color=(120, 200, 140))
-                dpg.add_spacer(height=5)
+                dpg.add_spacer(height=scaled(5))
                 
                 # Store project list for deselection logic
                 self._project_selectables = []
                 
-                with dpg.child_window(height=140, border=True, tag="project_list_window"):
+                with dpg.child_window(height=scaled(140), border=True, tag="project_list_window"):
                     for project_name, file_count in projects:
                         is_current = (project_name == current_project)
                         label = f"{project_name} ({file_count} saves)" + (" [current]" if is_current else "")
@@ -1505,14 +1505,14 @@ class WallDanceGUI:
                         )
                         self._project_selectables.append((sel, project_name))
                 
-                dpg.add_spacer(height=10)
+                dpg.add_spacer(height=scaled(10))
                 dpg.add_text("Config history:", tag="history_label", color=(120, 200, 140))
-                dpg.add_spacer(height=5)
+                dpg.add_spacer(height=scaled(5))
                 
-                with dpg.child_window(height=150, border=True, tag="config_history_window"):
+                with dpg.child_window(height=scaled(150), border=True, tag="config_history_window"):
                     dpg.add_text("Select a project above...", tag="history_placeholder", color=(100, 100, 100))
                 
-                dpg.add_spacer(height=10)
+                dpg.add_spacer(height=scaled(10))
                 dpg.add_button(
                     label="Load Selected",
                     width=-1,
@@ -1525,7 +1525,7 @@ class WallDanceGUI:
                 if current_project and any(p[0] == current_project for p in projects):
                     self._populate_config_history(current_project)
             
-            dpg.add_spacer(height=5)
+            dpg.add_spacer(height=scaled(5))
             dpg.add_button(
                 label="Cancel",
                 width=-1,
@@ -1634,8 +1634,8 @@ class WallDanceGUI:
         
         vp_width = dpg.get_viewport_width()
         vp_height = dpg.get_viewport_height()
-        modal_width = 500
-        modal_height = 200
+        modal_width = scaled(500)
+        modal_height = scaled(200)
         
         with dpg.window(
             label="Model Loading",
@@ -1649,17 +1649,17 @@ class WallDanceGUI:
             no_close=True,
             no_collapse=True,
         ):
-            dpg.add_spacer(height=10)
-            dpg.add_text(message, tag="model_loading_message", wrap=480)
-            dpg.add_spacer(height=15)
+            dpg.add_spacer(height=scaled(10))
+            dpg.add_text(message, tag="model_loading_message", wrap=scaled(480))
+            dpg.add_spacer(height=scaled(15))
             dpg.add_progress_bar(
                 tag="model_loading_progress",
                 default_value=0.0,
                 width=-1,
-                height=25,
+                height=scaled(25),
             )
-            dpg.add_spacer(height=8)
-            dpg.add_text("", tag="model_loading_detail", color=(150, 150, 150), wrap=480)
+            dpg.add_spacer(height=scaled(8))
+            dpg.add_text("", tag="model_loading_detail", color=(150, 150, 150), wrap=scaled(480))
     
     def update_model_loading_progress(self, message: str, progress: float, detail: str = "", animate: bool = False):
         """Update the model loading modal progress.
@@ -1705,8 +1705,8 @@ class WallDanceGUI:
         
         vp_width = dpg.get_viewport_width()
         vp_height = dpg.get_viewport_height()
-        modal_width = 450
-        modal_height = 180
+        modal_width = scaled(450)
+        modal_height = scaled(180)
         
         def on_build_trt():
             if dpg.does_item_exist("tensorrt_prompt_modal"):
@@ -1730,27 +1730,27 @@ class WallDanceGUI:
             no_close=True,
             no_collapse=True,
         ):
-            dpg.add_spacer(height=10)
-            dpg.add_text(f"No TensorRT engine found for {model_name}.", wrap=420)
-            dpg.add_spacer(height=5)
+            dpg.add_spacer(height=scaled(10))
+            dpg.add_text(f"No TensorRT engine found for {model_name}.", wrap=scaled(420))
+            dpg.add_spacer(height=scaled(5))
             dpg.add_text(
                 "Build TensorRT engine for faster inference (5-10 min)?\n"
                 "Or use PyTorch directly (slower but instant).",
-                wrap=420,
+                wrap=scaled(420),
                 color=(180, 180, 180)
             )
-            dpg.add_spacer(height=15)
+            dpg.add_spacer(height=scaled(15))
             with dpg.group(horizontal=True):
                 dpg.add_button(
                     label="Build TensorRT (5-10 min)",
                     callback=on_build_trt,
-                    width=180,
+                    width=scaled(180),
                 )
-                dpg.add_spacer(width=20)
+                dpg.add_spacer(width=scaled(20))
                 dpg.add_button(
                     label="Use PyTorch",
                     callback=on_use_pytorch,
-                    width=120,
+                    width=scaled(120),
                 )
     
     def hide_tensorrt_prompt(self):

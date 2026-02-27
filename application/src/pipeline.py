@@ -53,7 +53,6 @@ except ImportError:
 class ProcessingSettings:
     confidence: float
     imgsz: int
-    max_persons: int
     use_fp16: bool
     enhance_enabled: bool
     enhance_lite: bool
@@ -303,7 +302,6 @@ class FrameProcessor:
             imgsz=self.settings.imgsz,
             conf=self.settings.confidence,
             iou=YOLO_IOU_THRESHOLD,
-            max_det=self.settings.max_persons,
             half=self.settings.use_fp16,
             verbose=False,
         )
@@ -424,7 +422,6 @@ class FrameProcessor:
             imgsz=self.settings.imgsz,
             conf=self.settings.confidence,
             iou=YOLO_IOU_THRESHOLD,
-            max_det=self.settings.max_persons,
             half=self.settings.use_fp16,
             verbose=False,
         )

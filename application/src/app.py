@@ -112,7 +112,6 @@ class WallDanceApp:
         self.settings = ProcessingSettings(
             confidence=YOLO_CONFIDENCE,
             imgsz=YOLO_IMGSZ,
-            max_persons=MAX_PERSONS,
             use_fp16=False,
             enhance_enabled=ENHANCE_ENABLED,
             enhance_lite=False,
@@ -121,7 +120,7 @@ class WallDanceApp:
             person_height_min_ratio=PERSON_HEIGHT_MIN_RATIO,
             person_height_max_ratio=PERSON_HEIGHT_MAX_RATIO,
             brightness_threshold=BRIGHTNESS_THRESHOLD,
-            denoise_strength=DENOISE_STRENGTH,
+            denoise_strength=0.0,
             osc_enabled=OSC_ENABLED,
         )
 
@@ -251,7 +250,6 @@ class WallDanceApp:
             "model": self.current_model_name,
             "use_tensorrt": self.model_manager.is_using_tensorrt(),
             "confidence": self.settings.confidence,
-            "max_persons": self.settings.max_persons,
             "fp16": self.settings.use_fp16,
             "yolo_imgsz": self.settings.imgsz,
             "person_height_px": self.settings.person_height_px,
@@ -298,7 +296,6 @@ class WallDanceApp:
             "on_bg_clear": self._cb_bg_clear,
             "on_bg_sensitivity_change": self._cb_bg_sensitivity_change,
             "on_confidence_change": self._cb_confidence_change,
-            "on_max_persons_change": self._cb_max_persons_change,
             "on_model_change": self._cb_model_change,
             "on_trt_toggle": self._cb_trt_toggle,
             "on_fp16_toggle": self._cb_fp16_toggle,
@@ -349,7 +346,6 @@ class WallDanceApp:
             "use_tensorrt": self.model_manager.is_using_tensorrt(),
             "confidence": self.settings.confidence,
             "yolo_imgsz": self.settings.imgsz,
-            "max_persons": self.settings.max_persons,
             "fp16": self.settings.use_fp16,
             "person_height_px": self.settings.person_height_px,
             "enhance_enabled": self.settings.enhance_enabled,
@@ -565,9 +561,6 @@ class WallDanceApp:
         if "confidence" in config:
             self.settings.confidence = config["confidence"]
             self.gui and self.gui.sync_slider("confidence", config["confidence"])
-        if "max_persons" in config:
-            self.settings.max_persons = config["max_persons"]
-            self.gui and self.gui.sync_slider("max_persons", config["max_persons"])
         if "fp16" in config:
             self.settings.use_fp16 = config["fp16"]
             self.gui and self.gui.sync_checkbox("fp16", config["fp16"])
@@ -795,10 +788,6 @@ class WallDanceApp:
     def _cb_confidence_change(self, value: float):
         self.settings.confidence = value
         print(f"Confidence: {value:.2f}")
-
-    def _cb_max_persons_change(self, value: int):
-        self.settings.max_persons = value
-        print(f"Max persons: {value}")
 
     def _cb_camera_change(self, value: str):
         source = value.replace(" (unavailable)", "").strip()
@@ -1744,9 +1733,7 @@ class WallDanceApp:
 
     def _handle_key(self, sender, app_data):
         key = app_data
-        if key == dpg.mvKey_Q:
-            self.running = False
-        elif key == dpg.mvKey_E:
+        if key == dpg.mvKey_E:
             self.settings.enhance_enabled = not self.settings.enhance_enabled
             self.gui and self.gui.sync_checkbox("enhance", self.settings.enhance_enabled)
             print(f"Enhancement: {'ON' if self.settings.enhance_enabled else 'OFF'}")
@@ -1774,8 +1761,6 @@ class WallDanceApp:
             self.preview_enabled = not self.preview_enabled
             self.gui and self.gui.sync_checkbox("preview", self.preview_enabled)
             print(f"Preview: {'ON' if self.preview_enabled else 'OFF (measure raw FPS)'}")
-        elif key == dpg.mvKey_R:
-            self._cb_tracker_reset()
         if key == dpg.mvKey_S and (dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)):
             self._cb_save_config()
 
