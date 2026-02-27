@@ -621,6 +621,8 @@ def build_control_panel(gui: Any):
         # === DETAIL SECTIONS (Open by default with spacing) ===
         build_input_section(gui)
         dpg.add_spacer(height=scaled(8))
+        build_background_section(gui)
+        dpg.add_spacer(height=scaled(8))
         build_enhancement_section(gui)
         dpg.add_spacer(height=scaled(8))
         build_model_section(gui)
@@ -948,6 +950,47 @@ def build_enhancement_section(gui: Any):
                 callback=gui._on_denoise_change,
             )
             _add_slider_row("adv_denoise_slider", 0.05, 0.0, 0.9, gui._on_denoise_change)
+
+
+def build_background_section(gui: Any):
+    """Background subtraction settings."""
+    with dpg.collapsing_header(label="Background", default_open=False, tag="section_background", closable=False):
+        # Row 1: Capture / Enable / Clear buttons
+        with dpg.group(horizontal=True):
+            dpg.add_button(
+                label="Capture",
+                tag="bg_capture_btn",
+                width=scaled(80),
+                callback=gui._on_bg_capture,
+            )
+            dpg.add_checkbox(
+                label="Enable",
+                tag="bg_enable_checkbox",
+                default_value=gui.config.get("bg_subtract_enabled", False),
+                callback=gui._on_bg_enable_toggle,
+            )
+            dpg.add_button(
+                label="Clear",
+                tag="bg_clear_btn",
+                width=scaled(50),
+                callback=gui._on_bg_clear,
+            )
+        
+        # Status / mismatch warning line
+        dpg.add_text("No reference captured", tag="bg_status_text", color=(120, 120, 120))
+        
+        # Sensitivity slider
+        dpg.add_text("Sensitivity", color=(180, 180, 180))
+        with dpg.group(horizontal=True):
+            dpg.add_slider_int(
+                tag="bg_sensitivity_slider",
+                default_value=gui.config.get("bg_subtract_sensitivity", 30),
+                min_value=5,
+                max_value=100,
+                width=scaled(-90),
+                callback=gui._on_bg_sensitivity_change,
+            )
+            _add_slider_row("bg_sensitivity_slider", 5, 5, 100, gui._on_bg_sensitivity_change)
 
 
 def build_input_section(gui: Any):

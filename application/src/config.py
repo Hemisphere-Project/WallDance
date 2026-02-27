@@ -212,6 +212,13 @@ RECORDING_CODEC = "FFV1"
 # 98-100 is near-lossless but produces larger files (~3-5× vs default).
 RECORDING_QUALITY = 100
 
+# =============================================================================
+# BACKGROUND SUBTRACTION
+# =============================================================================
+BG_SUBTRACT_ENABLED = False         # Enable static background subtraction
+BG_SUBTRACT_SENSITIVITY = 30       # Threshold 0-255 (lower = more aggressive removal)
+                                    # 20-40 works well for most scenes
+
 # Colors for different dancers (BGR)
 DANCER_COLORS = [
     (0, 255, 0),      # Green

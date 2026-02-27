@@ -327,6 +327,43 @@ class WallDanceGUI:
         if 'on_denoise_change' in self.callbacks:
             self.callbacks['on_denoise_change'](value)
 
+    # --- Background subtraction callbacks ---
+    def _on_bg_capture(self, sender=None, value=None):
+        if 'on_bg_capture' in self.callbacks:
+            self.callbacks['on_bg_capture']()
+
+    def _on_bg_enable_toggle(self, sender, value):
+        if 'on_bg_enable_toggle' in self.callbacks:
+            self.callbacks['on_bg_enable_toggle'](value)
+
+    def _on_bg_clear(self, sender=None, value=None):
+        if 'on_bg_clear' in self.callbacks:
+            self.callbacks['on_bg_clear']()
+
+    def _on_bg_sensitivity_change(self, sender, value):
+        if 'on_bg_sensitivity_change' in self.callbacks:
+            self.callbacks['on_bg_sensitivity_change'](value)
+
+    def update_bg_status(self, has_reference: bool, enabled: bool, 
+                         fg_ratio: float = 0.0, is_mismatched: bool = False):
+        """Update the background subtraction status text and color."""
+        if not dpg.does_item_exist("bg_status_text"):
+            return
+        if not has_reference:
+            dpg.set_value("bg_status_text", "No reference captured")
+            dpg.configure_item("bg_status_text", color=(120, 120, 120))
+        elif is_mismatched:
+            pct = int(fg_ratio * 100)
+            dpg.set_value("bg_status_text", f"!! MISMATCH ({pct}% fg) - Recapture or disable")
+            dpg.configure_item("bg_status_text", color=(255, 80, 80))
+        elif enabled:
+            pct = int(fg_ratio * 100)
+            dpg.set_value("bg_status_text", f"Active ({pct}% foreground)")
+            dpg.configure_item("bg_status_text", color=(100, 255, 100))
+        else:
+            dpg.set_value("bg_status_text", "Reference ready (disabled)")
+            dpg.configure_item("bg_status_text", color=(180, 180, 100))
+
     def _on_preview_toggle(self, sender, value):
         if 'on_preview_toggle' in self.callbacks:
             self.callbacks['on_preview_toggle'](value)
@@ -1108,6 +1145,7 @@ class WallDanceGUI:
             'fp16': ['adv_fp16_checkbox'],
             'trt': ['adv_trt_checkbox'],
             'osc': ['osc_checkbox'],
+            'bg_enable': ['bg_enable_checkbox'],
         }
         # Visualization toggles - update toolbar button themes instead of checkboxes
         vis_toggles = ['skeleton', 'keypoints', 'bbox', 'trails', 'ids']
@@ -1148,6 +1186,7 @@ class WallDanceGUI:
             'ids_ratio': ['adv_ids_ratio_slider'],
             'ids_gain_db': ['adv_ids_gain_slider'],
             'ids_exposure_us': ['adv_ids_exposure_slider'],
+            'bg_sensitivity': ['bg_sensitivity_slider'],
         }
         if name in tag_map:
             for tag in tag_map[name]:

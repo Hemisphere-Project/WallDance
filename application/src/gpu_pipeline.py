@@ -98,6 +98,10 @@ class GpuPipelineSettings:
     preview_height: int = 540       # Target preview height
     preview_fps_cap: Optional[float] = None  # None = no cap, e.g. 10.0 = 10fps
     
+    # Background subtraction
+    bg_subtract_enabled: bool = False
+    bg_subtract_sensitivity: int = 30  # 0-255
+    
     # Processing
     yolo_imgsz: int = 960
 
@@ -441,6 +445,7 @@ class GpuPipeline:
         self.settings = settings or GpuPipelineSettings()
         self._enhancer = GpuEnhancer()
         self._resizer = GpuResizer()
+        self._bg_subtractor = None  # Set by FrameProcessor (shared instance)
         
         # Preview rate limiting - cache on CPU side to skip GPU→CPU copy
         self._last_preview_time: float = 0.0
@@ -492,6 +497,22 @@ class GpuPipeline:
         
         # Ensure we don't hold onto old CPU cache if we were reusing frames (we aren't, but good practice)
         gpu_frame.invalidate_cache()
+        
+        # 1.5. Background subtraction (on GPU, before enhancement)
+        if (self.settings.bg_subtract_enabled and 
+                self._bg_subtractor is not None and 
+                self._bg_subtractor.has_reference):
+            t0 = time.time()
+            self._bg_subtractor.ensure_gpu_ref(gpu_frame.tensor.device)
+            fg_tensor = self._bg_subtractor.apply_gpu(
+                gpu_frame.tensor, self.settings.bg_subtract_sensitivity
+            )
+            gpu_frame = GpuFrame(fg_tensor, is_bgr=False)
+            timing['bg_subtract'] = (time.time() - t0) * 1000
+            timing['bg_fg_ratio'] = self._bg_subtractor.foreground_ratio
+            timing['bg_mismatched'] = self._bg_subtractor.is_mismatched
+        else:
+            timing['bg_subtract'] = 0.0
         
         # 2. Enhancement (on GPU, in RGB)
         t0 = time.time()
@@ -572,6 +593,22 @@ class GpuPipeline:
         
         # Wrap in GpuFrame
         gpu_frame = GpuFrame(gpu_tensor, is_bgr=False)  # IDS provides RGB-equivalent
+        
+        # 1.5. Background subtraction (on GPU, before enhancement)
+        if (self.settings.bg_subtract_enabled and 
+                self._bg_subtractor is not None and 
+                self._bg_subtractor.has_reference):
+            t0 = time.time()
+            self._bg_subtractor.ensure_gpu_ref(gpu_frame.tensor.device)
+            fg_tensor = self._bg_subtractor.apply_gpu(
+                gpu_frame.tensor, self.settings.bg_subtract_sensitivity
+            )
+            gpu_frame = GpuFrame(fg_tensor, is_bgr=False)
+            timing['bg_subtract'] = (time.time() - t0) * 1000
+            timing['bg_fg_ratio'] = self._bg_subtractor.foreground_ratio
+            timing['bg_mismatched'] = self._bg_subtractor.is_mismatched
+        else:
+            timing['bg_subtract'] = 0.0
         
         # 2. Enhancement (on GPU, in RGB)
         t0 = time.time()

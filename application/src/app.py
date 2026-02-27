@@ -207,6 +207,7 @@ class WallDanceApp:
         self.latency_ms = 0.0
         self.running = False
         self.last_tracked: List[ScaledTrack] = []
+        self._last_raw_frame: Optional[np.ndarray] = None  # Last raw camera frame for BG capture
         
         # Pending operations (deferred to main loop)
         self._pending_camera_refresh = False
@@ -292,6 +293,10 @@ class WallDanceApp:
             "on_clahe_change": self._cb_clahe_change,
             "on_gamma_change": self._cb_gamma_change,
             "on_denoise_change": self._cb_denoise_change,
+            "on_bg_capture": self._cb_bg_capture,
+            "on_bg_enable_toggle": self._cb_bg_enable_toggle,
+            "on_bg_clear": self._cb_bg_clear,
+            "on_bg_sensitivity_change": self._cb_bg_sensitivity_change,
             "on_confidence_change": self._cb_confidence_change,
             "on_max_persons_change": self._cb_max_persons_change,
             "on_model_change": self._cb_model_change,
@@ -372,6 +377,8 @@ class WallDanceApp:
             "ids_ratio": self.ids_ratio,
             "ids_gain_db": self.ids_gain_db,
             "ids_exposure_us": self.ids_exposure_us,
+            "bg_subtract_enabled": self.settings.bg_subtract_enabled,
+            "bg_subtract_sensitivity": self.settings.bg_subtract_sensitivity,
         }
 
     def _update_topbar_state(self, selected_filepath: Optional[str] = None):
@@ -672,6 +679,18 @@ class WallDanceApp:
             self._cb_ids_exposure_change(config["ids_exposure_us"])
             self.gui and self.gui.sync_slider("ids_exposure_us", config["ids_exposure_us"])
 
+        # Background subtraction
+        if "bg_subtract_enabled" in config:
+            self.settings.bg_subtract_enabled = config["bg_subtract_enabled"]
+            self.gui and self.gui.sync_checkbox("bg_enable", config["bg_subtract_enabled"])
+        if "bg_subtract_sensitivity" in config:
+            self.settings.bg_subtract_sensitivity = config["bg_subtract_sensitivity"]
+            self.gui and self.gui.sync_slider("bg_sensitivity", config["bg_subtract_sensitivity"])
+        # Update BG status display
+        if self.gui:
+            bg = self.processor.bg_subtractor
+            self.gui.update_bg_status(bg.has_reference, self.settings.bg_subtract_enabled)
+
     # ------------------------------------------------------------------
     # GUI callbacks
     # ------------------------------------------------------------------
@@ -708,6 +727,70 @@ class WallDanceApp:
     def _cb_denoise_change(self, value: float):
         self.settings.denoise_strength = value
         print(f"Denoise strength: {value:.2f}")
+
+    # --- Background subtraction callbacks ---
+    def _cb_bg_capture(self):
+        """Capture current frame as background reference."""
+        frame = self._get_current_frame_for_bg()
+        if frame is not None:
+            # Clear any previous reference first to avoid stacking
+            self.processor.bg_subtractor.clear()
+            self.processor.bg_subtractor.capture_cpu(frame)
+            # Auto-enable on capture
+            self.settings.bg_subtract_enabled = True
+            print(f"[BG] Background reference captured ({frame.shape[1]}x{frame.shape[0]}), auto-enabled")
+            if self.gui:
+                self.gui.sync_checkbox("bg_enable", True)
+                self.gui.update_bg_status(True, True)
+        else:
+            print("[BG] No frame available for capture")
+
+    def _cb_bg_enable_toggle(self, enabled: bool):
+        self.settings.bg_subtract_enabled = enabled
+        bg = self.processor.bg_subtractor
+        if enabled and not bg.has_reference:
+            print("[BG] Warning: enabled but no reference captured yet")
+        print(f"[BG] Background subtraction: {'ON' if enabled else 'OFF'}")
+        if self.gui:
+            self.gui.update_bg_status(bg.has_reference, enabled)
+
+    def _cb_bg_clear(self):
+        self.processor.bg_subtractor.clear()
+        self.settings.bg_subtract_enabled = False
+        if self.gui:
+            self.gui.sync_checkbox("bg_enable", False)
+            self.gui.update_bg_status(False, False)
+        print("[BG] Background reference cleared")
+
+    def _cb_bg_sensitivity_change(self, value: int):
+        self.settings.bg_subtract_sensitivity = value
+        print(f"[BG] Sensitivity: {value}")
+
+    def _get_current_frame_for_bg(self) -> 'Optional[np.ndarray]':
+        """Get the current raw frame for BG capture (before any processing).
+        
+        Uses the last raw frame from the main loop (same frame the pipeline sees)
+        to avoid mismatch from reading a separate camera buffer frame.
+        Falls back to camera.read() if no stashed frame available.
+        """
+        # Prefer the stashed raw frame — same frame the pipeline processes
+        if self._last_raw_frame is not None:
+            return self._last_raw_frame.copy()
+        
+        # Fallback: read directly from camera
+        try:
+            if self._use_unified_camera and self.unified_camera is not None:
+                cached = self.unified_camera.get_last_cpu_frame()
+                if cached is not None:
+                    return cached.copy()
+                ret, frame = self.unified_camera.read()
+            else:
+                ret, frame = self.camera.read()
+            if ret and frame is not None:
+                return frame.copy()
+        except Exception as e:
+            print(f"[BG] Failed to get frame for capture: {e}")
+        return None
 
     def _cb_confidence_change(self, value: float):
         self.settings.confidence = value
@@ -2261,6 +2344,10 @@ class WallDanceApp:
                 # heartbeat may fire from a "waiting" iteration where frame=None.
                 self._last_fresh_frame_time = time.time()
                 
+                # Stash raw frame for BG capture (before any processing)
+                if frame is not None:
+                    self._last_raw_frame = frame
+                
                 # Recording is handled via camera callback thread - no write_frame here
 
             should_process = True
@@ -2332,21 +2419,29 @@ class WallDanceApp:
                     else:
                         display_frame = None
                 elif frame is not None:
+                    # Apply BG subtraction in STANDBY mode too (for preview)
+                    standby_frame = frame
+                    if (self.settings.bg_subtract_enabled and 
+                            self.processor.bg_subtractor.has_reference):
+                        standby_frame = self.processor.bg_subtractor.apply_cpu(
+                            frame, self.settings.bg_subtract_sensitivity
+                        )
+                    
                     should_enhance = self.settings.enhance_enabled
                     if should_enhance and not self.settings.enhance_lite and not self.settings.enhance_force:
                         # Check brightness threshold (same logic as pipeline)
-                        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                        gray = cv2.cvtColor(standby_frame, cv2.COLOR_BGR2GRAY)
                         brightness = float(np.mean(gray))
                         if brightness >= self.settings.brightness_threshold:
                             should_enhance = False
                     
                     if should_enhance:
                         if self.settings.enhance_lite:
-                            display_frame = self.enhancer.enhance_simple(frame)
+                            display_frame = self.enhancer.enhance_simple(standby_frame)
                         else:
-                            display_frame, _ = self.enhancer.enhance(frame)
+                            display_frame, _ = self.enhancer.enhance(standby_frame)
                     else:
-                        display_frame = frame.copy()
+                        display_frame = standby_frame.copy()
                 else:
                     display_frame = None
                 tracked = self.last_tracked
@@ -2500,6 +2595,16 @@ class WallDanceApp:
                 gpu_fallback_reason=self.processor.gpu_fallback_reason or "",
             )
             _gui_stats_ms = (time.perf_counter() - _stats_t0) * 1000.0
+            
+            # Update BG subtraction status (piggyback on stats update cycle)
+            bg = self.processor.bg_subtractor
+            if bg.has_reference:
+                fg_ratio = self.timing.get("bg_fg_ratio", bg.foreground_ratio)
+                is_mismatched = self.timing.get("bg_mismatched", bg.is_mismatched)
+                self.gui.update_bg_status(
+                    True, self.settings.bg_subtract_enabled,
+                    fg_ratio, is_mismatched
+                )
             
             # Update recording UI periodically (every 10 frames to avoid overhead)
             rec_ui_update_counter += 1

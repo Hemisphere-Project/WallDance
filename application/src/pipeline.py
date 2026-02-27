@@ -15,6 +15,8 @@ import numpy as np
 from ultralytics import YOLO
 
 from config import (
+    BG_SUBTRACT_ENABLED,
+    BG_SUBTRACT_SENSITIVITY,
     BRIGHTNESS_THRESHOLD,
     KEYPOINT_CONFIDENCE,
     PERSON_HEIGHT_MAX_RATIO,
@@ -22,6 +24,7 @@ from config import (
     YOLO_IOU_THRESHOLD,
     USE_GPU_PATH,
 )
+from background import BackgroundSubtractor
 from enhancer import ImageEnhancer, TORCH_CUDA_AVAILABLE
 from osc_output import OSCSender
 from tracker import DancerTrack, DancerTracker
@@ -63,6 +66,8 @@ class ProcessingSettings:
     greyscale: bool = False         # Convert to greyscale (mono camera simulation)
     osc_enabled: bool = True
     use_gpu_path: bool = USE_GPU_PATH  # Enable GPU frame buffer
+    bg_subtract_enabled: bool = BG_SUBTRACT_ENABLED  # Static BG subtraction
+    bg_subtract_sensitivity: int = BG_SUBTRACT_SENSITIVITY  # Threshold 0-255
 
 
 @dataclass
@@ -94,6 +99,9 @@ class FrameProcessor:
         self._timing: Dict[str, float] = {}
         self._extract_transfer_timing: Dict[str, float] = {}
         
+        # Background subtraction
+        self.bg_subtractor = BackgroundSubtractor()
+        
         # GPU pipeline (zero-copy path)
         self._gpu_pipeline: Optional[GpuPipeline] = None
         self._gpu_path_active = False
@@ -114,6 +122,7 @@ class FrameProcessor:
                 yolo_imgsz=settings.imgsz,
             )
             self._gpu_pipeline = GpuPipeline(gpu_settings)
+            self._gpu_pipeline._bg_subtractor = self.bg_subtractor  # Share instance
             self._gpu_path_active = True
             print("[Pipeline] GPU pipeline active - zero-copy enhancement + YOLO (kornia/PyTorch)")
         elif TORCH_CUDA_AVAILABLE:
@@ -350,6 +359,10 @@ class FrameProcessor:
             gs.denoise_enabled = False
             
         gs.yolo_imgsz = self.settings.imgsz
+        
+        # Background subtraction
+        gs.bg_subtract_enabled = self.settings.bg_subtract_enabled
+        gs.bg_subtract_sensitivity = self.settings.bg_subtract_sensitivity
     
     def set_preview_size(self, width: int, height: int):
         """Set preview dimensions for GPU pipeline."""
@@ -368,6 +381,16 @@ class FrameProcessor:
         frame_start = time.time()
         original_h, original_w = frame.shape[:2]
         timing: Dict[str, float] = {}
+
+        # 0. Background subtraction (before enhancement)
+        if self.settings.bg_subtract_enabled and self.bg_subtractor.has_reference:
+            t0 = time.time()
+            frame = self.bg_subtractor.apply_cpu(frame, self.settings.bg_subtract_sensitivity)
+            timing["bg_subtract"] = (time.time() - t0) * 1000
+            timing["bg_fg_ratio"] = self.bg_subtractor.foreground_ratio
+            timing["bg_mismatched"] = self.bg_subtractor.is_mismatched
+        else:
+            timing["bg_subtract"] = 0.0
 
         # 1. Enhancement
         t0 = time.time()
