@@ -332,6 +332,10 @@ class WallDanceGUI:
             self.callbacks['on_preview_toggle'](value)
         self._update_preview_row_state(value)
     
+    def _on_input_fps_cap_toggle(self, sender, value):
+        if 'on_input_fps_cap_toggle' in self.callbacks:
+            self.callbacks['on_input_fps_cap_toggle'](value)
+
     def _on_preview_cap_toggle(self, sender, value):
         if 'on_preview_cap_toggle' in self.callbacks:
             self.callbacks['on_preview_cap_toggle'](value)
@@ -786,7 +790,26 @@ class WallDanceGUI:
 
         ctrl_w = scaled(CONTROL_PANEL_WIDTH)
         h_pad = scaled(28)       # left(6) + right(6) + window padding + gap
-        v_overhead = scaled(155)  # top bar + bottom bar + window padding + spacing
+
+        # Dynamically measure top/bottom bar heights if rendered,
+        # otherwise fall back to a safe estimate.
+        top_h = 0
+        bot_h = 0
+        try:
+            if dpg.does_item_exist("top_bar_wrapper"):
+                top_h = dpg.get_item_rect_size("top_bar_wrapper")[1]
+            if dpg.does_item_exist("bottom_bar_wrapper"):
+                bot_h = dpg.get_item_rect_size("bottom_bar_wrapper")[1]
+        except Exception:
+            pass
+
+        if top_h > 0 and bot_h > 0:
+            # Measured bars + DPG window padding (2×8) + spacer(2) + item spacing gaps
+            # Use generous padding to guarantee bottom bar stays visible
+            v_overhead = int(top_h + bot_h) + scaled(95)
+        else:
+            # First frame fallback (items not rendered yet)
+            v_overhead = scaled(220)
 
         mid_h = max(scaled(200), vp_h - v_overhead)
         vid_w = max(scaled(200), vp_w - ctrl_w - h_pad)
@@ -979,6 +1002,10 @@ class WallDanceGUI:
                 dpg.set_value("badge_cam_type", "[--]")
                 dpg.configure_item("badge_cam_type", color=(150, 150, 150))
 
+        # Show/hide IDS-specific sliders based on camera type
+        if dpg.does_item_exist("ids_sliders_group"):
+            dpg.configure_item("ids_sliders_group", show=(camera_type == "IDS_PEAK"))
+
         osc_color = (120, 255, 120) if osc_enabled else (255, 120, 120)
         if dpg.does_item_exist("badge_osc"):
             dpg.set_value("badge_osc", "ON" if osc_enabled else "OFF")
@@ -1077,6 +1104,7 @@ class WallDanceGUI:
             'greyscale': ['adv_greyscale_checkbox'],
             'preview': ['adv_preview_checkbox'],
             'preview_cap': ['adv_preview_cap_checkbox'],
+            'input_fps_cap': ['adv_input_fps_cap_checkbox'],
             'fp16': ['adv_fp16_checkbox'],
             'trt': ['adv_trt_checkbox'],
             'osc': ['osc_checkbox'],

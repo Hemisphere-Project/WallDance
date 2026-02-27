@@ -44,12 +44,39 @@ STATE_LABELS = {
 _dpi_scale = 1.0
 
 # Layout constants (in unscaled pixels, use scaled() for actual values)
-CONTROL_PANEL_WIDTH = 320
+CONTROL_PANEL_WIDTH = 370
 
 
 def scaled(value: int) -> int:
     """Scale a pixel value by the DPI factor."""
     return int(value * _dpi_scale)
+
+
+def _slider_nudge(slider_tag: str, step: float, min_val: float, max_val: float, callback=None):
+    """Return a nudge function that adjusts a slider by +/- step."""
+    def _nudge(sender, app_data, direction=1):
+        cur = dpg.get_value(slider_tag)
+        new = round(cur + step * direction, 6)
+        new = max(min_val, min(max_val, new))
+        dpg.set_value(slider_tag, new)
+        if callback:
+            callback(slider_tag, new)
+    return _nudge
+
+
+def _add_slider_row(slider_tag: str, step: float, min_val: float, max_val: float, callback=None):
+    """Add - / + buttons next to a slider for fine-tuning.
+    Call this inside a horizontal group, right after the slider.
+    """
+    nudge = _slider_nudge(slider_tag, step, min_val, max_val, callback)
+    dpg.add_button(
+        label="-", width=scaled(20),
+        callback=lambda: nudge(None, None, -1),
+    )
+    dpg.add_button(
+        label="+", width=scaled(20),
+        callback=lambda: nudge(None, None, 1),
+    )
 
 
 def get_state_colors(state: SystemState) -> Tuple[Tuple, Tuple]:
@@ -282,14 +309,16 @@ def build_ui(gui: Any):
     and bottom.  The preview image is scaled to fit the available area.
     """
     with dpg.window(tag="main_window", label="WallDance Control Panel"):
-        build_top_bar(gui)
+        with dpg.group(tag="top_bar_wrapper"):
+            build_top_bar(gui)
         dpg.add_spacer(height=scaled(2))
         with dpg.group(horizontal=True, tag="middle_group"):
             dpg.add_spacer(width=scaled(6))  # Left padding
             build_video_panel(gui)
             build_control_panel(gui)
             dpg.add_spacer(width=scaled(6))  # Right padding
-        build_bottom_bar(gui)
+        with dpg.group(tag="bottom_bar_wrapper"):
+            build_bottom_bar(gui)
 
 
 def build_top_bar(gui: Any):
@@ -615,15 +644,17 @@ def build_show_settings(gui: Any):
         with dpg.group(horizontal=True):
             with dpg.group():
                 dpg.add_text("Person Height", color=(180, 180, 180))
-                height_slider = dpg.add_slider_int(
-                    tag="person_height_slider",
-                    default_value=gui.config.get("person_height_px", 200),
-                    min_value=50,
-                    max_value=800,
-                    format="%d px",
-                    width=scaled(130),
-                    callback=gui._on_person_height_change,
-                )
+                with dpg.group(horizontal=True):
+                    height_slider = dpg.add_slider_int(
+                        tag="person_height_slider",
+                        default_value=gui.config.get("person_height_px", 200),
+                        min_value=50,
+                        max_value=800,
+                        format="%d px",
+                        width=scaled(90),
+                        callback=gui._on_person_height_change,
+                    )
+                    _add_slider_row("person_height_slider", 10, 50, 800, gui._on_person_height_change)
                 with dpg.tooltip(height_slider):
                     dpg.add_text("Expected person height in pixels.\nCalibrate for each venue/distance.")
             
@@ -631,14 +662,16 @@ def build_show_settings(gui: Any):
             
             with dpg.group():
                 dpg.add_text("Max Dancers", color=(180, 180, 180))
-                max_p_slider = dpg.add_slider_int(
-                    tag="max_persons_slider",
-                    default_value=gui.config.get("max_persons", 6),
-                    min_value=1,
-                    max_value=12,
-                    width=scaled(100),
-                    callback=gui._on_max_persons_change,
-                )
+                with dpg.group(horizontal=True):
+                    max_p_slider = dpg.add_slider_int(
+                        tag="max_persons_slider",
+                        default_value=gui.config.get("max_persons", 6),
+                        min_value=1,
+                        max_value=12,
+                        width=scaled(60),
+                        callback=gui._on_max_persons_change,
+                    )
+                    _add_slider_row("max_persons_slider", 1, 1, 12, gui._on_max_persons_change)
                 with dpg.tooltip(max_p_slider):
                     dpg.add_text("Maximum dancers to track")
         
@@ -646,15 +679,17 @@ def build_show_settings(gui: Any):
         
         # Confidence threshold
         dpg.add_text("Detection Confidence", color=(180, 180, 180))
-        conf_slider = dpg.add_slider_float(
-            tag="show_conf_slider",
-            default_value=gui.config.get("confidence", 0.25),
-            min_value=0.1,
-            max_value=0.9,
-            format="%.2f",
-            width=-1,
-            callback=gui._on_confidence_change,
-        )
+        with dpg.group(horizontal=True):
+            conf_slider = dpg.add_slider_float(
+                tag="show_conf_slider",
+                default_value=gui.config.get("confidence", 0.25),
+                min_value=0.1,
+                max_value=0.9,
+                format="%.2f",
+                width=scaled(-90),
+                callback=gui._on_confidence_change,
+            )
+            _add_slider_row("show_conf_slider", 0.05, 0.1, 0.9, gui._on_confidence_change)
         with dpg.tooltip(conf_slider):
             dpg.add_text("Lower = more detections (may include false positives)\nHigher = fewer, more certain detections")
 
@@ -726,24 +761,30 @@ def build_tracker_section(gui: Any):
     with dpg.collapsing_header(label="Tracker", default_open=False, tag="section_tracker", closable=False):
 
         dpg.add_text("Max Age (frames)")
-        age_slider = dpg.add_slider_int(
-            tag="tracker_age_slider",
-            default_value=gui.config.get("tracker_max_age", 20),
-            min_value=5,
-            max_value=60,
-            callback=gui._on_tracker_age_change,
-        )
+        with dpg.group(horizontal=True):
+            age_slider = dpg.add_slider_int(
+                tag="tracker_age_slider",
+                default_value=gui.config.get("tracker_max_age", 20),
+                min_value=5,
+                max_value=60,
+                width=scaled(-90),
+                callback=gui._on_tracker_age_change,
+            )
+            _add_slider_row("tracker_age_slider", 1, 5, 60, gui._on_tracker_age_change)
         with dpg.tooltip(age_slider):
             dpg.add_text("Frames to keep a lost track")
         
         dpg.add_text("Smoothing")
-        smooth_slider = dpg.add_slider_int(
-            tag="tracker_smoothing_slider",
-            default_value=gui.config.get("tracker_smoothing", 1),
-            min_value=1,
-            max_value=10,
-            callback=gui._on_tracker_smoothing_change,
-        )
+        with dpg.group(horizontal=True):
+            smooth_slider = dpg.add_slider_int(
+                tag="tracker_smoothing_slider",
+                default_value=gui.config.get("tracker_smoothing", 1),
+                min_value=1,
+                max_value=10,
+                width=scaled(-90),
+                callback=gui._on_tracker_smoothing_change,
+            )
+            _add_slider_row("tracker_smoothing_slider", 1, 1, 10, gui._on_tracker_smoothing_change)
         with dpg.tooltip(smooth_slider):
             dpg.add_text("Temporal smoothing of keypoint positions.\n1 = No smoothing (raw detections)\nHigher = Smoother but more latency")
         dpg.add_spacer(height=scaled(5))
@@ -858,43 +899,55 @@ def build_enhancement_section(gui: Any):
             )
         
         dpg.add_text("Brightness Threshold", color=(180, 180, 180))
-        dpg.add_slider_int(
-            tag="adv_brightness_threshold_slider",
-            default_value=gui.config.get("brightness_threshold", 60),
-            min_value=0,
-            max_value=255,
-            callback=gui._on_brightness_threshold_change,
-        )
+        with dpg.group(horizontal=True):
+            dpg.add_slider_int(
+                tag="adv_brightness_threshold_slider",
+                default_value=gui.config.get("brightness_threshold", 60),
+                min_value=0,
+                max_value=255,
+                width=scaled(-90),
+                callback=gui._on_brightness_threshold_change,
+            )
+            _add_slider_row("adv_brightness_threshold_slider", 5, 0, 255, gui._on_brightness_threshold_change)
         
         dpg.add_text("CLAHE Clip", color=(180, 180, 180))
-        dpg.add_slider_float(
-            tag="adv_clahe_slider",
-            default_value=gui.config.get("clahe_clip", 3.0),
-            min_value=1.0,
-            max_value=6.0,
-            format="%.1f",
-            callback=gui._on_clahe_change,
-        )
+        with dpg.group(horizontal=True):
+            dpg.add_slider_float(
+                tag="adv_clahe_slider",
+                default_value=gui.config.get("clahe_clip", 3.0),
+                min_value=1.0,
+                max_value=6.0,
+                format="%.1f",
+                width=scaled(-90),
+                callback=gui._on_clahe_change,
+            )
+            _add_slider_row("adv_clahe_slider", 0.1, 1.0, 6.0, gui._on_clahe_change)
         
         dpg.add_text("Gamma", color=(180, 180, 180))
-        dpg.add_slider_float(
-            tag="adv_gamma_slider",
-            default_value=gui.config.get("gamma", 1.2),
-            min_value=0.5,
-            max_value=2.5,
-            format="%.2f",
-            callback=gui._on_gamma_change,
-        )
+        with dpg.group(horizontal=True):
+            dpg.add_slider_float(
+                tag="adv_gamma_slider",
+                default_value=gui.config.get("gamma", 1.2),
+                min_value=0.5,
+                max_value=2.5,
+                format="%.2f",
+                width=scaled(-90),
+                callback=gui._on_gamma_change,
+            )
+            _add_slider_row("adv_gamma_slider", 0.05, 0.5, 2.5, gui._on_gamma_change)
         
         dpg.add_text("Temporal Denoise", color=(180, 180, 180))
-        dpg.add_slider_float(
-            tag="adv_denoise_slider",
-            default_value=gui.config.get("denoise_strength", 0.0),
-            min_value=0.0,
-            max_value=0.9,
-            format="%.2f",
-            callback=gui._on_denoise_change,
-        )
+        with dpg.group(horizontal=True):
+            dpg.add_slider_float(
+                tag="adv_denoise_slider",
+                default_value=gui.config.get("denoise_strength", 0.0),
+                min_value=0.0,
+                max_value=0.9,
+                format="%.2f",
+                width=scaled(-90),
+                callback=gui._on_denoise_change,
+            )
+            _add_slider_row("adv_denoise_slider", 0.05, 0.0, 0.9, gui._on_denoise_change)
 
 
 def build_input_section(gui: Any):
@@ -923,39 +976,59 @@ def build_input_section(gui: Any):
                 width=scaled(50),
                 callback=gui._on_camera_toggle,
             )
-        
-        dpg.add_spacer(height=scaled(4))
-        dpg.add_text("IDS Crop Ratio (W/H)", color=(180, 180, 180))
-        dpg.add_slider_float(
-            tag="adv_ids_ratio_slider",
-            default_value=gui.config.get("ids_ratio", 1.0),
-            min_value=0.5,
-            max_value=2.0,
-            format="%.2f",
-            callback=gui._on_ids_ratio_change,
-        )
 
         dpg.add_spacer(height=scaled(4))
-        dpg.add_text("IDS Gain (dB)", color=(180, 180, 180))
-        dpg.add_slider_float(
-            tag="adv_ids_gain_slider",
-            default_value=gui.config.get("ids_gain_db", 0.0),
-            min_value=0.0,
-            max_value=48.0,
-            format="%.1f",
-            callback=gui._on_ids_gain_change,
+        dpg.add_checkbox(
+            label="Cap Input 20 FPS",
+            tag="adv_input_fps_cap_checkbox",
+            default_value=gui.config.get("input_fps_cap", False),
+            callback=gui._on_input_fps_cap_toggle,
         )
 
-        dpg.add_spacer(height=scaled(4))
-        dpg.add_text("IDS Exposure (\u00b5s)", color=(180, 180, 180))
-        dpg.add_slider_float(
-            tag="adv_ids_exposure_slider",
-            default_value=gui.config.get("ids_exposure_us", 10000.0),
-            min_value=100.0,
-            max_value=100000.0,
-            format="%.0f",
-            callback=gui._on_ids_exposure_change,
-        )
+        # --- IDS-specific controls (hidden when using standard webcam) ---
+        is_ids = gui.config.get("camera_type", "") == "IDS_PEAK"
+        with dpg.group(tag="ids_sliders_group", show=is_ids):
+            dpg.add_spacer(height=scaled(4))
+            dpg.add_text("IDS Crop Ratio (W/H)", color=(180, 180, 180))
+            with dpg.group(horizontal=True):
+                dpg.add_slider_float(
+                    tag="adv_ids_ratio_slider",
+                    default_value=gui.config.get("ids_ratio", 1.0),
+                    min_value=0.5,
+                    max_value=2.0,
+                    format="%.2f",
+                    width=scaled(-90),
+                    callback=gui._on_ids_ratio_change,
+                )
+                _add_slider_row("adv_ids_ratio_slider", 0.05, 0.5, 2.0, gui._on_ids_ratio_change)
+
+            dpg.add_spacer(height=scaled(4))
+            dpg.add_text("IDS Gain (dB)", color=(180, 180, 180))
+            with dpg.group(horizontal=True):
+                dpg.add_slider_float(
+                    tag="adv_ids_gain_slider",
+                    default_value=gui.config.get("ids_gain_db", 0.0),
+                    min_value=0.0,
+                    max_value=48.0,
+                    format="%.1f",
+                    width=scaled(-90),
+                    callback=gui._on_ids_gain_change,
+                )
+                _add_slider_row("adv_ids_gain_slider", 0.5, 0.0, 48.0, gui._on_ids_gain_change)
+
+            dpg.add_spacer(height=scaled(4))
+            dpg.add_text("IDS Exposure (\u00b5s)", color=(180, 180, 180))
+            with dpg.group(horizontal=True):
+                dpg.add_slider_float(
+                    tag="adv_ids_exposure_slider",
+                    default_value=gui.config.get("ids_exposure_us", 10000.0),
+                    min_value=100.0,
+                    max_value=100000.0,
+                    format="%.0f",
+                    width=scaled(-90),
+                    callback=gui._on_ids_exposure_change,
+                )
+                _add_slider_row("adv_ids_exposure_slider", 500.0, 100.0, 100000.0, gui._on_ids_exposure_change)
 
 
 def build_preview_section(gui: Any):

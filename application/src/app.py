@@ -174,6 +174,9 @@ class WallDanceApp:
         # Preview/display state
         self.preview_enabled = PREVIEW_ENABLED
         self.preview_fps_cap = False
+        self.input_fps_cap = False
+        self._input_fps_cap_interval = 1.0 / 20.0  # 20 FPS = 50ms
+        self._last_input_frame_time = 0.0
         self.preview_stride = 1
         self.preview = PreviewGeometry(
             render_scale=PREVIEW_RENDER_SCALE,
@@ -269,6 +272,7 @@ class WallDanceApp:
             "osc_port": self.osc_port,
             "preview_enabled": self.preview_enabled,
             "preview_fps_cap": self.preview_fps_cap,
+            "input_fps_cap": self.input_fps_cap,
             "preview_scale": self.preview.render_scale,
             "ids_ratio": self.ids_ratio,
             "ids_gain_db": self.ids_gain_db,
@@ -308,6 +312,7 @@ class WallDanceApp:
             "on_osc_toggle": self._cb_osc_toggle,
             "on_osc_config": self._cb_osc_config,
             "on_preview_toggle": self._cb_preview_toggle,
+            "on_input_fps_cap_toggle": self._cb_input_fps_cap_toggle,
             "on_preview_cap_toggle": self._cb_preview_cap_toggle,
             "on_preview_scale_change": self._cb_preview_scale_change,
             "on_save_config": self._cb_save_config,
@@ -362,6 +367,7 @@ class WallDanceApp:
             "osc_port": self.osc_port,
             "preview_enabled": self.preview_enabled,
             "preview_fps_cap": self.preview_fps_cap,
+            "input_fps_cap": self.input_fps_cap,
             "preview_scale": self.preview.render_scale,
             "ids_ratio": self.ids_ratio,
             "ids_gain_db": self.ids_gain_db,
@@ -460,9 +466,20 @@ class WallDanceApp:
             # Check if TRT engine exists
             force_pt = not use_trt
             if use_trt and not self.model_manager.engine_exists(base_name):
-                print(f"[Project Switch] TRT enabled but no engine for {base_name}@{new_imgsz}, using PyTorch")
-                force_pt = True
-                use_trt = False
+                from model_manager import is_tensorrt_available
+                if is_tensorrt_available():
+                    # Prompt user before starting long TRT build
+                    if self._prompt_trt_build_sync(base_name):
+                        print(f"[Project Switch] User accepted TRT build for {base_name}@{new_imgsz}")
+                        force_pt = False
+                    else:
+                        print(f"[Project Switch] User declined TRT build, using PyTorch")
+                        force_pt = True
+                        use_trt = False
+                else:
+                    print(f"[Project Switch] TRT not available, using PyTorch")
+                    force_pt = True
+                    use_trt = False
             
             print(f"[Project Switch] Loading model {model_name}... (TRT={use_trt}, force_pt={force_pt})")
             if not self._load_model_with_progress(model_name, force_pt=force_pt):
@@ -631,6 +648,9 @@ class WallDanceApp:
         if "preview_fps_cap" in config:
             self.preview_fps_cap = config["preview_fps_cap"]
             self.gui and self.gui.sync_checkbox("preview_cap", self.preview_fps_cap)
+        if "input_fps_cap" in config:
+            self.input_fps_cap = config["input_fps_cap"]
+            self.gui and self.gui.sync_checkbox("input_fps_cap", self.input_fps_cap)
         if "preview_scale" in config:
             # Legacy config value – render scale is now auto-computed from layout.
             # Just store it; actual scale will be overridden by next layout recompute.
@@ -1149,6 +1169,39 @@ class WallDanceApp:
             self._pending_model_switch = model_name
             self._model_loading = True  # Block processing until model is reloaded
 
+    def _prompt_trt_build_sync(self, model_name: str) -> bool:
+        """Show TRT build prompt and block until user responds.
+        
+        Used during startup / project switch before entering the main loop.
+        
+        Args:
+            model_name: Base model name (e.g. "yolo11m-pose")
+            
+        Returns:
+            True if user chose to build, False if declined.
+        """
+        if self.gui is None:
+            return False
+        
+        user_choice = {"build_trt": None}
+        
+        def on_choice(build_trt: bool):
+            user_choice["build_trt"] = build_trt
+        
+        self.gui.show_tensorrt_prompt(model_name, on_choice)
+        
+        # Spin the GUI event loop until the user clicks a button
+        while user_choice["build_trt"] is None:
+            dpg.render_dearpygui_frame()
+            time.sleep(0.016)
+        
+        # Let modal close cleanly
+        for _ in range(5):
+            dpg.render_dearpygui_frame()
+            time.sleep(0.02)
+        
+        return user_choice["build_trt"]
+
     def _cb_trt_toggle(self, enabled: bool):
         """Handle TensorRT toggle checkbox.
         
@@ -1275,6 +1328,13 @@ class WallDanceApp:
             print("Preview: ON (video pushed to GUI)")
         else:
             print("Preview: OFF (no video output - measure raw FPS)")
+
+    def _cb_input_fps_cap_toggle(self, enabled: bool):
+        self.input_fps_cap = enabled
+        if enabled:
+            print("Input FPS cap: ON (20 FPS limit)")
+        else:
+            print("Input FPS cap: OFF (uncapped)")
 
     def _cb_preview_cap_toggle(self, enabled: bool):
         self.preview_fps_cap = enabled
@@ -1927,7 +1987,21 @@ class WallDanceApp:
         else:
             # No saved project - load default model
             print("No saved project, loading default model...")
-            if not self._load_model_with_progress(YOLO_MODEL, force_pt=not USE_TENSORRT):
+            force_pt_default = not USE_TENSORRT
+            if USE_TENSORRT:
+                from model_manager import is_tensorrt_available
+                base_default = YOLO_MODEL.replace('.pt', '').replace('.engine', '')
+                if is_tensorrt_available() and not self.model_manager.engine_exists(base_default):
+                    # Prompt user before starting long TRT build
+                    if self._prompt_trt_build_sync(base_default):
+                        print("User accepted TRT build at startup")
+                        force_pt_default = False
+                    else:
+                        print("User declined TRT build at startup, using PyTorch")
+                        force_pt_default = True
+                elif not is_tensorrt_available():
+                    force_pt_default = True
+            if not self._load_model_with_progress(YOLO_MODEL, force_pt=force_pt_default):
                 print("ERROR: Failed to load model. Exiting.")
                 return
             self.current_model_name = YOLO_MODEL.replace('.pt', '').replace('.engine', '')
@@ -2160,6 +2234,17 @@ class WallDanceApp:
                         self._update_gpu_stats_if_due()
                     time.sleep(0.01)
                     continue
+
+                # Input FPS cap: wait if too soon since last processed frame
+                if self.input_fps_cap and (frame is not None or gpu_tensor is not None):
+                    now = time.perf_counter()
+                    elapsed = now - self._last_input_frame_time
+                    if elapsed < self._input_fps_cap_interval:
+                        remaining = self._input_fps_cap_interval - elapsed
+                        if self.gui:
+                            self.gui.render_frame()
+                        time.sleep(remaining)
+                    self._last_input_frame_time = time.perf_counter()
 
                 # Update frame acquisition timestamp for stall detection.
                 # Must happen here (not just in diag callback) because the diag
