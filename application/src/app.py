@@ -2014,6 +2014,16 @@ class WallDanceApp:
         self.recorder.set_project(self._current_project)
         self._update_recording_ui()
 
+        # Show CPU fallback badge immediately if GPU is not available
+        if self.gui and self.processor:
+            self.gui.update_compute_mode_badge(self.processor.gpu_fallback_reason or "")
+            if self.processor.gpu_fallback_reason:
+                self.gui.show_toast(
+                    "⚠ Running on CPU — no GPU acceleration",
+                    duration=6.0,
+                    color=(255, 120, 120),
+                )
+
         print("Starting main loop...")
         self.running = True
         rec_ui_update_counter = 0
