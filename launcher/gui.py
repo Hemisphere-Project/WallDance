@@ -7,8 +7,8 @@ from tkinter import messagebox
 from git_manager import GitManager
 from process_runner import ProcessRunner
 
-# Patterns to detect in install.bat output
-INSTALL_PATTERNS = {
+# Patterns to detect in install.bat output (only actionable ones)
+INSTALL_ERROR_PATTERNS = {
     "python_missing": {
         "pattern": r"ERROR:.*Python 3 is missing",
         "title": "Python 3 Required",
@@ -19,7 +19,6 @@ INSTALL_PATTERNS = {
             "Or run:  winget install Python.Python.3.12\n\n"
             "After installing Python, click 'Retry' to resume installation."
         ),
-        "severity": "critical",
     },
     "uv_missing": {
         "pattern": r"ERROR:.*uv is missing",
@@ -31,7 +30,6 @@ INSTALL_PATTERNS = {
             "Or run:  winget install astral-sh.uv\n\n"
             "After installing uv, click 'Retry' to resume installation."
         ),
-        "severity": "critical",
     },
     "dep_failed": {
         "pattern": r"ERROR:.*Dependency installation failed",
@@ -41,61 +39,15 @@ INSTALL_PATTERNS = {
             "This may be caused by network issues or missing system libraries.\n\n"
             "Check the logs for details, then click 'Retry'."
         ),
-        "severity": "critical",
-    },
-    "no_gpu": {
-        "pattern": r"No NVIDIA GPU detected",
-        "title": "No NVIDIA GPU Detected",
-        "message": (
-            "No NVIDIA GPU was found on this machine.\n\n"
-            "WallDance will run in CPU-only mode (lower FPS).\n"
-            "This is fine for testing or machines without a dedicated GPU.\n\n"
-            "Continue with CPU-only installation?"
-        ),
-        "severity": "info",
-    },
-    "cuda_unavailable": {
-        "pattern": r"WARNING:.*CUDA not available to PyTorch",
-        "title": "CUDA Not Available",
-        "message": (
-            "An NVIDIA GPU was detected, but PyTorch cannot use CUDA.\n\n"
-            "The installer will attempt to fix this automatically.\n"
-            "If this persists, ensure NVIDIA CUDA drivers are installed:\n"
-            "  https://developer.nvidia.com/cuda-downloads\n\n"
-            "The app will fall back to CPU mode if CUDA cannot be enabled."
-        ),
-        "severity": "warning",
-    },
-    "cuda_fixed": {
-        "pattern": r"OK:.*Automatic PyTorch upgrade succeeded",
-        "title": "CUDA Fixed",
-        "message": "CUDA support was automatically restored.",
-        "severity": "success",
-    },
-    "cuda_still_unavailable": {
-        "pattern": r"WARNING:.*CUDA still not available after auto-fix",
-        "title": "CUDA Unavailable (Auto-Fix Failed)",
-        "message": (
-            "The automatic CUDA fix did not work.\n\n"
-            "WallDance will run in CPU-only mode (lower FPS but functional).\n\n"
-            "To enable GPU acceleration later:\n"
-            "1. Install NVIDIA CUDA drivers\n"
-            "2. Run install.bat again from the WallDance folder\n\n"
-            "Continue in CPU mode?"
-        ),
-        "severity": "choice",
-    },
-    "arch_mismatch": {
-        "pattern": r"WARNING:.*GPU architecture mismatch",
-        "title": "GPU Architecture Mismatch",
-        "message": (
-            "Your GPU requires a different PyTorch/CUDA build.\n\n"
-            "The installer will attempt to find a compatible version automatically.\n"
-            "If this fails, WallDance will fall back to CPU mode."
-        ),
-        "severity": "warning",
     },
 }
+
+# Patterns that indicate CPU-only mode (not errors, just informational)
+CPU_MODE_PATTERNS = [
+    r"CUDA still not available after auto-fix",
+    r"No NVIDIA GPU detected",
+    r"CUDA not available to PyTorch.*Continuing in CPU mode",
+]
 
 
 class LauncherGUI(ctk.CTk):
@@ -288,44 +240,41 @@ class LauncherGUI(ctk.CTk):
         # Use monitored version that checks patterns on each line
         install_code = self.run_bat_monitored(bat_path)
         
+        full_log = "\n".join(self.install_log_lines)
+        
         if install_code == 0:
-            # Success — but check if there were warnings we should summarize
-            full_log = "\n".join(self.install_log_lines)
+            # Success — check if we ended up in CPU-only mode
+            is_cpu_mode = any(re.search(p, full_log) for p in CPU_MODE_PATTERNS)
             
-            # Check for CPU-only mode (no GPU or CUDA fix failed)
-            if re.search(r"CUDA still not available|No NVIDIA GPU detected", full_log):
-                if "cuda_still_unavailable" not in self.install_alerts_shown:
-                    choice = self.ask_choice_sync(
-                        "CPU Mode",
-                        "Installation completed, but GPU/CUDA is not available.\n\n"
-                        "WallDance will run in CPU-only mode (lower FPS but functional).\n\n"
-                        "You can fix this later by installing NVIDIA CUDA drivers\n"
-                        "and running install.bat again from the WallDance folder.\n\n"
-                        "Continue in CPU mode?",
-                        yes_text="Continue",
-                        no_text="Exit (fix later)"
-                    )
-                    if not choice:
-                        self.update_status("Installation paused. Fix dependencies and re-launch.")
-                        self.append_log("User chose to exit and fix dependencies.\n")
-                        self.after(0, self.progress_bar.stop)
-                        self.after(0, lambda: self.action_btn.configure(state="normal", text="Retry"))
-                        return False
+            if is_cpu_mode:
+                choice = self.ask_choice_sync(
+                    "CPU Mode",
+                    "Installation completed successfully, but GPU/CUDA is not available.\n\n"
+                    "WallDance will run in CPU-only mode (lower FPS but functional).\n\n"
+                    "To enable GPU later: install NVIDIA CUDA drivers,\n"
+                    "then re-launch WallDance (install will re-run automatically).\n\n"
+                    "Continue in CPU mode?",
+                    yes_text="Continue",
+                    no_text="Exit (fix later)"
+                )
+                if not choice:
+                    self.update_status("Install done. Fix CUDA/GPU and re-launch.")
+                    self.append_log("User chose to exit and fix GPU/CUDA.\n")
+                    self.after(0, self.progress_bar.stop)
+                    self.after(0, lambda: self.action_btn.configure(state="normal", text="Retry"))
+                    return False
             
             self.append_log("Installation complete.\n")
             return True
         else:
-            # Failure — analyze why and show appropriate dialog
-            full_log = "\n".join(self.install_log_lines)
+            # Failure — find the most specific error message
+            info = None
+            for key, pat_info in INSTALL_ERROR_PATTERNS.items():
+                if re.search(pat_info["pattern"], full_log):
+                    info = pat_info
+                    break
             
-            # Determine specific error
-            if re.search(INSTALL_PATTERNS["python_missing"]["pattern"], full_log):
-                info = INSTALL_PATTERNS["python_missing"]
-            elif re.search(INSTALL_PATTERNS["uv_missing"]["pattern"], full_log):
-                info = INSTALL_PATTERNS["uv_missing"]
-            elif re.search(INSTALL_PATTERNS["dep_failed"]["pattern"], full_log):
-                info = INSTALL_PATTERNS["dep_failed"]
-            else:
+            if not info:
                 info = {
                     "title": "Installation Failed",
                     "message": f"install.bat exited with error code {install_code}.\n\nCheck the logs for details, then click 'Retry'.",
@@ -339,7 +288,6 @@ class LauncherGUI(ctk.CTk):
             )
             
             if choice:
-                # User wants to retry
                 self.append_log("Retrying installation...\n")
                 return self._run_install_interactive()  # Recursive retry
             else:
@@ -350,31 +298,13 @@ class LauncherGUI(ctk.CTk):
                 return False
 
     def run_bat_monitored(self, bat_file):
-        """Run a bat file while monitoring output for known patterns."""
+        """Run a bat file, collecting output lines for post-analysis."""
         event = threading.Event()
         return_code = [-1]
 
         def on_output(line):
             self.install_log_lines.append(line.rstrip())
             self.after(0, self.append_log, line)
-            
-            # Check for informational patterns while install is running
-            for key, info in INSTALL_PATTERNS.items():
-                if key in self.install_alerts_shown:
-                    continue
-                if re.search(info["pattern"], line):
-                    self.install_alerts_shown.add(key)
-                    severity = info.get("severity", "info")
-                    
-                    if severity == "info":
-                        # Non-blocking info: just show as info dialog
-                        self.show_info_sync(info["title"], info["message"])
-                    elif severity == "warning":
-                        # Show warning but let install continue
-                        self.show_warning_sync(info["title"], info["message"])
-                    elif severity == "success":
-                        self.show_info_sync(info["title"], info["message"])
-                    # critical and choice are handled after install completes
 
         def on_done(code):
             return_code[0] = code
