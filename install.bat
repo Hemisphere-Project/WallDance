@@ -147,7 +147,18 @@ if "%HAS_GPU%"=="1" (
 
     if not "!CUDA_OK!"=="1" (
         echo WARNING: CUDA not available to PyTorch despite NVIDIA GPU being present.
-        echo Fix: ensure CUDA drivers are installed, then run install.bat again.
+        echo [WallDance] This likely means the PyTorch index did not have a CUDA build for the required version.
+        echo [WallDance] Attempting automatic CUDA PyTorch upgrade...
+        call :auto_fix_torch sm_auto
+        rem Re-check after fix attempt
+        set "CUDA_OK2="
+        for /f "usebackq delims=" %%A in (`%UV_CMD% run --no-sync python -c "import torch; print('1' if torch.cuda.is_available() else '0')" 2^>nul`) do set "CUDA_OK2=%%A"
+        if not "!CUDA_OK2!"=="1" (
+            echo WARNING: CUDA still not available after auto-fix. Continuing in CPU mode.
+            echo Fix: ensure CUDA drivers are installed, then run install.bat again.
+        ) else (
+            echo OK: CUDA is now available after PyTorch upgrade.
+        )
         exit /b 0
     )
 
@@ -182,7 +193,7 @@ exit /b 0
 
 :auto_fix_torch
 set "REQ_SM=%~1"
-if not defined REQ_SM set "REQ_SM=sm_120"
+if not defined REQ_SM set "REQ_SM=sm_auto"
 
 echo [WallDance] Attempting automatic PyTorch upgrade for %REQ_SM%...
 echo [WallDance] Trying PyTorch CUDA wheels in order: cu130, cu129, cu128, cu126, cu124
@@ -192,12 +203,17 @@ for %%I in (cu130 cu129 cu128 cu126 cu124) do (
     %UV_CMD% pip install --upgrade torch torchvision --index-url https://download.pytorch.org/whl/%%I
     if not errorlevel 1 (
         set "AUTO_OK="
-        for /f "usebackq delims=" %%Z in (`%UV_CMD% run --no-sync python -c "import torch; need=r'%REQ_SM%'; arch=torch.cuda.get_arch_list() if hasattr(torch.cuda,'get_arch_list') else []; ok=torch.cuda.is_available() and ((not arch) or (need in arch)); print('1' if ok else '0')" 2^>nul`) do set "AUTO_OK=%%Z"
+        if "%REQ_SM%"=="sm_auto" (
+            rem Just check if CUDA is generally available
+            for /f "usebackq delims=" %%Z in (`%UV_CMD% run --no-sync python -c "import torch; print('1' if torch.cuda.is_available() else '0')" 2^>nul`) do set "AUTO_OK=%%Z"
+        ) else (
+            for /f "usebackq delims=" %%Z in (`%UV_CMD% run --no-sync python -c "import torch; need=r'%REQ_SM%'; arch=torch.cuda.get_arch_list() if hasattr(torch.cuda,'get_arch_list') else []; ok=torch.cuda.is_available() and ((not arch) or (need in arch)); print('1' if ok else '0')" 2^>nul`) do set "AUTO_OK=%%Z"
+        )
         if "!AUTO_OK!"=="1" (
             echo OK: Automatic PyTorch upgrade succeeded with %%I.
             exit /b 0
         ) else (
-            echo [WallDance] %%I installed but %REQ_SM% still unavailable.
+            echo [WallDance] %%I installed but CUDA still unavailable.
         )
     ) else (
         echo [WallDance] Install attempt with %%I failed.
