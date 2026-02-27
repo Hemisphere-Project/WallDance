@@ -2019,7 +2019,7 @@ class WallDanceApp:
             self.gui.update_compute_mode_badge(self.processor.gpu_fallback_reason or "")
             if self.processor.gpu_fallback_reason:
                 self.gui.show_toast(
-                    "⚠ Running on CPU — no GPU acceleration",
+                    "/!\\ Running on CPU - no GPU acceleration",
                     duration=6.0,
                     color=(255, 120, 120),
                 )

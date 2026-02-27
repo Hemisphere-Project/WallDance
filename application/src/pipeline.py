@@ -120,7 +120,7 @@ class FrameProcessor:
             print("[Pipeline] CUDA available - YOLO on GPU, Enhancement on CPU")
         else:
             print("[Pipeline] CUDA not available - all processing on CPU")
-            self._gpu_fallback_reason = "CUDA not available – PyTorch was built without GPU support or no compatible GPU found."
+            self._gpu_fallback_reason = "CUDA not available - PyTorch was built without GPU support or no compatible GPU found."
 
     @staticmethod
     def _is_cuda_kernel_compat_error(exc: Exception) -> bool:
