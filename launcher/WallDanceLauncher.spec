@@ -5,7 +5,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('C:\\Users\\tango\\Documents\\GitHub\\WallDance\\launcher\\.venv\\Lib\\site-packages\\customtkinter', 'customtkinter/')],
+    datas=[('C:\\Users\\tango\\Documents\\GitHub\\WallDance\\launcher\\.venv\\Lib\\site-packages\\customtkinter', 'customtkinter/'), ('icon.ico', '.')],
     hiddenimports=['win32timezone'],
     hookspath=[],
     hooksconfig={},
@@ -35,4 +35,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon=['icon.ico'],
 )

@@ -25,7 +25,11 @@ echo CustomTkinter path: %CTK_PATH%
 
 :: Run PyInstaller
 echo Running PyInstaller...
-pyinstaller --noconfirm --onefile --windowed --name "WallDanceLauncher" --add-data "%CTK_PATH%;customtkinter/" --icon "icon.ico" --hidden-import win32timezone --clean main.py
+if exist "dist\WallDanceLauncher.exe" del /q "dist\WallDanceLauncher.exe"
+pyinstaller --noconfirm --onefile --windowed --name "WallDanceLauncher" --add-data "%CTK_PATH%;customtkinter/" --add-data "icon.ico;." --icon "icon.ico" --hidden-import win32timezone --clean main.py
+
+:: Flush Windows icon cache so explorer picks up the new icon
+ie4uinit.exe -show
 
 echo Build complete. The executable is in the "dist" folder.
 pause

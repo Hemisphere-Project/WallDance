@@ -60,6 +60,21 @@ class SetupDialog(ctk.CTk):
         self.destroy()
         sys.exit(0)
 
+def _copy_bundled_icon(target_dir):
+    """Extract the bundled icon.ico to the target directory."""
+    try:
+        if getattr(sys, 'frozen', False):
+            # PyInstaller bundles --add-data files into sys._MEIPASS
+            bundled_icon = os.path.join(sys._MEIPASS, "icon.ico")
+        else:
+            bundled_icon = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico")
+        
+        dest_icon = os.path.join(target_dir, "icon.ico")
+        if os.path.exists(bundled_icon) and not os.path.exists(dest_icon):
+            shutil.copy2(bundled_icon, dest_icon)
+    except Exception:
+        pass  # Non-critical
+
 def main():
     ctk.set_appearance_mode("System")
     ctk.set_default_color_theme("blue")
@@ -93,6 +108,9 @@ def main():
                     new_exe_path = os.path.join(final_dir, os.path.basename(current_exe))
                     shutil.copy2(current_exe, new_exe_path)
                     
+                    # Copy icon.ico next to the exe for the desktop shortcut
+                    _copy_bundled_icon(final_dir)
+                    
                     install_manager.create_desktop_shortcut(new_exe_path)
                     
                     # Restart the new exe with --no-setup flag and delete the current one
@@ -105,6 +123,7 @@ def main():
                     sys.exit(1)
             else:
                 # Running in the correct folder already
+                _copy_bundled_icon(base_dir)
                 install_manager.create_desktop_shortcut(current_exe)
     else:
         # Running as script

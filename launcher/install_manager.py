@@ -26,11 +26,16 @@ def create_desktop_shortcut(target_exe):
         desktop = winshell.desktop()
         path = os.path.join(desktop, "WallDance.lnk")
         
+        # Use a dedicated .ico file next to the exe if available, otherwise fall back to exe icon
+        icon_path = os.path.join(os.path.dirname(target_exe), "icon.ico")
+        if not os.path.exists(icon_path):
+            icon_path = target_exe
+        
         shell = Dispatch('WScript.Shell')
         shortcut = shell.CreateShortCut(path)
         shortcut.Targetpath = target_exe
         shortcut.WorkingDirectory = os.path.dirname(target_exe)
-        shortcut.IconLocation = target_exe
+        shortcut.IconLocation = f"{icon_path},0"
         shortcut.save()
         return True
     except Exception as e:
