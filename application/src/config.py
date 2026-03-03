@@ -276,6 +276,21 @@ TRACKER_CASCADED_MATCHING = True         # Established tracks match first (pass 
                                          # detections (pass 2).  Prevents newly-
                                          # spawned tracks from stealing detections
                                          # that belong to established dancers.
+TRACKER_CASCADE_OCCLUSION_SWAP = True    # Post-cascade swap: when a detection
+                                         # merger occurs (n_det < n_tracks) and
+                                         # an exiting established track claims a
+                                         # detection that a nearby tentative track
+                                         # should have, swap the assignment so the
+                                         # tentative track survives.
+TRACKER_CASCADE_SUPPRESSION_FRAMES = 5   # After CASCADE_OCCLUSION_SWAP fires for
+                                         # an established track, suppress it from
+                                         # Pass 1 for this many frames so the
+                                         # tentative track keeps priority.
+TRACKER_MERGE_DIRECTION_SWAP = True      # Post-cascade swap: when two tracks
+                                         # emerge from a merge/occlusion zone
+                                         # on the wrong sides (velocity direction
+                                         # reversed relative to pre-merge history),
+                                         # swap them back.
 
 # =============================================================================
 # OSC OUTPUT

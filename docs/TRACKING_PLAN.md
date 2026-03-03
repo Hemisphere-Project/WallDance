@@ -4,6 +4,13 @@
 **Context**: Similar costumes (ReID low-value), ≤6 dancers, comfortable GPU headroom (>15ms spare).  
 **Started**: 2026-03-03  
 
+**Methodology**: For each reported issue, first analyze logs and identify root
+cause.  Then assess whether a direct, targeted fix is possible (e.g. Phase 1b/1c/1d
+style post-match corrections) or whether the issue requires advancing to the next
+plan phase (e.g. Phase 2 temporal signatures, Phase 3 optical flow).  Prefer
+direct fixes when the failure mode is clear and self-contained; escalate to a new
+phase only when the root cause is structural and can't be patched locally.
+
 ---
 
 ## Test reference video
@@ -192,6 +199,195 @@ the gap 7→9→11.
   for normal pose variation while still catching true merges (two people in one bbox).
 - **ID counter waste fix**: `_try_resurrect()` now sets the class counter to re-use the
   dormant ID instead of wasting a fresh one.
+
+---
+
+## Known Issue: Cascade Occlusion Swap (frames ~366-393)
+
+> **Priority**: HIGH — discovered during Phase 1 validation, slot 6 replay.
+
+### Reproduction
+1. D1 (ID1) on the left, D2 (ID2) moving right toward the edge.
+2. D3 enters from the right edge → ID3 created at frame 353 (tentative).
+3. D2 (exiting right) passes through D3 (entering).  YOLO merges them into
+   a single detection at frame 366 (det count drops from 3 to 2).
+4. **Bug**: Cascaded matching gives the merged detection to ID2 (established,
+   hits=106) — established-first priority.  ID3 (tentative, hits=8) gets nothing.
+5. D2 exits the frame.  ID2 smoothly transitions onto D3's body (velocity
+   drops from +18 to ≈0 in one frame).  ID3 drifts off and goes dormant
+   at frame 393.
+6. Result: D3 is now tracked as ID2.  The real D2 is gone.
+
+### Root cause (confirmed via log analysis)
+
+**Cascaded matching's established-first priority is harmful during occlusion.**
+
+| Frame | Event |
+|-------|-------|
+| 353 | ID3 created at x=942 (right edge entry), tentative. |
+| 358 | ID2 at x=856 (vel +12.5 → right), ID3 at x=934 (vel ≈0). Gap = 78px. |
+| 364 | ID2 at x=895, ID3 at x=927. Gap = 32px. Converging. |
+| **366** | YOLO drops to 2 dets. Pass 1 matches ID2 (est) to the merged det. ID3 (tent) unmatched → OCCLUDED. |
+| **367** | ID2 velocity: **+18 → -0.7** (reversal = identity changed). |
+| 370-390 | ID2 at x≈913, nearly stationary = tracking D3's body. ID3 Kalman prediction drifts off-screen. |
+| **393** | ID3 goes DORMANT (edge_exit=true). Swap is permanent. |
+
+The mechanism: Pass 1 gives established tracks absolute priority over all
+detections.  When an exiting established track (D2, moving fast to the right)
+and a tentative track (D3, stationary) overlap in a single merged detection,
+the established track always wins.  After the established track exits, it's
+seamlessly reassigned to the tentative track's body — a silent ID swap with
+no log anomaly except the velocity reversal.
+
+### Fix applied (Phase 1c)
+- **Post-cascade occlusion swap** (`TRACKER_CASCADE_OCCLUSION_SWAP=True`):
+  After both cascade passes, but **before** Kalman updates are committed,
+  check for the pattern:
+  1. Detection count < track count (merger/occlusion detected)
+  2. An unmatched tentative track T is in close proximity to a matched
+     established track E
+  3. E is moving significantly faster than T (exiting behavior:
+     `speed_E > speed_T × 1.5 + 3`)
+  4. T's predicted position is within `close_dist` of the detection E claimed
+  When all criteria are met → swap: give the detection to T, un-assign E.
+  E will age out via occlusion-aware aging (correctly — it was exiting).
+- **Deferred updates**: `_run_assignment_pass` now accepts `pending_updates`
+  list. In cascaded mode, `.update()` calls are deferred until after the
+  swap check.  Non-cascaded (legacy) mode is unchanged.
+- **New log event**: `CASCADE_OCCLUSION_SWAP` with est/tent IDs and speeds.
+
+### Iteration: Cascade suppression window (Phase 1c+)
+
+**Problem**: The single-frame CASCADE_OCCLUSION_SWAP fires correctly (e.g. at
+frame 366) but is undone on the very next frame.  On frame 367,
+established-first priority in Pass 1 reclaims the detection for the exiting
+track.  The tentative track starves with no detections and dies by frame 390.
+
+**Root cause**: The swap is a one-shot per-frame correction.  Established-first
+cascade priority is persistent — it overrides the swap on every subsequent frame.
+
+**Fix applied**:
+- **Cascade suppression window** (`TRACKER_CASCADE_SUPPRESSION_FRAMES=5`):
+  When CASCADE_OCCLUSION_SWAP fires for established track E, E is excluded
+  from Pass 1 for N frames (default 5).  During suppression, E participates
+  in Pass 2 alongside tentative tracks — it can still match if spare
+  detections remain, but it cannot steal priority from the tentative track.
+- Implementation: `_cascade_suppressed: dict[int, int]` on DancerTracker
+  maps track_id → frames remaining.  Counters decrement each frame; stale
+  entries (track deleted) are auto-pruned.
+- Pass 1 `est_indices` now filters out suppressed track IDs.
+- Pass 2 `tent_indices` now includes suppressed established tracks.
+- **New log event**: `CASCADE_SUPPRESSED` with active suppression map.
+- **Cleanup**: Removed `[MERGE_DBG]` debug prints from
+  `_check_merge_direction_swaps` (Phase 1d).
+
+### Iteration 2: Velocity clamp on swap beneficiary
+
+**Problem**: Pass 1 suppression alone is insufficient. The suppressed
+established track T2 competes in Pass 2 and still wins, because the tentative
+track T3's Kalman prediction drifts away from the detection.
+
+**Root cause**: The merged detection centroid is offset from T3's true position
+(it's a blend of two bodies). When T3 receives this offset detection via the
+swap, Kalman interprets the 14px position jump as velocity (v=-14.2). On
+subsequent frames T3's prediction drifts far left (895→872→841→805...) and
+by F371 it is Mahalanobis-gated (chi²=10.8 > gate 9.21). T2, even in Pass 2,
+is always closer and wins every frame. T3 starves and dies.
+
+**Fix applied**:
+- **Velocity clamp**: When CASCADE_OCCLUSION_SWAP fires and gives the merged
+  detection to tentative track T, clamp T's Kalman velocity and acceleration
+  to zero (`kf.x[2:] = 0.0`).
+- ~~Initially placed before the deferred `.update()` call — but this was
+  ineffective because the Kalman gain recomputes velocity from the
+  innovation (predicted - measured), undoing the clamp.~~
+- **Moved to post-update** (Phase 1c+++): clamp fires **after** all deferred
+  `track.update()` calls via `_post_update_clamp_indices` set.  Swap methods
+  register track indices; the `update()` loop applies clamps after Kalman.
+- Combined with Pass 1 suppression, this ensures the tentative track keeps
+  matching until it accumulates enough hits to become established.
+
+---
+
+## Known Issue: Established-Established Merge Swap (frames ~297-305)
+
+> **Priority**: HIGH — discovered during Phase 1 validation, slot 6 replay.
+
+### Reproduction
+1. D1 (ID1, established, 200 hits) on the right, moving LEFT (vel ≈ -7).
+2. D2 (ID2, established, 64 hits) entered from left, moving RIGHT (vel ≈ +14).
+3. D2 passes in front of D1.  They converge (48px gap at frame 294).
+4. Frame 291+: Mahalanobis gate blocks correct matches at 89px (chi²=11 >
+   gate 9.21, effective radius ~80px).  Both tracks fall to FORCE_UPDATE
+   (correct assignment, but bypasses cost matrix).
+5. Frame 297: YOLO merges to 1 detection (D2 in front).  Both established →
+   both in Pass 1.  ID2 (closer to merged det) gets it.  ID1 → OCCLUDED.
+6. Frames 297-304: ID1's Kalman (constant-acceleration model) extrapolates
+   rightward: vel 0→+3→+6→+9→+12→+15→+18.  ID2 tracks merged centroid.
+7. **Frame 305**: 2 detections return.  Hungarian matches:
+   - ID1 (predicted at x=557) → det1 at x=507 (D2's body) — cost 156
+   - ID2 (at x=482) → det0 at x=466 (D1's body) — cost 25
+8. **Result**: ID1 now tracks D2 (going right), ID2 tracks D1 (going left).
+
+### Root cause
+
+**Kalman drift during occlusion + spatial re-match on wrong side.**
+
+| Frame | ID1 (D1) | ID2 (D2) | Event |
+|-------|----------|----------|-------|
+| 294 | x=484 v=-7 | x=436 v=+14 | Last 2-det frame, 48px gap |
+| 295 | x=484 v=0 | x=443 v=+7 | FORCE_UPDATE (gate too tight), vel corrupted |
+| 297 | x=485 v=+3 occ | x=458 v=+14 | 1 det. ID1 OCCLUDED. |
+| 304 | x=539 v=+18 occ | x=482 v=-4 | ID1 drifted 55px RIGHT of entry |
+| **305** | x=507 v=+6 | x=466 v=-19 | **SWAP**: ID1→right det, ID2→left det |
+
+Two reinforcing mechanisms:
+1. Constant-acceleration Kalman extrapolation pushes ID1 far from its true
+   position during occlusion (from x=484 to x=539).
+2. After separation, ID1's predicted position (x=557) is closer to D2's
+   detection (x=507) than to D1's detection (x=466).  ID2 meanwhile sits
+   near the merged centroid (x=482) and matches D1's detection (x=466).
+
+### Fix applied (Phase 1d)
+- **Post-merge direction swap** (`TRACKER_MERGE_DIRECTION_SWAP=True`):
+  After cascade passes (and Phase 1c swap), but **before** Kalman updates,
+  check pairs of matched tracks for velocity-direction reversal:
+  1. At least one track was occluded (merge exit)
+  2. Dominant velocity directions are opposite (+1 vs -1) — computed from the
+     older half of a 20-frame `_vx_history` buffer (resistant to merge
+     corruption)
+  3. Matched detections are close (just separated from merge zone)
+  4. Assignment is direction-reversed: LEFT-going track matched RIGHT
+     detection and vice versa
+  When all criteria are met → swap assignments.
+- **Velocity direction buffer**: `DancerTrack._vx_history` (deque, maxlen=20)
+  records x-velocity on each matched frame.  `get_dominant_vx_direction()`
+  returns the dominant sign from the older half of the buffer.
+- **New log event**: `MERGE_DIRECTION_SWAP` with track IDs and directions.
+
+### Iteration: Velocity clamp on merge direction swap (Phase 1d+)
+
+**Problem**: The F306 swap fires correctly, but the detection-jump creates a
+Kalman velocity spike (v=33→60).  This spike causes Hungarian to cross-match
+on the next frame (F310), triggering an oscillation cycle:
+swap → velocity shock → cross-match → merge → swap → shock, until
+`_vx_history` gets corrupted and the swap detector fails permanently.
+
+**Root cause**: When we swap detections between two tracks, each track receives
+a detection far from its Kalman prediction.  The Kalman filter interprets this
+position jump as real velocity, creating a spike that feeds back into the cost
+matrix and causes cross-matching.
+
+**Fix applied**:
+- **Velocity clamp on both tracks**: After MERGE_DIRECTION_SWAP fires, zero
+  out Kalman velocity and acceleration on both swapped tracks
+  (`kf.x[2:] = 0.0`).  Same technique as CASCADE_OCCLUSION_SWAP clamp.
+- ~~Initially placed before the deferred `.update()` call — ineffective
+  because the Kalman gain recomputes velocity from the innovation.~~
+- **Moved to post-update** (Phase 1d++): clamp fires **after** all deferred
+  `track.update()` calls via `_post_update_clamp_indices` set.
+- Both tracks then predict from their updated position with zero velocity,
+  giving Hungarian a clean cost matrix on the next frame.
 
 ---
 
@@ -425,6 +621,14 @@ the gap 7→9→11.
 | 2026-03-03 | Separate gate noise from smoothing noise | `TRACKER_MAHALANOBIS_GATE_NOISE=700` gives ~80px effective radius; Kalman `R=2` kept for smoothing quality |
 | 2026-03-03 | Relaxed MERGE_SIZE_RATIO 1.3 → 2.0 | 1.3 was blocking legitimate detections during normal pose variation near occlusions |
 | 2026-03-03 | Fixed ID counter waste in resurrection | `_try_resurrect()` now reuses dormant ID in constructor instead of wasting a fresh one |
+| 2026-03-03 | Root-caused cascade occlusion swap | Established-first priority gives merged detection to exiting track; tentative track (the one staying) starves and dies → silent ID swap |
+| 2026-03-03 | Post-cascade occlusion swap (Phase 1c) | `TRACKER_CASCADE_OCCLUSION_SWAP=True`; deferred updates + speed-based swap criterion; `_check_occlusion_cascade_swaps()` |
+| 2026-03-03 | Root-caused established-established merge swap | Kalman CA model drifts occluded track rightward during merge; re-emergence matches wrong body. Both established → no cascade priority to exploit |
+| 2026-03-03 | Post-merge direction swap (Phase 1d) | `TRACKER_MERGE_DIRECTION_SWAP=True`; 20-frame `_vx_history` buffer; dominant direction from older half; direction-reversed pairs swapped before Kalman update |
+| 2026-03-03 | Cascade suppression window (Phase 1c+) | CASCADE_OCCLUSION_SWAP was single-frame, undone by Pass 1 next frame. Added `TRACKER_CASCADE_SUPPRESSION_FRAMES=5` — suppressed track excluded from Pass 1 for N frames; participates in Pass 2 instead. Cleaned up `[MERGE_DBG]` prints |
+| 2026-03-03 | Velocity clamp on swap beneficiary (Phase 1c++) | Suppression alone insufficient — merged detection offset interpreted as velocity → Kalman drift → tentative track Mahalanobis-gated. Clamp `kf.x[2:]=0` on swap beneficiary prevents runaway drift |
+| 2026-03-03 | Velocity clamp on merge direction swap (Phase 1d+) | MERGE_DIRECTION_SWAP detection jump → velocity spike → cross-match oscillation (swap↔cross-match until `_vx_history` corrupted). Clamp `kf.x[2:]=0` on both swapped tracks eliminates feedback loop |
+| 2026-03-03 | Move velocity clamps to post-update (Phase 1c+++/1d++) | Pre-update clamps were no-ops: Kalman gain recomputes velocity from innovation, undoing the zeroing. Moved to `_post_update_clamp_indices` set, applied after all deferred `.update()` calls. Fixes both F300 and F370 swap regressions |
 
 ---
 

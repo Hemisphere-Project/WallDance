@@ -29,7 +29,8 @@ from config import (
     TRACKER_EVENT_LOG_ENABLED, TRACKER_EVENT_LOG_FILE,
     TRACKER_EVENT_LOG_MAX_ENTRIES, TRACKER_EVENT_LOG_FLUSH_INTERVAL,
     TRACKER_MAHALANOBIS_GATE, TRACKER_MAHALANOBIS_GATE_NOISE,
-    TRACKER_CASCADED_MATCHING,
+    TRACKER_CASCADED_MATCHING, TRACKER_CASCADE_OCCLUSION_SWAP,
+    TRACKER_MERGE_DIRECTION_SWAP, TRACKER_CASCADE_SUPPRESSION_FRAMES,
 )
 from tracking_logger import TrackingLogger
 
@@ -103,6 +104,9 @@ class DancerTrack:
         self._occluded = False           # True when hidden behind another track
         self._shadow_streak = 0          # Consecutive frames detected as shadow
         self.smoothing_depth = smoothing_depth
+
+        # Velocity-direction history for merge-exit swap detection (Phase 1d)
+        self._vx_history = deque(maxlen=20)
         
         # Smoothed centroid for output (EMA, does not affect tracking)
         centroid = self._compute_centroid(keypoints, confidence)
@@ -220,6 +224,9 @@ class DancerTrack:
         centroid = self._compute_centroid(keypoints, confidence)
         self.kf.update(centroid.reshape(2, 1))
         self.history.append(centroid)
+
+        # Record x-velocity for merge-exit direction swap
+        self._vx_history.append(float(self.kf.x[2, 0]))
         
         # Update smoothed centroid (EMA for jitter-free output)
         alpha = CENTROID_OUTPUT_SMOOTHING
@@ -266,6 +273,35 @@ class DancerTrack:
     def get_speed(self):
         """Get speed magnitude."""
         return np.linalg.norm(self.get_velocity())
+
+    def get_dominant_vx_direction(self, min_entries=5, min_confidence=0.6):
+        """Return the dominant recent x-velocity direction.
+
+        Uses the **older half** of ``_vx_history`` so that any corruption
+        from a close-approach or merge zone is excluded.
+
+        Returns:
+            +1 (moving right), -1 (moving left), or 0 (unclear/too few data).
+        """
+        if len(self._vx_history) < min_entries:
+            return 0
+        # Use the older half of the buffer — least corrupted by merge
+        n_old = max(3, len(self._vx_history) // 2)
+        old_entries = list(self._vx_history)[:n_old]
+        # Filter out near-zero velocities (< 1 px/frame) as noise
+        signs = [int(np.sign(v)) for v in old_entries if abs(v) > 1.0]
+        if len(signs) < 3:
+            return 0
+        n_pos = sum(1 for s in signs if s > 0)
+        n_neg = sum(1 for s in signs if s < 0)
+        total = n_pos + n_neg
+        if total == 0:
+            return 0
+        if n_pos / total >= min_confidence:
+            return 1
+        if n_neg / total >= min_confidence:
+            return -1
+        return 0
 
     @property
     def avg_bbox_area(self):
@@ -338,6 +374,12 @@ class DancerTracker:
         # Frame dimensions for edge-exit detection (content area bounds)
         self._content_left: int = 0     # left edge of actual image content
         self._content_right: int = 0    # right edge of actual image content
+
+        # Cascade suppression window (Phase 1c+)
+        # After CASCADE_OCCLUSION_SWAP fires for an established track,
+        # that track is suppressed from Pass 1 for N frames so the
+        # tentative track retains priority and doesn't starve.
+        self._cascade_suppressed: dict[int, int] = {}  # track_id → frames left
 
         # Structured event logger (Phase 0)
         self.logger = TrackingLogger(
@@ -602,10 +644,266 @@ class DancerTracker:
         return cost_matrix
 
     # ------------------------------------------------------------------
+    # Post-cascade occlusion swap (Phase 1c)
+    # ------------------------------------------------------------------
+    def _check_occlusion_cascade_swaps(self, detections, pending_updates,
+                                        matched_det, matched_trk,
+                                        matched_pairs_log):
+        """Swap assignments when an exiting established track steals a
+        detection from a nearby tentative track during a detection merger.
+
+        **Pattern detected** (confirmed at frame 366, slot 6):
+        An established track E is exiting while a tentative track T is
+        stationary nearby.  YOLO merges them into one detection.  Pass 1
+        gives the det to E (established-first priority).  T gets nothing
+        and slowly dies → ID swap.
+
+        **Fix**: after both cascade passes, check if any unmatched tentative
+        track T is near a detection that an established track E claimed.
+        If E is moving significantly faster than T (exiting behaviour) and
+        both are in close proximity, swap: give the det to T, un-assign E.
+        E will age out normally (it was leaving anyway).
+        """
+        if len(detections) >= len(self.tracks):
+            return  # No detection dropout → no merger → nothing to swap
+
+        close_dist = self.distance_threshold * TRACKER_CLOSE_PROXIMITY_RATIO
+
+        # Find unmatched tentative tracks
+        unmatched_tent = [
+            idx for idx, t in enumerate(self.tracks)
+            if idx not in matched_trk and not t.is_established
+        ]
+        if not unmatched_tent:
+            return
+
+        # Collect established matches from pending_updates
+        est_matches = [
+            (upd_i, trk_idx, det_idx)
+            for upd_i, (trk_idx, det_idx, _, _, _) in enumerate(pending_updates)
+            if self.tracks[trk_idx].is_established
+        ]
+        if not est_matches:
+            return
+
+        swaps_to_apply = []  # (tent_trk_idx, upd_i, est_trk_idx, det_idx)
+        claimed_pending = set()
+
+        for tent_idx in unmatched_tent:
+            tent_track = self.tracks[tent_idx]
+            tent_pos = tent_track.get_centroid()
+            tent_speed = tent_track.get_speed()
+
+            best_swap = None
+            best_closeness = float('inf')
+
+            for upd_i, est_trk_idx, det_idx in est_matches:
+                if upd_i in claimed_pending:
+                    continue
+
+                est_track = self.tracks[est_trk_idx]
+                est_pos = est_track.get_centroid()
+                est_speed = est_track.get_speed()
+
+                # Criterion 1: est and tent are in close proximity (overlapping)
+                if np.linalg.norm(est_pos - tent_pos) > close_dist:
+                    continue
+
+                # Criterion 2: est is moving significantly faster than tent
+                # (passing through / exiting)
+                if est_speed < tent_speed * 1.5 + 3.0:
+                    continue
+
+                # Criterion 3: tentative track is near the claimed detection
+                det_centroid = self._compute_centroid(*detections[det_idx])
+                tent_det_dist = float(np.linalg.norm(tent_pos - det_centroid))
+                if tent_det_dist > close_dist:
+                    continue
+
+                if tent_det_dist < best_closeness:
+                    best_closeness = tent_det_dist
+                    best_swap = (upd_i, est_trk_idx, det_idx)
+
+            if best_swap is not None:
+                swaps_to_apply.append((tent_idx, *best_swap))
+                claimed_pending.add(best_swap[0])
+
+        # Apply swaps
+        for tent_idx, upd_i, est_trk_idx, det_idx in swaps_to_apply:
+            tent_track = self.tracks[tent_idx]
+            est_track = self.tracks[est_trk_idx]
+            kpts, conf, bbox = detections[det_idx]
+
+            # Register the established track for cascade suppression
+            self._cascade_suppressed[est_track.track_id] = TRACKER_CASCADE_SUPPRESSION_FRAMES
+
+            self.logger.log("CASCADE_OCCLUSION_SWAP", {
+                "from_est_id": est_track.track_id,
+                "to_tent_id": tent_track.track_id,
+                "det": det_idx,
+                "est_speed": round(est_track.get_speed(), 1),
+                "tent_speed": round(tent_track.get_speed(), 1),
+                "suppression_frames": TRACKER_CASCADE_SUPPRESSION_FRAMES,
+            })
+            if TRACKER_DEBUG:
+                print(f"[TRACKER] Cascade occlusion swap: det {det_idx} "
+                      f"from est #{est_track.track_id} "
+                      f"(speed={est_track.get_speed():.1f}) "
+                      f"→ tent #{tent_track.track_id} "
+                      f"(speed={tent_track.get_speed():.1f})")
+
+            # Swap the pending update: tentative gets the detection
+            pending_updates[upd_i] = (tent_idx, det_idx, kpts, conf, bbox)
+
+            # Mark tentative for post-update velocity clamp (applied after
+            # deferred .update() so the clamp isn't undone by Kalman gain).
+            self._post_update_clamp_indices.add(tent_idx)
+
+            # Update matched sets
+            matched_trk.discard(est_trk_idx)
+            matched_trk.add(tent_idx)
+
+            # Update log entries
+            matched_pairs_log[:] = [
+                p for p in matched_pairs_log
+                if not (p["track_id"] == est_track.track_id
+                        and p["det"] == det_idx)
+            ]
+            det_centroid = self._compute_centroid(kpts, conf, bbox)
+            tent_dist = float(np.linalg.norm(
+                tent_track.get_centroid() - det_centroid))
+            matched_pairs_log.append({
+                "det": det_idx,
+                "track_id": tent_track.track_id,
+                "cost": round(tent_dist * 0.4, 1),  # approx pos_cost
+            })
+
+    # ------------------------------------------------------------------
+    # Post-merge direction swap (Phase 1d)
+    # ------------------------------------------------------------------
+    def _check_merge_direction_swaps(self, detections, pending_updates,
+                                      matched_det, matched_trk,
+                                      matched_pairs_log):
+        """Swap assignments when tracks emerge from a merge on the wrong side.
+
+        **Pattern detected** (confirmed at frames 297-305, slot 6):
+        Two established tracks A (going LEFT) and B (going RIGHT) converge
+        and merge into a single YOLO detection.  B grabs the merged
+        detection; A goes OCCLUDED.  A's Kalman prediction drifts
+        rightward (constant-acceleration model).  When they separate,
+        A matches the RIGHT detection (B's body) and B matches the LEFT
+        detection (A's body) → silent ID swap.
+
+        **Fix**: After cascade passes, check pairs of tracks in
+        pending_updates.  If at least one was occluded (merge exit), they
+        have opposite dominant velocity directions, their matched
+        detections are close (just separated), and the assignment is
+        direction-reversed, swap them back.
+        """
+        if len(pending_updates) < 2:
+            return
+
+        close_dist = self.distance_threshold * TRACKER_CLOSE_PROXIMITY_RATIO
+
+        swaps = []
+        used = set()
+
+        for i in range(len(pending_updates)):
+            if i in used:
+                continue
+            trk_i, det_i, kpts_i, conf_i, bbox_i = pending_updates[i]
+            track_i = self.tracks[trk_i]
+            dir_i = track_i.get_dominant_vx_direction()
+            if dir_i == 0:
+                continue
+            det_pos_i = self._compute_centroid(kpts_i, conf_i, bbox_i)
+
+            for j in range(i + 1, len(pending_updates)):
+                if j in used:
+                    continue
+                trk_j, det_j, kpts_j, conf_j, bbox_j = pending_updates[j]
+                track_j = self.tracks[trk_j]
+
+                # Criterion 1: at least one was occluded (merge exit)
+                if not track_i._occluded and not track_j._occluded:
+                    continue
+
+                dir_j = track_j.get_dominant_vx_direction()
+                if dir_j == 0:
+                    continue
+
+                # Criterion 2: opposite dominant velocity directions
+                if dir_i == dir_j:
+                    continue
+
+                det_pos_j = self._compute_centroid(kpts_j, conf_j, bbox_j)
+
+                # Criterion 3: detections are close (just separated from merge)
+                det_gap = abs(det_pos_i[0] - det_pos_j[0])
+                if det_gap > close_dist:
+                    continue
+
+                # Criterion 4: assignment is direction-reversed
+                # LEFT-going track should match the LEFT detection, etc.
+                if det_pos_i[0] < det_pos_j[0]:
+                    # det_i is LEFT, det_j is RIGHT
+                    left_dir, right_dir = dir_i, dir_j
+                else:
+                    left_dir, right_dir = dir_j, dir_i
+
+                # Reversed = LEFT det assigned to RIGHT-going track (+1)
+                #            AND RIGHT det assigned to LEFT-going track (-1)
+                if left_dir == +1 and right_dir == -1:
+                    swaps.append((i, j))
+                    used.add(i)
+                    used.add(j)
+                    break
+
+        # Apply swaps
+        for i, j in swaps:
+            trk_i, det_i, kpts_i, conf_i, bbox_i = pending_updates[i]
+            trk_j, det_j, kpts_j, conf_j, bbox_j = pending_updates[j]
+            track_i = self.tracks[trk_i]
+            track_j = self.tracks[trk_j]
+
+            # Swap: track i gets detection j, track j gets detection i
+            pending_updates[i] = (trk_i, det_j, kpts_j, conf_j, bbox_j)
+            pending_updates[j] = (trk_j, det_i, kpts_i, conf_i, bbox_i)
+
+            # Mark both for post-update velocity clamp (applied after
+            # deferred .update() so the clamp isn't undone by Kalman gain).
+            self._post_update_clamp_indices.add(trk_i)
+            self._post_update_clamp_indices.add(trk_j)
+
+            self.logger.log("MERGE_DIRECTION_SWAP", {
+                "track_a_id": track_i.track_id,
+                "track_b_id": track_j.track_id,
+                "dir_a": int(track_i.get_dominant_vx_direction()),
+                "dir_b": int(track_j.get_dominant_vx_direction()),
+            })
+            if TRACKER_DEBUG:
+                print(f"[TRACKER] Merge direction swap: "
+                      f"#{track_i.track_id} (dir={track_i.get_dominant_vx_direction():+d}) "
+                      f"↔ #{track_j.track_id} (dir={track_j.get_dominant_vx_direction():+d})")
+
+            # Update matched_pairs_log
+            matched_pairs_log[:] = [
+                p for p in matched_pairs_log
+                if p["track_id"] not in (track_i.track_id, track_j.track_id)
+            ]
+            matched_pairs_log.append({
+                "det": det_j, "track_id": track_i.track_id, "cost": -1.0,
+            })
+            matched_pairs_log.append({
+                "det": det_i, "track_id": track_j.track_id, "cost": -1.0,
+            })
+
+    # ------------------------------------------------------------------
     # Assignment pass (used by cascaded matching)
     # ------------------------------------------------------------------
     def _run_assignment_pass(self, detections, det_indices, trk_indices,
-                             matched_det, matched_trk, matched_pairs_log):
+                             matched_det, matched_trk, matched_pairs_log,
+                             pending_updates=None):
         """Run one pass of Hungarian assignment on detection/track subsets.
 
         Computes the cost matrix for the given subsets, runs
@@ -622,6 +920,11 @@ class DancerTracker:
                               (updated in-place).
             matched_pairs_log: List — (det, track_id, cost) triples for
                               the FRAME_SUMMARY event (updated in-place).
+            pending_updates:  Optional list.  When provided, matched
+                              (trk_idx, det_idx, kpts, conf, bbox) tuples
+                              are appended instead of calling track.update()
+                              immediately.  This allows post-cascade swap
+                              checks before committing updates.
         """
         if not det_indices or not trk_indices:
             return
@@ -690,8 +993,11 @@ class DancerTracker:
 
                 matched_det.add(actual_det)
                 matched_trk.add(actual_trk)
-                track.update(kpts, conf, bbox)
                 cost_val = round(float(cost_matrix[row, col]), 1)
+                if pending_updates is not None:
+                    pending_updates.append((actual_trk, actual_det, kpts, conf, bbox))
+                else:
+                    track.update(kpts, conf, bbox)
                 self.logger.log("MATCH", {
                     "det": actual_det,
                     "track_id": track.track_id,
@@ -863,6 +1169,24 @@ class DancerTracker:
             self.frame_count += 1
         self.logger.set_frame(self.frame_count)
 
+        # Tick down cascade suppression counters
+        expired_sup = [tid for tid, ttl in self._cascade_suppressed.items()
+                       if ttl <= 1]
+        for tid in expired_sup:
+            del self._cascade_suppressed[tid]
+        for tid in list(self._cascade_suppressed):
+            self._cascade_suppressed[tid] -= 1
+        # Also remove stale entries for tracks no longer active
+        active_ids = {t.track_id for t in self.tracks}
+        stale_sup = [tid for tid in self._cascade_suppressed
+                     if tid not in active_ids]
+        for tid in stale_sup:
+            del self._cascade_suppressed[tid]
+        if self._cascade_suppressed:
+            self.logger.log("CASCADE_SUPPRESSED", {
+                "suppressed": {tid: ttl for tid, ttl in self._cascade_suppressed.items()},
+            })
+
         # Predict
         for track in self.tracks:
             track.predict()
@@ -879,21 +1203,60 @@ class DancerTracker:
         all_det_indices = list(range(len(detections)))
 
         if TRACKER_CASCADED_MATCHING:
+            # Defer .update() calls so we can run the occlusion swap
+            # check before committing Kalman state changes.
+            pending_updates = []
+
             # --- Pass 1: established tracks ---
+            # Exclude tracks under cascade suppression — they lost a
+            # swap and should not steal the detection back in Pass 1.
             est_indices = [i for i, t in enumerate(self.tracks)
-                           if t.is_established]
+                           if t.is_established
+                           and t.track_id not in self._cascade_suppressed]
             self._run_assignment_pass(
                 detections, all_det_indices, est_indices,
-                matched_det, matched_trk, matched_pairs_log)
+                matched_det, matched_trk, matched_pairs_log,
+                pending_updates=pending_updates)
 
-            # --- Pass 2: tentative tracks vs remaining detections ---
+            # --- Pass 2: tentative tracks + suppressed established ---
+            # Suppressed established tracks participate in Pass 2 alongside
+            # tentative tracks so they can still match if detections remain.
             tent_indices = [i for i, t in enumerate(self.tracks)
-                            if not t.is_established and i not in matched_trk]
+                            if (not t.is_established
+                                or t.track_id in self._cascade_suppressed)
+                            and i not in matched_trk]
             remaining_dets = [d for d in all_det_indices
                               if d not in matched_det]
             self._run_assignment_pass(
                 detections, remaining_dets, tent_indices,
-                matched_det, matched_trk, matched_pairs_log)
+                matched_det, matched_trk, matched_pairs_log,
+                pending_updates=pending_updates)
+
+            # --- Post-cascade occlusion swap check (Phase 1c) ---
+            # Collect track indices that need post-update velocity clamping.
+            self._post_update_clamp_indices: set[int] = set()
+
+            if TRACKER_CASCADE_OCCLUSION_SWAP:
+                self._check_occlusion_cascade_swaps(
+                    detections, pending_updates,
+                    matched_det, matched_trk, matched_pairs_log)
+
+            # --- Post-merge direction swap check (Phase 1d) ---
+            if TRACKER_MERGE_DIRECTION_SWAP:
+                self._check_merge_direction_swaps(
+                    detections, pending_updates,
+                    matched_det, matched_trk, matched_pairs_log)
+
+            # Apply all deferred updates
+            for trk_idx, det_idx, kpts, conf, bbox in pending_updates:
+                self.tracks[trk_idx].update(kpts, conf, bbox)
+
+            # Clamp velocity & acceleration on swapped tracks AFTER the
+            # Kalman update.  If done before, the Kalman gain recomputes
+            # velocity from the innovation (predicted vs measured) and
+            # undoes the clamp.
+            for trk_idx in self._post_update_clamp_indices:
+                self.tracks[trk_idx].kf.x[2:] = 0.0
         else:
             # Single-pass matching (legacy behaviour)
             self._run_assignment_pass(
