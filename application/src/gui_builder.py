@@ -649,7 +649,7 @@ def build_detection_section(gui: Any):
             )
             _add_slider_row("person_height_slider", 10, 50, 800, gui._on_person_height_change)
         with dpg.tooltip(height_slider):
-            dpg.add_text("Expected person height in pixels.\nCalibrate for each venue/distance.")
+            dpg.add_text("Expected dancer height in pixels at current\ncamera distance. All tracking thresholds\nscale from this value. Measure on the\npreview and adjust per venue.")
         
         dpg.add_spacer(height=scaled(6))
         
@@ -667,7 +667,7 @@ def build_detection_section(gui: Any):
             )
             _add_slider_row("show_conf_slider", 0.05, 0.1, 0.9, gui._on_confidence_change)
         with dpg.tooltip(conf_slider):
-            dpg.add_text("Lower = more detections (may include false positives)\nHigher = fewer, more certain detections")
+            dpg.add_text("Detection sensitivity.\nLower = catches more dancers but may create\nghost detections from shadows or rigging.\nHigher = only confident detections.\nStart at 0.25, raise if you see ghosts.")
 
         dpg.add_spacer(height=scaled(6))
 
@@ -684,7 +684,7 @@ def build_detection_section(gui: Any):
             )
             _add_slider_row("tracker_age_slider", 1, 5, 60, gui._on_tracker_age_change)
         with dpg.tooltip(age_slider):
-            dpg.add_text("Frames to keep a lost track")
+            dpg.add_text("How long (in frames) to remember a dancer\nwho disappears. Higher = keeps ID longer\nduring occlusions but slower to drop\nstale tracks. 30-45 is a good default.")
 
 
 def build_visualization_toolbar(gui: Any):

@@ -23,6 +23,9 @@ from config import (
     PERSON_HEIGHT_MIN_RATIO,
     YOLO_IOU_THRESHOLD,
     USE_GPU_PATH,
+    SHADOW_QUALITY_MIN_KEYPOINTS,
+    SHADOW_QUALITY_MIN_CONFIDENCE,
+    SHADOW_PROXIMITY_RATIO,
 )
 from background import BackgroundSubtractor
 from enhancer import ImageEnhancer, TORCH_CUDA_AVAILABLE
@@ -77,6 +80,7 @@ class ScaledTrack:
     bbox: np.ndarray
     history: List[np.ndarray]
     velocity: np.ndarray
+    smoothed_centroid: Optional[np.ndarray] = None  # EMA-smoothed, jitter-free
 
 
 class FrameProcessor:
@@ -317,15 +321,19 @@ class FrameProcessor:
 
         # Tracking
         t0 = time.time()
+        # Set content-area bounds for edge-exit detection.
+        # In the GPU path, tracker coords are in letterboxed imgsz-space;
+        # the actual content sits between pad_x and imgsz - pad_x.
+        letterbox = gpu_timing.get('letterbox', {})
+        lb_scale = letterbox.get('scale', 1.0)
+        pad_x = letterbox.get('pad_x', 0)
+        pad_y = letterbox.get('pad_y', 0)
+        self.tracker.set_frame_dimensions(self.settings.imgsz, pad_x=pad_x)
         tracked = self.tracker.update(detections)
         timing["track"] = (time.time() - t0) * 1000
         timing["path_track"] = "cpu"
 
         # Unscale from letterboxed YOLO space to original camera space
-        letterbox = gpu_timing.get('letterbox', {})
-        lb_scale = letterbox.get('scale', 1.0)
-        pad_x = letterbox.get('pad_x', 0)
-        pad_y = letterbox.get('pad_y', 0)
         scaled_tracks = [self._unscale_letterbox(track, lb_scale, pad_x, pad_y) for track in tracked]
 
         # OSC output
@@ -437,6 +445,8 @@ class FrameProcessor:
 
         # 4. Tracking
         t0 = time.time()
+        # CPU path: YOLO outputs in original frame coords
+        self.tracker.set_frame_dimensions(original_w)
         tracked = self.tracker.update(detections)
         timing["track"] = (time.time() - t0) * 1000
         timing["path_track"] = "cpu"
@@ -450,6 +460,7 @@ class FrameProcessor:
                 bbox=t.bbox.copy(),
                 history=[pt.copy() for pt in t.history],
                 velocity=t.get_velocity().copy(),
+                smoothed_centroid=t.get_smoothed_centroid().copy(),
             ) for t in tracked
         ]
 
@@ -494,6 +505,9 @@ class FrameProcessor:
         velocity = track.get_velocity() * inv_scale
         if not np.all(np.isfinite(velocity)):
             velocity = np.zeros(2, dtype=np.float64)
+
+        # Smoothed centroid (same unscale transform)
+        sm_centroid = (track.get_smoothed_centroid() - pad_xy) * inv_scale
         
         return ScaledTrack(
             track_id=track.track_id,
@@ -502,6 +516,7 @@ class FrameProcessor:
             bbox=bbox,
             history=history,
             velocity=velocity,
+            smoothed_centroid=sm_centroid,
         )
 
     # ------------------------------------------------------------------
@@ -593,6 +608,45 @@ class FrameProcessor:
         if len(size_filtered) <= 1:
             return size_filtered
 
+        # --- Shadow suppression (pre-tracker) ---
+        # Low-quality detections near a high-quality detection are likely
+        # shadow ghosts. Suppress them before pairwise NMS.
+        shadow_radius = self.settings.person_height_px * SHADOW_PROXIMITY_RATIO
+        shadow_suppressed = set()
+        for i, (kpts_i, conf_i, bbox_i) in enumerate(size_filtered):
+            n_valid_i = int(np.sum(conf_i > KEYPOINT_CONFIDENCE))
+            mean_conf_i = (float(np.mean(conf_i[conf_i > KEYPOINT_CONFIDENCE]))
+                           if n_valid_i > 0 else 0.0)
+            is_low_i = (n_valid_i < SHADOW_QUALITY_MIN_KEYPOINTS
+                        or mean_conf_i < SHADOW_QUALITY_MIN_CONFIDENCE)
+            if not is_low_i:
+                continue
+            # This detection has weak skeleton — check if a strong one
+            # is nearby.
+            cent_i = np.array([bbox_i[0] + bbox_i[2] / 2,
+                               bbox_i[1] + bbox_i[3] / 2])
+            for j, (kpts_j, conf_j, bbox_j) in enumerate(size_filtered):
+                if j == i or j in shadow_suppressed:
+                    continue
+                n_valid_j = int(np.sum(conf_j > KEYPOINT_CONFIDENCE))
+                mean_conf_j = (float(np.mean(conf_j[conf_j > KEYPOINT_CONFIDENCE]))
+                               if n_valid_j > 0 else 0.0)
+                is_high_j = (n_valid_j >= SHADOW_QUALITY_MIN_KEYPOINTS
+                             and mean_conf_j >= SHADOW_QUALITY_MIN_CONFIDENCE)
+                if not is_high_j:
+                    continue
+                cent_j = np.array([bbox_j[0] + bbox_j[2] / 2,
+                                   bbox_j[1] + bbox_j[3] / 2])
+                if np.linalg.norm(cent_i - cent_j) < shadow_radius:
+                    shadow_suppressed.add(i)
+                    break
+
+        if shadow_suppressed:
+            size_filtered = [det for idx, det in enumerate(size_filtered)
+                             if idx not in shadow_suppressed]
+            if len(size_filtered) <= 1:
+                return size_filtered
+
         det_with_area = [(i, kpts, conf, bbox, bbox[2] * bbox[3]) for i, (kpts, conf, bbox) in enumerate(size_filtered)]
         det_with_area.sort(key=lambda x: x[4], reverse=True)
 
@@ -611,6 +665,7 @@ class FrameProcessor:
                             kpts_i[k] = kpts_j[k]
                             conf_i[k] = conf_j[k]
                     suppressed.add(j)
+                    
         return [size_filtered[i] for i in sorted(kept_indices)]
 
     def _should_merge(self, bbox_i, bbox_j, kpts_i, conf_i, kpts_j, conf_j, centroid_dist_thresh, keypoint_dist_thresh) -> bool:

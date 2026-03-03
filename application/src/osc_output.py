@@ -49,10 +49,16 @@ class OSCSender:
         def norm_y(y):
             return float(y / frame_height)
         
-        # Centroid (normalized) - compute from bbox
+        # Centroid (normalized) — use smoothed centroid if available
+        # (EMA-filtered for jitter-free generative video input),
+        # otherwise fall back to bbox center.
         bbox = track.bbox
-        centroid_x = bbox[0] + bbox[2] / 2
-        centroid_y = bbox[1] + bbox[3] / 2
+        if hasattr(track, 'smoothed_centroid') and track.smoothed_centroid is not None:
+            centroid_x = float(track.smoothed_centroid[0])
+            centroid_y = float(track.smoothed_centroid[1])
+        else:
+            centroid_x = bbox[0] + bbox[2] / 2
+            centroid_y = bbox[1] + bbox[3] / 2
         self.client.send_message("/walldance/dancer/centroid", 
                                   [dancer_id, norm_x(centroid_x), norm_y(centroid_y)])
         

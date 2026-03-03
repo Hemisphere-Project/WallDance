@@ -167,6 +167,7 @@ class WallDanceApp:
 
         # Video recording
         self.recorder = VideoRecorder()
+        self.recorder.on_playback_start = self._on_playback_start_event
         self._pending_rec_slot: Optional[int] = None  # Slot being recorded to
         self._rec_armed: bool = False  # True when REC clicked, waiting for slot selection
 
@@ -309,7 +310,6 @@ class WallDanceApp:
             "on_person_height_change": self._cb_person_height_change,
             "on_visualization_toggle": self._cb_visualization_toggle,
             "on_tracker_age_change": self._cb_tracker_age_change,
-            "on_tracker_smoothing_change": self._cb_tracker_smoothing_change,
             "on_tracker_reset": self._cb_tracker_reset,
             "on_osc_toggle": self._cb_osc_toggle,
             "on_osc_config": self._cb_osc_config,
@@ -1069,24 +1069,23 @@ class WallDanceApp:
             self.show_ids = enabled
         print(f"{name.capitalize()}: {'ON' if enabled else 'OFF'}")
 
-    def _cb_tracker_distance_change(self, value: int):
-        # Legacy: distance threshold is now auto-derived from person_height_px.
-        # This callback is kept for backward compatibility but is a no-op.
-        pass
-
     def _cb_tracker_age_change(self, value: int):
         self.tracker.max_age = value
         print(f"Tracker max age: {value} frames")
-
-    def _cb_tracker_smoothing_change(self, value: int):
-        self.tracker.smoothing_depth = value
-        print(f"Tracker smoothing: {value} frames")
 
     def _cb_tracker_reset(self):
         self.tracker.reset()
         if self.osc:
             self.osc.send_clear()
         print("Tracker reset")
+
+    def _on_playback_start_event(self, event: str):
+        """Called by VideoRecorder on playback start/restart/loop.
+        
+        Resets the tracker to avoid stale IDs carrying across takes.
+        """
+        print(f"[Playback] Event '{event}' — resetting tracker")
+        self._cb_tracker_reset()
 
     def _cb_osc_toggle(self, enabled: bool):
         self.osc_enabled = enabled

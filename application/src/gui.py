@@ -541,17 +541,9 @@ class WallDanceGUI:
         """Get current system state."""
         return self._system_state
 
-    def _on_tracker_distance_change(self, sender, value):
-        if 'on_tracker_distance_change' in self.callbacks:
-            self.callbacks['on_tracker_distance_change'](value)
-    
     def _on_tracker_age_change(self, sender, value):
         if 'on_tracker_age_change' in self.callbacks:
             self.callbacks['on_tracker_age_change'](value)
-    
-    def _on_tracker_smoothing_change(self, sender, value):
-        if 'on_tracker_smoothing_change' in self.callbacks:
-            self.callbacks['on_tracker_smoothing_change'](value)
     
     def _on_tracker_reset(self):
         if 'on_tracker_reset' in self.callbacks:

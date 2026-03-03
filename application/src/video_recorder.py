@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from queue import Queue, Empty
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -92,6 +92,12 @@ class VideoRecorder:
         self._frame_new: bool = False  # True when decoder wrote a new frame not yet consumed
         self._frame_lock = threading.Lock()
         self._playback_frame_count: int = 0
+
+        # Optional callback fired on playback start / loop / restart.
+        # Signature: on_playback_start(event: str)  where event is
+        # "start", "restart" (same slot), or "loop".
+        # Intended for tracker reset so IDs don't carry across takes.
+        self.on_playback_start: Optional[Callable[[str], None]] = None
     
     @property
     def status(self) -> RecorderStatus:
@@ -401,17 +407,29 @@ class VideoRecorder:
             if wait_time > 0:
                 time.sleep(wait_time)
             
-            # Read next frame
-            ret, frame = self._reader.read()
+            # Read next frame (reader may have been released by stop_playback)
+            reader = self._reader
+            if reader is None:
+                break
+            ret, frame = reader.read()
             if not ret:
                 # End of video - loop back
-                self._reader.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                reader = self._reader
+                if reader is None:
+                    break
+                reader.set(cv2.CAP_PROP_POS_FRAMES, 0)
                 frame_count = 0
                 start_time = time.time()
-                ret, frame = self._reader.read()
+                ret, frame = reader.read()
                 if not ret:
                     print("Playback decoder thread: cannot read frame after loop")
                     break
+                # Notify listener on loop (e.g. tracker reset)
+                if self.on_playback_start:
+                    try:
+                        self.on_playback_start("loop")
+                    except Exception as e:
+                        print(f"[Playback] on_playback_start callback error: {e}")
             
             # Update buffer (latest frame overwrites previous)
             with self._frame_lock:
@@ -482,7 +500,8 @@ class VideoRecorder:
 
         # Reset speed to 1x only when switching to a different slot;
         # keep the user-chosen speed when re-starting the same slot.
-        if slot != previous_slot:
+        is_same_slot = (slot == previous_slot)
+        if not is_same_slot:
             self._playback_speed = 1.0
         
         self._status.state = RecorderState.PLAYING
@@ -516,6 +535,15 @@ class VideoRecorder:
         self._playback_thread.start()
         
         print(f"Started playback from slot {slot}: {filepath} ({self._status.playback_total} frames @ {self._playback_fps:.1f} FPS)")
+
+        # Notify listener (e.g. tracker reset) on start / restart
+        if self.on_playback_start:
+            event = "restart" if is_same_slot else "start"
+            try:
+                self.on_playback_start(event)
+            except Exception as e:
+                print(f"[Playback] on_playback_start callback error: {e}")
+
         return True
     
     @property

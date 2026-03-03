@@ -561,9 +561,8 @@ BRIGHTNESS_THRESHOLD = 60   # Auto-detect threshold
 **Parameters:**
 
 ```python
-TRACKER_DISTANCE_THRESHOLD = 300    # Pixels (in upscaled space)
 TRACKER_VELOCITY_WEIGHT = 0.6       # Trust in velocity prediction
-TRACKER_MAX_AGE = 20                # Frames before track deletion
+TRACKER_MAX_AGE = 45                # Frames before track deletion
 TRACKER_PROCESS_NOISE = 2.5         # Allow velocity changes
 ```
 
@@ -613,8 +612,7 @@ MAX_PERSONS = 6                   # Target dancer count
 ENHANCE_ENABLED = True            # Auto low-light enhancement
 CLAHE_CLIP_LIMIT = 3.0
 GAMMA_CORRECTION = 1.2
-TRACKER_DISTANCE_THRESHOLD = 300  # Generous for fast movement
-TRACKER_MAX_AGE = 20              # Robust to brief occlusions
+TRACKER_MAX_AGE = 45              # Robust to brief occlusions
 TRACKER_VELOCITY_WEIGHT = 0.6     # Trust motion prediction
 ```
 

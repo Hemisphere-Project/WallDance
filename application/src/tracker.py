@@ -11,7 +11,21 @@ from config import (
     TRACKER_MAX_AGE, TRACKER_MIN_HITS, TRACKER_DISTANCE_THRESHOLD,
     TRACKER_DORMANT_MAX_AGE,
     TRACKER_VELOCITY_WEIGHT, TRACKER_PROCESS_NOISE, TRACKER_MEASUREMENT_NOISE,
-    KEYPOINT_CONFIDENCE
+    KEYPOINT_CONFIDENCE,
+    TRACKER_MATCH_GATE_RATIO, TRACKER_NEW_TRACK_GATE_RATIO,
+    TRACKER_DUPLICATE_GATE_RATIO, TRACKER_SEPARATION_MEMORY_FRAMES,
+    TRACKER_SEPARATION_PENALTY_WEIGHT, TRACKER_VELOCITY_PREDICTION_INFLUENCE,
+    TRACKER_ESTABLISHED_FRAMES, TRACKER_MERGE_SIZE_RATIO,
+    TRACKER_OCCLUSION_DISTANCE_RATIO, TRACKER_OCCLUSION_AGE_FACTOR,
+    TRACKER_DORMANT_VELOCITY_DECAY,
+    SHADOW_TRACK_VELOCITY_CORR, SHADOW_TRACK_FRAMES,
+    SHADOW_PROXIMITY_RATIO,
+    TRACKER_ESTABLISHED_MAX_AGE_MULT, TRACKER_CLOSE_PROXIMITY_RATIO,
+    TRACKER_CLOSE_POS_WEIGHT, TRACKER_CLOSE_KPT_WEIGHT,
+    TRACKER_CLOSE_SIZE_WEIGHT, TRACKER_ESTABLISHED_SEP_BOOST,
+    TRACKER_EDGE_ZONE_RATIO, TRACKER_CENTER_EXIT_RESURRECT_BOOST,
+    TRACKER_EDGE_EXIT_AGE_MULT, TRACKER_CENTER_NEW_TRACK_GATE_MULT,
+    CENTROID_OUTPUT_SMOOTHING,
 )
 
 # Set to True for detailed tracking debug output
@@ -24,17 +38,38 @@ class DormantSnapshot:
     Stored in the dormant ("graveyard") pool so that if the same person
     reappears we can resurrect the original track ID instead of minting
     a new one.  Matching uses position + bbox height + keypoint shape.
-    """
-    __slots__ = ('track_id', 'last_position', 'keypoints', 'confidence',
-                 'bbox_height', 'age')
 
-    def __init__(self, track: 'DancerTrack'):
+    Stores velocity so that ``projected_position`` can extrapolate
+    where the person *should* be after N dormant frames.
+    """
+    __slots__ = ('track_id', 'last_position', 'velocity', 'keypoints',
+                 'confidence', 'bbox_height', 'age', 'was_occluded',
+                 'exited_from_edge')
+
+    def __init__(self, track: 'DancerTrack', exited_from_edge: bool = True):
         self.track_id: int = track.track_id
         self.last_position: np.ndarray = track.get_last_known_position().copy()
+        self.velocity: np.ndarray = track.get_velocity().copy()
         self.keypoints: np.ndarray = track.keypoints.copy()
         self.confidence: np.ndarray = track.confidence.copy()
         self.bbox_height: float = float(track.bbox[3])
         self.age: int = 0  # frames since entering dormant pool
+        self.was_occluded: bool = getattr(track, '_occluded', False)
+        self.exited_from_edge: bool = exited_from_edge
+
+    def projected_position(self) -> np.ndarray:
+        """Extrapolate position using stored velocity with decay."""
+        if self.age == 0 or np.linalg.norm(self.velocity) < 0.1:
+            return self.last_position.copy()
+        # Sum of decayed velocity over `age` frames:
+        #   pos += v * sum(decay^i for i in 0..age-1)
+        decay = TRACKER_DORMANT_VELOCITY_DECAY
+        if abs(decay - 1.0) < 1e-6:
+            displacement = self.velocity * self.age
+        else:
+            geo_sum = (1.0 - decay ** self.age) / (1.0 - decay)
+            displacement = self.velocity * geo_sum
+        return self.last_position + displacement
 
 
 class DancerTrack:
@@ -60,13 +95,23 @@ class DancerTrack:
         self.hits = 1
         self.age = 0
         self.time_since_update = 0
+        self._occluded = False           # True when hidden behind another track
+        self._shadow_streak = 0          # Consecutive frames detected as shadow
         self.smoothing_depth = smoothing_depth
+        
+        # Smoothed centroid for output (EMA, does not affect tracking)
+        centroid = self._compute_centroid(keypoints, confidence)
+        self._smoothed_centroid = centroid.copy()
         
         # History for visualization
         self.history = deque(maxlen=30)
         
         # Confidence history for temporal smoothing
         self.confidence_history = deque(maxlen=max(1, smoothing_depth))
+        
+        # Bbox area history for anti-merge detection (Phase 4)
+        self.bbox_area_history = deque(maxlen=30)
+        self.bbox_area_history.append(float(bbox[2] * bbox[3]))
         
         # Initialize Kalman filter for centroid tracking
         # State: [x, y, vx, vy, ax, ay]
@@ -92,9 +137,16 @@ class DancerTrack:
         q = TRACKER_PROCESS_NOISE
         self.kf.Q = np.diag([q*0.1, q*0.1, q*1.0, q*1.0, q*2.0, q*2.0])
         
-        self.kf.P = np.eye(6) * 100.0
-        self.kf.P[2:4, 2:4] *= 10.0
-        self.kf.P[4:6, 4:6] *= 10.0
+        # Initial covariance scales with detection size so that the
+        # filter starts with proportional uncertainty regardless of
+        # whether persons are 50px or 200px tall.
+        h = max(10.0, float(bbox[3]))  # bbox height in pixels
+        pos_var = (h * 0.67) ** 2       # ~2/3 of person height
+        vel_var = pos_var * 0.1         # velocity less certain
+        acc_var = pos_var * 0.01        # acceleration even less
+        self.kf.P = np.diag([pos_var, pos_var,
+                             vel_var, vel_var,
+                             acc_var, acc_var])
         
         centroid = self._compute_centroid(keypoints, confidence)
         self.kf.x = np.zeros((6, 1))
@@ -116,13 +168,21 @@ class DancerTrack:
     
     def predict(self):
         """Predict next state."""
+        # Add slight friction to missing tracks so they don't accelerate away,
+        # but let them coast through occlusions so they emerge on the correct side!
+        if self.time_since_update > 0:
+            self.kf.x[2:4] *= 0.9  # coast through occlusion (10% dampening)
+            self.kf.x[4:6] *= 0.5  # drop acceleration completely
+            
         self.kf.predict()
         self.age += 1
         self.time_since_update += 1
         
         # Clamp velocity to prevent runaway predictions
-        # Max reasonable velocity: ~100 pixels/frame (fast dancer movement)
-        MAX_VELOCITY = 100.0
+        # Max reasonable velocity scales with detection size: a dancer
+        # can't teleport more than ~0.67× their bbox height per frame.
+        own_height = max(10.0, float(self.bbox[3]))
+        MAX_VELOCITY = own_height * 0.67
         vel = self.kf.x[2:4].flatten()
         speed = np.linalg.norm(vel)
         if not np.isfinite(speed) or speed > MAX_VELOCITY:
@@ -144,8 +204,10 @@ class DancerTrack:
         self.keypoints = keypoints.copy()
         self.confidence = confidence.copy()
         self.bbox = np.array(bbox)
+        self.bbox_area_history.append(float(bbox[2] * bbox[3]))
         self.hits += 1
         self.time_since_update = 0
+        self._fractional_age = 0.0
         
         # Store confidence for temporal smoothing
         self.confidence_history.append(confidence.copy())
@@ -153,6 +215,11 @@ class DancerTrack:
         centroid = self._compute_centroid(keypoints, confidence)
         self.kf.update(centroid.reshape(2, 1))
         self.history.append(centroid)
+        
+        # Update smoothed centroid (EMA for jitter-free output)
+        alpha = CENTROID_OUTPUT_SMOOTHING
+        self._smoothed_centroid = (alpha * centroid
+                                   + (1.0 - alpha) * self._smoothed_centroid)
     
     def get_smoothed_confidence(self):
         """Get temporally smoothed confidence values."""
@@ -176,6 +243,10 @@ class DancerTrack:
     def get_centroid(self):
         """Get current estimated centroid."""
         return self.kf.x[:2].flatten()
+
+    def get_smoothed_centroid(self):
+        """Get EMA-smoothed centroid for jitter-free output."""
+        return self._smoothed_centroid.copy()
     
     def get_last_known_position(self):
         """Get last measured position (not predicted)."""
@@ -191,6 +262,44 @@ class DancerTrack:
         """Get speed magnitude."""
         return np.linalg.norm(self.get_velocity())
 
+    @property
+    def avg_bbox_area(self):
+        """Running average of bbox area for anti-merge detection."""
+        if len(self.bbox_area_history) == 0:
+            return float(self.bbox[2] * self.bbox[3])
+        return float(np.mean(self.bbox_area_history))
+
+    @property
+    def is_established(self):
+        """Whether this track has existed long enough to be reliable."""
+        return self.hits >= TRACKER_ESTABLISHED_FRAMES
+
+    @property
+    def skeleton_quality(self) -> float:
+        """0-1 score of skeleton reliability.
+
+        Shadows typically have few visible keypoints with low confidence.
+        Real people have many keypoints with high confidence.
+        """
+        n_valid = int(np.sum(self.confidence > KEYPOINT_CONFIDENCE))
+        mean_conf = float(np.mean(self.confidence[self.confidence > KEYPOINT_CONFIDENCE])) if n_valid > 0 else 0.0
+        # Normalize: 17 keypoints max, confidence max ~1.0
+        kpt_ratio = min(1.0, n_valid / 10.0)  # 10+ keypoints = full score
+        return 0.5 * kpt_ratio + 0.5 * mean_conf
+
+    def get_normalized_skeleton(self):
+        """Keypoints translated to centroid-origin for shape comparison.
+
+        Returns (kpts_norm, mask) where kpts_norm is (17,2) with each
+        valid keypoint expressed relative to the weighted centroid.
+        This makes shape comparison position-independent — critical when
+        two dancers overlap spatially but have different poses.
+        """
+        mask = self.confidence > KEYPOINT_CONFIDENCE
+        centroid = self._compute_centroid(self.keypoints, self.confidence)
+        kpts_norm = self.keypoints - centroid  # broadcast (17,2) - (2,)
+        return kpts_norm, mask
+
 
 class DancerTracker:
     """Multi-dancer tracker with Hungarian assignment."""
@@ -202,18 +311,28 @@ class DancerTracker:
         self.min_hits = TRACKER_MIN_HITS
         self.velocity_weight = TRACKER_VELOCITY_WEIGHT
         self._smoothing_depth = 1  # Temporal confidence smoothing depth
+        self._person_height_px = 150  # updated via set_person_height()
 
         # Scale-dependent thresholds — all derived from person_height_px.
         # Call set_person_height() to update; the master dial in config.py
         # is PERSON_HEIGHT_PX.  TRACKER_DISTANCE_THRESHOLD is only used as
         # the initial fallback before the app callback fires.
-        self.distance_threshold = TRACKER_DISTANCE_THRESHOLD
-        self.new_track_min_distance = max(30, int(TRACKER_DISTANCE_THRESHOLD * 0.33))
-        self.duplicate_distance = max(15, int(TRACKER_DISTANCE_THRESHOLD * 0.17))
+        self.distance_threshold = max(50, int(TRACKER_DISTANCE_THRESHOLD * 0.33))
+        self.new_track_min_distance = max(20, int(TRACKER_DISTANCE_THRESHOLD * 0.33))
+        self.duplicate_distance = max(10, int(TRACKER_DISTANCE_THRESHOLD * 0.17))
 
         # Dormant pool for re-ID after occlusion
         self._dormant: list[DormantSnapshot] = []
         self.dormant_max_age = TRACKER_DORMANT_MAX_AGE
+
+        # Pairwise distance history for separation memory (Phase 2+4)
+        self._pair_distances: dict[tuple[int, int], deque] = {}
+        self._separation_penalty_weight = TRACKER_SEPARATION_PENALTY_WEIGHT
+        self._velocity_prediction_influence = TRACKER_VELOCITY_PREDICTION_INFLUENCE
+
+        # Frame dimensions for edge-exit detection (content area bounds)
+        self._content_left: int = 0     # left edge of actual image content
+        self._content_right: int = 0    # right edge of actual image content
 
     # ------------------------------------------------------------------
     # Person-height master dial
@@ -222,15 +341,44 @@ class DancerTracker:
         """Derive all scale-dependent thresholds from expected person height.
 
         This is the **single knob** that adjusts tracker behaviour for
-        capture distance.  All three thresholds scale linearly:
+        capture distance.  Ratios are configured in config.py:
 
-        * distance_threshold      = height × 1.2  (match gate)
-        * new_track_min_distance  = height × 0.4  (create-track gate)
-        * duplicate_distance      = height × 0.2  (ignore-duplicate gate)
+        * distance_threshold      = height × TRACKER_MATCH_GATE_RATIO
+        * new_track_min_distance  = height × TRACKER_NEW_TRACK_GATE_RATIO
+        * duplicate_distance      = height × TRACKER_DUPLICATE_GATE_RATIO
         """
-        self.distance_threshold = max(50, int(height_px * 1.2))
-        self.new_track_min_distance = max(20, int(height_px * 0.4))
-        self.duplicate_distance = max(10, int(height_px * 0.2))
+        self._person_height_px = max(1, height_px)
+        # Floor clamps are proportional so they never dominate the ratios
+        floor = max(5, height_px // 10)  # 10 % of person height
+        self.distance_threshold = max(floor, int(height_px * TRACKER_MATCH_GATE_RATIO))
+        self.new_track_min_distance = max(floor // 2, int(height_px * TRACKER_NEW_TRACK_GATE_RATIO))
+        self.duplicate_distance = max(floor // 5, int(height_px * TRACKER_DUPLICATE_GATE_RATIO))
+
+    def set_frame_dimensions(self, width: int, pad_x: int = 0):
+        """Store content-area boundaries for edge-exit detection.
+
+        Called every frame from the pipeline so that changes in input
+        resolution or YOLO ``imgsz`` take effect immediately.
+
+        Args:
+            width:  Total frame width in the coordinate space the
+                    tracker operates in (``imgsz`` for the GPU path,
+                    ``original_w`` for the CPU path).
+            pad_x:  Horizontal letterbox padding on the left side.
+                    Content area spans ``[pad_x, width - pad_x]``.
+                    Zero for the CPU path (no letterbox).
+        """
+        self._content_left = pad_x
+        self._content_right = width - pad_x
+
+    def _is_near_edge(self, x: float) -> bool:
+        """Return True if x-coordinate is inside the left or right edge zone."""
+        content_width = self._content_right - self._content_left
+        if content_width <= 0:
+            return True  # unknown frame size → assume edge (safe default)
+        edge_px = content_width * TRACKER_EDGE_ZONE_RATIO
+        return (x < self._content_left + edge_px
+                or x > self._content_right - edge_px)
     
     @property
     def smoothing_depth(self):
@@ -244,9 +392,10 @@ class DancerTracker:
             track.set_smoothing_depth(self._smoothing_depth)
     
     def reset(self):
-        """Reset all tracks and dormant pool."""
+        """Reset all tracks, dormant pool, and separation memory."""
         self.tracks = []
         self._dormant = []
+        self._pair_distances = {}
         self.frame_count = 0
         DancerTrack._id_counter = 0
     
@@ -262,63 +411,148 @@ class DancerTracker:
     def _compute_cost_matrix(self, detections, tracks):
         """Compute assignment cost matrix.
         
-        Cost blends three signals so that skeleton shape and size help
-        disambiguate when centroids alone are ambiguous (= ID-swap scenario):
+        Cost blends four signals to disambiguate when centroids alone
+        are ambiguous (= ID-swap scenario):
         
         1. **Position cost** — weighted blend of distances to predicted,
            velocity-adjusted, and last-known positions.
-        2. **Keypoint-shape cost** — mean distance between co-visible
-           keypoints of the detection and the track's last keypoints.
-        3. **Bbox-size cost** — absolute height difference between detection
-           and track bbox.
+        2. **Keypoint-shape cost** — mean distance between **centroid-
+           normalised** co-visible keypoints (position-independent body
+           shape comparison).
+        3. **Bbox-size cost** — absolute height difference.
+        4. **Separation penalty** — discourages cross-matching bodies
+           that have historically been far apart (known-separate).
         
-        All three are in pixel units and combined as a weighted sum.
+        When a detection is near multiple tracks (close-dancing), the
+        cost weights shift to favour skeleton shape over position,
+        because position is ambiguous but body shape differs.
         """
         if len(detections) == 0 or len(tracks) == 0:
             return np.empty((len(detections), len(tracks)))
         
         cost_matrix = np.zeros((len(detections), len(tracks)))
+        close_dist = self.distance_threshold * TRACKER_CLOSE_PROXIMITY_RATIO
         
         for d, (kpts, conf, bbox) in enumerate(detections):
             det_centroid = self._compute_centroid(kpts, conf, bbox)
             det_height = bbox[3]  # bbox (x, y, w, h)
+            
+            # Pre-compute detection's normalised skeleton
+            mask_det = conf > KEYPOINT_CONFIDENCE
+            det_centroid_kpt = det_centroid  # already weighted centroid
+            det_kpts_norm = kpts - det_centroid_kpt  # (17,2) relative
+            
+            # Check if this detection is in a crowded zone
+            # (near multiple tracks → must rely on shape)
+            n_nearby_tracks = sum(
+                1 for tr in tracks
+                if np.linalg.norm(det_centroid - tr.get_centroid()) < close_dist
+            )
+            is_crowded = n_nearby_tracks >= 2
             
             for t, track in enumerate(tracks):
                 predicted_pos = track.get_centroid()
                 last_known_pos = track.get_last_known_position()
                 velocity = track.get_velocity()
                 
-                # --- 1. Position cost (weighted blend, not min) ---
+                # --- 1. Position cost with velocity prediction influence ---
                 velocity_adjusted = predicted_pos + velocity * self.velocity_weight
                 dist_pred = np.linalg.norm(det_centroid - predicted_pos)
                 dist_vel  = np.linalg.norm(det_centroid - velocity_adjusted)
                 dist_last = np.linalg.norm(det_centroid - last_known_pos)
-                pos_cost = 0.5 * dist_pred + 0.3 * dist_vel + 0.2 * dist_last
+                vpi = self._velocity_prediction_influence
+                w_pred = 0.4 + 0.2 * vpi
+                w_vel  = 0.2 + 0.2 * vpi
+                w_last = 0.4 - 0.4 * vpi
+                pos_cost = w_pred * dist_pred + w_vel * dist_vel + w_last * dist_last
                 
-                # --- 2. Keypoint-shape cost ---
-                # Mean distance between co-visible keypoints of detection
-                # vs. track.  Powerful disambiguator when two dancers are
-                # close but their skeletons differ.
+                # --- 2. Normalised keypoint-shape cost ---
+                # Compare body shapes relative to each centroid so that
+                # two overlapping dancers are distinguished by *pose*,
+                # not by absolute position.
                 kpt_cost = 0.0
-                mask_det = conf > KEYPOINT_CONFIDENCE
                 mask_trk = track.confidence > KEYPOINT_CONFIDENCE
                 both = mask_det & mask_trk
                 n_both = int(np.sum(both))
                 if n_both >= 3:
-                    diffs = np.linalg.norm(kpts[both] - track.keypoints[both], axis=1)
+                    trk_kpts_norm, _ = track.get_normalized_skeleton()
+                    diffs = np.linalg.norm(
+                        det_kpts_norm[both] - trk_kpts_norm[both], axis=1)
                     kpt_cost = float(np.mean(diffs))
                 
                 # --- 3. Bbox-size cost ---
                 trk_height = track.bbox[3]
                 size_cost = abs(det_height - trk_height)
                 
-                # --- Combined cost ---
-                # Weights:  position=0.5  keypoints=0.35  size=0.15
-                # When no co-visible keypoints exist, position dominates.
-                if n_both >= 3:
-                    cost_matrix[d, t] = 0.50 * pos_cost + 0.35 * kpt_cost + 0.15 * size_cost
+                # --- 4. Separation penalty (known-separate bodies) ---
+                sep_penalty = 0.0
+                for other_track in tracks:
+                    if other_track is track:
+                        continue
+                    pair_key = self._pair_key(track.track_id,
+                                              other_track.track_id)
+                    if pair_key not in self._pair_distances:
+                        continue
+                    hist = self._pair_distances[pair_key]
+                    if len(hist) < 5:
+                        continue
+                    avg_sep = float(np.mean(hist))
+                    if avg_sep < self.distance_threshold * 0.5:
+                        continue
+                    other_pos = other_track.get_centroid()
+                    dist_to_other = np.linalg.norm(det_centroid - other_pos)
+                    if dist_to_other < avg_sep * 0.6:
+                        penalty = ((avg_sep - dist_to_other)
+                                   * self._separation_penalty_weight)
+                        # Boost for established pairs
+                        if track.is_established and other_track.is_established:
+                            penalty *= TRACKER_ESTABLISHED_SEP_BOOST
+                        sep_penalty = max(sep_penalty, penalty)
+                
+                # --- 5. Directional Momentum Penalty ---
+                # Heavily penalizes a detection if assigning it would mean
+                # an established track suddenly reversing direction in a crowd!
+                dir_penalty = 0.0
+                if is_crowded and track.is_established:
+                    implied_vel = det_centroid - last_known_pos
+                    implied_speed = np.linalg.norm(implied_vel)
+                    curr_speed = np.linalg.norm(velocity)
+                    
+                    if curr_speed > self.distance_threshold * 0.05 and implied_speed > self.distance_threshold * 0.05:
+                        cos_sim = float(np.dot(velocity, implied_vel) / (curr_speed * implied_speed))
+                        if cos_sim < 0:
+                            # Reversal (-1.0 to 0) -> strongly punish!
+                            dir_penalty = abs(cos_sim) * self.distance_threshold * 2.0
+                        elif cos_sim < 0.5:
+                            # Sharp turn -> mild punish
+                            dir_penalty = (0.5 - cos_sim) * self.distance_threshold * 0.5
+                
+                # --- Combined cost with adaptive weights ---
+                if is_crowded:
+                    if n_both >= 5:
+                        # Close dancing with strong skeleton: shape dominates
+                        base_cost = (TRACKER_CLOSE_POS_WEIGHT * pos_cost
+                                     + TRACKER_CLOSE_KPT_WEIGHT * kpt_cost
+                                     + TRACKER_CLOSE_SIZE_WEIGHT * size_cost)
+                    elif n_both >= 3:
+                        # Close dancing but weak skeleton: blend but add
+                        # uncertainty penalty to discourage cross-matching
+                        base_cost = (0.25 * pos_cost + 0.50 * kpt_cost
+                                     + 0.25 * size_cost)
+                        base_cost *= 1.3  # coherence penalty
+                    else:
+                        # Close dancing, no skeleton: position + size only,
+                        # heavily penalised → strongly discourage swap
+                        base_cost = (0.85 * pos_cost + 0.15 * size_cost)
+                        base_cost *= 1.5  # no skeleton = very uncertain
+                elif n_both >= 3:
+                    # Normal: balanced weights
+                    base_cost = (0.40 * pos_cost + 0.45 * kpt_cost
+                                 + 0.15 * size_cost)
                 else:
-                    cost_matrix[d, t] = 0.85 * pos_cost + 0.15 * size_cost
+                    base_cost = 0.85 * pos_cost + 0.15 * size_cost
+                
+                cost_matrix[d, t] = base_cost + sep_penalty + dir_penalty
         
         return cost_matrix
 
@@ -328,17 +562,16 @@ class DancerTracker:
     def _try_resurrect(self, keypoints, confidence, bbox, det_centroid) -> 'DancerTrack | None':
         """Check the dormant pool for a matching snapshot.
 
-        All three criteria must hold (AND logic):
-        1. Position: detection centroid within ``distance_threshold`` of
-           the dormant snapshot's last position.
+        Criteria (AND logic):
+        1. Position: detection centroid within gate of the dormant
+           snapshot's **velocity-projected** position.  Gate is widened
+           for recently-dormant or previously-occluded tracks.
         2. Size: bbox height within 40 % of the snapshot's bbox height.
-        3. Shape (when ≥ 3 co-visible keypoints): mean keypoint distance
-           < ``distance_threshold × 0.5``.
+        3. Shape (when >= 3 co-visible keypoints): mean keypoint distance
+           < gate * 0.5.
 
-        If a match is found the dormant entry is consumed, a *new*
-        ``DancerTrack`` is created with the fresh detection data, **but
-        its ``track_id`` is overwritten** with the old ID so the OSC
-        consumer sees continuity.
+        Resurrected tracks are **immediately confirmed** (hits set to
+        ``min_hits``) so they appear without the usual warm-up delay.
 
         Returns:
             A resurrected ``DancerTrack`` or ``None``.
@@ -351,18 +584,42 @@ class DancerTracker:
         best_score = float('inf')
 
         for i, snap in enumerate(self._dormant):
-            # --- 1. Position gate ---
-            dist = np.linalg.norm(det_centroid - snap.last_position)
-            if dist > self.distance_threshold:
+            # --- Position gate (velocity-projected) ---
+            projected = snap.projected_position()
+            dist = np.linalg.norm(det_centroid - projected)
+
+            # Widen gate for recently-dormant or occluded tracks:
+            # young dormant (< 30 frames) → up to 1.5× gate
+            # was occluded → 1.5× gate (they were hidden, not gone)
+            # CENTER exit (not near edge) → BOOST gate: the person didn't
+            #   really leave the scene, so match more aggressively
+            gate = self.distance_threshold
+            if snap.age < 30:
+                gate *= 1.5
+            if snap.was_occluded:
+                gate *= 1.5
+            if not snap.exited_from_edge:
+                gate *= TRACKER_CENTER_EXIT_RESURRECT_BOOST
+
+            if dist > gate:
                 continue
 
-            # --- 2. Size gate (±40 %) ---
+            # --- Size gate ---
+            # Center-exited/occluded: wider tolerance (body may look
+            # different after partial occlusion)
             if snap.bbox_height > 0:
+                if not snap.exited_from_edge or snap.was_occluded:
+                    size_lo, size_hi = 0.5, 1.5  # ±50 %
+                else:
+                    size_lo, size_hi = 0.6, 1.4  # ±40 %
                 height_ratio = det_height / snap.bbox_height
-                if height_ratio < 0.6 or height_ratio > 1.4:
+                if height_ratio < size_lo or height_ratio > size_hi:
                     continue
 
-            # --- 3. Keypoint-shape gate ---
+            # --- Keypoint-shape gate ---
+            # Center-exited dormants get a more lenient shape gate
+            # (body pose may have changed during occlusion)
+            kpt_gate_ratio = 0.7 if not snap.exited_from_edge else 0.5
             mask_det = confidence > KEYPOINT_CONFIDENCE
             mask_snap = snap.confidence > KEYPOINT_CONFIDENCE
             both = mask_det & mask_snap
@@ -371,13 +628,16 @@ class DancerTracker:
                 kpt_dist = float(np.mean(
                     np.linalg.norm(keypoints[both] - snap.keypoints[both], axis=1)
                 ))
-                if kpt_dist > self.distance_threshold * 0.5:
+                if kpt_dist > gate * kpt_gate_ratio:
                     continue
-                # Score: blend of position + keypoint distance (lower is better)
                 score = 0.5 * dist + 0.5 * kpt_dist
             else:
-                # Not enough keypoints to compare shape — rely on position + size
                 score = dist
+
+            # Prefer center-exited dormants (they're almost certainly
+            # still in frame and just occluded) — halve the score
+            if not snap.exited_from_edge:
+                score *= 0.5
 
             if score < best_score:
                 best_score = score
@@ -390,11 +650,14 @@ class DancerTracker:
 
         # Create fresh track with the new detection data but the OLD id
         new_track = DancerTrack(keypoints, confidence, bbox, self.smoothing_depth)
-        new_track.track_id = snap.track_id  # ← resurrect the old ID
+        new_track.track_id = snap.track_id  # resurrect the old ID
+        new_track.hits = self.min_hits       # immediately confirmed
 
         if TRACKER_DEBUG:
             print(f"[TRACKER] Resurrected track #{snap.track_id} from dormant "
-                  f"(dormant_age={snap.age}, score={best_score:.1f})")
+                  f"(dormant_age={snap.age}, score={best_score:.1f}, "
+                  f"occluded={snap.was_occluded}, "
+                  f"edge_exit={snap.exited_from_edge})")
 
         return new_track
 
@@ -433,18 +696,43 @@ class DancerTracker:
                 track_speed = track.get_speed()
                 
                 # Dynamic threshold: base + velocity bonus + time bonus
-                # Time bonus is capped to prevent runaway expansion that
-                # would accept cross-matches after a few missed frames.
+                # All terms proportional to distance_threshold for proper
+                # scaling across person_height range (50px – 200px).
                 time_bonus = min(
-                    track.time_since_update * 10.0,
-                    self.distance_threshold * 0.5,
+                    track.time_since_update * self.distance_threshold * 0.04,
+                    self.distance_threshold * 0.3,
                 )
-                dynamic_thresh = self.distance_threshold + track_speed * 1.5 + time_bonus
+                dynamic_thresh = self.distance_threshold + track_speed * 1.0 + time_bonus
                 
                 if cost_matrix[row, col] < dynamic_thresh:
+                    kpts, conf, bbox = detections[row]
+                    
+                    # Anti-merge (Phase 4): reject if detection bbox is
+                    # suspiciously large for this established track
+                    # (likely two people merged into one detection).
+                    if (track.is_established
+                            and len(track.bbox_area_history) >= 5
+                            and bbox[2] * bbox[3] > track.avg_bbox_area * TRACKER_MERGE_SIZE_RATIO):
+                        
+                        # Only consider it a toxic merge if multiple tracks are nearby
+                        # Otherwise, it's just an isolated person stretching out.
+                        det_centroid = self._compute_centroid(kpts, conf, bbox)
+                        close_dist = self.distance_threshold * TRACKER_CLOSE_PROXIMITY_RATIO
+                        nearby = sum(1 for tr in self.tracks if np.linalg.norm(det_centroid - tr.get_centroid()) < close_dist)
+                        
+                        if nearby >= 2:
+                            if TRACKER_DEBUG:
+                                print(f"[TRACKER] Anti-merge rejected: "
+                                      f"det_area={bbox[2]*bbox[3]:.0f} > "
+                                      f"{TRACKER_MERGE_SIZE_RATIO}x "
+                                      f"avg={track.avg_bbox_area:.0f}")
+                            # Mark this detection as a toxic merge so it isn't
+                            # picked up by the fallback logic
+                            matched_det.add(row)
+                            continue
+                    
                     matched_det.add(row)
                     matched_trk.add(col)
-                    kpts, conf, bbox = detections[row]
                     track.update(kpts, conf, bbox)
                 else:
                     # Debug: print why match failed
@@ -470,21 +758,47 @@ class DancerTracker:
                         closest_track_idx = idx
                 
                 # Gate 1: far enough from every track → new person (or resurrect)
-                if min_dist > self.new_track_min_distance:
+                # Center detections need a tighter gate to avoid ghost splits
+                creation_gate = self.new_track_min_distance
+                is_edge_det = self._is_near_edge(float(det_centroid[0]))
+                if not is_edge_det:
+                    creation_gate = int(creation_gate * TRACKER_CENTER_NEW_TRACK_GATE_MULT)
+                if min_dist > creation_gate:
                     resurrected = self._try_resurrect(kpts, conf, bbox, det_centroid)
                     if resurrected is not None:
                         self.tracks.append(resurrected)
                     else:
+                        # Deadlock fix: If a detection is far enough from active tracks
+                        # and failed resurrection validations, allow it to spawn a new
+                        # track instantly rather than waiting for shape-mismatched
+                        # dormant tracks to expire.
                         if TRACKER_DEBUG:
-                            print(f"[TRACKER] New track #{DancerTrack._id_counter + 1}: "
-                                  f"min_dist={min_dist:.1f} > gate={self.new_track_min_distance}")
-                        self.tracks.append(DancerTrack(kpts, conf, bbox, self.smoothing_depth))
+                            print(f"[TRACKER] New track "
+                                  f"#{DancerTrack._id_counter + 1}: "
+                                  f"min_dist={min_dist:.1f} > "
+                                  f"gate={creation_gate}")
+                        self.tracks.append(
+                            DancerTrack(kpts, conf, bbox,
+                                        self.smoothing_depth))
                 elif closest_track is not None and closest_track_idx not in matched_trk:
                     # Close to an unmatched track → force-update it
+                    # Prefer occluded tracks (they've been waiting for this)
+                    best_unmatched = closest_track
+                    best_unmatched_idx = closest_track_idx
+                    for idx2, t2 in enumerate(self.tracks):
+                        if idx2 in matched_trk:
+                            continue
+                        d2 = np.linalg.norm(det_centroid - t2.get_last_known_position())
+                        if (d2 < self.distance_threshold
+                                and t2._occluded
+                                and not best_unmatched._occluded):
+                            best_unmatched = t2
+                            best_unmatched_idx = idx2
                     if TRACKER_DEBUG:
-                        print(f"[TRACKER] Force update track #{closest_track.track_id}: dist={min_dist:.1f}")
-                    closest_track.update(kpts, conf, bbox)
-                    matched_trk.add(closest_track_idx)
+                        print(f"[TRACKER] Force update track #{best_unmatched.track_id}: "
+                              f"dist={min_dist:.1f} occluded={best_unmatched._occluded}")
+                    best_unmatched.update(kpts, conf, bbox)
+                    matched_trk.add(best_unmatched_idx)
                 elif closest_track is not None and min_dist < self.duplicate_distance:
                     # Very close to an already-matched track → duplicate, drop
                     if TRACKER_DEBUG:
@@ -507,13 +821,71 @@ class DancerTracker:
                             print(f"[TRACKER] Ignoring ambiguous det near track "
                                   f"#{closest_track.track_id if closest_track else 'None'}: dist={min_dist:.1f}")
         
+        # ---- Occlusion-aware aging ----
+        # For unmatched tracks whose predicted position is near a
+        # *matched* track, the person is likely occluded (hidden behind
+        # another dancer), not gone.  We slow their aging dramatically
+        # so they survive the occlusion and can resume matching once
+        # the occluder moves away.
+        matched_positions = []
+        for idx in matched_trk:
+            matched_positions.append(self.tracks[idx].get_centroid())
+
+        occlusion_dist = self.distance_threshold * TRACKER_OCCLUSION_DISTANCE_RATIO
+
+        for idx, track in enumerate(self.tracks):
+            if idx in matched_trk:
+                track._occluded = False
+                continue
+            # Track is unmatched — check if it's near any matched track
+            pred_pos = track.get_centroid()
+            near_matched = False
+            for mpos in matched_positions:
+                if np.linalg.norm(pred_pos - mpos) < occlusion_dist:
+                    near_matched = True
+                    break
+            if near_matched:
+                track._occluded = True
+                # Undo the full aging from predict() and apply fractional aging
+                # predict() already incremented time_since_update by 1
+                track._fractional_age = getattr(track, '_fractional_age', 0.0) + TRACKER_OCCLUSION_AGE_FACTOR
+                track.time_since_update -= 1
+                if track._fractional_age >= 1.0:
+                    increments = int(track._fractional_age)
+                    track.time_since_update += increments
+                    track._fractional_age -= increments
+                
+                if TRACKER_DEBUG:
+                    print(f"[TRACKER] Track #{track.track_id} occluded "
+                          f"(t_miss={track.time_since_update})")
+            else:
+                track._occluded = False
+
         # Move expired tracks to the dormant pool (for later re-ID)
+        # Established tracks get a longer max_age — they've proven they
+        # are real people and deserve more time to survive occlusion.
         still_alive = []
         for t in self.tracks:
-            if t.time_since_update >= self.max_age:
-                self._dormant.append(DormantSnapshot(t))
+            effective_max_age = self.max_age
+            last_x = float(t.get_last_known_position()[0])
+            at_edge = self._is_near_edge(last_x) and t.time_since_update > 0
+            if at_edge:
+                # Edge tracks: skip established bonus, apply edge mult
+                # They left the scene — no need to linger on screen
+                effective_max_age = int(
+                    self.max_age * TRACKER_EDGE_EXIT_AGE_MULT)
+            elif t.is_established:
+                # Center/established: full bonus for occlusion survival
+                effective_max_age = int(
+                    self.max_age * TRACKER_ESTABLISHED_MAX_AGE_MULT)
+            if t.time_since_update >= effective_max_age:
+                # Did this track leave near an edge, or vanish in the center?
+                self._dormant.append(DormantSnapshot(t, exited_from_edge=at_edge))
                 if TRACKER_DEBUG:
-                    print(f"[TRACKER] Track #{t.track_id} → dormant pool")
+                    print(f"[TRACKER] Track #{t.track_id} → dormant pool "
+                          f"(was_occluded={t._occluded}, "
+                          f"established={t.is_established}, "
+                          f"edge_exit={at_edge})")
             else:
                 still_alive.append(t)
         self.tracks = still_alive
@@ -526,6 +898,15 @@ class DancerTracker:
             print(f"[TRACKER] Dormant expired: {[s.track_id for s in expired]}")
         self._dormant = [s for s in self._dormant if s.age < self.dormant_max_age]
         
+        # Update pairwise distance memory (for separation penalty)
+        self._update_pair_distances()
+
+        # ---- Shadow track detection ----
+        # A "shadow track" consistently moves in sync with a nearby
+        # higher-quality track.  Kill it after SHADOW_TRACK_FRAMES
+        # consecutive shadow-correlated frames.
+        self._detect_shadow_tracks()
+
         # Return confirmed tracks
         confirmed = []
         for track in self.tracks:
@@ -533,3 +914,119 @@ class DancerTracker:
                 confirmed.append(track)
         
         return confirmed
+
+    # ------------------------------------------------------------------
+    # Separation memory helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _pair_key(id_a: int, id_b: int) -> tuple:
+        """Canonical key for a pair of track IDs (order-independent)."""
+        return (min(id_a, id_b), max(id_a, id_b))
+
+    def _update_pair_distances(self):
+        """Update rolling pairwise-distance history for all active tracks.
+
+        Called once per frame after assignment.  The history feeds the
+        separation penalty in ``_compute_cost_matrix``:
+
+        * Bodies historically far apart → penalty discourages cross-match.
+        * Bodies always close (shadow artifacts) → no penalty (lenient).
+        """
+        for i, track_a in enumerate(self.tracks):
+            for j in range(i + 1, len(self.tracks)):
+                track_b = self.tracks[j]
+                key = self._pair_key(track_a.track_id, track_b.track_id)
+                pos_a = track_a.get_centroid()
+                pos_b = track_b.get_centroid()
+                dist = float(np.linalg.norm(pos_a - pos_b))
+                if key not in self._pair_distances:
+                    self._pair_distances[key] = deque(
+                        maxlen=TRACKER_SEPARATION_MEMORY_FRAMES)
+                self._pair_distances[key].append(dist)
+
+        # Prune stale pairs (both IDs gone from active + dormant)
+        active_ids = {t.track_id for t in self.tracks}
+        dormant_ids = {s.track_id for s in self._dormant}
+        known = active_ids | dormant_ids
+        stale = [k for k in self._pair_distances
+                 if k[0] not in known and k[1] not in known]
+        for k in stale:
+            del self._pair_distances[k]
+
+    def _detect_shadow_tracks(self):
+        """Kill tracks that behave like shadows of another track.
+
+        A shadow track is characterised by:
+        1. Close to a higher-quality track (within SHADOW_PROXIMITY_RATIO
+           × person-height-derived distance_threshold).
+        2. Velocity direction is highly correlated (cosine similarity
+           ≥ SHADOW_TRACK_VELOCITY_CORR).
+        3. Lower skeleton quality than the parent track.
+
+        Tracks that satisfy all three for SHADOW_TRACK_FRAMES consecutive
+        frames are removed.
+        """
+        shadow_proximity = self.distance_threshold * SHADOW_PROXIMITY_RATIO
+        to_kill = set()
+        incremented = set()  # tracks whose shadow streak was bumped this frame
+
+        for i, track_a in enumerate(self.tracks):
+            if track_a.time_since_update > 0:
+                continue  # only check freshly-matched tracks
+            vel_a = track_a.get_velocity()
+            speed_a = np.linalg.norm(vel_a)
+            qual_a = track_a.skeleton_quality
+
+            for j, track_b in enumerate(self.tracks):
+                if j == i or track_b.time_since_update > 0:
+                    continue
+                # Check proximity
+                dist = np.linalg.norm(track_a.get_centroid()
+                                      - track_b.get_centroid())
+                if dist > shadow_proximity:
+                    continue
+
+                vel_b = track_b.get_velocity()
+                speed_b = np.linalg.norm(vel_b)
+
+                # Need both to be moving to check correlation
+                # Min speed scales with distance_threshold (~person height)
+                min_speed = self.distance_threshold * 0.01
+                if speed_a < min_speed or speed_b < min_speed:
+                    continue
+
+                # Cosine similarity of velocity vectors
+                cos_sim = float(np.dot(vel_a, vel_b) / (speed_a * speed_b))
+                if cos_sim < SHADOW_TRACK_VELOCITY_CORR:
+                    continue
+
+                # Both are close and moving the same way.
+                # The one with lower skeleton quality is the shadow.
+                qual_b = track_b.skeleton_quality
+                if qual_a < qual_b:
+                    shadow, parent = track_a, track_b
+                elif qual_b < qual_a:
+                    shadow, parent = track_b, track_a
+                else:
+                    continue  # equal quality — can't tell, skip
+
+                shadow._shadow_streak += 1
+                incremented.add(shadow.track_id)
+                if shadow._shadow_streak >= SHADOW_TRACK_FRAMES:
+                    to_kill.add(shadow.track_id)
+                    if TRACKER_DEBUG:
+                        print(f"[TRACKER] Shadow track #{shadow.track_id} killed "
+                              f"(parent=#{parent.track_id}, "
+                              f"qual={shadow.skeleton_quality:.2f} vs "
+                              f"{parent.skeleton_quality:.2f}, "
+                              f"cos={cos_sim:.2f})")
+
+        # Reset shadow streak for tracks NOT flagged this frame
+        for track in self.tracks:
+            if track.track_id not in incremented:
+                track._shadow_streak = 0
+
+        # Kill shadow tracks
+        if to_kill:
+            self.tracks = [t for t in self.tracks
+                           if t.track_id not in to_kill]

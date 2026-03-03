@@ -143,11 +143,8 @@ TRACKER_MAX_AGE = 45                # Frames to keep lost track (~3 sec at 15 FP
 TRACKER_MIN_HITS = 2                # Hits to confirm track
 TRACKER_DISTANCE_THRESHOLD = 500    # Initial fallback only — overridden at startup
                                     # by set_person_height(PERSON_HEIGHT_PX).
-                                    # All distance thresholds now auto-derive from
-                                    # PERSON_HEIGHT_PX (the single master dial):
-                                    #   match gate      = height × 1.2
-                                    #   new-track gate  = height × 0.4
-                                    #   duplicate gate  = height × 0.2
+                                    # All distance thresholds auto-derive from
+                                    # PERSON_HEIGHT_PX via configurable ratios below.
 TRACKER_DORMANT_MAX_AGE = 150       # Max frames to remember a lost track for re-ID
                                     # (~10 sec at 15 FPS).  When a track expires
                                     # from active tracking (max_age), it moves to
@@ -157,6 +154,95 @@ TRACKER_DORMANT_MAX_AGE = 150       # Max frames to remember a lost track for re
 TRACKER_VELOCITY_WEIGHT = 0.6       # Trust in velocity prediction (0-1)
 TRACKER_PROCESS_NOISE = 2.5         # Kalman Q - velocity adaptation
 TRACKER_MEASUREMENT_NOISE = 2.0     # Kalman R - smoothing
+
+# --- Robust tracking (Phases 2-4) ---
+# Match gate ratios (scale factors applied to PERSON_HEIGHT_PX)
+TRACKER_MATCH_GATE_RATIO = 0.90        # Match gate as fraction of person_height
+TRACKER_NEW_TRACK_GATE_RATIO = 0.4     # New-track creation gate
+TRACKER_DUPLICATE_GATE_RATIO = 0.2     # Duplicate suppression gate
+
+# Pairwise separation memory — discourages ID swaps between bodies
+# that have historically been far apart (known-separate bodies),
+# while being lenient with always-close bodies (shadow artifacts).
+TRACKER_SEPARATION_MEMORY_FRAMES = 30  # Rolling window (frames)
+TRACKER_SEPARATION_PENALTY_WEIGHT = 0.3 # Cost penalty weight (0-1)
+
+# Velocity prediction influence — easy-tweak knob
+TRACKER_VELOCITY_PREDICTION_INFLUENCE = 0.5  # 0 = trust raw position
+                                              # 1 = trust Kalman prediction
+                                              # Lower for unpredictable movement
+
+# Anti-merge constraints — reject detections that are suspiciously
+# large for an established track (likely two people merged into one).
+TRACKER_ESTABLISHED_FRAMES = 15        # Hits before a track is "established"
+TRACKER_MERGE_SIZE_RATIO = 1.3         # Reject if det_area > track_avg × this
+
+# Occlusion handling — keeps tracks alive when hidden behind
+# another tracked body instead of ageing them to death.
+TRACKER_OCCLUSION_DISTANCE_RATIO = 1.0  # Track is "occluded" if its predicted
+                                         # position is within height × this of
+                                         # a matched track's position.
+TRACKER_OCCLUSION_AGE_FACTOR = 0.1      # Aging rate while occluded (0.1 = 10×
+                                         # slower, 0 = freeze completely)
+TRACKER_DORMANT_VELOCITY_DECAY = 0.95   # Per-frame velocity decay for dormant
+                                         # position projection (< 1.0 = slow down)
+
+# Shadow suppression — filters ghost tracks caused by person shadows
+# being detected as separate people.  Two-layer approach:
+#   1. Pre-tracker: low-quality detections near a high-quality one are
+#      suppressed before the tracker ever sees them.
+#   2. Tracker: tracks that consistently shadow another track
+#      (correlated velocity + proximity) are auto-killed.
+SHADOW_QUALITY_MIN_KEYPOINTS = 8        # Detections with fewer valid keypoints
+                                         # than this are considered "low quality"
+SHADOW_QUALITY_MIN_CONFIDENCE = 0.50    # Mean confidence below this = low quality
+SHADOW_PROXIMITY_RATIO = 1.5            # Suppression radius = person_height * this
+SHADOW_TRACK_VELOCITY_CORR = 0.80       # Velocity cosine similarity threshold
+                                         # for shadow-track detection (0-1)
+SHADOW_TRACK_FRAMES = 12                # Consecutive shadow-correlated frames
+                                         # before a track is killed
+
+# Production refinements — identity lock, close-dancing resilience
+# Once a track is established (hits >= TRACKER_ESTABLISHED_FRAMES), it
+# gets special treatment to preserve identity during close dancing.
+TRACKER_ESTABLISHED_MAX_AGE_MULT = 3.0  # Established tracks survive this ×
+                                         # longer without matches vs new tracks
+TRACKER_CLOSE_PROXIMITY_RATIO = 0.6     # Two tracks are "close" when distance
+                                         # < person_height × this.  Triggers
+                                         # skeleton-dominant matching.
+TRACKER_CLOSE_POS_WEIGHT = 0.10         # Position weight when tracks are close
+TRACKER_CLOSE_KPT_WEIGHT = 0.70         # Keypoint-shape weight when close
+TRACKER_CLOSE_SIZE_WEIGHT = 0.20        # Bbox-size weight when close
+TRACKER_ESTABLISHED_SEP_BOOST = 2.0     # Separation penalty multiplier for
+                                         # pairs of established tracks
+
+# Edge-aware exit / resurrection — dancers enter/exit from frame edges.
+# When a track disappears in the CENTER of the frame (not near an edge)
+# it almost certainly was occluded, not truly gone.  This makes the
+# dormant resurrection gate much more generous for center-disappeared
+# tracks so we recover the original ID instead of minting a new one.
+TRACKER_EDGE_ZONE_RATIO = 0.12          # Left/right edge zone as fraction of
+                                         # frame width.  A track whose last
+                                         # known x is within this zone of
+                                         # either edge is considered to have
+                                         # "exited from an edge" (really left).
+TRACKER_EDGE_EXIT_AGE_MULT = 0.5         # Edge-exited tracks die at max_age × this.
+                                         # < 1.0 = they vanish faster (they left
+                                         # the scene, no need to linger).
+TRACKER_CENTER_NEW_TRACK_GATE_MULT = 1.5 # New-track creation in the CENTER zone
+                                         # requires new_track_min_distance × this.
+                                         # > 1.0 = harder to mint new IDs away
+                                         # from edges (prevents ghost splits).
+TRACKER_CENTER_EXIT_RESURRECT_BOOST = 2.0  # Gate multiplier for dormant
+                                            # snapshots that disappeared in
+                                            # the center.  Higher = easier
+                                            # to match → prefer re-ID.
+
+# Centroid output smoothing (for OSC / TouchDesigner)
+# EMA (exponential moving average) on the unscaled centroid for
+# jitter-free generative video input.  Does NOT affect tracking.
+CENTROID_OUTPUT_SMOOTHING = 0.5         # EMA alpha (0 = max smooth, 1 = raw)
+                                         # 0.3-0.5 is good for generative video
 
 # =============================================================================
 # OSC OUTPUT
