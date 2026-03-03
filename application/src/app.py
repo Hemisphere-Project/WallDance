@@ -2329,11 +2329,12 @@ class WallDanceApp:
                 # heartbeat may fire from a "waiting" iteration where frame=None.
                 self._last_fresh_frame_time = time.time()
                 
-                # Stash raw frame for BG capture (before any processing)
-                if frame is not None:
-                    self._last_raw_frame = frame
-                
                 # Recording is handled via camera callback thread - no write_frame here
+
+            # Stash raw frame for BG capture (before any processing)
+            # Works for both camera and playback sources
+            if frame is not None:
+                self._last_raw_frame = frame
 
             should_process = True
 

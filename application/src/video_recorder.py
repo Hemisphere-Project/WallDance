@@ -426,6 +426,9 @@ class VideoRecorder:
     
     def start_playback(self, slot: int, recording_index: int = 0) -> bool:
         """Start playing from a slot. recording_index=0 is latest."""
+        # Remember which slot was playing before we tear down
+        previous_slot = self._status.current_slot
+
         # Stop any current playback or recording
         self.stop_playback()
         self.stop_recording()
@@ -476,7 +479,11 @@ class VideoRecorder:
             print(f"[Playback] No .meta sidecar — capping FPS to {effective:.1f} "
                   f"(container says {container_fps:.1f})")
             self._playback_fps = effective
-        self._playback_speed = 1.0  # Reset speed on new playback
+
+        # Reset speed to 1x only when switching to a different slot;
+        # keep the user-chosen speed when re-starting the same slot.
+        if slot != previous_slot:
+            self._playback_speed = 1.0
         
         self._status.state = RecorderState.PLAYING
         self._status.current_slot = slot
