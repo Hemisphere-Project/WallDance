@@ -41,3 +41,4 @@ projects/
 # OS
 .DS_Store
 Thumbs.db
+application/tracking_events.jsonl

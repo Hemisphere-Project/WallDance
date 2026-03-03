@@ -26,7 +26,12 @@ from config import (
     TRACKER_EDGE_ZONE_RATIO, TRACKER_CENTER_EXIT_RESURRECT_BOOST,
     TRACKER_EDGE_EXIT_AGE_MULT, TRACKER_CENTER_NEW_TRACK_GATE_MULT,
     CENTROID_OUTPUT_SMOOTHING,
+    TRACKER_EVENT_LOG_ENABLED, TRACKER_EVENT_LOG_FILE,
+    TRACKER_EVENT_LOG_MAX_ENTRIES, TRACKER_EVENT_LOG_FLUSH_INTERVAL,
+    TRACKER_MAHALANOBIS_GATE, TRACKER_MAHALANOBIS_GATE_NOISE,
+    TRACKER_CASCADED_MATCHING,
 )
+from tracking_logger import TrackingLogger
 
 # Set to True for detailed tracking debug output
 TRACKER_DEBUG = False
@@ -334,6 +339,14 @@ class DancerTracker:
         self._content_left: int = 0     # left edge of actual image content
         self._content_right: int = 0    # right edge of actual image content
 
+        # Structured event logger (Phase 0)
+        self.logger = TrackingLogger(
+            enabled=TRACKER_EVENT_LOG_ENABLED,
+            filepath=TRACKER_EVENT_LOG_FILE,
+            max_entries=TRACKER_EVENT_LOG_MAX_ENTRIES,
+            flush_interval=TRACKER_EVENT_LOG_FLUSH_INTERVAL,
+        )
+
     # ------------------------------------------------------------------
     # Person-height master dial
     # ------------------------------------------------------------------
@@ -398,6 +411,7 @@ class DancerTracker:
         self._pair_distances = {}
         self.frame_count = 0
         DancerTrack._id_counter = 0
+        self.logger.reset()
     
     def _compute_centroid(self, keypoints, confidence, bbox):
         """Compute centroid from keypoints or bbox."""
@@ -451,6 +465,37 @@ class DancerTracker:
             is_crowded = n_nearby_tracks >= 2
             
             for t, track in enumerate(tracks):
+                # --- 0. Mahalanobis gating (Phase 1) ---
+                # Use Kalman covariance to reject physically impossible
+                # assignments.  After predict(), kf.P is the predicted
+                # covariance.  If the detection is too far from the
+                # track's predicted position (chi² > gate), set cost to
+                # INF so Hungarian never picks this pair.
+                if TRACKER_MAHALANOBIS_GATE > 0:
+                    innov = det_centroid - track.kf.x[:2].flatten()
+                    # Use inflated noise for the gate so that normal
+                    # YOLO jitter (10-50px) passes while teleports
+                    # (>120px) are still blocked.  Kalman R is tuned
+                    # for smoothing (R=2) and collapses S to ~4px²,
+                    # which is far too tight for gating purposes.
+                    R_gate = np.eye(2) * TRACKER_MAHALANOBIS_GATE_NOISE
+                    S = track.kf.P[:2, :2] + R_gate               # 2×2
+                    try:
+                        S_inv = np.linalg.inv(S)
+                        maha_sq = float(innov @ S_inv @ innov)
+                    except np.linalg.LinAlgError:
+                        maha_sq = 0.0  # degenerate covariance — skip gate
+                    if maha_sq > TRACKER_MAHALANOBIS_GATE:
+                        cost_matrix[d, t] = 1e6
+                        self.logger.log("MAHALANOBIS_GATE", {
+                            "det": d,
+                            "track_id": track.track_id,
+                            "chi2": round(maha_sq, 1),
+                            "gate": TRACKER_MAHALANOBIS_GATE,
+                            "dist_px": round(float(np.linalg.norm(innov)), 1),
+                        })
+                        continue
+
                 predicted_pos = track.get_centroid()
                 last_known_pos = track.get_last_known_position()
                 velocity = track.get_velocity()
@@ -557,6 +602,123 @@ class DancerTracker:
         return cost_matrix
 
     # ------------------------------------------------------------------
+    # Assignment pass (used by cascaded matching)
+    # ------------------------------------------------------------------
+    def _run_assignment_pass(self, detections, det_indices, trk_indices,
+                             matched_det, matched_trk, matched_pairs_log):
+        """Run one pass of Hungarian assignment on detection/track subsets.
+
+        Computes the cost matrix for the given subsets, runs
+        ``linear_sum_assignment``, applies threshold + anti-merge checks,
+        and updates the matched sets in-place.
+
+        Args:
+            detections:       Full detection list (indexed by det_indices).
+            det_indices:      List of detection indices to consider.
+            trk_indices:      List of self.tracks indices to consider.
+            matched_det:      Set[int] — already-matched detection indices
+                              (updated in-place).
+            matched_trk:      Set[int] — already-matched track indices
+                              (updated in-place).
+            matched_pairs_log: List — (det, track_id, cost) triples for
+                              the FRAME_SUMMARY event (updated in-place).
+        """
+        if not det_indices or not trk_indices:
+            return
+
+        subset_tracks = [self.tracks[i] for i in trk_indices]
+        subset_dets = [detections[d] for d in det_indices]
+
+        cost_matrix = self._compute_cost_matrix(subset_dets, subset_tracks)
+        if cost_matrix.size == 0:
+            return
+
+        # Sanitize: NaN / inf entries crash linear_sum_assignment
+        if not np.all(np.isfinite(cost_matrix)):
+            cost_matrix = np.nan_to_num(
+                cost_matrix, nan=1e6, posinf=1e6, neginf=1e6
+            )
+
+        row_idx, col_idx = linear_sum_assignment(cost_matrix)
+
+        for row, col in zip(row_idx, col_idx):
+            actual_det = det_indices[row]
+            actual_trk = trk_indices[col]
+            track = self.tracks[actual_trk]
+            track_speed = track.get_speed()
+
+            # Dynamic threshold: base + velocity bonus + time bonus
+            time_bonus = min(
+                track.time_since_update * self.distance_threshold * 0.04,
+                self.distance_threshold * 0.3,
+            )
+            dynamic_thresh = (self.distance_threshold
+                              + track_speed * 1.0
+                              + time_bonus)
+
+            if cost_matrix[row, col] < dynamic_thresh:
+                kpts, conf, bbox = detections[actual_det]
+
+                # Anti-merge: reject if detection bbox is suspiciously
+                # large for this established track.
+                if (track.is_established
+                        and len(track.bbox_area_history) >= 5
+                        and bbox[2] * bbox[3]
+                            > track.avg_bbox_area * TRACKER_MERGE_SIZE_RATIO):
+                    det_centroid = self._compute_centroid(kpts, conf, bbox)
+                    close_dist = (self.distance_threshold
+                                  * TRACKER_CLOSE_PROXIMITY_RATIO)
+                    nearby = sum(
+                        1 for tr in self.tracks
+                        if np.linalg.norm(
+                            det_centroid - tr.get_centroid()) < close_dist
+                    )
+                    if nearby >= 2:
+                        self.logger.log("ANTI_MERGE", {
+                            "track_id": track.track_id,
+                            "det_area": round(bbox[2] * bbox[3]),
+                            "avg_area": round(track.avg_bbox_area),
+                            "ratio": TRACKER_MERGE_SIZE_RATIO,
+                        })
+                        if TRACKER_DEBUG:
+                            print(f"[TRACKER] Anti-merge rejected: "
+                                  f"det_area={bbox[2]*bbox[3]:.0f} > "
+                                  f"{TRACKER_MERGE_SIZE_RATIO}x "
+                                  f"avg={track.avg_bbox_area:.0f}")
+                        matched_det.add(actual_det)
+                        continue
+
+                matched_det.add(actual_det)
+                matched_trk.add(actual_trk)
+                track.update(kpts, conf, bbox)
+                cost_val = round(float(cost_matrix[row, col]), 1)
+                self.logger.log("MATCH", {
+                    "det": actual_det,
+                    "track_id": track.track_id,
+                    "cost": cost_val,
+                    "threshold": round(dynamic_thresh, 1),
+                    "is_established": track.is_established,
+                })
+                matched_pairs_log.append({
+                    "det": actual_det,
+                    "track_id": track.track_id,
+                    "cost": cost_val,
+                })
+            else:
+                self.logger.log("MATCH_REJECTED", {
+                    "det": actual_det,
+                    "track_id": track.track_id,
+                    "cost": round(float(cost_matrix[row, col]), 1),
+                    "threshold": round(dynamic_thresh, 1),
+                    "time_since_update": track.time_since_update,
+                })
+                if TRACKER_DEBUG:
+                    print(f"[TRACKER] Match rejected: "
+                          f"cost={cost_matrix[row, col]:.1f} > "
+                          f"thresh={dynamic_thresh:.1f} "
+                          f"(t_miss={track.time_since_update})")
+
+    # ------------------------------------------------------------------
     # Dormant pool re-identification
     # ------------------------------------------------------------------
     def _try_resurrect(self, keypoints, confidence, bbox, det_centroid) -> 'DancerTrack | None':
@@ -589,20 +751,27 @@ class DancerTracker:
             dist = np.linalg.norm(det_centroid - projected)
 
             # Widen gate for recently-dormant or occluded tracks:
-            # young dormant (< 30 frames) → up to 1.5× gate
-            # was occluded → 1.5× gate (they were hidden, not gone)
-            # CENTER exit (not near edge) → BOOST gate: the person didn't
-            #   really leave the scene, so match more aggressively
-            gate = self.distance_threshold
+            base_gate = self.distance_threshold
+            multiplier = 1.0
             if snap.age < 30:
-                gate *= 1.5
+                multiplier += 0.5
             if snap.was_occluded:
-                gate *= 1.5
+                multiplier += 0.5
             if not snap.exited_from_edge:
-                gate *= TRACKER_CENTER_EXIT_RESURRECT_BOOST
+                multiplier += (TRACKER_CENTER_EXIT_RESURRECT_BOOST - 1.0)
+            
+            # Cap maximum distance expansion so they don't jump across the entire stage
+            gate = base_gate * min(multiplier, 2.5)
 
             if dist > gate:
                 continue
+                
+            # Prevent edge entrants from instantly stealing tracks that disappeared in the center
+            is_edge_det = self._is_near_edge(float(det_centroid[0]))
+            if not snap.exited_from_edge and is_edge_det:
+                # If they walked to the edge while occluded, allow it, but require MUCH stricter distance.
+                if dist > base_gate:
+                    continue
 
             # --- Size gate ---
             # Center-exited/occluded: wider tolerance (body may look
@@ -617,9 +786,11 @@ class DancerTracker:
                     continue
 
             # --- Keypoint-shape gate ---
-            # Center-exited dormants get a more lenient shape gate
-            # (body pose may have changed during occlusion)
-            kpt_gate_ratio = 0.7 if not snap.exited_from_edge else 0.5
+            # IMPORTANT: Shape check MUST use the base_gate, not the expanded projection gate!
+            # The expanded gate is only to catch rapid position drift. Shape must remain heavily 
+            # restricted to prevent identity theft by differently-posed dancers.
+            kpt_gate_thresh = base_gate * (0.8 if not snap.exited_from_edge else 0.5)
+            
             mask_det = confidence > KEYPOINT_CONFIDENCE
             mask_snap = snap.confidence > KEYPOINT_CONFIDENCE
             both = mask_det & mask_snap
@@ -628,7 +799,7 @@ class DancerTracker:
                 kpt_dist = float(np.mean(
                     np.linalg.norm(keypoints[both] - snap.keypoints[both], axis=1)
                 ))
-                if kpt_dist > gate * kpt_gate_ratio:
+                if kpt_dist > kpt_gate_thresh:
                     continue
                 score = 0.5 * dist + 0.5 * kpt_dist
             else:
@@ -648,11 +819,23 @@ class DancerTracker:
 
         snap = self._dormant.pop(best_idx)
 
-        # Create fresh track with the new detection data but the OLD id
+        # Create fresh track with the new detection data but the OLD id.
+        # Temporarily set the class counter back so the constructor uses
+        # the dormant ID directly, avoiding wasted ID numbers.
+        saved_counter = DancerTrack._id_counter
+        DancerTrack._id_counter = snap.track_id - 1
         new_track = DancerTrack(keypoints, confidence, bbox, self.smoothing_depth)
-        new_track.track_id = snap.track_id  # resurrect the old ID
+        # Restore counter — only advance past old value if needed
+        DancerTrack._id_counter = max(saved_counter, new_track.track_id)
         new_track.hits = self.min_hits       # immediately confirmed
 
+        self.logger.log("RESURRECT", {
+            "track_id": snap.track_id,
+            "dormant_age": snap.age,
+            "score": round(best_score, 1),
+            "was_occluded": snap.was_occluded,
+            "edge_exit": snap.exited_from_edge,
+        })
         if TRACKER_DEBUG:
             print(f"[TRACKER] Resurrected track #{snap.track_id} from dormant "
                   f"(dormant_age={snap.age}, score={best_score:.1f}, "
@@ -661,83 +844,62 @@ class DancerTracker:
 
         return new_track
 
-    def update(self, detections):
+    def update(self, detections, frame_number: int | None = None):
         """
         Update tracker with new detections.
         
         Args:
             detections: List of (keypoints, confidence, bbox) tuples
+            frame_number: External frame number (from overlay) so that
+                log entries match the frame shown on screen.  When None,
+                the tracker increments its own counter (legacy path).
         
         Returns:
             List of DancerTrack objects for confirmed tracks
         """
-        self.frame_count += 1
-        
+        if frame_number is not None:
+            self.frame_count = frame_number
+        else:
+            self.frame_count += 1
+        self.logger.set_frame(self.frame_count)
+
         # Predict
         for track in self.tracks:
             track.predict()
         
-        # Match
-        cost_matrix = self._compute_cost_matrix(detections, self.tracks)
-        
+        # Match — cascaded assignment (Phase 1)
+        # Pass 1: established tracks get first pick of all detections.
+        # Pass 2: tentative tracks match remaining detections.
+        # This prevents a newly-spawned tentative track from stealing a
+        # detection that belongs to an established dancer.
         matched_det = set()
         matched_trk = set()
-        
-        if cost_matrix.size > 0:
-            # Sanitize cost matrix: NaN/inf entries crash linear_sum_assignment
-            if not np.all(np.isfinite(cost_matrix)):
-                cost_matrix = np.nan_to_num(
-                    cost_matrix, nan=1e6, posinf=1e6, neginf=1e6
-                )
-            row_idx, col_idx = linear_sum_assignment(cost_matrix)
-            
-            for row, col in zip(row_idx, col_idx):
-                track = self.tracks[col]
-                track_speed = track.get_speed()
-                
-                # Dynamic threshold: base + velocity bonus + time bonus
-                # All terms proportional to distance_threshold for proper
-                # scaling across person_height range (50px – 200px).
-                time_bonus = min(
-                    track.time_since_update * self.distance_threshold * 0.04,
-                    self.distance_threshold * 0.3,
-                )
-                dynamic_thresh = self.distance_threshold + track_speed * 1.0 + time_bonus
-                
-                if cost_matrix[row, col] < dynamic_thresh:
-                    kpts, conf, bbox = detections[row]
-                    
-                    # Anti-merge (Phase 4): reject if detection bbox is
-                    # suspiciously large for this established track
-                    # (likely two people merged into one detection).
-                    if (track.is_established
-                            and len(track.bbox_area_history) >= 5
-                            and bbox[2] * bbox[3] > track.avg_bbox_area * TRACKER_MERGE_SIZE_RATIO):
-                        
-                        # Only consider it a toxic merge if multiple tracks are nearby
-                        # Otherwise, it's just an isolated person stretching out.
-                        det_centroid = self._compute_centroid(kpts, conf, bbox)
-                        close_dist = self.distance_threshold * TRACKER_CLOSE_PROXIMITY_RATIO
-                        nearby = sum(1 for tr in self.tracks if np.linalg.norm(det_centroid - tr.get_centroid()) < close_dist)
-                        
-                        if nearby >= 2:
-                            if TRACKER_DEBUG:
-                                print(f"[TRACKER] Anti-merge rejected: "
-                                      f"det_area={bbox[2]*bbox[3]:.0f} > "
-                                      f"{TRACKER_MERGE_SIZE_RATIO}x "
-                                      f"avg={track.avg_bbox_area:.0f}")
-                            # Mark this detection as a toxic merge so it isn't
-                            # picked up by the fallback logic
-                            matched_det.add(row)
-                            continue
-                    
-                    matched_det.add(row)
-                    matched_trk.add(col)
-                    track.update(kpts, conf, bbox)
-                else:
-                    # Debug: print why match failed
-                    if TRACKER_DEBUG:
-                        print(f"[TRACKER] Match rejected: cost={cost_matrix[row, col]:.1f} > thresh={dynamic_thresh:.1f} (t_miss={track.time_since_update})")
+        matched_pairs_log = []  # for FRAME_SUMMARY
+
+        all_det_indices = list(range(len(detections)))
+
+        if TRACKER_CASCADED_MATCHING:
+            # --- Pass 1: established tracks ---
+            est_indices = [i for i, t in enumerate(self.tracks)
+                           if t.is_established]
+            self._run_assignment_pass(
+                detections, all_det_indices, est_indices,
+                matched_det, matched_trk, matched_pairs_log)
+
+            # --- Pass 2: tentative tracks vs remaining detections ---
+            tent_indices = [i for i, t in enumerate(self.tracks)
+                            if not t.is_established and i not in matched_trk]
+            remaining_dets = [d for d in all_det_indices
+                              if d not in matched_det]
+            self._run_assignment_pass(
+                detections, remaining_dets, tent_indices,
+                matched_det, matched_trk, matched_pairs_log)
+        else:
+            # Single-pass matching (legacy behaviour)
+            self._run_assignment_pass(
+                detections, all_det_indices,
+                list(range(len(self.tracks))),
+                matched_det, matched_trk, matched_pairs_log)
         
         # Create new tracks — use separate, tighter gate for new-track
         # creation vs. matching so two close dancers can coexist.
@@ -772,9 +934,17 @@ class DancerTracker:
                         # and failed resurrection validations, allow it to spawn a new
                         # track instantly rather than waiting for shape-mismatched
                         # dormant tracks to expire.
+                        new_id = DancerTrack._id_counter + 1
+                        self.logger.log("NEW_TRACK", {
+                            "track_id": new_id,
+                            "position": [round(float(det_centroid[0]), 1), round(float(det_centroid[1]), 1)],
+                            "min_dist": round(min_dist, 1),
+                            "gate": creation_gate,
+                            "is_edge": is_edge_det,
+                        })
                         if TRACKER_DEBUG:
                             print(f"[TRACKER] New track "
-                                  f"#{DancerTrack._id_counter + 1}: "
+                                  f"#{new_id}: "
                                   f"min_dist={min_dist:.1f} > "
                                   f"gate={creation_gate}")
                         self.tracks.append(
@@ -794,6 +964,11 @@ class DancerTracker:
                                 and not best_unmatched._occluded):
                             best_unmatched = t2
                             best_unmatched_idx = idx2
+                    self.logger.log("FORCE_UPDATE", {
+                        "track_id": best_unmatched.track_id,
+                        "dist": round(min_dist, 1),
+                        "occluded": best_unmatched._occluded,
+                    })
                     if TRACKER_DEBUG:
                         print(f"[TRACKER] Force update track #{best_unmatched.track_id}: "
                               f"dist={min_dist:.1f} occluded={best_unmatched._occluded}")
@@ -801,6 +976,10 @@ class DancerTracker:
                     matched_trk.add(best_unmatched_idx)
                 elif closest_track is not None and min_dist < self.duplicate_distance:
                     # Very close to an already-matched track → duplicate, drop
+                    self.logger.log("DUPLICATE_IGNORED", {
+                        "near_track_id": closest_track.track_id,
+                        "dist": round(min_dist, 1),
+                    })
                     if TRACKER_DEBUG:
                         print(f"[TRACKER] Ignoring duplicate near track "
                               f"#{closest_track.track_id}: dist={min_dist:.1f}")
@@ -811,12 +990,20 @@ class DancerTracker:
                             last_pos = track.get_last_known_position()
                             dist = np.linalg.norm(det_centroid - last_pos)
                             if dist < self.distance_threshold:
+                                self.logger.log("FALLBACK_UPDATE", {
+                                    "track_id": track.track_id,
+                                    "dist": round(dist, 1),
+                                })
                                 if TRACKER_DEBUG:
                                     print(f"[TRACKER] Fallback update track #{track.track_id}: dist={dist:.1f}")
                                 track.update(kpts, conf, bbox)
                                 matched_trk.add(idx)
                                 break
                     else:
+                        self.logger.log("AMBIGUOUS_IGNORED", {
+                            "near_track_id": closest_track.track_id if closest_track else None,
+                            "dist": round(min_dist, 1),
+                        })
                         if TRACKER_DEBUG:
                             print(f"[TRACKER] Ignoring ambiguous det near track "
                                   f"#{closest_track.track_id if closest_track else 'None'}: dist={min_dist:.1f}")
@@ -840,8 +1027,13 @@ class DancerTracker:
             # Track is unmatched — check if it's near any matched track
             pred_pos = track.get_centroid()
             near_matched = False
+            
+            # Widen the radius slightly if they were already occluded to 
+            # account for them coasting past the occluder while hidden.
+            current_occlusion_dist = occlusion_dist * (1.5 if track._occluded else 1.0)
+            
             for mpos in matched_positions:
-                if np.linalg.norm(pred_pos - mpos) < occlusion_dist:
+                if np.linalg.norm(pred_pos - mpos) < current_occlusion_dist:
                     near_matched = True
                     break
             if near_matched:
@@ -855,6 +1047,10 @@ class DancerTracker:
                     track.time_since_update += increments
                     track._fractional_age -= increments
                 
+                self.logger.log("OCCLUDED", {
+                    "track_id": track.track_id,
+                    "time_since_update": track.time_since_update,
+                })
                 if TRACKER_DEBUG:
                     print(f"[TRACKER] Track #{track.track_id} occluded "
                           f"(t_miss={track.time_since_update})")
@@ -881,6 +1077,12 @@ class DancerTracker:
             if t.time_since_update >= effective_max_age:
                 # Did this track leave near an edge, or vanish in the center?
                 self._dormant.append(DormantSnapshot(t, exited_from_edge=at_edge))
+                self.logger.log("DORMANT", {
+                    "track_id": t.track_id,
+                    "was_occluded": t._occluded,
+                    "is_established": t.is_established,
+                    "edge_exit": at_edge,
+                })
                 if TRACKER_DEBUG:
                     print(f"[TRACKER] Track #{t.track_id} → dormant pool "
                           f"(was_occluded={t._occluded}, "
@@ -894,8 +1096,11 @@ class DancerTracker:
         for snap in self._dormant:
             snap.age += 1
         expired = [s for s in self._dormant if s.age >= self.dormant_max_age]
-        if expired and TRACKER_DEBUG:
-            print(f"[TRACKER] Dormant expired: {[s.track_id for s in expired]}")
+        if expired:
+            for s in expired:
+                self.logger.log("DORMANT_EXPIRED", {"track_id": s.track_id})
+            if TRACKER_DEBUG:
+                print(f"[TRACKER] Dormant expired: {[s.track_id for s in expired]}")
         self._dormant = [s for s in self._dormant if s.age < self.dormant_max_age]
         
         # Update pairwise distance memory (for separation penalty)
@@ -912,7 +1117,27 @@ class DancerTracker:
         for track in self.tracks:
             if track.hits >= self.min_hits or self.frame_count <= self.min_hits:
                 confirmed.append(track)
-        
+
+        # ---- Emit per-frame summary to structured log ----
+        self.logger.log_frame_summary(
+            n_detections=len(detections),
+            n_tracks=len(self.tracks),
+            track_states=[
+                {
+                    "id": t.track_id,
+                    "centroid": t.get_centroid().tolist(),
+                    "velocity": t.get_velocity().tolist(),
+                    "hits": t.hits,
+                    "t_miss": t.time_since_update,
+                    "established": t.is_established,
+                    "occluded": getattr(t, '_occluded', False),
+                }
+                for t in self.tracks
+            ],
+            n_dormant=len(self._dormant),
+            matched_pairs=matched_pairs_log,
+        )
+
         return confirmed
 
     # ------------------------------------------------------------------
@@ -1014,6 +1239,13 @@ class DancerTracker:
                 incremented.add(shadow.track_id)
                 if shadow._shadow_streak >= SHADOW_TRACK_FRAMES:
                     to_kill.add(shadow.track_id)
+                    self.logger.log("KILL_SHADOW", {
+                        "track_id": shadow.track_id,
+                        "parent_id": parent.track_id,
+                        "shadow_quality": round(shadow.skeleton_quality, 2),
+                        "parent_quality": round(parent.skeleton_quality, 2),
+                        "cos_sim": round(cos_sim, 2),
+                    })
                     if TRACKER_DEBUG:
                         print(f"[TRACKER] Shadow track #{shadow.track_id} killed "
                               f"(parent=#{parent.track_id}, "

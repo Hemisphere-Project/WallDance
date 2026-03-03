@@ -185,7 +185,7 @@ class FrameProcessor:
     # ------------------------------------------------------------------
     # Processing
     # ------------------------------------------------------------------
-    def process(self, frame: np.ndarray, need_preview: bool = True) -> Tuple[List[ScaledTrack], np.ndarray, Dict[str, float], float]:
+    def process(self, frame: np.ndarray, need_preview: bool = True, frame_number: int | None = None) -> Tuple[List[ScaledTrack], np.ndarray, Dict[str, float], float]:
         """Run a single frame through the pipeline.
         
         When GPU pipeline is active:
@@ -197,21 +197,22 @@ class FrameProcessor:
         Args:
             frame: BGR numpy array from camera
             need_preview: Whether to generate preview output (for rate limiting)
+            frame_number: Display frame number for tracker logging (overlay match)
         
         Returns:
             (tracked, enhanced_frame, timing, latency_ms)
         """
         if self._gpu_path_active and self._gpu_pipeline is not None:
             try:
-                return self._process_gpu(frame, need_preview)
+                return self._process_gpu(frame, need_preview, frame_number=frame_number)
             except RuntimeError as e:
                 if self._is_cuda_kernel_compat_error(e):
                     self._disable_gpu_path_and_fallback(str(e))
-                    return self._process_cpu(frame)
+                    return self._process_cpu(frame, frame_number=frame_number)
                 raise
-        return self._process_cpu(frame)
+        return self._process_cpu(frame, frame_number=frame_number)
     
-    def _process_gpu(self, frame: np.ndarray, need_preview: bool = True) -> Tuple[List[ScaledTrack], np.ndarray, Dict[str, float], float]:
+    def _process_gpu(self, frame: np.ndarray, need_preview: bool = True, frame_number: int | None = None) -> Tuple[List[ScaledTrack], np.ndarray, Dict[str, float], float]:
         """GPU pipeline: zero-copy enhancement + YOLO."""
         frame_start = time.time()
         original_h, original_w = frame.shape[:2]
@@ -228,7 +229,7 @@ class FrameProcessor:
         timing["path_enhance"] = "gpu"
         
         # 2-6. YOLO → Track → OSC
-        scaled_tracks = self._run_yolo_and_track(yolo_tensor, gpu_timing, timing, original_w, original_h)
+        scaled_tracks = self._run_yolo_and_track(yolo_tensor, gpu_timing, timing, original_w, original_h, frame_number=frame_number)
         
         latency_ms = (time.time() - frame_start) * 1000
         timing["total"] = latency_ms
@@ -236,7 +237,7 @@ class FrameProcessor:
         
         return scaled_tracks, preview_frame, timing, latency_ms
     
-    def process_gpu_direct(self, gpu_tensor: 'torch.Tensor', need_preview: bool = True) -> Tuple[List[ScaledTrack], np.ndarray, Dict[str, float], float]:
+    def process_gpu_direct(self, gpu_tensor: 'torch.Tensor', need_preview: bool = True, frame_number: int | None = None) -> Tuple[List[ScaledTrack], np.ndarray, Dict[str, float], float]:
         """Process a pre-uploaded GPU tensor (optimized path for IDS camera).
         
         This bypasses the CPU→GPU upload step for lowest latency when the
@@ -245,6 +246,7 @@ class FrameProcessor:
         Args:
             gpu_tensor: GPU tensor (1, 3, H, W) float32 [0,1] RGB format
             need_preview: Whether to generate preview output
+            frame_number: Display frame number for tracker logging (overlay match)
             
         Returns:
             (tracked, enhanced_frame, timing, latency_ms)
@@ -270,7 +272,7 @@ class FrameProcessor:
             timing["path_enhance"] = "gpu-direct"
 
             # 2-6. YOLO → Track → OSC
-            scaled_tracks = self._run_yolo_and_track(yolo_tensor, gpu_timing, timing, original_w, original_h)
+            scaled_tracks = self._run_yolo_and_track(yolo_tensor, gpu_timing, timing, original_w, original_h, frame_number=frame_number)
 
             latency_ms = (time.time() - frame_start) * 1000
             timing["total"] = latency_ms
@@ -285,7 +287,7 @@ class FrameProcessor:
 
             cpu_rgb = gpu_tensor.squeeze(0).detach().clamp(0, 1).permute(1, 2, 0).cpu().numpy()
             cpu_bgr = cv2.cvtColor((cpu_rgb * 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
-            return self._process_cpu(cpu_bgr)
+            return self._process_cpu(cpu_bgr, frame_number=frame_number)
 
     def _run_yolo_and_track(
         self,
@@ -294,6 +296,7 @@ class FrameProcessor:
         timing: Dict[str, float],
         original_w: int,
         original_h: int,
+        frame_number: int | None = None,
     ) -> List[ScaledTrack]:
         """Shared YOLO inference → extract → track → unscale → OSC pipeline.
 
@@ -329,7 +332,7 @@ class FrameProcessor:
         pad_x = letterbox.get('pad_x', 0)
         pad_y = letterbox.get('pad_y', 0)
         self.tracker.set_frame_dimensions(self.settings.imgsz, pad_x=pad_x)
-        tracked = self.tracker.update(detections)
+        tracked = self.tracker.update(detections, frame_number=frame_number)
         timing["track"] = (time.time() - t0) * 1000
         timing["path_track"] = "cpu"
 
@@ -382,7 +385,7 @@ class FrameProcessor:
             self._gpu_pipeline.settings.preview_fps_cap = fps_cap
             self._gpu_pipeline.update_settings(self._gpu_pipeline.settings)
     
-    def _process_cpu(self, frame: np.ndarray) -> Tuple[List[ScaledTrack], np.ndarray, Dict[str, float], float]:
+    def _process_cpu(self, frame: np.ndarray, frame_number: int | None = None) -> Tuple[List[ScaledTrack], np.ndarray, Dict[str, float], float]:
         """CPU pipeline: traditional enhancement + YOLO."""
         frame_start = time.time()
         original_h, original_w = frame.shape[:2]
@@ -447,7 +450,7 @@ class FrameProcessor:
         t0 = time.time()
         # CPU path: YOLO outputs in original frame coords
         self.tracker.set_frame_dimensions(original_w)
-        tracked = self.tracker.update(detections)
+        tracked = self.tracker.update(detections, frame_number=frame_number)
         timing["track"] = (time.time() - t0) * 1000
         timing["path_track"] = "cpu"
 

@@ -175,7 +175,7 @@ TRACKER_VELOCITY_PREDICTION_INFLUENCE = 0.5  # 0 = trust raw position
 # Anti-merge constraints — reject detections that are suspiciously
 # large for an established track (likely two people merged into one).
 TRACKER_ESTABLISHED_FRAMES = 15        # Hits before a track is "established"
-TRACKER_MERGE_SIZE_RATIO = 1.3         # Reject if det_area > track_avg × this
+TRACKER_MERGE_SIZE_RATIO = 2.0         # Reject if det_area > track_avg × this
 
 # Occlusion handling — keeps tracks alive when hidden behind
 # another tracked body instead of ageing them to death.
@@ -243,6 +243,39 @@ TRACKER_CENTER_EXIT_RESURRECT_BOOST = 2.0  # Gate multiplier for dormant
 # jitter-free generative video input.  Does NOT affect tracking.
 CENTROID_OUTPUT_SMOOTHING = 0.5         # EMA alpha (0 = max smooth, 1 = raw)
                                          # 0.3-0.5 is good for generative video
+
+# =============================================================================
+# TRACKING EVENT LOG (Phase 0 — diagnostics)
+# =============================================================================
+TRACKER_EVENT_LOG_ENABLED = True        # Write structured JSONL event log
+TRACKER_EVENT_LOG_FILE = "tracking_events.jsonl"  # Output file (in working dir)
+TRACKER_EVENT_LOG_MAX_ENTRIES = 3000    # Rolling in-memory buffer size
+TRACKER_EVENT_LOG_FLUSH_INTERVAL = 2.0  # Seconds between auto-flushes
+
+# =============================================================================
+# PHASE 1 — HARDENED ASSOCIATION
+# =============================================================================
+TRACKER_MAHALANOBIS_GATE = 9.21         # Chi² gate (df=2, 99% confidence).
+                                         # Rejects detection↔track pairs where
+                                         # the detection is statistically too far
+                                         # from the track's Kalman-predicted pos.
+                                         # Prevents "teleport" assignments.
+                                         # Set to 0 to disable.
+TRACKER_MAHALANOBIS_GATE_NOISE = 700.0   # Measurement noise used ONLY for the
+                                         # Mahalanobis gate covariance S.
+                                         # The Kalman R (MEASUREMENT_NOISE=2.0)
+                                         # is tuned for smoothing — it collapses
+                                         # the innovation cov to ~4px², gating
+                                         # anything >6px away.  For gating we
+                                         # need to tolerate normal YOLO jitter
+                                         # (10-50px), so we inflate R_gate.
+                                         # With 700: ~80px passes, ~110px gated,
+                                         # 294px teleport still firmly blocked.
+TRACKER_CASCADED_MATCHING = True         # Established tracks match first (pass 1),
+                                         # tentative tracks match remaining
+                                         # detections (pass 2).  Prevents newly-
+                                         # spawned tracks from stealing detections
+                                         # that belong to established dancers.
 
 # =============================================================================
 # OSC OUTPUT

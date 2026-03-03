@@ -207,6 +207,7 @@ class WallDanceApp:
         self.latency_ms = 0.0
         self.running = False
         self.last_tracked: List[ScaledTrack] = []
+        self._total_frame_count: int = 0  # Phase 0: cumulative frame counter (live mode)
         self._last_raw_frame: Optional[np.ndarray] = None  # Last raw camera frame for BG capture
         
         # Pending operations (deferred to main loop)
@@ -1085,6 +1086,7 @@ class WallDanceApp:
         Resets the tracker to avoid stale IDs carrying across takes.
         """
         print(f"[Playback] Event '{event}' — resetting tracker")
+        self._total_frame_count = 0
         self._cb_tracker_reset()
 
     def _cb_osc_toggle(self, enabled: bool):
@@ -1380,16 +1382,20 @@ class WallDanceApp:
             self.recorder.resume_playback()
         else:
             self.recorder.pause_playback()
+            self.tracker.logger.flush()  # Phase 0: flush log on pause
     
     def _cb_playback_next_frame(self):
         """Handle next frame button."""
         self.recorder.next_frame()
+        self.tracker.logger.flush()  # Phase 0: flush log on frame step
     
     def _cb_playback_prev_frame(self):
         """Handle previous frame button."""
         self.recorder.prev_frame()
+        self.tracker.logger.flush()  # Phase 0: flush log on frame step
 
     def _cb_quit(self):
+        self.tracker.logger.close()  # Phase 0: flush and close tracking log
         self.running = False
         self.recorder.close()
 
@@ -1603,6 +1609,38 @@ class WallDanceApp:
         text_x = x - tw // 2
         text_y = y_bottom + th + int(8 * ts)
         cv2.rectangle(frame, (text_x - 2, text_y - th - 2), (text_x + tw + 2, text_y + 2), bg_color, -1)
+        cv2.putText(frame, label, (text_x, text_y), font, font_scale, color, thickness)
+
+    def _draw_frame_number_overlay(self, frame, frame_number: int):
+        """Phase 0: Draw frame number overlay in the top-right corner.
+
+        Shows 'Frame: NNN' (or 'Frame: NNN / TTT' during playback)
+        in white text on a dark semi-transparent background so it's
+        always readable regardless of scene content.
+        """
+        h, w = frame.shape[:2]
+        # Build label
+        if self.recorder.is_playing:
+            total = self.recorder.status.playback_total
+            label = f"Frame: {frame_number}/{total}"
+        else:
+            label = f"Frame: {frame_number}"
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.6
+        thickness = 1
+        color = (255, 255, 255)
+        bg_color = (0, 0, 0)
+        (tw, th), baseline = cv2.getTextSize(label, font, font_scale, thickness)
+        margin = 8
+        text_x = w - tw - margin
+        text_y = th + margin
+        # Dark background rectangle
+        cv2.rectangle(
+            frame,
+            (text_x - 4, text_y - th - 4),
+            (text_x + tw + 4, text_y + baseline + 4),
+            bg_color, -1,
+        )
         cv2.putText(frame, label, (text_x, text_y), font, font_scale, color, thickness)
 
     def _update_gpu_stats_if_due(self, now: Optional[float] = None, interval_s: float = 1.0):
@@ -2344,18 +2382,27 @@ class WallDanceApp:
             # Skip YOLO inference if not in RUN state (Phase 3 gating)
             if self.gui and self.gui.get_system_state() != SystemState.RUN:
                 should_process = False
+
+            # Phase 0: compute display frame number for tracker logging
+            # (set outside should_process so overlay works even in STANDBY)
+            if self.recorder.is_playing:
+                _display_frame_num = self.recorder.status.playback_frame
+            else:
+                self._total_frame_count += 1
+                _display_frame_num = self._total_frame_count
                 
             if should_process:
                 process_wall_ms = 0.0
+
                 try:
                     _proc_t0 = time.perf_counter()
                     if gpu_tensor is not None:
                         tracked, display_frame, timing, latency_ms = self.processor.process_gpu_direct(
-                            gpu_tensor
+                            gpu_tensor, frame_number=_display_frame_num
                         )
                     elif frame is not None:
                         tracked, display_frame, timing, latency_ms = self.processor.process(
-                            frame, need_preview=True
+                            frame, need_preview=True, frame_number=_display_frame_num
                         )
                     else:
                         time.sleep(0.001)
@@ -2499,6 +2546,8 @@ class WallDanceApp:
                             thickness_scale=thickness_scale,
                         )
                     self._draw_height_ruler(preview_frame, scale=ruler_scale, thickness_scale=thickness_scale)
+                    # Phase 0: frame number overlay (top-right)
+                    self._draw_frame_number_overlay(preview_frame, _display_frame_num)
                     preview_draw_ms = (time.time() - preview_t0) * 1000
                     upload_t0 = time.time()
                     self.gui.update_frame(preview_frame)
