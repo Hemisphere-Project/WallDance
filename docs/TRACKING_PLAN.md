@@ -3,6 +3,7 @@
 **Goal**: Eliminate ID steal → ghost creation, and survive complex occluded crossovers.  
 **Context**: Similar costumes (ReID low-value), ≤6 dancers, comfortable GPU headroom (>15ms spare).  
 **Started**: 2026-03-03  
+**Last updated**: 2026-03-09  
 
 **Methodology**: For each reported issue, first analyze logs and identify root
 cause.  Then assess whether a direct, targeted fix is possible (e.g. Phase 1b/1c/1d
@@ -13,16 +14,114 @@ phase only when the root cause is structural and can't be patched locally.
 
 ---
 
+## Current Status (quick reference)
+
+| Phase | Status | Notes |
+|-------|--------|-------|
+| Phase 0 — Logging & diagnostics | **DONE** | `TrackingLogger` → `tracking_events.jsonl`, frame overlay, `FRAME_SUMMARY` per frame |
+| Phase 1.1 — Mahalanobis gate | **DONE** | Chi²(df=2, 99%) = 9.21, gate noise R=700 (effective radius ~80px) |
+| Phase 1.2 — Cascaded matching | **DONE** | Established-first (Pass 1) + tentative (Pass 2), deferred updates |
+| Phase 1b — Gate noise fix | **DONE** | Separate R_gate from Kalman R; relaxed anti-merge 1.3→2.0; ID counter fix |
+| Phase 1c — Cascade occlusion swap | **DONE** | `_check_occlusion_cascade_swaps()` + suppression window (5 frames) + post-update velocity clamp |
+| Phase 1d — Merge direction swap | **DONE** | `_check_merge_direction_swaps()` + post-update velocity clamp on both tracks |
+| Phase 1.3 — IoU cost signal | Not started | |
+| Phase 2 — Temporal pose signature | Not started | |
+| Phase 3 — Optical flow bridge | Not started | |
+| Phase 4 — Track lifecycle | Not started | |
+| Phase 5 — Occupancy grid | Not started | |
+
+### Known issues on Slot 6 test clip
+
+| Issue | Frames | Status | Fix |
+|-------|--------|--------|-----|
+| Edge-entry ID theft (no occlusion) | ~237 | **FIXED** | Phase 1.1 Mahalanobis gate blocks 294px teleport |
+| Occlusion zone ID loss / ghosts | ~430-477 | **FIXED** | Phase 1b: gate noise 700, anti-merge 2.0 |
+| Cascade occlusion swap (est steals from tent) | ~366-393 | **FIXED** | Phase 1c: swap + suppression window + velocity clamp |
+| Established-established merge swap | ~297-305 | **FIXED** | Phase 1d: direction swap + velocity clamp |
+| Shadows | various | OK | Existing shadow suppression handles it |
+
+### How to run and test
+
+```bash
+# From repo root
+cd application
+uv run python src/main.py
+# Load Slot 6, play back, watch for ID issues
+# Frame overlay shows frame number (top-right)
+# Logs written to application/tracking_events.jsonl
+```
+
+### How to analyze logs
+
+```powershell
+# Find latest session
+$lines = Get-Content tracking_events.jsonl
+$resets = @(); for($i=0; $i -lt $lines.Count; $i++) { if($lines[$i] -match '"RESET"') { $resets += $i } }
+$session = $lines[$resets[-1]..($lines.Count-1)]
+
+# Find swap events
+$session | Select-String 'MERGE_DIRECTION_SWAP|CASCADE_OCCLUSION_SWAP|CASCADE_SUPPRESSED'
+
+# Trace frame summaries for a range (e.g. F360-399)
+$session | Select-String '"frame": (36[0-9]|37[0-9]|38[0-9]|39[0-9])' |
+  Where-Object { $_ -match 'FRAME_SUMMARY' } |
+  ForEach-Object { $_.Line | ConvertFrom-Json } |
+  ForEach-Object { "F$($_.frame) d=$($_.data.n_detections) trk=$($_.data.n_tracks)" }
+```
+
+### Key files
+
+| File | Purpose |
+|------|---------|
+| [tracker.py](../application/src/tracker.py) | Core tracker: `DancerTrack`, `DancerTracker`, swap checks, Kalman filter |
+| [config.py](../application/src/config.py) | All config constants (gates, thresholds, feature flags) |
+| [tracking_logger.py](../application/src/tracking_logger.py) | Structured JSONL event logger |
+| [app.py](../application/src/app.py) | Main app, frame overlay, preview rendering |
+| `application/tracking_events.jsonl` | Log output (working dir, NOT in `src/`) |
+
+### Key config flags (all in `config.py`)
+
+| Flag | Value | Purpose |
+|------|-------|---------|
+| `TRACKER_MAHALANOBIS_GATE` | 9.21 | Chi² gate threshold |
+| `TRACKER_MAHALANOBIS_GATE_NOISE` | 700.0 | Inflated R for gate (effective radius ~80px) |
+| `TRACKER_CASCADED_MATCHING` | True | 2-pass established/tentative matching |
+| `TRACKER_CASCADE_OCCLUSION_SWAP` | True | Post-cascade swap for est-steals-from-tent |
+| `TRACKER_CASCADE_SUPPRESSION_FRAMES` | 5 | Frames to suppress swapped est track from Pass 1 |
+| `TRACKER_MERGE_DIRECTION_SWAP` | True | Post-merge velocity-direction swap |
+| `TRACKER_ESTABLISHED_FRAMES` | 15 | Hits before a track is "established" |
+| `TRACKER_CLOSE_PROXIMITY_RATIO` | 0.6 | Proximity ratio for swap detection |
+| `TRACKER_MATCH_GATE_RATIO` | 0.90 | Match distance as fraction of person height |
+
+### Architecture overview (tracker.py)
+
+The `update()` method flow per frame:
+1. **Tick down** cascade suppression counters
+2. **Predict** all tracks (Kalman predict, velocity dampening for occluded)
+3. **Pass 1**: Established tracks (excluding suppressed) match all detections → `pending_updates`
+4. **Pass 2**: Tentative + suppressed tracks match remaining detections → `pending_updates`
+5. **Phase 1c check**: `_check_occlusion_cascade_swaps()` — swap if established steals from tentative
+6. **Phase 1d check**: `_check_merge_direction_swaps()` — swap if direction-reversed after merge
+7. **Apply deferred updates**: `track.update(kpts, conf, bbox)` for all pending
+8. **Post-update velocity clamp**: Zero `kf.x[2:]` on all swapped tracks (prevents velocity spike)
+9. **New track creation / force-update / resurrection**
+10. **Occlusion-aware aging**: Fractional aging for tracks near matched tracks
+11. **Expire** old tracks → dormant pool
+12. **Shadow detection** and cleanup
+13. **Emit** `FRAME_SUMMARY` log
+
+### Important: don't run `uv run python -c "from tracker import ..."` for import tests!
+
+This breaks CUDA packages. Validate code changes by running the full app instead.
+
+---
+
 ## Test reference video
 
 **Slot 6** of the current project — 4 people entering and leaving the stage.  
-Known issues on this clip (current state):
-- Shadows: mostly handled OK by existing shadow suppression
-- **ID steal → new ID creation**: primary issue — one dancer takes another's ID, victim gets a fresh ID
-- **Partial merge**: when 2 people walk in line (one behind the other), they temporarily merge into one detection; recovery is OK but not instant
-- **ID swap**: secondary issue during close crossovers
-
 Use this clip as the benchmark for every phase checkpoint.
+
+Known issue status — see **Current Status** table above.
 
 ---
 
@@ -414,8 +513,8 @@ matrix and causes cross-matching.
 - Matching logic extracted into `_run_assignment_pass()` helper (threshold check, anti-merge, logging)
 - Controlled by `TRACKER_CASCADED_MATCHING = True` in config (can disable for A/B testing)
 - **Why**: Prevents a freshly-spawned tentative track from stealing a detection that belongs to an established dancer
-- [ ] **Test**: Scenario with established dancer + nearby tentative track. Established must win.
-- [ ] **Regression**: Run on recorded crossover clips — count ID changes before/after
+- [x] **Test**: Scenario with established dancer + nearby tentative track. Established wins (confirmed slot 6).
+- [x] **Regression**: Slot 6 full replay — no regressions (combined with Phase 1c/1d fixes)
 
 ### 1.3 IoU cost signal
 - [ ] **Implement** as 6th cost term in `_compute_cost_matrix`
@@ -427,10 +526,17 @@ matrix and causes cross-matching.
 - [ ] **Config**: Add `TRACKER_IOU_WEIGHT = 0.10`, `TRACKER_CLOSE_IOU_WEIGHT = 0.05`
 
 ### Phase 1 — Validation checkpoint
-- [ ] Run on recorded video with known crossover moments
-- [ ] Count ID swaps/steals before vs after Phase 1
-- [ ] Check for regressions: false track kills, missed detections, latency impact
-- [ ] **Decision**: If steal rate dropped enough, skip to Phase 3 (optical flow). Otherwise continue to Phase 2.
+- [x] Run on recorded video with known crossover moments (Slot 6, 4 dancers)
+- [x] Count ID swaps/steals before vs after Phase 1: **4 known issues → 0 remaining**
+  - F237 edge-entry theft: FIXED (Phase 1.1 Mahalanobis gate)
+  - F430-477 occlusion zone loss: FIXED (Phase 1b gate noise separation)
+  - F366-393 cascade occlusion swap: FIXED (Phase 1c + suppression + velocity clamp)
+  - F297-305 merge direction swap: FIXED (Phase 1d + velocity clamp)
+- [x] Check for regressions: no false track kills, no missed detections, no latency impact observed
+- [ ] **Decision**: Continue to Phase 1.3 (IoU) or advance to Phase 2/3? (pending user decision)
+  - All 4 reported issues resolved with targeted Phase 1 fixes
+  - Phase 1.3 (IoU cost signal) still available as a "preventive" improvement
+  - Phase 2 (temporal pose) and Phase 3 (optical flow) for deeper structural robustness
 
 ---
 
