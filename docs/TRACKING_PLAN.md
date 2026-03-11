@@ -3,7 +3,7 @@
 **Goal**: Eliminate ID steal → ghost creation, and survive complex occluded crossovers.  
 **Context**: Similar costumes (ReID low-value), ≤6 dancers, comfortable GPU headroom (>15ms spare).  
 **Started**: 2026-03-03  
-**Last updated**: 2026-03-09  
+**Last updated**: 2026-03-11  
 
 **Methodology**: For each reported issue, first analyze logs and identify root
 cause.  Then assess whether a direct, targeted fix is possible (e.g. Phase 1b/1c/1d
@@ -25,7 +25,7 @@ phase only when the root cause is structural and can't be patched locally.
 | Phase 1c — Cascade occlusion swap | **DONE** | `_check_occlusion_cascade_swaps()` + suppression window (5 frames) + post-update velocity clamp |
 | Phase 1d — Merge direction swap | **DONE** | `_check_merge_direction_swaps()` + post-update velocity clamp on both tracks |
 | Phase 1.3 — IoU cost signal | Not started | |
-| Phase 2 — Temporal pose signature | Not started | |
+| Phase 2 — Temporal pose signature | **IN PROGRESS** | Pose history buffer + trajectory cost in cost matrix done; merge-frame contamination fix applied; awaiting validation |
 | Phase 3 — Optical flow bridge | Not started | |
 | Phase 4 — Track lifecycle | Not started | |
 | Phase 5 — Occupancy grid | Not started | |
@@ -37,7 +37,8 @@ phase only when the root cause is structural and can't be patched locally.
 | Edge-entry ID theft (no occlusion) | ~237 | **FIXED** | Phase 1.1 Mahalanobis gate blocks 294px teleport |
 | Occlusion zone ID loss / ghosts | ~430-477 | **FIXED** | Phase 1b: gate noise 700, anti-merge 2.0 |
 | Cascade occlusion swap (est steals from tent) | ~366-393 | **FIXED** | Phase 1c: swap + suppression window + velocity clamp |
-| Established-established merge swap | ~297-305 | **FIXED** | Phase 1d: direction swap + velocity clamp |
+| Established-established merge swap | ~297-305 | **INVESTIGATING** | Phase 1d fixes it in some sessions; Phase 2 trajectory cost + merge-frame guard applied, awaiting validation |
+| Edge occlusion swap (minor) | ~377-380 | KNOWN | id2/id3 swap after id2 returns from occlusion; `_occluded` already cleared so merge-direction swap doesn't fire; low priority (edge area) |
 | Shadows | various | OK | Existing shadow suppression handles it |
 
 ### How to run and test
@@ -92,6 +93,8 @@ $session | Select-String '"frame": (36[0-9]|37[0-9]|38[0-9]|39[0-9])' |
 | `TRACKER_ESTABLISHED_FRAMES` | 15 | Hits before a track is "established" |
 | `TRACKER_CLOSE_PROXIMITY_RATIO` | 0.6 | Proximity ratio for swap detection |
 | `TRACKER_MATCH_GATE_RATIO` | 0.90 | Match distance as fraction of person height |
+| `TRACKER_POSE_HISTORY_DEPTH` | 15 | Frames of skeleton history for trajectory cost |
+| `TRACKER_TRAJECTORY_WEIGHT` | 0.30 | Weight of trajectory cost in crowded zones |
 
 ### Architecture overview (tracker.py)
 
@@ -102,9 +105,11 @@ The `update()` method flow per frame:
 4. **Pass 2**: Tentative + suppressed tracks match remaining detections → `pending_updates`
 5. **Phase 1c check**: `_check_occlusion_cascade_swaps()` — swap if established steals from tentative
 6. **Phase 1d check**: `_check_merge_direction_swaps()` — swap if direction-reversed after merge
-7. **Apply deferred updates**: `track.update(kpts, conf, bbox)` for all pending
+7. **Apply deferred updates**: `track.update(kpts, conf, bbox, merge_frame)` for all pending
+   - `merge_frame` computed once per frame: `len(detections) < len(tracks)`
+   - When True, pose history recording is skipped (prevents contamination from merged skeletons)
 8. **Post-update velocity clamp**: Zero `kf.x[2:]` on all swapped tracks (prevents velocity spike)
-9. **New track creation / force-update / resurrection**
+9. **New track creation / force-update / resurrection** (also passes `merge_frame`)
 10. **Occlusion-aware aging**: Fractional aging for tracks near matched tracks
 11. **Expire** old tracks → dormant pool
 12. **Shadow detection** and cleanup
@@ -527,16 +532,13 @@ matrix and causes cross-matching.
 
 ### Phase 1 — Validation checkpoint
 - [x] Run on recorded video with known crossover moments (Slot 6, 4 dancers)
-- [x] Count ID swaps/steals before vs after Phase 1: **4 known issues → 0 remaining**
+- [x] Count ID swaps/steals before vs after Phase 1: **3 of 4 known issues fixed**
   - F237 edge-entry theft: FIXED (Phase 1.1 Mahalanobis gate)
   - F430-477 occlusion zone loss: FIXED (Phase 1b gate noise separation)
   - F366-393 cascade occlusion swap: FIXED (Phase 1c + suppression + velocity clamp)
-  - F297-305 merge direction swap: FIXED (Phase 1d + velocity clamp)
+  - F297-305 merge direction swap: PARTIALLY FIXED (Phase 1d works in some sessions; unreliable due to `_vx_history` corruption → escalated to Phase 2)
 - [x] Check for regressions: no false track kills, no missed detections, no latency impact observed
-- [ ] **Decision**: Continue to Phase 1.3 (IoU) or advance to Phase 2/3? (pending user decision)
-  - All 4 reported issues resolved with targeted Phase 1 fixes
-  - Phase 1.3 (IoU cost signal) still available as a "preventive" improvement
-  - Phase 2 (temporal pose) and Phase 3 (optical flow) for deeper structural robustness
+- [x] **Decision**: Advance to Phase 2 — F300 merge swap requires structural fix (temporal pose signature) rather than more post-hoc corrections. Phase 1.3 (IoU) deferred.
 
 ---
 
@@ -546,11 +548,19 @@ matrix and causes cross-matching.
 > A true match shows smooth pose evolution; a steal shows an abrupt jump.
 
 ### 2.1 Pose trajectory buffer
-- [ ] **Implement** in `DancerTrack` (`tracker.py`)
-- Add rolling buffer: last 8 normalized skeleton snapshots (`deque(maxlen=8)`)
-- On each `update()`, append centroid-normalized keypoints (already computed via `get_normalized_skeleton()`)
-- Compute "pose trajectory descriptor" = flattened recent history
-- [ ] **Config**: Add `TRACKER_POSE_HISTORY_DEPTH = 8`
+- [x] **Implement** in `DancerTrack` (`tracker.py`)
+- Rolling buffer: `_pose_history` deque with `maxlen=TRACKER_POSE_HISTORY_DEPTH` (15)
+- On each `update()`, append `{'kpts_norm', 'mask', 'aspect'}` snapshot:
+  - `kpts_norm`: centroid-normalized keypoints (17×2)
+  - `mask`: boolean mask of visible keypoints (confidence > 0.3)
+  - `aspect`: bbox width/height ratio
+- **Merge-frame guard**: when `merge_frame=True` (fewer detections than tracks),
+  pose history recording is skipped to prevent contamination from merged
+  skeletons. This is critical for the F297-304 merge period.
+- All `.update()` call sites pass `merge_frame=self._is_merge_frame` (computed
+  once per frame in `DancerTracker.update()`): deferred updates, single-pass
+  path, FORCE_UPDATE, and FALLBACK_UPDATE.
+- [x] **Config**: `TRACKER_POSE_HISTORY_DEPTH = 15` (increased from 10 to survive 8-frame merge periods)
 
 ### 2.1b Frame history buffer
 - [ ] **Implement** in `DancerTrack` (`tracker.py`)
@@ -572,15 +582,21 @@ matrix and causes cross-matching.
 - [ ] **Test**: Log profiles for known-good tracks — verify they are smooth. Inject a simulated steal — verify spike in `pose_change_rate` and (if crops enabled) `appearance_stability`.
 
 ### 2.2 Trajectory similarity in cost matrix
-- [ ] **Implement** in `_compute_cost_matrix` for crowded zones
-- When `is_crowded` and track has ≥4 frames of history:
-  - Compare detection skeleton vs track's last N skeletons
-  - Score = weighted mean distance with exponential recency bias
-  - Compare detection's implied velocity (from detection position vs track's last known position) against the track's `get_velocity_profile()` — penalize assignments that would require physically implausible acceleration
-  - Compare detection bbox aspect ratio against track's `get_aspect_ratio_profile()` — penalize sudden shape changes
-  - Replaces or supplements the single-frame `kpt_cost`
-- **Why**: Single-frame skeleton can be ambiguous (both dancers in similar pose at one instant). Trajectory over 5–8 frames is much more discriminative. Velocity/acceleration profile adds physics-based plausibility checking.
-- [ ] **Test**: Two dancers with similar pose at crossing point — trajectory should still disambiguate
+- [x] **Implement** in `_compute_cost_matrix` for crowded zones
+- `DancerTrack.trajectory_cost(det_kpts_norm, det_mask, det_aspect)` method:
+  - Compares detection skeleton against last N history frames
+  - Exponential decay weighting: `0.7^age` (recent frames weighted more)
+  - Per-frame distance = mean L2 of visible joint differences (masked intersection)
+  - Aspect ratio penalty: `0.3 × |det_aspect - hist_aspect|` added per frame
+  - Returns weighted average cost (0.0 = perfect match, higher = worse)
+- Cost matrix integration (in `_compute_cost_matrix`):
+  - Only active when `is_crowded` (two tracks within `close_dist`)
+  - Requires track to have `trajectory_cost()` available (≥1 history frame)
+  - Weight redistribution: `TRACKER_TRAJECTORY_WEIGHT = 0.30` taken proportionally
+    from position, keypoint, and size weights
+  - Cost normalized by `PERSON_HEIGHT_PX` for consistency with other terms
+- [x] **Config**: `TRACKER_TRAJECTORY_WEIGHT = 0.30`
+- [ ] **Test**: Awaiting validation on Slot 6 (F300 merge swap scenario)
 
 ### 2.3 Post-assignment swap detector (2-opt)
 - [ ] **Implement** in `update()`, after Hungarian matching
@@ -596,10 +612,59 @@ matrix and causes cross-matching.
 - [ ] **Config**: Add `TRACKER_SWAP_DETECT_ENABLED = True`
 
 ### Phase 2 — Validation checkpoint
-- [ ] Run on crossover clips — verify swap detector fires correctly
-- [ ] Count false positives (unnecessary swaps) — should be zero or near-zero
+- [ ] Run on Slot 6 — verify F300 merge swap is resolved with trajectory cost + merge-frame guard
+- [ ] Verify F380 edge swap status (expected: still present, low priority)
+- [ ] Check for regressions: no false swap corrections, no new ghost IDs
 - [ ] Measure per-frame latency impact (should be <1ms)
-- [ ] **Decision**: Proceed to Phase 3
+- [ ] **Decision**: If F300 solved, consider Phase 2.3 (2-opt swap detector) or move to Phase 3
+
+### Investigation notes (2026-03-11)
+
+#### F300 merge swap — deep analysis
+
+The F297-305 established-established merge swap is the most persistent issue.
+Phase 1d (MERGE_DIRECTION_SWAP) fixes it in some sessions but is unreliable
+because `_vx_history` gets corrupted by merge-zone noise.
+
+**Timeline**:
+- F296: id1 (x=480, vx=-2.2, LEFT) and id2 (x=450, vx=+5.4, RIGHT) converge
+- F297: YOLO merges to 1 detection. id1 grabs it. id2 → OCCLUDED.
+- F297-F304: id1 tracks the merged skeleton. id2's Kalman drifts (y→639).
+- F305: 2 detections return. Initially correct assignment.
+- F310: Hungarian cross-matches — costs nearly identical (45.3 vs 45.0).
+  Both tracks now moving RIGHT (id1 corrupted by merge zone).
+  MERGE_DIRECTION_SWAP doesn't always fire because `_vx_history` is corrupted.
+
+**Why Phase 2 trajectory cost alone didn't fix it**: During the 8-frame merge
+period (F297-304), only 1 detection exists. id1 receives it and records the
+merged skeleton into `_pose_history`. When 2 detections return at F305, id1's
+pose history IS the merged body — trajectory cost can't differentiate because
+recent history matches either detection equally well.
+
+**Fix applied**: Skip `_pose_history` recording during merge frames
+(`merge_frame = len(detections) < len(self.tracks)`). This preserves the
+pre-merge pose signature. Combined with increased depth (10→15 frames), the
+pre-merge history should survive the 8-frame gap and provide a discriminative
+signal when detections return.
+
+#### F380 edge swap — analysis
+
+- id2 was occluded F365-F373, returned at F374, `_occluded` cleared.
+- By F377, id2 and id3 are 25px apart. Hungarian cross-matches.
+- `_check_merge_direction_swaps` doesn't fire because neither track is
+  currently `_occluded` (id2's flag cleared 3 frames prior).
+- Attempted fix: `_frames_since_occluded` counter to relax the occlusion
+  criterion (accept "recently occluded" tracks). **REVERTED** — caused
+  false MERGE_DIRECTION_SWAP firings at F363 and F374.
+- Status: KNOWN, low priority (edge area, dancer exiting).
+
+#### Lesson: whack-a-mole pattern
+
+Post-hoc swap correction (Phase 1c/1d style) is inherently fragile:
+- Timing-dependent: `_occluded` flag state, `_vx_history` corruption
+- One fix can trigger false positives in other scenarios
+- The root cause is that the cost matrix can't distinguish the tracks
+  during/after merge — need better pre-assignment signals (Phase 2/3)
 
 ---
 
@@ -735,6 +800,11 @@ matrix and causes cross-matching.
 | 2026-03-03 | Velocity clamp on swap beneficiary (Phase 1c++) | Suppression alone insufficient — merged detection offset interpreted as velocity → Kalman drift → tentative track Mahalanobis-gated. Clamp `kf.x[2:]=0` on swap beneficiary prevents runaway drift |
 | 2026-03-03 | Velocity clamp on merge direction swap (Phase 1d+) | MERGE_DIRECTION_SWAP detection jump → velocity spike → cross-match oscillation (swap↔cross-match until `_vx_history` corrupted). Clamp `kf.x[2:]=0` on both swapped tracks eliminates feedback loop |
 | 2026-03-03 | Move velocity clamps to post-update (Phase 1c+++/1d++) | Pre-update clamps were no-ops: Kalman gain recomputes velocity from innovation, undoing the zeroing. Moved to `_post_update_clamp_indices` set, applied after all deferred `.update()` calls. Fixes both F300 and F370 swap regressions |
+| 2026-03-11 | F300 swap still intermittent despite Phase 1d | `_vx_history` corrupted by merge-zone noise → MERGE_DIRECTION_SWAP doesn't fire reliably. Escalated to Phase 2 structural fix |
+| 2026-03-11 | Attempted `_frames_since_occluded` for F380 swap → REVERTED | Counter relaxed occlusion criterion for merge-direction swap, but caused false swaps at F363/F374. Direct fix too fragile |
+| 2026-03-11 | Phase 2 trajectory cost implemented | `_pose_history` buffer (15 frames), `trajectory_cost()` method, 30% weight in crowded zones. Provides temporal skeleton matching signal |
+| 2026-03-11 | Merge-frame pose history guard | Skip `_pose_history` recording when `len(detections) < len(tracks)` — prevents contamination from merged skeletons during F297-304 period. Applied to all 4 `.update()` call sites via `self._is_merge_frame` |
+| 2026-03-11 | Increased pose history depth 10→15 | Ensures pre-merge pose signature survives 8-frame merge gap with margin |
 
 ---
 

@@ -2031,7 +2031,25 @@ class WallDanceApp:
             _ = self.model(dummy_frame, verbose=False)
             print("[Model] Warmup complete")
         except Exception as e:
-            print(f"[Model] Warmup failed (non-critical): {e}")
+            print(f"[Model] Warmup failed: {e}")
+            # If TensorRT warmup fails (e.g. incompatible engine), fall back to PyTorch
+            if self.model_manager.is_using_tensorrt() and not force_pt:
+                print("[Model] TensorRT warmup failed — falling back to PyTorch model...")
+                self.gui.update_model_loading_progress("TRT engine incompatible, loading PyTorch...", 0.5, str(e)[:80])
+                dpg.render_dearpygui_frame()
+                try:
+                    self.model = self.model_manager.load_model(model_name, force_pt=True)
+                    self.processor.model = self.model
+                    self.current_model = f"{base_name}.pt"
+                    self.gui.update_engine_type_badge(False)
+                    self.gui.show_toast("TRT engine incompatible — using PyTorch", duration=5.0, color=(255, 180, 80))
+                    # Warmup the fallback model
+                    _ = self.model(dummy_frame, verbose=False)
+                    print("[Model] PyTorch fallback warmup complete")
+                except Exception as e2:
+                    print(f"[Model] PyTorch fallback also failed: {e2}")
+            else:
+                print(f"[Model] Warmup failed (non-critical): {e}")
         
         # Brief pause to show "ready" message
         time.sleep(0.3)
@@ -2247,6 +2265,7 @@ class WallDanceApp:
             # Get frame from appropriate source
             frame = None
             gpu_tensor = None  # GPU tensor path for IDS camera, None for playback/OpenCV
+            camera_read_ms = 0.0
             
             if self.recorder.is_playing:
                 # Read from video file

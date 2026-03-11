@@ -31,6 +31,7 @@ from config import (
     TRACKER_MAHALANOBIS_GATE, TRACKER_MAHALANOBIS_GATE_NOISE,
     TRACKER_CASCADED_MATCHING, TRACKER_CASCADE_OCCLUSION_SWAP,
     TRACKER_MERGE_DIRECTION_SWAP, TRACKER_CASCADE_SUPPRESSION_FRAMES,
+    TRACKER_POSE_HISTORY_DEPTH, TRACKER_TRAJECTORY_WEIGHT,
 )
 from tracking_logger import TrackingLogger
 
@@ -107,9 +108,20 @@ class DancerTrack:
 
         # Velocity-direction history for merge-exit swap detection (Phase 1d)
         self._vx_history = deque(maxlen=20)
-        
+
+        # Phase 2: per-frame skeleton history for trajectory matching
+        self._pose_history = deque(maxlen=TRACKER_POSE_HISTORY_DEPTH)
+        # Store initial frame
+        centroid_init = self._compute_centroid(keypoints, confidence)
+        kpts_norm_init = keypoints - centroid_init
+        self._pose_history.append({
+            'kpts_norm': kpts_norm_init.copy(),
+            'mask': confidence > KEYPOINT_CONFIDENCE,
+            'aspect': float(bbox[2]) / max(1.0, float(bbox[3])),
+        })
+
         # Smoothed centroid for output (EMA, does not affect tracking)
-        centroid = self._compute_centroid(keypoints, confidence)
+        centroid = centroid_init
         self._smoothed_centroid = centroid.copy()
         
         # History for visualization
@@ -208,8 +220,15 @@ class DancerTrack:
         
         return self.kf.x[:2].flatten()
     
-    def update(self, keypoints, confidence, bbox):
-        """Update track with new detection."""
+    def update(self, keypoints, confidence, bbox, merge_frame=False):
+        """Update track with new detection.
+        
+        Args:
+            merge_frame: True when n_detections < n_tracks (detection
+                merger).  Pose history is NOT recorded on merge frames
+                because the matched skeleton is a blend of multiple
+                dancers and would contaminate trajectory matching.
+        """
         self.keypoints = keypoints.copy()
         self.confidence = confidence.copy()
         self.bbox = np.array(bbox)
@@ -227,7 +246,18 @@ class DancerTrack:
 
         # Record x-velocity for merge-exit direction swap
         self._vx_history.append(float(self.kf.x[2, 0]))
-        
+
+        # Phase 2: store skeleton snapshot for trajectory matching.
+        # Skip on merge frames — the skeleton is a blend of multiple
+        # dancers and would hurt trajectory matching accuracy.
+        if not merge_frame:
+            kpts_norm = keypoints - centroid
+            self._pose_history.append({
+                'kpts_norm': kpts_norm.copy(),
+                'mask': confidence > KEYPOINT_CONFIDENCE,
+                'aspect': float(bbox[2]) / max(1.0, float(bbox[3])),
+            })
+
         # Update smoothed centroid (EMA for jitter-free output)
         alpha = CENTROID_OUTPUT_SMOOTHING
         self._smoothed_centroid = (alpha * centroid
@@ -302,6 +332,48 @@ class DancerTrack:
         if n_neg / total >= min_confidence:
             return -1
         return 0
+
+    def trajectory_cost(self, det_kpts_norm, det_mask, det_aspect):
+        """Compute how well a detection matches this track's pose history.
+
+        Compares the detection's normalised skeleton against the last N
+        stored skeletons with exponential recency weighting.  Also factors
+        in aspect-ratio continuity.
+
+        Returns a cost in the same scale as ``kpt_cost`` (mean per-joint
+        pixel distance).  Returns ``None`` if insufficient history.
+        """
+        if len(self._pose_history) < 3:
+            return None
+
+        total_weight = 0.0
+        weighted_cost = 0.0
+
+        for i, snap in enumerate(self._pose_history):
+            # Exponential recency: newest entry (last) gets highest weight
+            age = len(self._pose_history) - 1 - i
+            w = 0.7 ** age  # decay factor per frame into the past
+
+            both = det_mask & snap['mask']
+            n_both = int(np.sum(both))
+            if n_both < 3:
+                continue
+
+            diffs = np.linalg.norm(
+                det_kpts_norm[both] - snap['kpts_norm'][both], axis=1)
+            frame_cost = float(np.mean(diffs))
+
+            # Small aspect-ratio penalty (sudden shape change = likely wrong body)
+            ar_diff = abs(det_aspect - snap['aspect'])
+            frame_cost += ar_diff * 15.0  # scale to comparable magnitude
+
+            weighted_cost += w * frame_cost
+            total_weight += w
+
+        if total_weight < 0.5:
+            return None
+
+        return weighted_cost / total_weight
 
     @property
     def avg_bbox_area(self):
@@ -615,17 +687,38 @@ class DancerTracker:
                             dir_penalty = (0.5 - cos_sim) * self.distance_threshold * 0.5
                 
                 # --- Combined cost with adaptive weights ---
+                # Phase 2: trajectory cost (pose history match)
+                traj_cost = None
+                if is_crowded and len(track._pose_history) >= 3:
+                    det_aspect = float(bbox[2]) / max(1.0, float(bbox[3]))
+                    traj_cost = track.trajectory_cost(
+                        det_kpts_norm, mask_det, det_aspect)
+
                 if is_crowded:
                     if n_both >= 5:
-                        # Close dancing with strong skeleton: shape dominates
-                        base_cost = (TRACKER_CLOSE_POS_WEIGHT * pos_cost
-                                     + TRACKER_CLOSE_KPT_WEIGHT * kpt_cost
-                                     + TRACKER_CLOSE_SIZE_WEIGHT * size_cost)
+                        if traj_cost is not None:
+                            # Trajectory available: redistribute weight
+                            # from position to trajectory (pose history)
+                            tw = TRACKER_TRAJECTORY_WEIGHT
+                            pw = TRACKER_CLOSE_POS_WEIGHT * (1.0 - tw)
+                            kw = TRACKER_CLOSE_KPT_WEIGHT * (1.0 - tw)
+                            sw = TRACKER_CLOSE_SIZE_WEIGHT * (1.0 - tw)
+                            base_cost = (pw * pos_cost
+                                         + kw * kpt_cost
+                                         + sw * size_cost
+                                         + tw * traj_cost)
+                        else:
+                            # No trajectory yet: original weights
+                            base_cost = (TRACKER_CLOSE_POS_WEIGHT * pos_cost
+                                         + TRACKER_CLOSE_KPT_WEIGHT * kpt_cost
+                                         + TRACKER_CLOSE_SIZE_WEIGHT * size_cost)
                     elif n_both >= 3:
                         # Close dancing but weak skeleton: blend but add
                         # uncertainty penalty to discourage cross-matching
                         base_cost = (0.25 * pos_cost + 0.50 * kpt_cost
                                      + 0.25 * size_cost)
+                        if traj_cost is not None:
+                            base_cost = 0.6 * base_cost + 0.4 * traj_cost
                         base_cost *= 1.3  # coherence penalty
                     else:
                         # Close dancing, no skeleton: position + size only,
@@ -997,7 +1090,8 @@ class DancerTracker:
                 if pending_updates is not None:
                     pending_updates.append((actual_trk, actual_det, kpts, conf, bbox))
                 else:
-                    track.update(kpts, conf, bbox)
+                    track.update(kpts, conf, bbox,
+                                 merge_frame=self._is_merge_frame)
                 self.logger.log("MATCH", {
                     "det": actual_det,
                     "track_id": track.track_id,
@@ -1190,6 +1284,10 @@ class DancerTracker:
         # Predict
         for track in self.tracks:
             track.predict()
+
+        # Merge-frame detection: fewer detections than active tracks
+        # means YOLO merged bodies → skip pose history recording.
+        self._is_merge_frame = len(detections) < len(self.tracks)
         
         # Match — cascaded assignment (Phase 1)
         # Pass 1: established tracks get first pick of all detections.
@@ -1249,7 +1347,8 @@ class DancerTracker:
 
             # Apply all deferred updates
             for trk_idx, det_idx, kpts, conf, bbox in pending_updates:
-                self.tracks[trk_idx].update(kpts, conf, bbox)
+                self.tracks[trk_idx].update(kpts, conf, bbox,
+                                            merge_frame=self._is_merge_frame)
 
             # Clamp velocity & acceleration on swapped tracks AFTER the
             # Kalman update.  If done before, the Kalman gain recomputes
@@ -1335,7 +1434,8 @@ class DancerTracker:
                     if TRACKER_DEBUG:
                         print(f"[TRACKER] Force update track #{best_unmatched.track_id}: "
                               f"dist={min_dist:.1f} occluded={best_unmatched._occluded}")
-                    best_unmatched.update(kpts, conf, bbox)
+                    best_unmatched.update(kpts, conf, bbox,
+                                          merge_frame=self._is_merge_frame)
                     matched_trk.add(best_unmatched_idx)
                 elif closest_track is not None and min_dist < self.duplicate_distance:
                     # Very close to an already-matched track → duplicate, drop
@@ -1359,7 +1459,8 @@ class DancerTracker:
                                 })
                                 if TRACKER_DEBUG:
                                     print(f"[TRACKER] Fallback update track #{track.track_id}: dist={dist:.1f}")
-                                track.update(kpts, conf, bbox)
+                                track.update(kpts, conf, bbox,
+                                             merge_frame=self._is_merge_frame)
                                 matched_trk.add(idx)
                                 break
                     else:

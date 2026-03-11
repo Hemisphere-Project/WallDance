@@ -293,6 +293,16 @@ TRACKER_MERGE_DIRECTION_SWAP = True      # Post-cascade swap: when two tracks
                                          # swap them back.
 
 # =============================================================================
+# PHASE 2 — TEMPORAL POSE SIGNATURE
+# =============================================================================
+TRACKER_POSE_HISTORY_DEPTH = 15          # Frames of skeleton history to keep
+                                         # per track.  Used for trajectory-
+                                         # based matching in crowded zones.
+TRACKER_TRAJECTORY_WEIGHT = 0.30         # Weight of trajectory similarity in
+                                         # the crowded-zone cost blend.  Higher
+                                         # = more influence from pose history.
+
+# =============================================================================
 # OSC OUTPUT
 # =============================================================================
 OSC_ENABLED = True                  # Enable OSC output

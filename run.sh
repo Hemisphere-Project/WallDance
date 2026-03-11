@@ -25,4 +25,17 @@ if [ "$FORCE_CPU" -eq 1 ]; then
     export CUDA_VISIBLE_DEVICES="-1"
 fi
 
+# Ensure PyTorch's bundled CUDA/cuDNN libs take priority over
+# potentially outdated system-installed versions.
+NVIDIA_PACKAGES="$ROOT_DIR/application/.venv/lib/python3.10/site-packages/nvidia"
+if [ -d "$NVIDIA_PACKAGES" ]; then
+    _EXTRA_LD=""
+    for _subdir in "$NVIDIA_PACKAGES"/*/lib; do
+        [ -d "$_subdir" ] && _EXTRA_LD="$_subdir${_EXTRA_LD:+:$_EXTRA_LD}"
+    done
+    if [ -n "$_EXTRA_LD" ]; then
+        export LD_LIBRARY_PATH="$_EXTRA_LD${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    fi
+fi
+
 uv run --no-sync python src/main.py "$@"

@@ -230,6 +230,11 @@ class ModelManager:
             self._update_progress(ModelStatus.LOADING, f"Loading TensorRT engine...", 0.95)
             try:
                 model = YOLO(engine_path)
+                # Validate the engine with a test inference — incompatible engines
+                # (wrong TRT version) load without error but fail at inference time.
+                import numpy as np
+                dummy = np.zeros((64, 64, 3), dtype=np.uint8)
+                _ = model(dummy, verbose=False)
                 self._using_tensorrt = True  # Track that we're using TensorRT
                 self._tensorrt_fallback_reason = None  # Clear - TensorRT worked
                 self._update_progress(ModelStatus.READY, f"TensorRT model ready: {base_name}", 1.0)
@@ -237,7 +242,7 @@ class ModelManager:
             except Exception as e:
                 print(f"Failed to load TensorRT engine: {e}")
                 print("Falling back to PyTorch model...")
-                self._tensorrt_fallback_reason = f"TensorRT engine load failed: {str(e)[:40]}"
+                self._tensorrt_fallback_reason = f"TensorRT engine incompatible or failed: {str(e)[:60]}"
 
         # Load .pt model (fallback or if TensorRT disabled/unavailable)
         self._update_progress(ModelStatus.LOADING, f"Loading PyTorch model...", 0.95)

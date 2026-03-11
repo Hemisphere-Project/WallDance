@@ -5,6 +5,19 @@
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR/application"
 
+# Ensure PyTorch's bundled CUDA/cuDNN libs take priority over
+# potentially outdated system-installed versions.
+NVIDIA_PACKAGES="$ROOT_DIR/application/.venv/lib/python3.10/site-packages/nvidia"
+if [ -d "$NVIDIA_PACKAGES" ]; then
+    _EXTRA_LD=""
+    for _subdir in "$NVIDIA_PACKAGES"/*/lib; do
+        [ -d "$_subdir" ] && _EXTRA_LD="$_subdir${_EXTRA_LD:+:$_EXTRA_LD}"
+    done
+    if [ -n "$_EXTRA_LD" ]; then
+        export LD_LIBRARY_PATH="$_EXTRA_LD${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+    fi
+fi
+
 # Models are in the workspace models folder
 MODELS_DIR="$ROOT_DIR/models"
 
@@ -22,8 +35,8 @@ for model in $MODELS_DIR/*.pt; do
         fi
         
         echo "=== Building $engine ==="
-        # Use python to run yolo through the venv
-        uv run python -c "
+        # Use python to run yolo through the venv (--no-sync to keep CUDA torch)
+        uv run --no-sync python -c "
 from ultralytics import YOLO
 model = YOLO('$model')
 model.export(format='engine', imgsz=$size, half=True, device=0)

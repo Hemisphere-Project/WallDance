@@ -90,6 +90,30 @@ if ! uv sync $UV_EXTRAS --extra ids; then
     uv sync $UV_EXTRAS
 fi
 
+# ── Auto-fix: force-install CUDA PyTorch via uv pip ─────────────────────────
+auto_fix_torch() {
+    echo "[WallDance] Trying PyTorch CUDA wheels in order: cu130, cu129, cu128, cu126, cu124"
+    for CUDA_TAG in cu130 cu129 cu128 cu126 cu124; do
+        echo "[WallDance] Trying $CUDA_TAG..."
+        if uv pip install --upgrade torch torchvision \
+                --index-url "https://download.pytorch.org/whl/$CUDA_TAG" 2>&1; then
+            AUTO_OK=$(uv run --no-sync python -c "import torch; print('1' if torch.cuda.is_available() else '0')" 2>/dev/null || echo "0")
+            if [ "$AUTO_OK" = "1" ]; then
+                echo "OK: Automatic PyTorch upgrade succeeded with $CUDA_TAG."
+                return 0
+            else
+                echo "[WallDance] $CUDA_TAG installed but CUDA still unavailable."
+            fi
+        else
+            echo "[WallDance] Install attempt with $CUDA_TAG failed."
+        fi
+    done
+    echo "WARNING: Automatic PyTorch upgrade did not resolve GPU support."
+    echo "Action: use the latest stable/nightly command from https://pytorch.org/get-started/locally/"
+    echo "        then re-run install.sh."
+    return 1
+}
+
 # ── Verify PyTorch ───────────────────────────────────────────────────────────
 echo "[WallDance] Verifying PyTorch..."
 if ! uv run --no-sync python -c "import torch" &> /dev/null; then
@@ -100,7 +124,17 @@ else
         CUDA_OK=$(uv run --no-sync python -c "import torch; print('1' if torch.cuda.is_available() else '0')" 2>/dev/null || echo "0")
         if [ "$CUDA_OK" != "1" ]; then
             echo "WARNING: CUDA not available to PyTorch despite NVIDIA GPU being present."
-            echo "Fix: ensure CUDA drivers are installed, then run install.sh again."
+            echo "[WallDance] This likely means the PyTorch index did not have a CUDA build for the required version."
+            echo "[WallDance] Attempting automatic CUDA PyTorch upgrade..."
+            auto_fix_torch
+            # Re-check after fix attempt
+            CUDA_OK2=$(uv run --no-sync python -c "import torch; print('1' if torch.cuda.is_available() else '0')" 2>/dev/null || echo "0")
+            if [ "$CUDA_OK2" != "1" ]; then
+                echo "WARNING: CUDA still not available after auto-fix. Continuing in CPU mode."
+                echo "Fix: ensure CUDA drivers are installed, then run install.sh again."
+            else
+                echo "OK: CUDA is now available after PyTorch upgrade."
+            fi
         else
             echo "OK: PyTorch with CUDA support is ready."
         fi
