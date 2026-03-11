@@ -114,6 +114,11 @@ class VideoRecorder:
     @property
     def is_playing(self) -> bool:
         return self._status.state == RecorderState.PLAYING
+
+    @property
+    def playback_path(self) -> Optional[str]:
+        """Return the currently playing recording path, if any."""
+        return self._playback_path
     
     def set_project(self, project_name: str):
         """Set the current project (creates recordings folder if needed)."""
@@ -442,7 +447,8 @@ class VideoRecorder:
         self._playback_running = False
         print("Playback decoder thread stopped")
     
-    def start_playback(self, slot: int, recording_index: int = 0) -> bool:
+    def start_playback(self, slot: int, recording_index: int = 0,
+                       start_frame: int | None = None) -> bool:
         """Start playing from a slot. recording_index=0 is latest."""
         # Remember which slot was playing before we tear down
         previous_slot = self._status.current_slot
@@ -509,6 +515,10 @@ class VideoRecorder:
         self._status.playback_frame = 0
         self._status.playback_total = int(self._reader.get(cv2.CAP_PROP_FRAME_COUNT))
         self._status.playback_fps = self._playback_fps
+
+        if start_frame is not None and self._status.playback_total > 0:
+            target = max(0, min(int(start_frame), self._status.playback_total - 1))
+            self._reader.set(cv2.CAP_PROP_POS_FRAMES, target)
         
         # Start decoder thread
         self._playback_running = True
@@ -530,6 +540,11 @@ class VideoRecorder:
 
         self._frame_buffer = first_frame.copy()
         self._frame_new = True  # Mark first frame as available for consumption
+        if start_frame is not None:
+            self._playback_frame_count = target
+            self._status.playback_frame = target
+        else:
+            self._playback_frame_count = 0
 
         self._playback_thread = threading.Thread(target=self._playback_decoder_thread, daemon=True)
         self._playback_thread.start()
@@ -633,6 +648,30 @@ class VideoRecorder:
                 self._frame_buffer = frame.copy()
                 self._frame_new = True
                 self._playback_frame_count = int(self._reader.get(cv2.CAP_PROP_POS_FRAMES)) - 1
+
+    def seek_frame(self, frame_index: int) -> bool:
+        """Jump playback to an absolute frame index.
+
+        The target frame is decoded immediately and placed in the shared
+        buffer so the main loop can display/process it on the next tick.
+        """
+        if not self.is_playing or self._reader is None:
+            return False
+
+        total = max(1, self._status.playback_total)
+        target = max(0, min(int(frame_index), total - 1))
+
+        self._reader.set(cv2.CAP_PROP_POS_FRAMES, target)
+        ret, frame = self._reader.read()
+        if not ret or frame is None:
+            return False
+
+        with self._frame_lock:
+            self._frame_buffer = frame.copy()
+            self._frame_new = True
+            self._playback_frame_count = target
+        self._status.playback_frame = target
+        return True
     
     def stop_playback(self):
         """Stop playback and return to live mode."""

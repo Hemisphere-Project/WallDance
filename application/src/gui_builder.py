@@ -533,6 +533,12 @@ def build_bottom_bar(gui: Any):
                     )
                     if gui._icon_font:
                         dpg.bind_item_font(next_btn, gui._icon_font)
+                    dpg.add_button(
+                        label="ISSUE",
+                        tag="rec_report_issue_btn",
+                        width=scaled(52),
+                        callback=gui._on_report_issue,
+                    )
 
             # STANDBY / RUN buttons
             with dpg.group(horizontal=True):

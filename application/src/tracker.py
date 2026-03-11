@@ -1084,26 +1084,24 @@ class DancerTracker:
                         matched_det.add(actual_det)
                         continue
 
-                matched_det.add(actual_det)
-                matched_trk.add(actual_trk)
                 cost_val = round(float(cost_matrix[row, col]), 1)
-                if pending_updates is not None:
-                    pending_updates.append((actual_trk, actual_det, kpts, conf, bbox))
-                else:
-                    track.update(kpts, conf, bbox,
-                                 merge_frame=self._is_merge_frame)
-                self.logger.log("MATCH", {
-                    "det": actual_det,
-                    "track_id": track.track_id,
-                    "cost": cost_val,
-                    "threshold": round(dynamic_thresh, 1),
-                    "is_established": track.is_established,
-                })
-                matched_pairs_log.append({
-                    "det": actual_det,
-                    "track_id": track.track_id,
-                    "cost": cost_val,
-                })
+                self._commit_match(
+                    trk_idx=actual_trk,
+                    det_idx=actual_det,
+                    kpts=kpts,
+                    conf=conf,
+                    bbox=bbox,
+                    matched_det=matched_det,
+                    matched_trk=matched_trk,
+                    matched_pairs_log=matched_pairs_log,
+                    pending_updates=pending_updates,
+                    cost_val=cost_val,
+                    log_event="MATCH",
+                    log_data={
+                        "threshold": round(dynamic_thresh, 1),
+                        "is_established": track.is_established,
+                    },
+                )
             else:
                 self.logger.log("MATCH_REJECTED", {
                     "det": actual_det,
@@ -1117,6 +1115,38 @@ class DancerTracker:
                           f"cost={cost_matrix[row, col]:.1f} > "
                           f"thresh={dynamic_thresh:.1f} "
                           f"(t_miss={track.time_since_update})")
+
+    def _commit_match(self, trk_idx, det_idx, kpts, conf, bbox,
+                      matched_det, matched_trk, matched_pairs_log,
+                      pending_updates=None, cost_val=None,
+                      log_event="MATCH", log_data=None):
+        """Commit a detection→track assignment through one shared path."""
+        track = self.tracks[trk_idx]
+
+        matched_det.add(det_idx)
+        matched_trk.add(trk_idx)
+
+        if pending_updates is not None:
+            pending_updates.append((trk_idx, det_idx, kpts, conf, bbox))
+        else:
+            track.update(kpts, conf, bbox,
+                         merge_frame=self._is_merge_frame)
+
+        event_data = {
+            "det": det_idx,
+            "track_id": track.track_id,
+        }
+        if cost_val is not None:
+            event_data["cost"] = cost_val
+        if log_data:
+            event_data.update(log_data)
+        self.logger.log(log_event, event_data)
+
+        matched_pairs_log.append({
+            "det": det_idx,
+            "track_id": track.track_id,
+            "cost": cost_val if cost_val is not None else -1.0,
+        })
 
     # ------------------------------------------------------------------
     # Dormant pool re-identification
@@ -1426,17 +1456,25 @@ class DancerTracker:
                                 and not best_unmatched._occluded):
                             best_unmatched = t2
                             best_unmatched_idx = idx2
-                    self.logger.log("FORCE_UPDATE", {
-                        "track_id": best_unmatched.track_id,
-                        "dist": round(min_dist, 1),
-                        "occluded": best_unmatched._occluded,
-                    })
                     if TRACKER_DEBUG:
                         print(f"[TRACKER] Force update track #{best_unmatched.track_id}: "
                               f"dist={min_dist:.1f} occluded={best_unmatched._occluded}")
-                    best_unmatched.update(kpts, conf, bbox,
-                                          merge_frame=self._is_merge_frame)
-                    matched_trk.add(best_unmatched_idx)
+                    self._commit_match(
+                        trk_idx=best_unmatched_idx,
+                        det_idx=d,
+                        kpts=kpts,
+                        conf=conf,
+                        bbox=bbox,
+                        matched_det=matched_det,
+                        matched_trk=matched_trk,
+                        matched_pairs_log=matched_pairs_log,
+                        cost_val=round(min_dist, 1),
+                        log_event="FORCE_UPDATE",
+                        log_data={
+                            "dist": round(min_dist, 1),
+                            "occluded": best_unmatched._occluded,
+                        },
+                    )
                 elif closest_track is not None and min_dist < self.duplicate_distance:
                     # Very close to an already-matched track → duplicate, drop
                     self.logger.log("DUPLICATE_IGNORED", {
@@ -1453,15 +1491,23 @@ class DancerTracker:
                             last_pos = track.get_last_known_position()
                             dist = np.linalg.norm(det_centroid - last_pos)
                             if dist < self.distance_threshold:
-                                self.logger.log("FALLBACK_UPDATE", {
-                                    "track_id": track.track_id,
-                                    "dist": round(dist, 1),
-                                })
                                 if TRACKER_DEBUG:
                                     print(f"[TRACKER] Fallback update track #{track.track_id}: dist={dist:.1f}")
-                                track.update(kpts, conf, bbox,
-                                             merge_frame=self._is_merge_frame)
-                                matched_trk.add(idx)
+                                self._commit_match(
+                                    trk_idx=idx,
+                                    det_idx=d,
+                                    kpts=kpts,
+                                    conf=conf,
+                                    bbox=bbox,
+                                    matched_det=matched_det,
+                                    matched_trk=matched_trk,
+                                    matched_pairs_log=matched_pairs_log,
+                                    cost_val=round(dist, 1),
+                                    log_event="FALLBACK_UPDATE",
+                                    log_data={
+                                        "dist": round(dist, 1),
+                                    },
+                                )
                                 break
                     else:
                         self.logger.log("AMBIGUOUS_IGNORED", {

@@ -646,6 +646,14 @@ class WallDanceGUI:
         """Handle previous frame button click."""
         if 'on_playback_prev_frame' in self.callbacks:
             self.callbacks['on_playback_prev_frame']()
+
+    def _on_report_issue(self):
+        """Open the issue report dialog for the current playback frame."""
+        if 'on_report_issue_request' not in self.callbacks:
+            return
+        context = self.callbacks['on_report_issue_request']()
+        if context:
+            self.show_issue_report_dialog(context)
     
     def update_recording_ui(self, state: str, current_slot: int, slots_info: list, 
                             recording_frames: int = 0, playback_frame: int = 0, playback_total: int = 0,
@@ -750,6 +758,8 @@ class WallDanceGUI:
                 dpg.set_value("rec_playback_progress", f"{cur_str} / {tot_str} ({playback_frame}/{playback_total})")
             else:
                 dpg.set_value("rec_playback_progress", f"{playback_frame}/{playback_total}")
+        if dpg.does_item_exist("rec_report_issue_btn"):
+            dpg.configure_item("rec_report_issue_btn", enabled=is_playing)
     
     def show_slot_history_menu(self, slot: int, recordings: list, callback):
         """Show a popup menu with recording history for a slot.
@@ -782,6 +792,88 @@ class WallDanceGUI:
                     callback=lambda s, a, u: (callback(u), dpg.delete_item(menu_tag)),
                     user_data=filepath,
                 )
+
+    def show_issue_report_dialog(self, context: Dict[str, Any]):
+        """Show a modal dialog to record a playback review issue."""
+        if dpg.does_item_exist("issue_report_dialog"):
+            dpg.delete_item("issue_report_dialog")
+
+        self._issue_report_context = context
+        frame_text = f"Frame {context.get('frame', 0)} / Slot {context.get('slot', 0)}"
+        if context.get('playback_path'):
+            frame_text += f"\n{os.path.basename(context['playback_path'])}"
+
+        dlg_w = scaled(520)
+        dlg_h = scaled(280)
+        with dpg.window(
+            label="Report Tracking Issue",
+            modal=True,
+            tag="issue_report_dialog",
+            width=dlg_w,
+            height=dlg_h,
+            pos=[dpg.get_viewport_width() // 2 - dlg_w // 2, dpg.get_viewport_height() // 2 - dlg_h // 2],
+            no_resize=True,
+            no_move=False,
+        ):
+            dpg.add_text(frame_text, color=(120, 200, 255))
+            dpg.add_spacer(height=scaled(8))
+            dpg.add_text("Issue type")
+            dpg.add_combo(
+                items=[
+                    "id_swap",
+                    "abusive_merge",
+                    "ghost_track",
+                    "false_new_id",
+                    "track_loss",
+                    "other",
+                ],
+                default_value="id_swap",
+                tag="issue_type_combo",
+                width=-1,
+            )
+            dpg.add_spacer(height=scaled(8))
+            dpg.add_text("Notes")
+            dpg.add_input_text(
+                tag="issue_note_input",
+                multiline=True,
+                width=-1,
+                height=scaled(90),
+                hint="Describe the visible problem on screen",
+            )
+            dpg.add_spacer(height=scaled(10))
+            with dpg.group(horizontal=True):
+                dpg.add_button(
+                    label="Save Issue",
+                    width=scaled(240),
+                    callback=self._submit_issue_report,
+                )
+                dpg.add_button(
+                    label="Cancel",
+                    width=scaled(240),
+                    callback=self._cancel_issue_report,
+                )
+
+    def _submit_issue_report(self):
+        """Submit the current issue report dialog."""
+        issue_type = dpg.get_value("issue_type_combo") if dpg.does_item_exist("issue_type_combo") else "other"
+        note = dpg.get_value("issue_note_input") if dpg.does_item_exist("issue_note_input") else ""
+        context = getattr(self, '_issue_report_context', None)
+        try:
+            if context and 'on_issue_submit' in self.callbacks:
+                self.callbacks['on_issue_submit'](context, issue_type, note)
+        finally:
+            self._close_issue_report_dialog()
+
+    def _cancel_issue_report(self):
+        """Cancel issue reporting and close the dialog cleanly."""
+        self._close_issue_report_dialog()
+
+    def _close_issue_report_dialog(self):
+        """Close the issue dialog and notify the app to refresh playback UI."""
+        if dpg.does_item_exist("issue_report_dialog"):
+            dpg.delete_item("issue_report_dialog")
+        if 'on_issue_dialog_closed' in self.callbacks:
+            self.callbacks['on_issue_dialog_closed']()
     
     # === Public Methods ===
 

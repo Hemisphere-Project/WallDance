@@ -12,6 +12,70 @@ plan phase (e.g. Phase 2 temporal signatures, Phase 3 optical flow).  Prefer
 direct fixes when the failure mode is clear and self-contained; escalate to a new
 phase only when the root cause is structural and can't be patched locally.
 
+## Active Workstreams
+
+| Workstream | Status | Purpose |
+|------------|--------|---------|
+| A. Tracker refactor roadmap | **DEFINED** | Keep the next cleanup steps explicit so we can resume after digressions |
+| B. Recorded-media review workflow | **STARTED** | Faster replay, issue capture, and fix-feedback loop on Slot 6 and future clips |
+
+### A. Tracker refactor roadmap (execution order)
+
+1. **Unify association paths**
+  - Remove imperative `FORCE_UPDATE` / `FALLBACK_UPDATE` state mutation as side paths.
+  - Replace with explicit late assignment passes that still go through the same gating / logging / merge-frame logic.
+  - **Why first**: this is the biggest source of hidden behavior and weakens every later feature.
+2. **Split `DancerTracker.update()` into frame stages**
+  - Target stages: predict, build candidates, solve assignment, apply policy corrections, commit updates, lifecycle cleanup, logging.
+  - Introduce a per-frame context object instead of mutable tracker-wide scratch state (`_is_merge_frame`, `_post_update_clamp_indices`).
+3. **Preserve continuity across resurrection**
+  - Rehydrate track identity state instead of creating a fresh `DancerTrack` with only the old ID.
+  - Minimum preserved state: pose history, vx history, bbox statistics, last occlusion/merge metadata.
+4. **Replace boolean occlusion heuristics with episode metadata**
+  - Add `last_matched_frame`, `last_occluded_frame`, `last_merge_frame`, merge participants, and reacquisition metadata.
+  - This replaces fragile conditions such as "currently occluded" for merge-exit recovery.
+5. **Strengthen temporal matching**
+  - Scale-normalize pose history, then add Phase 1.3 IoU and Phase 3 optical flow on top of the cleaner association core.
+6. **Move to offline regression metrics**
+  - Headless replay over recorded media with counts for `NEW_TRACK`, `DORMANT`, `RESURRECT`, `FORCE_UPDATE`, `FALLBACK_UPDATE`, swap corrections, and ID inflation.
+
+### B. Recorded-media review workflow (current state)
+
+- **Startup review mode** is now supported from the app CLI:
+
+```bash
+cd application
+uv run python src/main.py --project my_project --slot 6 --speed 0.5 --pause-at-frame 300
+```
+
+- Supported flags:
+  - `--project <name>` → load latest config for that project
+  - `--config <path>` → load a specific config file
+  - `--slot <n>` → start playback from a recording slot immediately
+  - `--recording-index <n>` → choose an older take in that slot (`0` = latest)
+  - `--speed <x>` → set initial playback speed
+  - `--paused` → start playback paused
+  - `--pause-at-frame <n>` → auto-pause on target frame
+- **Issue capture** during playback:
+  - Button: `ISSUE` in the playback toolbar
+  - Hotkey: `F8`
+  - Saves a structured issue packet with issue type, note, playback context, config snapshot, nearby tracker events, and a preview snapshot.
+  - Output directory: `projects/<project>/review_issues/`
+  - Summary index: `projects/<project>/review_issues/issues.jsonl`
+
+### Review loop (target workflow)
+
+1. Start the app directly in review mode with the project, slot, and optional target frame.
+2. Watch playback, pause or auto-pause at the suspicious frame.
+3. Press `F8` or click `ISSUE`.
+4. Choose issue type: `id_swap`, `abusive_merge`, `ghost_track`, `false_new_id`, `track_loss`, or `other`.
+5. Add a short note about what is visible.
+6. Inspect the saved issue packet plus `tracking_events.jsonl` to decide whether the right response is:
+  - logic fix
+  - constants tuning
+  - UI/operator setting change
+7. Re-run the same review command on the same slot/frame after the change.
+
 ---
 
 ## Current Status (quick reference)
@@ -50,6 +114,9 @@ uv run python src/main.py
 # Load Slot 6, play back, watch for ID issues
 # Frame overlay shows frame number (top-right)
 # Logs written to application/tracking_events.jsonl
+
+# Faster review startup
+uv run python src/main.py --project my_project --slot 6 --speed 0.5 --pause-at-frame 300
 ```
 
 ### How to analyze logs

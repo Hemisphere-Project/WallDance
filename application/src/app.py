@@ -10,6 +10,8 @@ This module keeps the runtime glue small by delegating to:
 
 from __future__ import annotations
 
+import argparse
+import json
 import os
 import sys
 import time
@@ -67,6 +69,7 @@ from gui import WallDanceGUI, get_display_scale
 from gui_builder import SystemState
 from enhancer import ImageEnhancer
 from tracker import DancerTracker
+from tracking_logger import _json_default
 from video_recorder import VideoRecorder, RecorderState
 
 
@@ -88,10 +91,22 @@ class PreviewGeometry:
     height: int = int(CAMERA_HEIGHT * PREVIEW_RENDER_SCALE)
 
 
+@dataclass
+class ReviewStartupOptions:
+    config_path: Optional[str] = None
+    project: Optional[str] = None
+    slot: Optional[int] = None
+    recording_index: int = 0
+    playback_speed: float = 1.0
+    paused: bool = False
+    play_at_frame: Optional[int] = None
+    pause_at_frame: Optional[int] = None
+
+
 class WallDanceApp:
     """Main application orchestrator."""
 
-    def __init__(self):
+    def __init__(self, startup_review: Optional[ReviewStartupOptions] = None):
         print("=" * 60)
         print("WallDance 1080p - Multi-Person Pose Detection")
         print("=" * 60)
@@ -209,6 +224,9 @@ class WallDanceApp:
         self.last_tracked: List[ScaledTrack] = []
         self._total_frame_count: int = 0  # Phase 0: cumulative frame counter (live mode)
         self._last_raw_frame: Optional[np.ndarray] = None  # Last raw camera frame for BG capture
+        self._last_review_frame: Optional[np.ndarray] = None
+        self._startup_review = startup_review or ReviewStartupOptions()
+        self._pause_at_frame_target = self._startup_review.pause_at_frame
         
         # Pending operations (deferred to main loop)
         self._pending_camera_refresh = False
@@ -334,6 +352,9 @@ class WallDanceApp:
             "on_playback_pause": self._cb_playback_pause,
             "on_playback_next_frame": self._cb_playback_next_frame,
             "on_playback_prev_frame": self._cb_playback_prev_frame,
+            "on_report_issue_request": self._cb_report_issue_request,
+            "on_issue_submit": self._cb_issue_submit,
+            "on_issue_dialog_closed": self._cb_issue_dialog_closed,
             "on_quit": self._cb_quit,
         }
 
@@ -1089,6 +1110,94 @@ class WallDanceApp:
         self._total_frame_count = 0
         self._cb_tracker_reset()
 
+    def _cb_report_issue_request(self):
+        """Build the current playback context for issue reporting."""
+        if not self.recorder.is_playing:
+            if self.gui:
+                self.gui.show_toast(
+                    "Issue reporting is available during playback only",
+                    duration=2.5,
+                    color=(255, 180, 120),
+                )
+            return None
+
+        self.tracker.logger.flush()
+        return {
+            "project": self._current_project,
+            "slot": self.recorder.status.current_slot,
+            "frame": self.recorder.status.playback_frame,
+            "playback_total": self.recorder.status.playback_total,
+            "playback_fps": self.recorder.status.playback_fps,
+            "playback_speed": self.recorder._playback_speed,
+            "playback_path": self.recorder.playback_path,
+            "model": self.current_model_name,
+            "imgsz": self.settings.imgsz,
+            "tracker_max_age": self.tracker.max_age,
+            "person_height_px": self.settings.person_height_px,
+            "system_state": self.gui.get_system_state().name if self.gui else "UNKNOWN",
+        }
+
+    def _cb_issue_submit(self, context: Dict, issue_type: str, note: str):
+        """Persist a structured review issue for the current playback frame."""
+        issue_dir = os.path.join(
+            self.config_store.config_dir,
+            self._current_project,
+            "review_issues",
+        )
+        os.makedirs(issue_dir, exist_ok=True)
+
+        self.tracker.logger.flush()
+        frame_num = int(context.get("frame", 0))
+        slot_num = int(context.get("slot", 0))
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        slug = f"{timestamp}_slot{slot_num}_f{frame_num:05d}_{issue_type}"
+        json_path = os.path.join(issue_dir, f"{slug}.json")
+        png_path = os.path.join(issue_dir, f"{slug}.png")
+        summary_path = os.path.join(issue_dir, "issues.jsonl")
+
+        payload = {
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "issue_type": issue_type,
+            "note": note.strip(),
+            "context": context,
+            "tracker_events": self.tracker.logger.get_events_around_frame(frame_num, window=30),
+            "config_snapshot": self._get_saveable_config(),
+            "tracked_ids": [track.track_id for track in self.last_tracked],
+        }
+
+        if self._last_review_frame is not None:
+            try:
+                cv2.imwrite(png_path, self._last_review_frame)
+                payload["snapshot_path"] = png_path
+            except Exception:
+                payload["snapshot_path"] = None
+        else:
+            payload["snapshot_path"] = None
+
+        with open(json_path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2, default=_json_default)
+
+        summary = {
+            "created_at": payload["created_at"],
+            "issue_type": issue_type,
+            "frame": frame_num,
+            "slot": slot_num,
+            "project": self._current_project,
+            "note": payload["note"],
+            "json_path": json_path,
+            "snapshot_path": payload["snapshot_path"],
+        }
+        with open(summary_path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(summary, default=_json_default) + "\n")
+
+        print(f"[Review] Saved issue report: {json_path}")
+        if self.gui:
+            self.gui.show_toast(
+                f"Issue saved: slot {slot_num} frame {frame_num}",
+                duration=3.0,
+                color=(120, 220, 140),
+            )
+
     def _cb_osc_toggle(self, enabled: bool):
         self.osc_enabled = enabled
         self.settings.osc_enabled = enabled
@@ -1383,6 +1492,7 @@ class WallDanceApp:
         else:
             self.recorder.pause_playback()
             self.tracker.logger.flush()  # Phase 0: flush log on pause
+        self._update_recording_ui()
     
     def _cb_playback_next_frame(self):
         """Handle next frame button."""
@@ -1394,6 +1504,64 @@ class WallDanceApp:
         self.recorder.prev_frame()
         self.tracker.logger.flush()  # Phase 0: flush log on frame step
 
+    def _cb_issue_dialog_closed(self):
+        """Refresh playback controls after the review dialog closes."""
+        self._update_recording_ui()
+
+    def _apply_startup_review_mode(self):
+        """Apply optional startup playback automation for review sessions."""
+        opts = self._startup_review
+        if opts.slot is None:
+            return
+
+        if not self.recorder.start_playback(
+                opts.slot,
+                opts.recording_index,
+                start_frame=opts.play_at_frame):
+            print(f"[Review] Failed to start playback for slot {opts.slot}")
+            return
+
+        if opts.playback_speed > 0:
+            self.recorder.set_playback_speed(opts.playback_speed)
+        if opts.paused:
+            self.recorder.pause_playback()
+        if opts.play_at_frame is not None:
+            print(f"[Review] Jumped to frame {opts.play_at_frame}")
+
+        self._pause_at_frame_target = opts.pause_at_frame
+        self._update_recording_ui()
+        if self.gui:
+            message = f"Review mode: slot {opts.slot}"
+            if opts.recording_index:
+                message += f" item {opts.recording_index}"
+            if opts.play_at_frame is not None:
+                message += f" play@{opts.play_at_frame}"
+            if opts.pause_at_frame is not None:
+                message += f" pause@{opts.pause_at_frame}"
+            self.gui.show_toast(message, duration=3.5, color=(120, 200, 255))
+
+    def _maybe_pause_at_target_frame(self):
+        """Pause playback automatically when the requested frame is reached."""
+        if self._pause_at_frame_target is None:
+            return
+        if not self.recorder.is_playing or self.recorder.is_paused():
+            return
+        if self.recorder.status.playback_frame < self._pause_at_frame_target:
+            return
+
+        target = self._pause_at_frame_target
+        self._pause_at_frame_target = None
+        self.recorder.pause_playback()
+        self.tracker.logger.flush()
+        self._update_recording_ui()
+        print(f"[Review] Auto-paused at frame {target}")
+        if self.gui:
+            self.gui.show_toast(
+                f"Paused at frame {target}",
+                duration=3.0,
+                color=(120, 200, 255),
+            )
+
     def _cb_quit(self):
         self.tracker.logger.close()  # Phase 0: flush and close tracking log
         self.running = False
@@ -1403,8 +1571,44 @@ class WallDanceApp:
         self.preview_enabled = enabled
         if enabled:
             print("Preview: ON (video pushed to GUI)")
+            if self.gui:
+                self.gui.show_toast(
+                    "Preview ON",
+                    duration=2.0,
+                    color=(120, 220, 140),
+                )
         else:
             print("Preview: OFF (no video output - measure raw FPS)")
+            if self.gui:
+                placeholder = np.zeros((max(1, self.preview.height),
+                                        max(1, self.preview.width), 3),
+                                       dtype=np.uint8)
+                cv2.putText(
+                    placeholder,
+                    "PREVIEW OFF",
+                    (max(20, self.preview.width // 8), max(40, self.preview.height // 2)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    max(0.8, self.preview.width / 900.0),
+                    (0, 200, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+                cv2.putText(
+                    placeholder,
+                    "Playback continues, but frames are not displayed.",
+                    (max(20, self.preview.width // 10), min(self.preview.height - 30, self.preview.height // 2 + 40)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    max(0.45, self.preview.width / 1600.0),
+                    (180, 180, 180),
+                    1,
+                    cv2.LINE_AA,
+                )
+                self.gui.update_frame(placeholder)
+                self.gui.show_toast(
+                    "Preview OFF: playback keeps running but the image will not update",
+                    duration=3.5,
+                    color=(255, 200, 120),
+                )
 
     def _cb_input_fps_cap_toggle(self, enabled: bool):
         self.input_fps_cap = enabled
@@ -1769,6 +1973,9 @@ class WallDanceApp:
         )
 
     def _handle_key(self, sender, app_data):
+        if dpg.does_item_exist("issue_report_dialog"):
+            return
+
         key = app_data
         if key == dpg.mvKey_E:
             self.settings.enhance_enabled = not self.settings.enhance_enabled
@@ -1798,6 +2005,10 @@ class WallDanceApp:
             self.preview_enabled = not self.preview_enabled
             self.gui and self.gui.sync_checkbox("preview", self.preview_enabled)
             print(f"Preview: {'ON' if self.preview_enabled else 'OFF (measure raw FPS)'}")
+        elif key == dpg.mvKey_F8:
+            context = self._cb_report_issue_request()
+            if context and self.gui:
+                self.gui.show_issue_report_dialog(context)
         if key == dpg.mvKey_S and (dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)):
             self._cb_save_config()
 
@@ -2099,7 +2310,13 @@ class WallDanceApp:
         # This ensures startup and runtime project switching use the same code
         last_project = self.config_store.read_last_project()
         startup_config = None
-        if last_project:
+        if self._startup_review.config_path:
+            startup_config = os.path.abspath(self._startup_review.config_path)
+        elif self._startup_review.project:
+            startup_config = self.config_store.latest_for_project(
+                sanitize_project_name(self._startup_review.project)
+            )
+        elif last_project:
             startup_config = self.config_store.latest_for_project(last_project)
         
         if startup_config:
@@ -2136,6 +2353,7 @@ class WallDanceApp:
         # Initialize recording UI
         self.recorder.set_project(self._current_project)
         self._update_recording_ui()
+        self._apply_startup_review_mode()
 
         # Show CPU fallback badge immediately if GPU is not available
         if self.gui and self.processor:
@@ -2450,6 +2668,8 @@ class WallDanceApp:
                         continue
                     raise
                 self.last_tracked = tracked
+                if display_frame is not None:
+                    self._last_review_frame = display_frame.copy()
                 self.timing = timing
                 self.timing["camera_read"] = camera_read_ms
                 self.timing["process_wall"] = process_wall_ms
@@ -2664,6 +2884,7 @@ class WallDanceApp:
             if rec_ui_update_counter >= 10:
                 rec_ui_update_counter = 0
                 self._update_recording_ui()
+            self._maybe_pause_at_target_frame()
             
             _dpg_t0 = time.perf_counter()
             dpg.render_dearpygui_frame()
@@ -2684,7 +2905,51 @@ class WallDanceApp:
 
 
 def main():
-    app = WallDanceApp()
+    parser = argparse.ArgumentParser(description="WallDance")
+    parser.add_argument("--project", help="Load the latest config for this project at startup")
+    parser.add_argument("--config", help="Load a specific config file at startup")
+    parser.add_argument("--slot", type=int, help="Start playback from the given recording slot")
+    parser.add_argument(
+        "--recording-index",
+        type=int,
+        default=0,
+        help="Playback history index for the chosen slot (0 = latest)",
+    )
+    parser.add_argument(
+        "--speed",
+        type=float,
+        default=1.0,
+        help="Initial playback speed for startup review mode",
+    )
+    parser.add_argument(
+        "--paused",
+        action="store_true",
+        help="Start playback paused",
+    )
+    parser.add_argument(
+        "--play-at-frame",
+        type=int,
+        help="Seek to this frame immediately after playback starts",
+    )
+    parser.add_argument(
+        "--pause-at-frame",
+        type=int,
+        help="Automatically pause playback when this frame is reached",
+    )
+    args = parser.parse_args()
+
+    startup_review = ReviewStartupOptions(
+        config_path=args.config,
+        project=args.project,
+        slot=args.slot,
+        recording_index=max(0, args.recording_index),
+        playback_speed=max(0.1, args.speed),
+        paused=args.paused,
+        play_at_frame=args.play_at_frame,
+        pause_at_frame=args.pause_at_frame,
+    )
+
+    app = WallDanceApp(startup_review=startup_review)
     app.run()
 
 
