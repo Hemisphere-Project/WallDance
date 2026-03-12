@@ -134,6 +134,7 @@ class DancerTrack:
         self.time_since_update = 0
         self._occluded = False           # True when hidden behind another track
         self._shadow_streak = 0          # Consecutive frames detected as shadow
+        self._fractional_age = 0.0       # Sub-frame occlusion aging accumulator
         self.smoothing_depth = smoothing_depth
         self._last_match_frame = -1
         self._last_occluded_frame = -1
@@ -1958,7 +1959,7 @@ class DancerTracker:
     def _apply_fractional_occlusion_aging(self, track: DancerTrack):
         """Undo full predict aging and reapply slowed occlusion aging."""
         track._fractional_age = (
-            getattr(track, '_fractional_age', 0.0)
+            track._fractional_age
             + TRACKER_OCCLUSION_AGE_FACTOR
         )
         track.time_since_update -= 1

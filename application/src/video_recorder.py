@@ -436,7 +436,21 @@ class VideoRecorder:
                     except Exception as e:
                         print(f"[Playback] on_playback_start callback error: {e}")
             
-            # Update buffer (latest frame overwrites previous)
+            # Wait for the previous frame to be consumed before writing
+            # the next one.  Without this, fast decode speeds cause the
+            # buffer to be overwritten before the main loop processes it,
+            # silently dropping frames.  Dropped frames make the Kalman
+            # filter see larger-than-expected displacements (dt=1 but
+            # actual motion spans multiple frames), degrading tracking
+            # quality and producing speed-dependent results.
+            while self._frame_new and self._playback_running and not self._playback_paused:
+                time.sleep(0.001)
+
+            # If we had to wait, reset the timing baseline so completed
+            # processing time doesn't create a burst of catch-up frames.
+            if time.time() - target_time > frame_interval:
+                start_time = time.time() - (frame_count * frame_interval / self._playback_speed)
+
             with self._frame_lock:
                 self._frame_buffer = frame.copy()
                 self._frame_new = True

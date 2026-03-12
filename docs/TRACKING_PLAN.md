@@ -3,182 +3,156 @@
 **Goal**: Eliminate ID steal → ghost creation, and survive complex occluded crossovers.  
 **Context**: Similar costumes (ReID low-value), ≤6 dancers, comfortable GPU headroom (>15ms spare).  
 **Started**: 2026-03-03  
-**Last updated**: 2026-03-11  
-
-**Methodology**: For each reported issue, first analyze logs and identify root
-cause.  Then assess whether a direct, targeted fix is possible (e.g. Phase 1b/1c/1d
-style post-match corrections) or whether the issue requires advancing to the next
-plan phase (e.g. Phase 2 temporal signatures, Phase 3 optical flow).  Prefer
-direct fixes when the failure mode is clear and self-contained; escalate to a new
-phase only when the root cause is structural and can't be patched locally.
-
-## Active Workstreams
-
-| Workstream | Status | Purpose |
-|------------|--------|---------|
-| A. Tracker refactor roadmap | **IN PROGRESS** | Structural cleanup underway; Steps 1-4 now implemented, replay validation still pending |
-| B. Recorded-media review workflow | **STARTED** | Faster replay, issue capture, and fix-feedback loop on Slot 6 and future clips |
-
-### A. Tracker refactor roadmap (execution order)
-
-1. **Unify association paths**  [done]
-  - Remove imperative `FORCE_UPDATE` / `FALLBACK_UPDATE` state mutation as side paths.
-  - Replace with explicit late assignment passes that still go through the same gating / logging / merge-frame logic.
-  - **Why first**: this is the biggest source of hidden behavior and weakens every later feature.
-2. **Split `DancerTracker.update()` into frame stages**  [done]
-  - Target stages: predict, build candidates, solve assignment, apply policy corrections, commit updates, lifecycle cleanup, logging.
-  - Introduce a per-frame context object instead of mutable tracker-wide scratch state (`_is_merge_frame`, `_post_update_clamp_indices`). Implemented via `FrameUpdateContext` + `PendingTrackUpdate`.
-  - Unmatched-detection resolution is now further decomposed into nearest-track lookup, force-update selection, fallback update, and new-track creation helpers.
-  - Occlusion aging is now decomposed into matched-position collection, occlusion-radius policy, near-match detection, fractional aging, and occlusion-state/logging helpers.
-  - Matching policy is now decomposed into helpers for crowded-zone detection, Mahalanobis gating, position/keypoint/separation/direction costs, cost blending, dynamic thresholding, and anti-merge rejection.
-3. **Preserve continuity across resurrection**  [done]
-  - Rehydrate track identity state instead of creating a fresh `DancerTrack` with only the old ID.
-  - Minimum preserved state: pose history, vx history, bbox statistics, last occlusion/merge metadata.
-4. **Replace boolean occlusion heuristics with episode metadata**  [done]
-  - Add `last_matched_frame`, `last_occluded_frame`, `last_merge_frame`, merge participants, and reacquisition metadata.
-  - This replaces fragile conditions such as "currently occluded" for merge-exit recovery.
-5. **Strengthen temporal matching**
-  - Scale-normalize pose history, then add Phase 1.3 IoU and Phase 3 optical flow on top of the cleaner association core.
-6. **Move to offline regression metrics**
-  - Headless replay over recorded media with counts for `NEW_TRACK`, `DORMANT`, `RESURRECT`, `FORCE_UPDATE`, `FALLBACK_UPDATE`, swap corrections, and ID inflation.
-
-### B. Recorded-media review workflow (current state)
-
-- **Startup review mode** is now supported from the app CLI:
-
-```bash
-cd application
-uv run python src/main.py --project my_project --slot 6 --speed 0.5 --pause-at-frame 300
-```
-
-- Supported flags:
-  - `--project <name>` → load latest config for that project
-  - `--config <path>` → load a specific config file
-  - `--slot <n>` → start playback from a recording slot immediately
-  - `--recording-index <n>` → choose an older take in that slot (`0` = latest)
-  - `--speed <x>` → set initial playback speed
-  - `--paused` → start playback paused
-  - `--pause-at-frame <n>` → auto-pause on target frame
-- **Issue capture** during playback:
-  - Button: `ISSUE` in the playback toolbar
-  - Hotkey: `F8`
-  - Saves a structured issue packet with issue type, note, playback context, config snapshot, nearby tracker events, and a preview snapshot.
-  - Output directory: `projects/<project>/review_issues/`
-  - Summary index: `projects/<project>/review_issues/issues.jsonl`
-
-### Review loop (target workflow)
-
-1. Start the app directly in review mode with the project, slot, and optional target frame.
-2. Watch playback, pause or auto-pause at the suspicious frame.
-3. Press `F8` or click `ISSUE`.
-4. Choose issue type: `id_swap`, `abusive_merge`, `ghost_track`, `false_new_id`, `track_loss`, or `other`.
-5. Add a short note about what is visible.
-6. Inspect the saved issue packet plus `tracking_events.jsonl` to decide whether the right response is:
-  - logic fix
-  - constants tuning
-  - UI/operator setting change
-7. Re-run the same review command on the same slot/frame after the change.
+**Last updated**: 2026-03-12  
 
 ---
 
-## Current Status (quick reference)
+## Status at a Glance
 
-| Phase | Status | Notes |
-|-------|--------|-------|
-| Phase 0 — Logging & diagnostics | **DONE** | `TrackingLogger` → `tracking_events.jsonl`, frame overlay, `FRAME_SUMMARY` per frame |
-| Phase 1.1 — Mahalanobis gate | **DONE** | Chi²(df=2, 99%) = 9.21, gate noise R=700 (effective radius ~80px) |
-| Phase 1.2 — Cascaded matching | **DONE** | Established-first (Pass 1) + tentative (Pass 2), deferred updates |
-| Phase 1b — Gate noise fix | **DONE** | Separate R_gate from Kalman R; relaxed anti-merge 1.3→2.0; ID counter fix |
-| Phase 1c — Cascade occlusion swap | **DONE** | `_check_occlusion_cascade_swaps()` + suppression window (5 frames) + post-update velocity clamp |
-| Phase 1d — Merge direction swap | **DONE** | `_check_merge_direction_swaps()` + post-update velocity clamp on both tracks |
-| Phase 1.3 — IoU cost signal | Not started | |
-| Phase 2 — Temporal pose signature | **IN PROGRESS** | Pose history buffer + trajectory cost in cost matrix done; merge-frame contamination fix applied; awaiting validation |
-| Phase 3 — Optical flow bridge | Not started | |
-| Phase 4 — Track lifecycle | **IN PROGRESS** | Lifecycle policy extraction underway: creation gate/new-track spawn and active/dormant expiry paths now split into dedicated helpers |
-| Phase 5 — Occupancy grid | Not started | |
+| Area | Status | Notes |
+|------|--------|-------|
+| Logging & diagnostics (Phase 0) | **DONE** | `TrackingLogger` → JSONL, frame overlay, `FRAME_SUMMARY` |
+| Mahalanobis gate (Phase 1.1) | **DONE** | Chi²(df=2, 99%) = 9.21, gate noise R=700 (~80px radius) |
+| Cascaded matching (Phase 1.2) | **DONE** | Established-first + tentative-second, deferred updates |
+| Gate noise fix (Phase 1b) | **DONE** | Separate R_gate from Kalman R; anti-merge 2.0; ID counter fix |
+| Cascade occlusion swap (Phase 1c) | **DONE** | Swap + suppression window (5f) + post-update velocity clamp |
+| Merge direction swap (Phase 1d) | **DONE** | Direction-reversed pair swap + velocity clamp on both tracks |
+| Temporal pose signature (Phase 2) | **DONE** | Pose history (15f), trajectory cost (30% in crowded), merge-frame guard |
+| Tracker structural refactor | **DONE** | `update()` decomposed into named stages; all policies in dedicated helpers |
+| Dormant continuity preservation | **DONE** | Full state rehydration on resurrection (pose, velocity, merge metadata) |
+| Episode metadata | **DONE** | `last_match_frame`, `last_occluded_frame`, `last_merge_frame`, `merge_episode_id` |
+| Review workflow | **DONE** | CLI startup, F8 issue capture, structured issue packets |
+| Replay regression report | **DONE** | `replay_report.sh` for session summary / comparison |
+| IoU cost signal (Phase 1.3) | Not started | 6th cost term — cheap, high value |
+| Optical flow bridge (Phase 3) | Not started | LK flow for occluded-track prediction |
+| Occupancy grid (Phase 5) | Not started | Only if residual multi-body crossover issues remain |
 
-### Known issues on Slot 6 test clip
+### Slot 6 Known Issues
 
-| Issue | Frames | Status | Fix |
-|-------|--------|--------|-----|
-| Edge-entry ID theft (no occlusion) | ~237 | **FIXED** | Phase 1.1 Mahalanobis gate blocks 294px teleport |
-| Occlusion zone ID loss / ghosts | ~430-477 | **FIXED** | Phase 1b: gate noise 700, anti-merge 2.0 |
-| Cascade occlusion swap (est steals from tent) | ~366-393 | **FIXED** | Phase 1c: swap + suppression window + velocity clamp |
-| Established-established merge swap | ~297-305 | **FIXED** | Latest replay looked good after merge-frame pose guard + recent merge episode metadata |
-| Edge occlusion swap (minor) | ~377-380 | **FIXED** | Latest replay looked good after recent merge/occlusion metadata replaced the live `_occluded` gate |
-| Shadows | various | OK | Existing shadow suppression handles it |
+| Issue | Frames | Status |
+|-------|--------|--------|
+| Edge-entry ID theft | ~237 | **FIXED** — Mahalanobis gate blocks 294px teleport |
+| Occlusion zone ghosts | ~430-477 | **FIXED** — Gate noise 700, anti-merge 2.0 |
+| Cascade occlusion swap | ~366-393 | **FIXED** — Swap + suppression + velocity clamp |
+| Est-est merge swap | ~297-305 | **FIXED** — Merge-frame pose guard + episode metadata |
+| Edge occlusion swap | ~377-380 | **FIXED** — Episode metadata replaces live `_occluded` gate |
 
-### How to run and test
+**Awaiting validation**: Full Slot 6 replay to confirm all fixes hold together after the structural refactor.
 
-```bash
-# From repo root
-cd application
-uv run python src/main.py
-# Load Slot 6, play back, watch for ID issues
-# Frame overlay shows frame number (top-right)
-# Logs written to application/tracking_events.jsonl
+---
 
-# Faster review startup
-uv run python src/main.py --project my_project --slot 6 --speed 0.5 --pause-at-frame 300
-```
+## Next Steps (priority order)
 
-### How to analyze logs
+### 1. Validate refactored tracker on Slot 6
 
-```powershell
-# Find latest session
-$lines = Get-Content tracking_events.jsonl
-$resets = @(); for($i=0; $i -lt $lines.Count; $i++) { if($lines[$i] -match '"RESET"') { $resets += $i } }
-$session = $lines[$resets[-1]..($lines.Count-1)]
-
-# Find swap events
-$session | Select-String 'MERGE_DIRECTION_SWAP|CASCADE_OCCLUSION_SWAP|CASCADE_SUPPRESSED'
-
-# Trace frame summaries for a range (e.g. F360-399)
-$session | Select-String '"frame": (36[0-9]|37[0-9]|38[0-9]|39[0-9])' |
-  Where-Object { $_ -match 'FRAME_SUMMARY' } |
-  ForEach-Object { $_.Line | ConvertFrom-Json } |
-  ForEach-Object { "F$($_.frame) d=$($_.data.n_detections) trk=$($_.data.n_tracks)" }
-```
-
-### Replay regression report
+Run the app, replay Slot 6, verify no regressions at the known-issue frames (237, 297, 366, 430).
+Then compare sessions:
 
 ```bash
-# From repo root
-./replay_report.sh --session latest
-
-# Compare the latest replay with the previous session
 ./replay_report.sh --compare previous latest
-
-# Focus on the merge/occlusion window only
 ./replay_report.sh --compare previous latest --start-frame 280 --end-frame 400
 ```
 
-- `replay_report.sh` mirrors `run.sh`: it enters `application/`, preserves the venv CUDA library path setup, and calls `uv run --no-sync` so Torch/CUDA is not disturbed by an automatic sync.
-- `replay_report.py` summarizes one session or compares two sessions from `tracking_events.jsonl`.
-- Reported metrics include counts for `NEW_TRACK`, `RESURRECT`, `DORMANT`, `FORCE_UPDATE`, `FALLBACK_UPDATE`, swap corrections, gating rejections, hotspot frames, and ID counts.
-- Session selectors: `latest`, `previous`, or a numeric session index.
+Target: zero new `NEW_TRACK` inflation, zero lost swap corrections.
+
+### 2. Phase 1.3 — IoU cost signal
+
+Add bbox IoU as a 6th cost term in `_compute_cost_matrix`:
+
+- Predicted bbox = last bbox translated by Kalman velocity
+- `iou_cost = 1.0 - iou`
+- Blend weight: ~10% normal, ~5% crowded
+- **Config**: `TRACKER_IOU_WEIGHT = 0.10`, `TRACKER_CLOSE_IOU_WEIGHT = 0.05`
+- **Why**: Two dancers at the same centroid but different bbox extents are distinguished. Nearly free to compute.
+- Implement as a new helper `_compute_iou_cost()` alongside existing cost helpers, wire into `_combine_assignment_cost()`.
+
+### 3. Phase 2.3 — Post-assignment swap detector (2-opt)
+
+For each pair of matched (detection, track) assignments where both tracks are in close proximity:
+
+- Check if swapping the two assignments reduces total cost
+- Also check: did the assignment cause velocity reversal AND skeleton jump simultaneously?
+- Only runs on nearby matched pairs — O(k²) where k is typically 2–4
+- **Config**: `TRACKER_SWAP_DETECT_ENABLED = True`
+
+### 4. Phase 3 — Optical flow bridge
+
+Track pixel motion through detector gaps using sparse LK optical flow:
+
+- `FlowTracker` class in `optical_flow.py` — 5-8 highest-confidence keypoints per track
+- LK parameters: window 21×21, 3 pyramid levels
+- Flow-assisted Kalman measurement update for missing tracks (inflated noise R×4)
+- Flow-predicted position in `_compute_cost_matrix` for `time_since_update > 0` tracks
+- Cost: ~1-3ms for 6 dancers × 8 points, CPU only
+- **Config**: `TRACKER_OPTICAL_FLOW_ENABLED = True`, `TRACKER_FLOW_MAX_POINTS = 8`
+
+### 5. Phase 4 — Track lifecycle refinements
+
+- **4.1 Aggressive dormant matching**: Before creating any new track, check dormant pool for tracks that died < 10 frames ago using relaxed position gate (2×) + pose trajectory similarity
+- **4.2 Anti-steal cooldown**: Freeze victim's aging for 5 frames when the swap detector identifies a steal
+- **4.3 Pose trajectory in resurrection**: Score dormant candidates using trajectory similarity in addition to position + height + keypoints
+
+---
+
+## Architecture
+
+### `update()` per-frame flow (tracker.py)
+
+1. `_begin_frame_update()` — tick suppression counters, create `FrameUpdateContext`
+2. `_predict_tracks_for_frame()` — Kalman predict, set `merge_frame`
+3. `_run_matching_phase()`:
+   - **Pass 1**: established (non-suppressed) tracks vs all detections → deferred
+   - **Pass 2**: tentative + suppressed tracks vs remaining detections → deferred
+   - **Phase 1c**: `_check_occlusion_cascade_swaps()` — swap if est steals from tent
+   - **Phase 1d**: `_check_merge_direction_swaps()` — swap if direction-reversed
+   - Apply all deferred updates via `FrameUpdateContext.pending_updates`
+   - Post-update velocity clamp on swapped tracks
+4. `_resolve_unmatched_detections()` — force-update / fallback / resurrect / new track
+5. `_apply_occlusion_aging()` — fractional aging for tracks near matched tracks
+6. `_finalize_track_lifecycle()` — expire → dormant, age dormant, shadow detection
+7. `_log_frame_summary()` — structured `FRAME_SUMMARY` event
+
+### Key data structures
+
+| Structure | Purpose |
+|-----------|---------|
+| `DancerTrack` | Per-person state: Kalman filter, pose history, episode metadata |
+| `DormantSnapshot` | Frozen track for resurrection: full state incl. pose/velocity/merge history |
+| `FrameUpdateContext` | Per-frame scope: `merge_frame`, `pending_updates`, `post_update_clamp_indices` |
+| `PendingTrackUpdate` | Deferred match awaiting post-swap application |
+| `ClosestTrackResult` | Nearest-track lookup result for unmatched-detection resolution |
+
+### Decomposed helpers (where each policy lives)
+
+| Policy area | Helpers |
+|-------------|---------|
+| Matching cost | `_is_detection_in_crowded_zone`, `_mahalanobis_gate_allows`, `_compute_position_cost`, `_compute_keypoint_cost`, `_compute_separation_penalty`, `_compute_direction_penalty`, `_combine_assignment_cost` |
+| Assignment acceptance | `_compute_dynamic_match_threshold`, `_is_suspicious_merge_candidate`, `_commit_match`, `_apply_track_update` |
+| Unmatched resolution | `_find_closest_track`, `_get_creation_gate`, `_select_force_update_target`, `_try_force_update_unmatched_detection`, `_try_fallback_update_unmatched_detection`, `_create_new_track` |
+| Occlusion aging | `_collect_matched_positions`, `_occlusion_distance_for_track`, `_is_track_near_matched_positions`, `_apply_fractional_occlusion_aging`, `_mark_track_occluded` |
+| Lifecycle | `_effective_max_age_for_track`, `_retire_track_to_dormant`, `_retire_expired_active_tracks`, `_age_and_prune_dormant_tracks` |
+| Swap corrections | `_check_occlusion_cascade_swaps`, `_check_merge_direction_swaps`, `_tracks_share_recent_merge_context` |
 
 ### Key files
 
 | File | Purpose |
 |------|---------|
-| [tracker.py](../application/src/tracker.py) | Core tracker: `DancerTrack`, `DancerTracker`, swap checks, Kalman filter |
+| [tracker.py](../application/src/tracker.py) | Core tracker: `DancerTrack`, `DancerTracker`, all matching/swap/lifecycle logic |
 | [config.py](../application/src/config.py) | All config constants (gates, thresholds, feature flags) |
 | [tracking_logger.py](../application/src/tracking_logger.py) | Structured JSONL event logger |
-| [replay_report.sh](../replay_report.sh) | Root launcher for replay reports using `uv run --no-sync` |
-| [app.py](../application/src/app.py) | Main app, frame overlay, preview rendering |
-| [replay_report.py](../application/replay_report.py) | Session summary and comparison tool for `tracking_events.jsonl` |
-| `application/tracking_events.jsonl` | Log output (working dir, NOT in `src/`) |
+| [app.py](../application/src/app.py) | Main app, frame overlay, review mode, issue reporting |
+| [replay_report.py](../application/replay_report.py) | Offline session summary and comparison tool |
+| [replay_report.sh](../replay_report.sh) | Safe launcher (uses `uv run --no-sync` to preserve CUDA) |
 
-### Key config flags (all in `config.py`)
+### Key config flags
 
 | Flag | Value | Purpose |
 |------|-------|---------|
 | `TRACKER_MAHALANOBIS_GATE` | 9.21 | Chi² gate threshold |
-| `TRACKER_MAHALANOBIS_GATE_NOISE` | 700.0 | Inflated R for gate (effective radius ~80px) |
+| `TRACKER_MAHALANOBIS_GATE_NOISE` | 700.0 | Inflated R for gate (~80px radius) |
 | `TRACKER_CASCADED_MATCHING` | True | 2-pass established/tentative matching |
 | `TRACKER_CASCADE_OCCLUSION_SWAP` | True | Post-cascade swap for est-steals-from-tent |
-| `TRACKER_CASCADE_SUPPRESSION_FRAMES` | 5 | Frames to suppress swapped est track from Pass 1 |
+| `TRACKER_CASCADE_SUPPRESSION_FRAMES` | 5 | Frames to suppress swapped est from Pass 1 |
 | `TRACKER_MERGE_DIRECTION_SWAP` | True | Post-merge velocity-direction swap |
 | `TRACKER_ESTABLISHED_FRAMES` | 15 | Hits before a track is "established" |
 | `TRACKER_CLOSE_PROXIMITY_RATIO` | 0.6 | Proximity ratio for swap detection |
@@ -186,690 +160,67 @@ $session | Select-String '"frame": (36[0-9]|37[0-9]|38[0-9]|39[0-9])' |
 | `TRACKER_POSE_HISTORY_DEPTH` | 15 | Frames of skeleton history for trajectory cost |
 | `TRACKER_TRAJECTORY_WEIGHT` | 0.30 | Weight of trajectory cost in crowded zones |
 
-### Architecture overview (tracker.py)
+---
 
-The `update()` method flow per frame:
-1. **Tick down** cascade suppression counters
-2. **Predict** all tracks (Kalman predict, velocity dampening for occluded)
-3. **Pass 1**: Established tracks (excluding suppressed) match all detections → `pending_updates`
-4. **Pass 2**: Tentative + suppressed tracks match remaining detections → `pending_updates`
-5. **Phase 1c check**: `_check_occlusion_cascade_swaps()` — swap if established steals from tentative
-6. **Phase 1d check**: `_check_merge_direction_swaps()` — swap if direction-reversed after a shared recent merge episode
-7. **Apply deferred updates** through `FrameUpdateContext.pending_updates`
-  - `merge_frame` computed once per frame inside `FrameUpdateContext`: `len(detections) < len(tracks)`
-   - When True, pose history recording is skipped (prevents contamination from merged skeletons)
-8. **Post-update velocity clamp**: Zero `kf.x[2:]` on all swapped tracks tracked in `FrameUpdateContext.post_update_clamp_indices` (prevents velocity spike)
-9. **New track creation / force-update / resurrection** (also passes `merge_frame`)
-10. **Occlusion-aware aging**: Fractional aging for tracks near matched tracks
-11. **Expire** old tracks → dormant pool
-12. **Shadow detection** and cleanup
-13. **Emit** `FRAME_SUMMARY` log (now includes `last_match_frame`, `last_occluded_frame`, `last_merge_frame`, `merge_episode_id`)
+## Operations
 
-### Important: don't run `uv run python -c "from tracker import ..."` for import tests!
+### Run and test
 
-This breaks CUDA packages. Validate code changes by running the full app instead.
+```bash
+# From repo root — normal launch
+cd application && uv run --no-sync python src/main.py
+
+# Review mode — jump straight to a slot/frame
+cd application && uv run --no-sync python src/main.py \
+  --project my_project --slot 6 --speed 0.5 --pause-at-frame 300
+```
+
+Frame overlay shows frame number (top-right). Logs go to `application/tracking_events.jsonl`.
+
+### Issue capture during playback
+
+- Press `F8` or click `ISSUE` in the playback toolbar
+- Choose issue type: `id_swap`, `abusive_merge`, `ghost_track`, `false_new_id`, `track_loss`, `other`
+- Issue packets saved to `projects/<project>/review_issues/`
+
+### Replay regression report
+
+```bash
+./replay_report.sh --session latest
+./replay_report.sh --compare previous latest
+./replay_report.sh --compare previous latest --start-frame 280 --end-frame 400
+```
+
+Uses `uv run --no-sync` to preserve CUDA. Reports: event counts, ID inflation, hotspot frames.
+
+### Log analysis (PowerShell)
+
+```powershell
+$lines = Get-Content tracking_events.jsonl
+$resets = @(); for($i=0; $i -lt $lines.Count; $i++) { if($lines[$i] -match '"RESET"') { $resets += $i } }
+$session = $lines[$resets[-1]..($lines.Count-1)]
+$session | Select-String 'MERGE_DIRECTION_SWAP|CASCADE_OCCLUSION_SWAP|CASCADE_SUPPRESSED'
+```
+
+### Important: never run `uv run python -c "from tracker import ..."` for import tests
+
+This triggers a dependency sync and breaks CUDA packages. Always validate via the full app.
 
 ---
 
-## Test reference video
-
-**Slot 6** of the current project — 4 people entering and leaving the stage.  
-Use this clip as the benchmark for every phase checkpoint.
-
-Known issue status — see **Current Status** table above.
-
----
-
-## Phase 0 — Diagnostics & Logging Infrastructure
-
-> **Before fixing anything, build the tools to see what's happening.**
-> We need structured tracking logs tied to frame numbers so that when an
-> ID issue is spotted during playback, we can pause, note the frame, and
-> trace exactly what the tracker decided and why.
-
-### 0.1 Structured tracking event log
-- [x] **Implement** `TrackingLogger` class in `tracker.py` (or new `tracking_logger.py`)
-- Replaces ad-hoc `TRACKER_DEBUG` print statements with structured, frame-stamped records
-- Each log entry: `{frame: int, event: str, data: dict}`
-- Event types to log:
-  - `MATCH` — detection d matched to track t (cost, threshold, was_crowded)
-  - `MATCH_REJECTED` — cost exceeded threshold (cost, threshold, track_id)
-  - `SWAP_DETECTED` — 2-opt swap fired (track_a, track_b, old_cost, new_cost) *(Phase 2+)*
-  - `NEW_TRACK` — new ID created (track_id, position, min_dist, gate, reason)
-  - `RESURRECT` — dormant ID resurrected (track_id, dormant_age, score)
-  - `DORMANT` — track moved to dormant pool (track_id, was_occluded, edge_exit)
-  - `KILL` — track removed (track_id, reason: shadow/expired/merged)
-  - `ANTI_MERGE` — merged detection rejected (track_id, det_area, avg_area)
-  - `OCCLUDED` — track marked occluded (track_id, near_track_id)
-  - `MAHALANOBIS_GATE` — entry gated out (track_id, chi2_dist) *(Phase 1+)*
-- Log storage: rolling deque (last 3000 entries ~= 200 frames × 15 events/frame)
-- **File output**: auto-flush to `tracking_events.jsonl` every 5 seconds (append mode, rotate on playback restart)
-- [x] **Config**: Add `TRACKER_EVENT_LOG_ENABLED = True`, `TRACKER_EVENT_LOG_FILE = "tracking_events.jsonl"` to `config.py`
-
-### 0.2 Frame number overlay on preview
-- [x] **Implement** in `app.py` preview rendering path (near `_draw_height_ruler` call)
-- During playback: overlay `Frame: {playback_frame}/{playback_total}` on the preview image (top-right corner, `cv2.putText`)
-- During live: overlay cumulative frame counter (add `self._total_frame_count` to `WallDanceApp`)
-- Small, semi-transparent white text on dark background so it's always readable
-- **Why**: When the user pauses on a problem frame, they can read the frame number and report it
-
-### 0.3 Per-frame track summary in log
-- [x] **Implement** in `DancerTracker.update()`, emitted every frame
-- Log entry: `FRAME_SUMMARY` with:
-  - `frame`: frame number
-  - `n_detections`: how many YOLO detections came in
-  - `n_tracks`: how many active tracks
-  - `track_states`: list of `{id, centroid, velocity, hits, time_since_update, is_established, is_occluded}`
-  - `n_dormant`: dormant pool size
-  - `matched_pairs`: list of `(det_idx, track_id, cost)`
-- **Why**: Single log entry lets you reconstruct the full tracker state at any frame — essential for post-mortem debugging
-
-### 0.4 Workflow: how to report issues
-- [x] **Document** in this section (no code needed)
-- Workflow:
-  1. Load slot 6, start playback at normal or 0.5× speed
-  2. When you see an ID problem, **pause** (Space or pause button)
-  3. Note the **frame number** from the overlay (top-right of preview)
-  4. Note what happened: "ID 3 stole ID 2's detection" / "ID 5 appeared as new but was ID 1" / "IDs 2 and 4 swapped"
-  5. Report: `Frame 1247: ID steal — ID 3 took ID 2, ID 2 got new ID 7`
-  6. I examine `tracking_events.jsonl` around frame 1247 to see exactly what the tracker decided
-  7. The JSONL log is in `application/` working directory — I can read it directly with tools
-
-### 0.5 Launch verification
-- [x] **Verify** the app starts correctly from terminal: `cd application; uv run --no-sync python src/main.py`
-- [x] **Verify** slot 6 plays back and frame counter overlay is visible
-- [x] **Verify** `tracking_events.jsonl` is being written during playback
-- [x] **Verify** I can read the log file and correlate events to frame numbers
-
-### Phase 0 — Validation checkpoint
-- [x] Replay slot 6 — confirm frame overlay is visible and log file is populating
-- [x] Pause on frame 551 — 4 tracks (IDs 1,2,4,5). Log frame 549 matches: 4 tracks, correct positions, low costs (3.4-12.7). Frame offset due to flush timing.
-- [x] **Decision**: Proceed to Phase 1
-
----
-
-## Known Issue: Edge-Entry ID Theft (no occlusion)
-
-> **Priority**: HIGH — must be root-caused with Phase 0 logs before Phase 1.
-
-### Reproduction
-1. Dancer1 (ID1) and Dancer2 (ID2) move around in the center of the image.
-2. Dancer3 (ID3) enters from the right edge while Dancer2 (ID2) exits right.
-3. Dancer3 (ID3) reaches the center — tracking is stable, no freeze, no loss.
-4. Dancer4 enters from the right edge.
-5. **Bug**: Dancer4 instantly receives ID3. Dancer3 (still in center, fully visible, never lost) is reassigned a new ID4.
-
-### Key observations
-- **No occlusion** — all three dancers (1, 3, 4) are far apart at the moment of the steal.
-- **No track freeze** — Dancer3's track does not stutter, go missing, or show `time_since_update > 0` at any point.
-- **The steal is instantaneous** — it happens on the exact frame Dancer4's detection first appears at the right edge.
-
-### Hypotheses to investigate with Phase 0 logs
-1. **Hungarian global optimum vs local correctness**: The cost matrix may produce a globally cheaper assignment by swapping ID3 to the new edge detection and giving the center detection a new ID. Even if each individual cost is reasonable, the *sum* is lower with the swap. This is the classic Hungarian failure mode — it optimizes total cost, not identity preservation.
-   - **Log check**: Look at the MATCH events on the theft frame. Is ID3→Dancer4 cost actually lower than ID3→Dancer3? Or is the *total* assignment cost lower after the swap?
-2. **Edge entry + dormant interaction**: Dancer2 recently exited right. Their dormant snapshot may be projected near the right edge area. When Dancer4 enters nearby, the system might resurrect Dancer2's dormant as ID2 for Dancer4 — but this could cascade into the Hungarian reshuffling all other assignments.
-   - **Log check**: Any RESURRECT event on the theft frame? Any dormant snapshots near the right edge?
-3. **Velocity overshoot**: Dancer3 entered from the right and moved to center. Their Kalman velocity vector still points leftward. The Hungarian may find it "cheaper" to assign a rightward detection (Dancer4) to a track with leftward velocity — nonsensical but mathematically possible if the `dir_penalty` isn't firing because `is_crowded = False` (dancers are far apart).
-   - **Log check**: What is `is_crowded` on the theft frame? Is `dir_penalty` being applied?
-4. **Creation gate too large**: The `new_track_min_distance` gate (or the center gate multiplier) may be so large that Dancer4's edge detection can't spawn a new ID, forcing the Hungarian to assign it to an existing track.
-   - **Log check**: Compare `min_dist` for Dancer4's detection vs `creation_gate`. Is Dancer4 being forced into the Hungarian instead of spawning fresh?
-
-### Root cause (confirmed via Phase 0 logs)
-
-**Hypothesis 1 confirmed: Hungarian global optimum vs local correctness.**
-
-Log analysis of the theft frame (tracker-frame 237, last session):
-
-| Frame | State |
-|-------|-------|
-| 236 | 2 tracks, 2 dets — ID1 at [351, 486], ID3 at [627, 491]. Stable. |
-| 237 | 3 detections appear (Dancer4 enters right edge). Hungarian assigns: |
-|     | ID1 → det 1 (cost 150.2) ✓ stays at [361, 482] |
-|     | **ID3 → det 2 (cost 142.7)** — teleports from [627] to [921] = **+294 px** |
-|     | det 0 at [620, 490] unmatched → **NEW_TRACK ID4** (ghost of Dancer3) |
-| 237 | ID3 velocity spikes to **307.8 px/frame** — physically impossible |
-
-- Cost 142.7 is under threshold 163.0, so Hungarian accepted the teleport.
-- No resurrection, no occlusion, no crowding — pure global-cost misassignment.
-- Hypotheses 2, 3, 4 ruled out (no RESURRECT events, `is_crowded = False`, creation gate not involved).
-
-### Fix applied (Phase 1)
-- **Mahalanobis gating**: At frame 237, ID3's Kalman covariance after 72 updates is tight.
-  Estimated chi² for the 294px jump: ~28,000 >> gate 9.21 → cost set to 1e6 → Hungarian can't pick it.
-- **Cascaded matching**: Established tracks match first, preventing tentative tracks from competing.
-
----
-
-## Known Issue: Occlusion Zone ID Loss / Ghosts (frames ~430-477)
-
-> **Priority**: HIGH — discovered after Phase 1 fix, during slot 6 replay.
-
-### Reproduction
-1. 4 dancers on stage. Two move very close in the center, one exits right.
-2. Near tracker-frame ~430: Mahalanobis gate starts blocking nearly all matches.
-3. Only 1-2 of 4 tracks match via Hungarian; the other 2-3 rely on FORCE_UPDATE.
-4. At F451: ghost track id11 created (a 5th track for 3-4 real dancers).
-5. At F458: ANTI_MERGE starts blocking legitimate matches for id6 every frame.
-6. At F472: id9 goes dormant after 15 consecutive misses. Dancer gets ghost id11.
-
-### Root cause (confirmed via log analysis)
-
-**The Mahalanobis gate was 13× too tight.**
-
-The Kalman filter's measurement noise `R=2.0` is tuned for **smoothing** — it makes the
-filter trust measurements heavily, which is good for output quality.  But after ~30 updates,
-the position covariance `P[:2,:2]` converges to ~1.84, making the innovation covariance
-`S = P + R ≈ diag(3.84, 3.84)`.  Combined with the chi² gate of 9.21:
-
-| Distance | chi² | Result |
-|----------|------|--------|
-| 5px | 6.5 | PASS |
-| 10px | 26.1 | **GATED** |
-| 15px | 58.6 | GATED |
-| 50px | 651 | GATED |
-
-**Effective matching radius: only 5.9 pixels.**  YOLO jitter is 10-50px → ~90% of
-legitimate matches were blocked, forcing tracks into the fragile FORCE_UPDATE fallback path.
-
-This caused a cascade:
-1. FORCE_UPDATE assigns closest unmatched detection → wrong dancer in crowded zone
-2. Tracks drift, accumulate `time_since_update` via fractional aging
-3. Detections can't match anything → ghost track created (id11 at F451)
-4. Original track (id9) starves from misses → goes dormant at F472
-
-**Secondary issue: ANTI_MERGE too aggressive.** `TRACKER_MERGE_SIZE_RATIO=1.3` is very tight;
-normal pose variation can push bbox area +30%. Changed to 2.0.
-
-**Minor: ID counter waste.** `_try_resurrect()` created a new `DancerTrack` (incrementing
-`_id_counter`) then overwrote `track_id`. Two resurrections consumed IDs 8 and 10, explaining
-the gap 7→9→11.
-
-### Fix applied (Phase 1b)
-- **Separate gate noise** (`TRACKER_MAHALANOBIS_GATE_NOISE=700`): The Mahalanobis gate now
-  uses `R_gate = eye(2) × 700` instead of the Kalman `R` for computing the innovation
-  covariance.  This gives an effective radius of ~80px — legitimate matches pass easily,
-  teleports (>120px) are still blocked, and the original 294px theft remains firmly gated.
-- **Relaxed anti-merge** (`TRACKER_MERGE_SIZE_RATIO=2.0`): From 1.3 to 2.0. Enough headroom
-  for normal pose variation while still catching true merges (two people in one bbox).
-- **ID counter waste fix**: `_try_resurrect()` now sets the class counter to re-use the
-  dormant ID instead of wasting a fresh one.
-
----
-
-## Known Issue: Cascade Occlusion Swap (frames ~366-393)
-
-> **Priority**: HIGH — discovered during Phase 1 validation, slot 6 replay.
-
-### Reproduction
-1. D1 (ID1) on the left, D2 (ID2) moving right toward the edge.
-2. D3 enters from the right edge → ID3 created at frame 353 (tentative).
-3. D2 (exiting right) passes through D3 (entering).  YOLO merges them into
-   a single detection at frame 366 (det count drops from 3 to 2).
-4. **Bug**: Cascaded matching gives the merged detection to ID2 (established,
-   hits=106) — established-first priority.  ID3 (tentative, hits=8) gets nothing.
-5. D2 exits the frame.  ID2 smoothly transitions onto D3's body (velocity
-   drops from +18 to ≈0 in one frame).  ID3 drifts off and goes dormant
-   at frame 393.
-6. Result: D3 is now tracked as ID2.  The real D2 is gone.
-
-### Root cause (confirmed via log analysis)
-
-**Cascaded matching's established-first priority is harmful during occlusion.**
-
-| Frame | Event |
-|-------|-------|
-| 353 | ID3 created at x=942 (right edge entry), tentative. |
-| 358 | ID2 at x=856 (vel +12.5 → right), ID3 at x=934 (vel ≈0). Gap = 78px. |
-| 364 | ID2 at x=895, ID3 at x=927. Gap = 32px. Converging. |
-| **366** | YOLO drops to 2 dets. Pass 1 matches ID2 (est) to the merged det. ID3 (tent) unmatched → OCCLUDED. |
-| **367** | ID2 velocity: **+18 → -0.7** (reversal = identity changed). |
-| 370-390 | ID2 at x≈913, nearly stationary = tracking D3's body. ID3 Kalman prediction drifts off-screen. |
-| **393** | ID3 goes DORMANT (edge_exit=true). Swap is permanent. |
-
-The mechanism: Pass 1 gives established tracks absolute priority over all
-detections.  When an exiting established track (D2, moving fast to the right)
-and a tentative track (D3, stationary) overlap in a single merged detection,
-the established track always wins.  After the established track exits, it's
-seamlessly reassigned to the tentative track's body — a silent ID swap with
-no log anomaly except the velocity reversal.
-
-### Fix applied (Phase 1c)
-- **Post-cascade occlusion swap** (`TRACKER_CASCADE_OCCLUSION_SWAP=True`):
-  After both cascade passes, but **before** Kalman updates are committed,
-  check for the pattern:
-  1. Detection count < track count (merger/occlusion detected)
-  2. An unmatched tentative track T is in close proximity to a matched
-     established track E
-  3. E is moving significantly faster than T (exiting behavior:
-     `speed_E > speed_T × 1.5 + 3`)
-  4. T's predicted position is within `close_dist` of the detection E claimed
-  When all criteria are met → swap: give the detection to T, un-assign E.
-  E will age out via occlusion-aware aging (correctly — it was exiting).
-- **Deferred updates**: `_run_assignment_pass` now accepts `pending_updates`
-  list. In cascaded mode, `.update()` calls are deferred until after the
-  swap check.  Non-cascaded (legacy) mode is unchanged.
-- **New log event**: `CASCADE_OCCLUSION_SWAP` with est/tent IDs and speeds.
-
-### Iteration: Cascade suppression window (Phase 1c+)
-
-**Problem**: The single-frame CASCADE_OCCLUSION_SWAP fires correctly (e.g. at
-frame 366) but is undone on the very next frame.  On frame 367,
-established-first priority in Pass 1 reclaims the detection for the exiting
-track.  The tentative track starves with no detections and dies by frame 390.
-
-**Root cause**: The swap is a one-shot per-frame correction.  Established-first
-cascade priority is persistent — it overrides the swap on every subsequent frame.
-
-**Fix applied**:
-- **Cascade suppression window** (`TRACKER_CASCADE_SUPPRESSION_FRAMES=5`):
-  When CASCADE_OCCLUSION_SWAP fires for established track E, E is excluded
-  from Pass 1 for N frames (default 5).  During suppression, E participates
-  in Pass 2 alongside tentative tracks — it can still match if spare
-  detections remain, but it cannot steal priority from the tentative track.
-- Implementation: `_cascade_suppressed: dict[int, int]` on DancerTracker
-  maps track_id → frames remaining.  Counters decrement each frame; stale
-  entries (track deleted) are auto-pruned.
-- Pass 1 `est_indices` now filters out suppressed track IDs.
-- Pass 2 `tent_indices` now includes suppressed established tracks.
-- **New log event**: `CASCADE_SUPPRESSED` with active suppression map.
-- **Cleanup**: Removed `[MERGE_DBG]` debug prints from
-  `_check_merge_direction_swaps` (Phase 1d).
-
-### Iteration 2: Velocity clamp on swap beneficiary
-
-**Problem**: Pass 1 suppression alone is insufficient. The suppressed
-established track T2 competes in Pass 2 and still wins, because the tentative
-track T3's Kalman prediction drifts away from the detection.
-
-**Root cause**: The merged detection centroid is offset from T3's true position
-(it's a blend of two bodies). When T3 receives this offset detection via the
-swap, Kalman interprets the 14px position jump as velocity (v=-14.2). On
-subsequent frames T3's prediction drifts far left (895→872→841→805...) and
-by F371 it is Mahalanobis-gated (chi²=10.8 > gate 9.21). T2, even in Pass 2,
-is always closer and wins every frame. T3 starves and dies.
-
-**Fix applied**:
-- **Velocity clamp**: When CASCADE_OCCLUSION_SWAP fires and gives the merged
-  detection to tentative track T, clamp T's Kalman velocity and acceleration
-  to zero (`kf.x[2:] = 0.0`).
-- ~~Initially placed before the deferred `.update()` call — but this was
-  ineffective because the Kalman gain recomputes velocity from the
-  innovation (predicted - measured), undoing the clamp.~~
-- **Moved to post-update** (Phase 1c+++): clamp fires **after** all deferred
-  `track.update()` calls via `_post_update_clamp_indices` set.  Swap methods
-  register track indices; the `update()` loop applies clamps after Kalman.
-- Combined with Pass 1 suppression, this ensures the tentative track keeps
-  matching until it accumulates enough hits to become established.
-
----
-
-## Known Issue: Established-Established Merge Swap (frames ~297-305)
-
-> **Priority**: HIGH — discovered during Phase 1 validation, slot 6 replay.
-
-### Reproduction
-1. D1 (ID1, established, 200 hits) on the right, moving LEFT (vel ≈ -7).
-2. D2 (ID2, established, 64 hits) entered from left, moving RIGHT (vel ≈ +14).
-3. D2 passes in front of D1.  They converge (48px gap at frame 294).
-4. Frame 291+: Mahalanobis gate blocks correct matches at 89px (chi²=11 >
-   gate 9.21, effective radius ~80px).  Both tracks fall to FORCE_UPDATE
-   (correct assignment, but bypasses cost matrix).
-5. Frame 297: YOLO merges to 1 detection (D2 in front).  Both established →
-   both in Pass 1.  ID2 (closer to merged det) gets it.  ID1 → OCCLUDED.
-6. Frames 297-304: ID1's Kalman (constant-acceleration model) extrapolates
-   rightward: vel 0→+3→+6→+9→+12→+15→+18.  ID2 tracks merged centroid.
-7. **Frame 305**: 2 detections return.  Hungarian matches:
-   - ID1 (predicted at x=557) → det1 at x=507 (D2's body) — cost 156
-   - ID2 (at x=482) → det0 at x=466 (D1's body) — cost 25
-8. **Result**: ID1 now tracks D2 (going right), ID2 tracks D1 (going left).
-
-### Root cause
-
-**Kalman drift during occlusion + spatial re-match on wrong side.**
-
-| Frame | ID1 (D1) | ID2 (D2) | Event |
-|-------|----------|----------|-------|
-| 294 | x=484 v=-7 | x=436 v=+14 | Last 2-det frame, 48px gap |
-| 295 | x=484 v=0 | x=443 v=+7 | FORCE_UPDATE (gate too tight), vel corrupted |
-| 297 | x=485 v=+3 occ | x=458 v=+14 | 1 det. ID1 OCCLUDED. |
-| 304 | x=539 v=+18 occ | x=482 v=-4 | ID1 drifted 55px RIGHT of entry |
-| **305** | x=507 v=+6 | x=466 v=-19 | **SWAP**: ID1→right det, ID2→left det |
-
-Two reinforcing mechanisms:
-1. Constant-acceleration Kalman extrapolation pushes ID1 far from its true
-   position during occlusion (from x=484 to x=539).
-2. After separation, ID1's predicted position (x=557) is closer to D2's
-   detection (x=507) than to D1's detection (x=466).  ID2 meanwhile sits
-   near the merged centroid (x=482) and matches D1's detection (x=466).
-
-### Fix applied (Phase 1d)
-- **Post-merge direction swap** (`TRACKER_MERGE_DIRECTION_SWAP=True`):
-  After cascade passes (and Phase 1c swap), but **before** Kalman updates,
-  check pairs of matched tracks for velocity-direction reversal:
-  1. At least one track was occluded (merge exit)
-  2. Dominant velocity directions are opposite (+1 vs -1) — computed from the
-     older half of a 20-frame `_vx_history` buffer (resistant to merge
-     corruption)
-  3. Matched detections are close (just separated from merge zone)
-  4. Assignment is direction-reversed: LEFT-going track matched RIGHT
-     detection and vice versa
-  When all criteria are met → swap assignments.
-- **Velocity direction buffer**: `DancerTrack._vx_history` (deque, maxlen=20)
-  records x-velocity on each matched frame.  `get_dominant_vx_direction()`
-  returns the dominant sign from the older half of the buffer.
-- **New log event**: `MERGE_DIRECTION_SWAP` with track IDs and directions.
-
-### Iteration: Velocity clamp on merge direction swap (Phase 1d+)
-
-**Problem**: The F306 swap fires correctly, but the detection-jump creates a
-Kalman velocity spike (v=33→60).  This spike causes Hungarian to cross-match
-on the next frame (F310), triggering an oscillation cycle:
-swap → velocity shock → cross-match → merge → swap → shock, until
-`_vx_history` gets corrupted and the swap detector fails permanently.
-
-**Root cause**: When we swap detections between two tracks, each track receives
-a detection far from its Kalman prediction.  The Kalman filter interprets this
-position jump as real velocity, creating a spike that feeds back into the cost
-matrix and causes cross-matching.
-
-**Fix applied**:
-- **Velocity clamp on both tracks**: After MERGE_DIRECTION_SWAP fires, zero
-  out Kalman velocity and acceleration on both swapped tracks
-  (`kf.x[2:] = 0.0`).  Same technique as CASCADE_OCCLUSION_SWAP clamp.
-- ~~Initially placed before the deferred `.update()` call — ineffective
-  because the Kalman gain recomputes velocity from the innovation.~~
-- **Moved to post-update** (Phase 1d++): clamp fires **after** all deferred
-  `track.update()` calls via `_post_update_clamp_indices` set.
-- Both tracks then predict from their updated position with zero velocity,
-  giving Hungarian a clean cost matrix on the next frame.
-
----
-
-## Phase 1 — Hardened Association (prevent steals at source)
-
-> **Gate bad matches before they happen.** The root cause of most ID steals
-> is Hungarian picking a globally-cheap but locally-implausible assignment.
-> Fix by filtering impossible matches and giving established tracks priority.
-
-### 1.1 Mahalanobis gating pre-filter
-- [x] **Implement** in `_compute_cost_matrix` (`tracker.py`)
-- Use Kalman covariance to compute chi-squared distance: $d = (z - Hx)^T S^{-1} (z - Hx)$
-- Gate at χ²(0.99, df=2) ≈ 9.21 → set cost to `INF` for entries exceeding the gate
-- Innovation covariance uses inflated noise: `S = P[:2,:2] + eye(2) × GATE_NOISE` (not Kalman `R`)
-- **Why**: Eliminates "teleport" assignments where a detection is picked up by a far-away track whose Kalman state says it can't possibly be there
-- Logs `MAHALANOBIS_GATE` event with chi², gate value, and pixel distance
-- [x] **Config**: `TRACKER_MAHALANOBIS_GATE = 9.21`, `TRACKER_MAHALANOBIS_GATE_NOISE = 700.0`
-
-### 1.2 Cascaded matching (established-first)
-- [x] **Implement** in `update()` (`tracker.py`)
-- Split the single Hungarian stage into two passes:
-  - **Pass 1**: Established tracks only (`hits >= TRACKER_ESTABLISHED_FRAMES`) — full cost matrix + Mahalanobis gate. These are real dancers; they get first pick.
-  - **Pass 2**: Remaining tentative tracks vs leftover detections — looser gate.
-- Matching logic extracted into `_run_assignment_pass()` helper (threshold check, anti-merge, logging)
-- Controlled by `TRACKER_CASCADED_MATCHING = True` in config (can disable for A/B testing)
-- **Why**: Prevents a freshly-spawned tentative track from stealing a detection that belongs to an established dancer
-- [x] **Test**: Scenario with established dancer + nearby tentative track. Established wins (confirmed slot 6).
-- [x] **Regression**: Slot 6 full replay — no regressions (combined with Phase 1c/1d fixes)
-
-### 1.3 IoU cost signal
-- [ ] **Implement** as 6th cost term in `_compute_cost_matrix`
-- Predicted bbox = last bbox translated by Kalman velocity
-- IoU between predicted bbox and detection bbox → `iou_cost = 1.0 - iou`
-- Blend weight: ~10% in normal mode, ~5% in crowded mode
-- **Why**: Two dancers at the same centroid but different bbox extents are distinguished. Nearly free to compute.
-- [ ] **Test**: Side-by-side dancers with different heights — IoU should disambiguate
-- [ ] **Config**: Add `TRACKER_IOU_WEIGHT = 0.10`, `TRACKER_CLOSE_IOU_WEIGHT = 0.05`
-
-### Phase 1 — Validation checkpoint
-- [x] Run on recorded video with known crossover moments (Slot 6, 4 dancers)
-- [x] Count ID swaps/steals before vs after Phase 1: **3 of 4 known issues fixed**
-  - F237 edge-entry theft: FIXED (Phase 1.1 Mahalanobis gate)
-  - F430-477 occlusion zone loss: FIXED (Phase 1b gate noise separation)
-  - F366-393 cascade occlusion swap: FIXED (Phase 1c + suppression + velocity clamp)
-  - F297-305 merge direction swap: PARTIALLY FIXED (Phase 1d works in some sessions; unreliable due to `_vx_history` corruption → escalated to Phase 2)
-- [x] Check for regressions: no false track kills, no missed detections, no latency impact observed
-- [x] **Decision**: Advance to Phase 2 — F300 merge swap requires structural fix (temporal pose signature) rather than more post-hoc corrections. Phase 1.3 (IoU) deferred.
-
----
-
-## Phase 2 — Temporal Pose Signature (detect and correct steals)
-
-> **Use motion history to catch swaps that slipped past the gate.**
-> A true match shows smooth pose evolution; a steal shows an abrupt jump.
-
-### 2.1 Pose trajectory buffer
-- [x] **Implement** in `DancerTrack` (`tracker.py`)
-- Rolling buffer: `_pose_history` deque with `maxlen=TRACKER_POSE_HISTORY_DEPTH` (15)
-- On each `update()`, append `{'kpts_norm', 'mask', 'aspect'}` snapshot:
-  - `kpts_norm`: centroid-normalized keypoints (17×2)
-  - `mask`: boolean mask of visible keypoints (confidence > 0.3)
-  - `aspect`: bbox width/height ratio
-- **Merge-frame guard**: when `merge_frame=True` (fewer detections than tracks),
-  pose history recording is skipped to prevent contamination from merged
-  skeletons. This is critical for the F297-304 merge period.
-- All `.update()` call sites pass `merge_frame=self._is_merge_frame` (computed
-  once per frame in `DancerTracker.update()`): deferred updates, single-pass
-  path, FORCE_UPDATE, and FALLBACK_UPDATE.
-- [x] **Config**: `TRACKER_POSE_HISTORY_DEPTH = 15` (increased from 10 to survive 8-frame merge periods)
-
-### 2.1b Frame history buffer
-- [ ] **Implement** in `DancerTrack` (`tracker.py`)
-- Add per-track rolling buffer of last N frames of tracking data (`deque(maxlen=N)`):
-  - **Tracking data per entry**: bbox `[x,y,w,h]`, centroid, keypoints (raw + normalized), confidence scores, Kalman state snapshot `[x, y, vx, vy]`
-  - **Crop thumbnail** (optional, for image-level checks): 64×128 grayscale crop of the track's bbox region, resized to fixed size for cheap comparison. Start WITHOUT crops; add only if skeleton-only signals aren't enough for the swap detector.
-- Stored per-frame, updated on every `update()` call (matched frames only — don't store predicted-only frames)
-- Memory: ~1 KB/frame tracking data + ~8 KB/frame optional crop = ~60–540 KB total for 6 tracks × 10 frames — negligible
-- [ ] **Config**: Add `TRACKER_FRAME_HISTORY_DEPTH = 10` to `config.py`
-
-### 2.1c Derived temporal features (computed from history buffer)
-- [ ] **Implement** helper methods on `DancerTrack`:
-  - `get_velocity_profile()` → array of per-frame velocity magnitudes over last N frames
-  - `get_aspect_ratio_profile()` → array of bbox width/height ratios over last N frames
-  - `get_pose_change_rate()` → mean per-joint displacement between consecutive frames (how fast the pose is evolving)
-  - `get_appearance_stability()` → if crops stored, mean absolute difference between consecutive crops (low = stable identity, spike = likely steal or occlusion). Skip if crops not enabled.
-- Compute cost: sub-0.1ms per track (simple numpy over small arrays)
-- **Why**: These derived signals feed into cost matrix (2.2) and swap detector (2.3) for richer matching. Two dancers at the same position with the same instantaneous pose can still have different velocity profiles (one decelerating, one accelerating) and different bbox aspect ratio trajectories.
-- [ ] **Test**: Log profiles for known-good tracks — verify they are smooth. Inject a simulated steal — verify spike in `pose_change_rate` and (if crops enabled) `appearance_stability`.
-
-### 2.2 Trajectory similarity in cost matrix
-- [x] **Implement** in `_compute_cost_matrix` for crowded zones
-- `DancerTrack.trajectory_cost(det_kpts_norm, det_mask, det_aspect)` method:
-  - Compares detection skeleton against last N history frames
-  - Exponential decay weighting: `0.7^age` (recent frames weighted more)
-  - Per-frame distance = mean L2 of visible joint differences (masked intersection)
-  - Aspect ratio penalty: `0.3 × |det_aspect - hist_aspect|` added per frame
-  - Returns weighted average cost (0.0 = perfect match, higher = worse)
-- Cost matrix integration (in `_compute_cost_matrix`):
-  - Only active when `is_crowded` (two tracks within `close_dist`)
-  - Requires track to have `trajectory_cost()` available (≥1 history frame)
-  - Weight redistribution: `TRACKER_TRAJECTORY_WEIGHT = 0.30` taken proportionally
-    from position, keypoint, and size weights
-  - Cost normalized by `PERSON_HEIGHT_PX` for consistency with other terms
-- [x] **Config**: `TRACKER_TRAJECTORY_WEIGHT = 0.30`
-- [ ] **Test**: Awaiting validation on Slot 6 (F300 merge swap scenario)
-
-### 2.3 Post-assignment swap detector (2-opt)
-- [ ] **Implement** in `update()`, after Hungarian matching
-- For each pair of matched (detection, track) assignments where both tracks were in close proximity:
-  - Check if swapping the two assignments reduces total cost
-  - Also check: did the assignment cause velocity reversal AND skeleton jump simultaneously?
-  - Check `get_pose_change_rate()` — if the assigned detection causes a pose change rate 3× above the track's running average, flag as likely steal
-  - Check `get_appearance_stability()` (if crops enabled) — if the matched crop diverges from the track's recent crop history, flag as suspicious
-  - If swap improves cost → apply swap
-- Only runs on pairs within `close_dist` — O(k²) where k = nearby matched pairs (typically 2–4)
-- **Why**: Catches the most common swap pattern — two crossing dancers whose IDs flip in one frame. Frame history provides multiple independent confirmation signals beyond just cost.
-- [ ] **Test**: Synthetic 2-track crossing scenario — verify swap is detected and corrected
-- [ ] **Config**: Add `TRACKER_SWAP_DETECT_ENABLED = True`
-
-### Phase 2 — Validation checkpoint
-- [ ] Run on Slot 6 — verify F300 merge swap is resolved with trajectory cost + merge-frame guard
-- [ ] Verify F380 edge swap status (expected: still present, low priority)
-- [ ] Check for regressions: no false swap corrections, no new ghost IDs
-- [ ] Measure per-frame latency impact (should be <1ms)
-- [ ] **Decision**: If F300 solved, consider Phase 2.3 (2-opt swap detector) or move to Phase 3
-
-### Investigation notes (2026-03-11)
-
-#### F300 merge swap — deep analysis
-
-The F297-305 established-established merge swap is the most persistent issue.
-Phase 1d (MERGE_DIRECTION_SWAP) fixes it in some sessions but is unreliable
-because `_vx_history` gets corrupted by merge-zone noise.
-
-**Timeline**:
-- F296: id1 (x=480, vx=-2.2, LEFT) and id2 (x=450, vx=+5.4, RIGHT) converge
-- F297: YOLO merges to 1 detection. id1 grabs it. id2 → OCCLUDED.
-- F297-F304: id1 tracks the merged skeleton. id2's Kalman drifts (y→639).
-- F305: 2 detections return. Initially correct assignment.
-- F310: Hungarian cross-matches — costs nearly identical (45.3 vs 45.0).
-  Both tracks now moving RIGHT (id1 corrupted by merge zone).
-  MERGE_DIRECTION_SWAP doesn't always fire because `_vx_history` is corrupted.
-
-**Why Phase 2 trajectory cost alone didn't fix it**: During the 8-frame merge
-period (F297-304), only 1 detection exists. id1 receives it and records the
-merged skeleton into `_pose_history`. When 2 detections return at F305, id1's
-pose history IS the merged body — trajectory cost can't differentiate because
-recent history matches either detection equally well.
-
-**Fix applied**: Skip `_pose_history` recording during merge frames
-(`merge_frame = len(detections) < len(self.tracks)`). This preserves the
-pre-merge pose signature. Combined with increased depth (10→15 frames), the
-pre-merge history should survive the 8-frame gap and provide a discriminative
-signal when detections return.
-
-**Latest structural change**: merge-exit recovery no longer relies only on the
-live `_occluded` boolean. Tracks now preserve `last_match_frame`,
-`last_occluded_frame`, `last_merge_frame`, `last_reacquired_frame`, and a
-`merge_episode_id`, including through dormant snapshots and resurrection. The
-Phase 1d swap check now requires a shared recent merge/occlusion context
-instead of "currently occluded right now".
-
-#### F380 edge swap — analysis
-
-- id2 was occluded F365-F373, returned at F374, `_occluded` cleared.
-- By F377, id2 and id3 are 25px apart. Hungarian cross-matches.
-- The old `_check_merge_direction_swaps` path didn't fire because neither track
-  was currently `_occluded` by F377, even though the swap still belonged to the
-  same merge-exit episode.
-- Attempted fix: `_frames_since_occluded` counter to relax the occlusion
-  criterion (accept "recently occluded" tracks). **REVERTED** — caused
-  false MERGE_DIRECTION_SWAP firings at F363 and F374.
-- Current direction: explicit merge/occlusion episode timestamps now replace
-  the live-boolean gate. This is implemented and needs replay validation on the
-  recorded clip before the issue can be closed.
-
-#### Lesson: whack-a-mole pattern
-
-Post-hoc swap correction (Phase 1c/1d style) is inherently fragile:
-- Timing-dependent: `_occluded` flag state, `_vx_history` corruption
-- One fix can trigger false positives in other scenarios
-- The root cause is that the cost matrix can't distinguish the tracks
-  during/after merge — need better pre-assignment signals (Phase 2/3)
-
----
-
-## Phase 3 — Optical Flow Bridge (maintain tracks through occlusion)
-
-> **Track pixel motion through detector gaps.** Kalman dead-reckoning decays
-> to zero velocity; optical flow follows actual image movement for 3–15 frames.
-
-### 3.1 Sparse optical flow module
-- [ ] **Create** `application/src/optical_flow.py`
-- Class `FlowTracker`:
-  - Stores previous frame (grayscale)
-  - Per-track: sparse point set = 5–8 highest-confidence keypoints
-  - On each frame: run `cv2.calcOpticalFlowPyrLK` for all active point sets
-  - Returns per-track displacement vector (median of valid flow vectors)
-  - Error handling: discard points with high flow error or out-of-bounds
-  - **Multi-frame flow validation**: keep flow vectors for last 3 frames. If a flow vector at frame T disagrees with the trend from T-1, T-2 by >2× median deviation, discard it as noise. This hardens flow through brief lighting changes and motion blur.
-- Lucas-Kanade parameters tuned for dance motion (window 21×21, 3 pyramid levels)
-- **Why**: LK is fast (~1–3ms for 6 dancers × 8 points), runs on CPU, doesn't need GPU
-- [ ] **Test**: Verify flow tracks keypoints accurately on recorded video
-- [ ] **Config**: Add `TRACKER_OPTICAL_FLOW_ENABLED = True`, `TRACKER_FLOW_MAX_POINTS = 8`
-
-### 3.2 Flow-assisted prediction for missing tracks
-- [ ] **Integrate** into `DancerTrack.predict()` and `DancerTracker.update()`
-- When a track is unmatched for 1+ frames AND flow displacement is available:
-  - Feed flow displacement as a Kalman measurement update (with inflated noise `R *= 4.0`)
-  - This keeps the Kalman state anchored to real image evidence
-- When flow is NOT available: fall back to current Kalman-only prediction (no regression)
-- [ ] **Test**: Occlude a dancer for 5–10 frames — verify predicted position follows actual motion via flow
-
-### 3.3 Flow-enhanced cost matrix
-- [ ] **Integrate** flow-predicted position into `_compute_cost_matrix`
-- For tracks with `time_since_update > 0` and valid flow, use flow-adjusted position instead of (or blended with) Kalman prediction for `dist_pred`
-- **Why**: Flow position is much more accurate than Kalman extrapolation after 3+ frames of occlusion
-- [ ] **Test**: Dancer emerges from behind another — verify re-association uses flow position
-
-### Phase 3 — Validation checkpoint
-- [ ] Run on occlusion-heavy clips
-- [ ] Measure track survival rate through 5-frame, 10-frame, 15-frame occlusions
-- [ ] Count new IDs created during occlusion events — should decrease significantly
-- [ ] Verify no latency regression (flow should add <3ms total)
-- [ ] **Decision**: If occlusion survival is good, Phase 4 refinements. If merge is still an issue, consider Phase 5.
-
----
-
-## Phase 4 — Track Lifecycle Refinements (reduce ghost creation)
-
-> **Tighten the rules around birth, death, and resurrection
-> to minimize spurious new IDs.**
-
-### 4.1 Aggressive dormant matching for recent deaths
-- [ ] **Implement** in `update()` new-track creation path (`tracker.py`)
-- Before creating ANY new track (even when `min_dist > creation_gate`):
-  - Check dormant pool for tracks that died < 10 frames ago
-  - Use relaxed position gate (2× normal) + pose trajectory similarity
-  - If match found → resurrect instead of creating new ID
-- **Why**: Directly addresses "stolen dancer gets a new ID" — the old ID is still in dormant pool
-- [ ] **Test**: Steal scenario → verify victim ID is resurrected, not replaced
-
-### 4.2 Anti-steal cooldown
-- [ ] **Implement** "contested" track state in `DancerTrack`
-- When the swap detector (2.3) identifies a steal victim:
-  - Freeze victim's aging for 5 frames
-  - Give victim priority in next frame's cascaded matching (Pass 0.5)
-  - Penalize the usurper's assignment cost by 1.5× for those frames
-- **Why**: Gives the stolen track a chance to reclaim its correct detection before dying
-- [ ] **Config**: Add `TRACKER_STEAL_COOLDOWN_FRAMES = 5`
-
-### 4.3 Pose trajectory in dormant resurrection
-- [ ] **Enhance** `_try_resurrect()` (`tracker.py`)
-- Store pose trajectory buffer (from 2.1) in `DormantSnapshot`
-- Score resurrection candidates using trajectory similarity in addition to current position + height + keypoints
-- **Why**: Improves re-ID accuracy when position is uncertain (long dormancy, complex motion)
-- [ ] **Test**: Dancer hidden for 3 seconds, re-emerges with similar pose style → correct ID restored
-
-### Phase 4 — Validation checkpoint
-- [ ] Run full show recording end-to-end
-- [ ] Metric: `total_ids_created / actual_persons` — target ≤ 1.2
-- [ ] Count ghost IDs (IDs that appear for <2 seconds then vanish) — should be near zero
-- [ ] **Decision**: If metrics are satisfactory, ship. If crossover merge is still an issue, proceed to Phase 5.
-
----
-
-## Phase 5 — Occupancy-Aware Occlusion (advanced, if needed)
-
-> **Explicit spatial reasoning about who is where.**
-> Only pursue if Phases 1–4 leave residual issues in complex multi-body crossovers.
-
-### 5.1 Occupancy grid
-- [ ] **Implement** lightweight 2D grid (one cell per ~50px) in `DancerTracker`
-- Mark cells occupied by each track's predicted bbox
-- When two tracks' cells overlap → declare "occlusion event"
-- [ ] **Config**: Add `TRACKER_OCCUPANCY_GRID_SIZE = 50`
-
-### 5.2 Occlusion event handling
-- [ ] On occlusion event:
-  - Tag both tracks as participants
-  - Disable new-track creation in overlapping cells
-  - Boost optical flow tracking priority for involved tracks
-  - After separation: use pose trajectory + bbox size + flow direction to re-assign IDs
-- [ ] **Test**: 3-dancer pileup → verify no ghost IDs created, all emerge with correct IDs
-
-### Phase 5 — Validation checkpoint
-- [ ] Stress test with worst-case choreography (all dancers crossing simultaneously)
-- [ ] Final metric pass: ID stability, ghost rate, latency
+## Structural Refactor Summary
+
+Completed 2026-03-11 / 2026-03-12. Steps executed in order:
+
+1. **Unified association paths** — FORCE_UPDATE, FALLBACK_UPDATE, and normal MATCH all route through `_commit_match()` → `_apply_track_update()`, getting consistent merge-frame handling and logging.
+2. **Decomposed `update()` into frame stages** — `_begin_frame_update`, `_predict_tracks_for_frame`, `_run_matching_phase`, `_resolve_unmatched_detections`, `_apply_occlusion_aging`, `_finalize_track_lifecycle`, `_log_frame_summary`.
+3. **Introduced per-frame context** — `FrameUpdateContext` replaces tracker-wide mutable scratch state (`_is_merge_frame`, `_post_update_clamp_indices`).
+4. **Preserved continuity across resurrection** — `DormantSnapshot` now carries pose history, vx history, bbox/confidence history, smoothed centroid, and all episode metadata. `restore_continuity()` rehydrates everything.
+5. **Replaced boolean occlusion gate with episode metadata** — `last_match_frame`, `last_occluded_frame`, `last_merge_frame`, `last_reacquired_frame`, `merge_episode_id`. Phase 1d swap check uses `_tracks_share_recent_merge_context()` instead of `_occluded`.
+6. **Extracted lifecycle helpers** — `_get_creation_gate`, `_create_new_track`, `_effective_max_age_for_track`, `_retire_track_to_dormant`, `_retire_expired_active_tracks`, `_age_and_prune_dormant_tracks`.
+7. **Extracted unmatched-detection helpers** — `_find_closest_track`, `_select_force_update_target`, `_try_force_update_unmatched_detection`, `_try_fallback_update_unmatched_detection`.
+8. **Extracted occlusion-aging helpers** — `_collect_matched_positions`, `_occlusion_distance_for_track`, `_is_track_near_matched_positions`, `_apply_fractional_occlusion_aging`, `_mark_track_occluded`.
+9. **Extracted matching-policy helpers** — `_is_detection_in_crowded_zone`, `_mahalanobis_gate_allows`, `_compute_position_cost`, `_compute_keypoint_cost`, `_compute_separation_penalty`, `_compute_direction_penalty`, `_combine_assignment_cost`, `_compute_dynamic_match_threshold`, `_is_suspicious_merge_candidate`.
 
 ---
 
@@ -879,63 +230,175 @@ Post-hoc swap correction (Phase 1c/1d style) is inherently fragile:
 |------|----------|-----------|
 | 2026-03-03 | Skip ReID embeddings | Similar costumes → appearance not discriminative |
 | 2026-03-03 | Skip JPDA/MHT | Overkill for ≤6 dancers; cascaded Hungarian + 2-opt sufficient |
-| 2026-03-03 | Skip IMM | Current CA model + velocity clamping handles dance motion well |
-| 2026-03-03 | Skip segmentation | Anti-merge bbox check + skeleton matching adequate; revisit if needed |
 | 2026-03-03 | Prioritize optical flow over ReID | Bridges occlusion gaps directly; more impactful than appearance |
 | 2026-03-03 | Prioritize pose trajectory over single-frame skeleton | Temporal signature more discriminative with similar costumes |
-| 2026-03-03 | Add per-track frame history buffer (tracking data + optional crops) | Low cost (~540 KB), enables velocity/aspect-ratio/pose-change-rate temporal signals for richer matching and steal detection |
-| 2026-03-03 | Start without crop thumbnails, add if needed | Skeleton + tracking data signals likely sufficient; crops add memory and complexity |
-| 2026-03-03 | Phase 1.1 Mahalanobis gate implemented | Chi²(df=2, 99%) = 9.21 gate in `_compute_cost_matrix`; blocks teleport assignments |
-| 2026-03-03 | Phase 1.2 Cascaded matching implemented | `_run_assignment_pass()` helper; established-first + tentative-second; `TRACKER_CASCADED_MATCHING` toggle |
-| 2026-03-03 | Root-caused edge-entry ID theft | Hypothesis 1 confirmed: Hungarian global cost minimization caused 294px teleport at frame 237 |
-| 2026-03-03 | Root-caused occlusion zone ID loss | Mahalanobis gate effective radius was 5.9px (13× too tight); cascaded into FORCE_UPDATE misassignment → ghost creation → track death |
-| 2026-03-03 | Separate gate noise from smoothing noise | `TRACKER_MAHALANOBIS_GATE_NOISE=700` gives ~80px effective radius; Kalman `R=2` kept for smoothing quality |
-| 2026-03-03 | Relaxed MERGE_SIZE_RATIO 1.3 → 2.0 | 1.3 was blocking legitimate detections during normal pose variation near occlusions |
-| 2026-03-03 | Fixed ID counter waste in resurrection | `_try_resurrect()` now reuses dormant ID in constructor instead of wasting a fresh one |
-| 2026-03-03 | Root-caused cascade occlusion swap | Established-first priority gives merged detection to exiting track; tentative track (the one staying) starves and dies → silent ID swap |
-| 2026-03-03 | Post-cascade occlusion swap (Phase 1c) | `TRACKER_CASCADE_OCCLUSION_SWAP=True`; deferred updates + speed-based swap criterion; `_check_occlusion_cascade_swaps()` |
-| 2026-03-03 | Root-caused established-established merge swap | Kalman CA model drifts occluded track rightward during merge; re-emergence matches wrong body. Both established → no cascade priority to exploit |
-| 2026-03-03 | Post-merge direction swap (Phase 1d) | `TRACKER_MERGE_DIRECTION_SWAP=True`; 20-frame `_vx_history` buffer; dominant direction from older half; direction-reversed pairs swapped before Kalman update |
-| 2026-03-03 | Cascade suppression window (Phase 1c+) | CASCADE_OCCLUSION_SWAP was single-frame, undone by Pass 1 next frame. Added `TRACKER_CASCADE_SUPPRESSION_FRAMES=5` — suppressed track excluded from Pass 1 for N frames; participates in Pass 2 instead. Cleaned up `[MERGE_DBG]` prints |
-| 2026-03-03 | Velocity clamp on swap beneficiary (Phase 1c++) | Suppression alone insufficient — merged detection offset interpreted as velocity → Kalman drift → tentative track Mahalanobis-gated. Clamp `kf.x[2:]=0` on swap beneficiary prevents runaway drift |
-| 2026-03-03 | Velocity clamp on merge direction swap (Phase 1d+) | MERGE_DIRECTION_SWAP detection jump → velocity spike → cross-match oscillation (swap↔cross-match until `_vx_history` corrupted). Clamp `kf.x[2:]=0` on both swapped tracks eliminates feedback loop |
-| 2026-03-03 | Move velocity clamps to post-update (Phase 1c+++/1d++) | Pre-update clamps were no-ops: Kalman gain recomputes velocity from innovation, undoing the zeroing. Moved to `_post_update_clamp_indices` set, applied after all deferred `.update()` calls. Fixes both F300 and F370 swap regressions |
-| 2026-03-11 | F300 swap still intermittent despite Phase 1d | `_vx_history` corrupted by merge-zone noise → MERGE_DIRECTION_SWAP doesn't fire reliably. Escalated to Phase 2 structural fix |
-| 2026-03-11 | Attempted `_frames_since_occluded` for F380 swap → REVERTED | Counter relaxed occlusion criterion for merge-direction swap, but caused false swaps at F363/F374. Direct fix too fragile |
-| 2026-03-11 | Phase 2 trajectory cost implemented | `_pose_history` buffer (15 frames), `trajectory_cost()` method, 30% weight in crowded zones. Provides temporal skeleton matching signal |
-| 2026-03-11 | Merge-frame pose history guard | Skip `_pose_history` recording when `len(detections) < len(tracks)` — prevents contamination from merged skeletons during F297-304 period. Applied to all 4 `.update()` call sites via `self._is_merge_frame` |
-| 2026-03-11 | Increased pose history depth 10→15 | Ensures pre-merge pose signature survives 8-frame merge gap with margin |
-| 2026-03-11 | Unified assignment commits | Normal matches, deferred matches, FORCE_UPDATE, and FALLBACK_UPDATE now all pass through `_commit_match()` / `_apply_track_update()` so merge-frame handling and logging are consistent |
-| 2026-03-11 | Staged `DancerTracker.update()` flow | `update()` now runs through named phase helpers, making lifecycle and policy boundaries explicit before further tracker changes |
-| 2026-03-11 | Replace frame-scoped scratch fields with `FrameUpdateContext` | `merge_frame`, deferred updates, and post-swap velocity clamps now live in an explicit per-frame object instead of tracker-wide mutable state |
-| 2026-03-11 | Preserve dormant continuity on resurrection | Dormant snapshots now carry velocity, pose, confidence, bbox, and centroid history so resurrected IDs keep the same temporal context |
-| 2026-03-11 | Replace live occlusion gate with episode metadata | Tracks now record `last_match_frame`, `last_occluded_frame`, `last_merge_frame`, `last_reacquired_frame`, and `merge_episode_id`; Phase 1d swap gating uses shared recent merge context instead of current `_occluded` |
-| 2026-03-11 | Extract lifecycle policy helpers | New-track creation, creation-gate selection, active-track expiry, dormant retirement, and dormant aging are now isolated in dedicated helper methods |
-| 2026-03-11 | Add offline replay report tool | `application/replay_report.py` summarizes or compares logged sessions using `tracking_events.jsonl` so tracker regressions can be measured without manual log spelunking |
-| 2026-03-11 | Split unmatched-detection policy into helpers | `_resolve_unmatched_detections()` now delegates nearest-track lookup, preferred force-update selection, fallback updates, and new-track spawn decisions instead of carrying the full policy inline |
-| 2026-03-11 | Split occlusion-aging policy into helpers | `_apply_occlusion_aging()` now delegates matched-position collection, occlusion radius calculation, near-match testing, fractional aging, and occlusion-state/logging instead of carrying all math and state transitions inline |
-| 2026-03-11 | Split matching policy into helpers | `_compute_cost_matrix()` and `_run_assignment_pass()` now delegate crowded-zone detection, Mahalanobis gating, component costs, cost blending, dynamic thresholds, and anti-merge rejection instead of carrying all matching policy inline |
+| 2026-03-03 | Phase 1.1 Mahalanobis gate | Chi²(df=2, 99%) = 9.21 in `_compute_cost_matrix`; blocks teleport assignments |
+| 2026-03-03 | Phase 1.2 Cascaded matching | `_run_assignment_pass()` helper; established-first + tentative-second |
+| 2026-03-03 | Separate gate noise from smoothing noise | `R_gate=700` gives ~80px radius; Kalman `R=2` kept for smoothing quality |
+| 2026-03-03 | Relaxed MERGE_SIZE_RATIO 1.3→2.0 | 1.3 blocked legitimate detections during normal pose variation |
+| 2026-03-03 | Post-cascade occlusion swap (Phase 1c) | Deferred updates + speed-based swap criterion; suppression window prevents reclaim |
+| 2026-03-03 | Post-merge direction swap (Phase 1d) | 20-frame `_vx_history`; direction from older half; velocity clamp on both tracks |
+| 2026-03-03 | Velocity clamps moved to post-update | Pre-update clamps were no-ops: Kalman gain recomputes velocity from innovation |
+| 2026-03-11 | Phase 2 trajectory cost implemented | `_pose_history` buffer (15f), 30% weight in crowded zones |
+| 2026-03-11 | Merge-frame pose history guard | Skip recording when `len(detections) < len(tracks)` — prevents merged-skeleton contamination |
+| 2026-03-11 | Unified association commits | All paths through `_commit_match` / `_apply_track_update` |
+| 2026-03-11 | Per-frame context object | `FrameUpdateContext` replaces tracker-wide mutable scratch state |
+| 2026-03-11 | Preserve dormant continuity | Full state rehydration on resurrection |
+| 2026-03-11 | Episode metadata replaces boolean gate | Tracks record merge/occlusion/reacquisition timestamps |
+| 2026-03-12 | Structural refactor complete | 9 extraction steps + code review — logic verified clean and sound |
 
 ---
 
-## Files to modify
+## Historical Investigation Notes
 
-| File | Changes |
-|------|---------|
-| [tracker.py](../application/src/tracker.py) | Phase 0: TrackingLogger + structured events. Phases 1–4: gating, cascaded matching, cost signals, swap detector, lifecycle |
-| [config.py](../application/src/config.py) | New constants for all phases (including logging flags) |
-| [app.py](../application/src/app.py) | Phase 0: frame number overlay on preview, cumulative frame counter |
-| [optical_flow.py](../application/src/optical_flow.py) | Phase 3: new module |
-| [pipeline.py](../application/src/pipeline.py) | Phase 3: wire optical flow into frame processing |
-| [tracking_logger.py](../application/src/tracking_logger.py) | Phase 0: new module (optional — can be inlined in tracker.py) |
+<details>
+<summary>Edge-entry ID theft — root cause analysis (F237)</summary>
 
-## Verification tools
+**Hypothesis 1 confirmed: Hungarian global optimum vs local correctness.**
 
-- `tracking_events.jsonl` — structured frame-stamped event log (Phase 0), auto-written during playback
-- Frame number overlay — visible on preview, readable when paused (Phase 0)
-- `TRACKER_DEBUG = True` — verbose console log (legacy, kept as fallback)
-- Recorded video slots — replay known-bad scenarios (slot 6 = primary test clip)
-- Metric: `total_ids_created / actual_persons` ratio per clip
-- Metric: ghost ID count (IDs alive < 2 seconds)
-- Metric: ID swap count at known crossover frames
-- **Workflow**: Pause on bad frame → read frame number → report → examine JSONL log around that frame
+| Frame | State |
+|-------|-------|
+| 236 | 2 tracks, 2 dets — ID1 at [351, 486], ID3 at [627, 491]. Stable. |
+| 237 | 3 dets. Hungarian: ID3 → det 2 (cost 142.7) — teleports +294px. det 0 → NEW_TRACK ID4 (ghost). |
+
+Cost 142.7 < threshold 163.0, so the teleport was accepted. Pure global-cost misassignment.
+Fixed by Mahalanobis gate (chi² ~28,000 >> 9.21 → cost = 1e6).
+
+</details>
+
+<details>
+<summary>Occlusion zone ID loss — root cause analysis (F430-477)</summary>
+
+**Mahalanobis gate was 13× too tight.** Kalman R=2 + 30 updates → P≈1.84 → S≈3.84.
+Effective radius: 5.9px. YOLO jitter is 10-50px → 90% of matches blocked.
+Cascade: FORCE_UPDATE misassignment → ghost id11 at F451 → id9 dormant at F472.
+
+Fixed by separate gate noise (R_gate=700 → ~80px radius).
+
+</details>
+
+<details>
+<summary>Cascade occlusion swap — root cause analysis (F366-393)</summary>
+
+Established-first cascade priority gives merged detection to exiting track. Tentative track starves and dies.
+
+Three iterations to fix:
+1. Post-cascade swap: detect and swap when est is exiting, tent is stationary
+2. Suppression window: prevent est from reclaiming in Pass 1 for 5 frames
+3. Post-update velocity clamp: prevent Kalman velocity spike from drifting tent away
+
+</details>
+
+<details>
+<summary>Established-established merge swap — root cause analysis (F297-305)</summary>
+
+Kalman CA model drifts occluded track during merge. On re-emergence, predicted position is closer to wrong body.
+
+| Frame | ID1 | ID2 | Event |
+|-------|-----|-----|-------|
+| 294 | x=484 v=-7 | x=436 v=+14 | Last 2-det frame |
+| 297 | x=485 v=+3 occ | x=458 v=+14 | 1 det, ID1 OCCLUDED |
+| 304 | x=539 v=+18 occ | x=482 v=-4 | ID1 drifted 55px RIGHT |
+| **305** | x=507 v=+6 | x=466 v=-19 | SWAP |
+
+Fixed by Phase 1d direction swap + merge-frame pose guard (skip `_pose_history` recording during merge).
+
+</details>
+
+<details>
+<summary>F380 edge swap — analysis</summary>
+
+id2 was occluded F365-F373, returned at F374, `_occluded` cleared. By F377, id2 and id3 are 25px apart.
+Old swap detector didn't fire because neither was `_occluded` at that moment.
+Attempted fix (`_frames_since_occluded` counter) reverted — caused false swaps at F363/F374.
+Resolved by episode metadata: `_tracks_share_recent_merge_context()` replaces the live-boolean gate.
+
+</details>
+
+<details>
+<summary>Lesson: whack-a-mole pattern in post-hoc swap correction</summary>
+
+Post-hoc swap correction (Phase 1c/1d style) is inherently fragile:
+- Timing-dependent: `_occluded` flag state, `_vx_history` corruption
+- One fix can trigger false positives in other scenarios
+- Root cause: cost matrix can't distinguish tracks during/after merge → need better pre-assignment signals (Phase 2/3)
+
+</details>
+
+---
+
+## Phase Specifications (reference)
+
+<details>
+<summary>Phase 0 — Diagnostics & Logging</summary>
+
+All items complete. See `TrackingLogger` in `tracking_logger.py`.
+
+- `TrackingLogger` class: structured, frame-stamped records
+- Event types: MATCH, MATCH_REJECTED, NEW_TRACK, RESURRECT, DORMANT, KILL, ANTI_MERGE, OCCLUDED, MAHALANOBIS_GATE, CASCADE_OCCLUSION_SWAP, MERGE_DIRECTION_SWAP, FRAME_SUMMARY, etc.
+- Rolling deque (3000 entries), auto-flush to `tracking_events.jsonl` every 5s
+- Frame overlay on preview (top-right)
+- Per-frame `FRAME_SUMMARY` with full track states
+
+</details>
+
+<details>
+<summary>Phase 1 — Hardened Association</summary>
+
+**1.1 Mahalanobis gate** [DONE]: Chi² distance in cost matrix, gate at 9.21, inflated noise R_gate=700.
+
+**1.2 Cascaded matching** [DONE]: Two-pass established-first; `_run_assignment_pass()` helper.
+
+**1b Gate noise fix** [DONE]: Separate R_gate from Kalman R; anti-merge 2.0; ID counter fix.
+
+**1c Cascade occlusion swap** [DONE]: `_check_occlusion_cascade_swaps()` + suppression + velocity clamp.
+
+**1d Merge direction swap** [DONE]: `_check_merge_direction_swaps()` + `_vx_history` + velocity clamp.
+
+**1.3 IoU cost signal** [NOT STARTED]: See Next Steps §2.
+
+</details>
+
+<details>
+<summary>Phase 2 — Temporal Pose Signature</summary>
+
+**2.1 Pose trajectory buffer** [DONE]: `_pose_history` deque (15 frames), centroid-normalized keypoints + mask + aspect ratio. Merge-frame guard skips recording during body mergers.
+
+**2.2 Trajectory cost in cost matrix** [DONE]: `trajectory_cost()` method with exponential decay weighting (0.7^age). 30% weight in crowded zones via `_combine_assignment_cost()`.
+
+**2.3 Post-assignment swap detector** [NOT STARTED]: See Next Steps §3.
+
+</details>
+
+<details>
+<summary>Phase 3 — Optical Flow Bridge</summary>
+
+Not started. See Next Steps §4 for specification.
+
+**3.1** Sparse LK optical flow module (`optical_flow.py`)
+**3.2** Flow-assisted prediction for missing tracks
+**3.3** Flow-enhanced cost matrix
+
+</details>
+
+<details>
+<summary>Phase 4 — Track Lifecycle Refinements</summary>
+
+Structural cleanup (creation gate, expiry, dormant aging helpers) is done.
+Behavioral enhancements not started. See Next Steps §5.
+
+**4.1** Aggressive dormant matching for recent deaths
+**4.2** Anti-steal cooldown
+**4.3** Pose trajectory in dormant resurrection
+
+</details>
+
+<details>
+<summary>Phase 5 — Occupancy-Aware Occlusion</summary>
+
+Not started. Only pursue if Phases 1–4 leave residual multi-body crossover issues.
+
+**5.1** Lightweight 2D occupancy grid (one cell per ~50px)
+**5.2** Occlusion event handling: disable new-track creation in overlapping cells, boost flow tracking
+
+</details>
