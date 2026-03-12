@@ -616,6 +616,17 @@ class VideoRecorder:
         if self.is_playing and not self._playback_paused:
             self._playback_paused = True
             print("Playback paused")
+
+    def requeue_frame(self):
+        """Re-mark the current frame as new so the main loop reprocesses it.
+
+        Useful when a parameter changes while paused — lets the user see
+        the effect immediately without stepping forward/backward.
+        """
+        if not self._playback_paused or self._frame_buffer is None:
+            return
+        with self._frame_lock:
+            self._frame_new = True
     
     def resume_playback(self):
         """Resume video playback."""

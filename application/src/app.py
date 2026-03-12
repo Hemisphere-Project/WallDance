@@ -716,39 +716,51 @@ class WallDanceApp:
     # ------------------------------------------------------------------
     # GUI callbacks
     # ------------------------------------------------------------------
+    def _request_reprocess(self):
+        """When paused, re-mark the current frame so the pipeline reruns it."""
+        self.recorder.requeue_frame()
+
     def _cb_enhance_toggle(self, enabled: bool):
         self.settings.enhance_enabled = enabled
         print(f"Enhancement: {'ON' if enabled else 'OFF'}")
+        self._request_reprocess()
 
     def _cb_enhance_lite_toggle(self, enabled: bool):
         self.settings.enhance_lite = enabled
         print(f"Enhancement Lite Mode: {'ON (gamma only)' if enabled else 'OFF (full CLAHE)'}")
+        self._request_reprocess()
 
     def _cb_enhance_force_toggle(self, enabled: bool):
         self.settings.enhance_force = enabled
         print(f"Enhancement Force: {'ON (ignore brightness threshold)' if enabled else 'OFF (auto-bypass)'}")
+        self._request_reprocess()
 
     def _cb_greyscale_toggle(self, enabled: bool):
         self.settings.greyscale = enabled
         print(f"Greyscale: {'ON (mono camera simulation)' if enabled else 'OFF'}")
+        self._request_reprocess()
 
     def _cb_clahe_change(self, value: float):
         self.enhancer.clahe_clip = value
         self.enhancer._update_clahe()
         print(f"CLAHE clip: {value:.1f}")
+        self._request_reprocess()
 
     def _cb_gamma_change(self, value: float):
         self.enhancer.gamma = value
         self.enhancer._update_gamma_lut()
         print(f"Gamma: {value:.2f}")
+        self._request_reprocess()
 
     def _cb_brightness_threshold_change(self, value: int):
         self.settings.brightness_threshold = value
         print(f"Brightness threshold: {value}")
+        self._request_reprocess()
 
     def _cb_denoise_change(self, value: float):
         self.settings.denoise_strength = value
         print(f"Denoise strength: {value:.2f}")
+        self._request_reprocess()
 
     # --- Background subtraction callbacks ---
     def _cb_bg_capture(self):
@@ -775,6 +787,7 @@ class WallDanceApp:
         print(f"[BG] Background subtraction: {'ON' if enabled else 'OFF'}")
         if self.gui:
             self.gui.update_bg_status(bg.has_reference, enabled)
+        self._request_reprocess()
 
     def _cb_bg_clear(self):
         self.processor.bg_subtractor.clear()
@@ -787,6 +800,7 @@ class WallDanceApp:
     def _cb_bg_sensitivity_change(self, value: int):
         self.settings.bg_subtract_sensitivity = value
         print(f"[BG] Sensitivity: {value}")
+        self._request_reprocess()
 
     def _get_current_frame_for_bg(self) -> 'Optional[np.ndarray]':
         """Get the current raw frame for BG capture (before any processing).
@@ -817,6 +831,7 @@ class WallDanceApp:
     def _cb_confidence_change(self, value: float):
         self.settings.confidence = value
         print(f"Confidence: {value:.2f}")
+        self._request_reprocess()
 
     def _cb_camera_change(self, value: str):
         source = value.replace(" (unavailable)", "").strip()
@@ -1084,6 +1099,7 @@ class WallDanceApp:
     def _cb_person_height_change(self, value: int):
         self.settings.person_height_px = int(value)
         self.tracker.set_person_height(int(value))
+        self._request_reprocess()
 
     def _cb_visualization_toggle(self, name: str, enabled: bool):
         if name == "skeleton":
