@@ -34,6 +34,8 @@ from config import (
     TRACKER_CASCADED_MATCHING, TRACKER_CASCADE_OCCLUSION_SWAP,
     TRACKER_MERGE_DIRECTION_SWAP, TRACKER_CASCADE_SUPPRESSION_FRAMES,
     TRACKER_POSE_HISTORY_DEPTH, TRACKER_TRAJECTORY_WEIGHT,
+    TRACKER_IOU_WEIGHT, TRACKER_CLOSE_IOU_WEIGHT,
+    TRACKER_MERGE_SWAP_COOLDOWN_FRAMES,
 )
 from tracking_logger import TrackingLogger
 
@@ -628,6 +630,11 @@ class DancerTracker:
         # tentative track retains priority and doesn't starve.
         self._cascade_suppressed: dict[int, int] = {}  # track_id → frames left
 
+        # Merge direction swap cooldown (Phase 1d)
+        # After MERGE_DIRECTION_SWAP fires for a pair, suppress it for
+        # N frames to prevent oscillation (swap ↔ re-swap cycles).
+        self._merge_swap_cooldown: dict[tuple[int, int], int] = {}  # (id_lo, id_hi) → frames left
+
         # Structured event logger (Phase 0)
         self.logger = TrackingLogger(
             enabled=TRACKER_EVENT_LOG_ENABLED,
@@ -698,6 +705,7 @@ class DancerTracker:
         self.tracks = []
         self._dormant = []
         self._pair_distances = {}
+        self._merge_swap_cooldown = {}
         self.frame_count = 0
         DancerTrack._id_counter = 0
         self.logger.reset()
@@ -829,35 +837,68 @@ class DancerTracker:
             return (0.5 - cos_sim) * self.distance_threshold * 0.5
         return 0.0
 
+    def _compute_iou_cost(self, det_bbox, track: DancerTrack) -> float:
+        """IoU cost between detection bbox and track's velocity-predicted bbox."""
+        tx, ty, tw, th = track.bbox
+        vx, vy = track.get_velocity()
+        pred_bbox = (tx + vx, ty + vy, tw, th)
+
+        dx, dy, dw, dh = det_bbox
+        # Convert to (x1, y1, x2, y2)
+        px1, py1, px2, py2 = pred_bbox[0], pred_bbox[1], pred_bbox[0] + pred_bbox[2], pred_bbox[1] + pred_bbox[3]
+        dx1, dy1, dx2, dy2 = dx, dy, dx + dw, dy + dh
+        ix1 = max(px1, dx1)
+        iy1 = max(py1, dy1)
+        ix2 = min(px2, dx2)
+        iy2 = min(py2, dy2)
+        if ix2 <= ix1 or iy2 <= iy1:
+            return 1.0
+        intersection = (ix2 - ix1) * (iy2 - iy1)
+        union = tw * th + dw * dh - intersection
+        iou = intersection / union if union > 0 else 0.0
+        return 1.0 - iou
+
     def _combine_assignment_cost(self, pos_cost: float, kpt_cost: float,
-                                 size_cost: float, traj_cost,
+                                 size_cost: float, iou_cost: float,
+                                 traj_cost,
                                  is_crowded: bool, n_both: int) -> float:
-        """Blend position, pose, size, and trajectory into one assignment cost."""
+        """Blend position, pose, size, IoU, and trajectory into one assignment cost."""
+        iw = TRACKER_CLOSE_IOU_WEIGHT if is_crowded else TRACKER_IOU_WEIGHT
+
         if is_crowded:
             if n_both >= 5:
                 if traj_cost is not None:
                     tw = TRACKER_TRAJECTORY_WEIGHT
-                    pw = TRACKER_CLOSE_POS_WEIGHT * (1.0 - tw)
-                    kw = TRACKER_CLOSE_KPT_WEIGHT * (1.0 - tw)
-                    sw = TRACKER_CLOSE_SIZE_WEIGHT * (1.0 - tw)
+                    rem = 1.0 - tw - iw
+                    pw = TRACKER_CLOSE_POS_WEIGHT * rem / (1.0 - iw)
+                    kw = TRACKER_CLOSE_KPT_WEIGHT * rem / (1.0 - iw)
+                    sw = TRACKER_CLOSE_SIZE_WEIGHT * rem / (1.0 - iw)
                     return (pw * pos_cost
                             + kw * kpt_cost
                             + sw * size_cost
+                            + iw * iou_cost
                             + tw * traj_cost)
-                return (TRACKER_CLOSE_POS_WEIGHT * pos_cost
-                        + TRACKER_CLOSE_KPT_WEIGHT * kpt_cost
-                        + TRACKER_CLOSE_SIZE_WEIGHT * size_cost)
+                rem = 1.0 - iw
+                return (TRACKER_CLOSE_POS_WEIGHT * rem * pos_cost
+                        + TRACKER_CLOSE_KPT_WEIGHT * rem * kpt_cost
+                        + TRACKER_CLOSE_SIZE_WEIGHT * rem * size_cost
+                        + iw * iou_cost)
             if n_both >= 3:
-                base_cost = (0.25 * pos_cost + 0.50 * kpt_cost
-                             + 0.25 * size_cost)
+                rem = 1.0 - iw
+                base_cost = (0.25 * rem * pos_cost + 0.50 * rem * kpt_cost
+                             + 0.25 * rem * size_cost + iw * iou_cost)
                 if traj_cost is not None:
                     base_cost = 0.6 * base_cost + 0.4 * traj_cost
                 return base_cost * 1.3
-            return (0.85 * pos_cost + 0.15 * size_cost) * 1.5
+            return ((0.85 * pos_cost + 0.15 * size_cost) * (1.0 - iw)
+                    + iw * iou_cost) * 1.5
 
         if n_both >= 3:
-            return 0.40 * pos_cost + 0.45 * kpt_cost + 0.15 * size_cost
-        return 0.85 * pos_cost + 0.15 * size_cost
+            rem = 1.0 - iw
+            return (0.40 * rem * pos_cost + 0.45 * rem * kpt_cost
+                    + 0.15 * rem * size_cost + iw * iou_cost)
+        rem = 1.0 - iw
+        return 0.85 * rem * pos_cost + 0.15 * rem * size_cost + iw * iou_cost
 
     def _compute_dynamic_match_threshold(self, track: DancerTrack) -> float:
         """Dynamic acceptance threshold for a candidate detection-track match."""
@@ -956,6 +997,9 @@ class DancerTracker:
                 dir_penalty = self._compute_direction_penalty(
                     det_centroid, last_known_pos, velocity, track, is_crowded)
                 
+                # --- IoU cost ---
+                iou_cost = self._compute_iou_cost(bbox, track)
+
                 # --- Combined cost with adaptive weights ---
                 # Phase 2: trajectory cost (pose history match)
                 traj_cost = None
@@ -965,7 +1009,7 @@ class DancerTracker:
                         det_kpts_norm, mask_det, det_aspect)
 
                 base_cost = self._combine_assignment_cost(
-                    pos_cost, kpt_cost, size_cost, traj_cost,
+                    pos_cost, kpt_cost, size_cost, iou_cost, traj_cost,
                     is_crowded, n_both)
                 
                 cost_matrix[d, t] = base_cost + sep_penalty + dir_penalty
@@ -1173,6 +1217,12 @@ class DancerTracker:
                 if not self._tracks_share_recent_merge_context(track_i, track_j):
                     continue
 
+                # Criterion 0: not on cooldown from a recent swap
+                pair_key = (min(track_i.track_id, track_j.track_id),
+                            max(track_i.track_id, track_j.track_id))
+                if pair_key in self._merge_swap_cooldown:
+                    continue
+
                 dir_j = track_j.get_dominant_vx_direction()
                 if dir_j == 0:
                     continue
@@ -1246,6 +1296,11 @@ class DancerTracker:
                 "merge_episode_a": track_i._merge_episode_id,
                 "merge_episode_b": track_j._merge_episode_id,
             })
+
+            # Cooldown: suppress this pair from re-swapping for N frames
+            swap_pair_key = (min(track_i.track_id, track_j.track_id),
+                             max(track_i.track_id, track_j.track_id))
+            self._merge_swap_cooldown[swap_pair_key] = TRACKER_MERGE_SWAP_COOLDOWN_FRAMES
             if TRACKER_DEBUG:
                 print(f"[TRACKER] Merge direction swap: "
                       f"#{track_i.track_id} (dir={track_i.get_dominant_vx_direction():+d}) "
@@ -1620,6 +1675,15 @@ class DancerTracker:
             self.logger.log("CASCADE_SUPPRESSED", {
                 "suppressed": {tid: ttl for tid, ttl in self._cascade_suppressed.items()},
             })
+
+        # Tick down merge-direction-swap cooldown
+        expired_msc = [k for k, ttl in self._merge_swap_cooldown.items()
+                       if ttl <= 1]
+        for k in expired_msc:
+            del self._merge_swap_cooldown[k]
+        for k in list(self._merge_swap_cooldown):
+            self._merge_swap_cooldown[k] -= 1
+
         return FrameUpdateContext()
 
     def _predict_tracks_for_frame(self, detections, frame_ctx: FrameUpdateContext):

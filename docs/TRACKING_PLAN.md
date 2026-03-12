@@ -23,7 +23,8 @@
 | Episode metadata | **DONE** | `last_match_frame`, `last_occluded_frame`, `last_merge_frame`, `merge_episode_id` |
 | Review workflow | **DONE** | CLI startup, F8 issue capture, structured issue packets |
 | Replay regression report | **DONE** | `replay_report.sh` for session summary / comparison |
-| IoU cost signal (Phase 1.3) | Not started | 6th cost term — cheap, high value |
+| IoU cost signal (Phase 1.3) | **DONE** | 6th cost term — predicted-bbox IoU, 10%/5% weight |
+| Playback frame-drop fix | **DONE** | Decoder waits for consumer — deterministic at all speeds |
 | Optical flow bridge (Phase 3) | Not started | LK flow for occluded-track prediction |
 | Occupancy grid (Phase 5) | Not started | Only if residual multi-body crossover issues remain |
 
@@ -55,18 +56,7 @@ Then compare sessions:
 
 Target: zero new `NEW_TRACK` inflation, zero lost swap corrections.
 
-### 2. Phase 1.3 — IoU cost signal
-
-Add bbox IoU as a 6th cost term in `_compute_cost_matrix`:
-
-- Predicted bbox = last bbox translated by Kalman velocity
-- `iou_cost = 1.0 - iou`
-- Blend weight: ~10% normal, ~5% crowded
-- **Config**: `TRACKER_IOU_WEIGHT = 0.10`, `TRACKER_CLOSE_IOU_WEIGHT = 0.05`
-- **Why**: Two dancers at the same centroid but different bbox extents are distinguished. Nearly free to compute.
-- Implement as a new helper `_compute_iou_cost()` alongside existing cost helpers, wire into `_combine_assignment_cost()`.
-
-### 3. Phase 2.3 — Post-assignment swap detector (2-opt)
+### 2. Phase 2.3 — Post-assignment swap detector (2-opt)
 
 For each pair of matched (detection, track) assignments where both tracks are in close proximity:
 
@@ -75,7 +65,7 @@ For each pair of matched (detection, track) assignments where both tracks are in
 - Only runs on nearby matched pairs — O(k²) where k is typically 2–4
 - **Config**: `TRACKER_SWAP_DETECT_ENABLED = True`
 
-### 4. Phase 3 — Optical flow bridge
+### 3. Phase 3 — Optical flow bridge
 
 Track pixel motion through detector gaps using sparse LK optical flow:
 
@@ -86,7 +76,7 @@ Track pixel motion through detector gaps using sparse LK optical flow:
 - Cost: ~1-3ms for 6 dancers × 8 points, CPU only
 - **Config**: `TRACKER_OPTICAL_FLOW_ENABLED = True`, `TRACKER_FLOW_MAX_POINTS = 8`
 
-### 5. Phase 4 — Track lifecycle refinements
+### 4. Phase 4 — Track lifecycle refinements
 
 - **4.1 Aggressive dormant matching**: Before creating any new track, check dormant pool for tracks that died < 10 frames ago using relaxed position gate (2×) + pose trajectory similarity
 - **4.2 Anti-steal cooldown**: Freeze victim's aging for 5 frames when the swap detector identifies a steal
@@ -246,6 +236,10 @@ Completed 2026-03-11 / 2026-03-12. Steps executed in order:
 | 2026-03-11 | Preserve dormant continuity | Full state rehydration on resurrection |
 | 2026-03-11 | Episode metadata replaces boolean gate | Tracks record merge/occlusion/reacquisition timestamps |
 | 2026-03-12 | Structural refactor complete | 9 extraction steps + code review — logic verified clean and sound |
+| 2026-03-12 | Playback frame-drop fix | Decoder waits for consumer before overwriting buffer — deterministic at all speeds |
+| 2026-03-12 | Phase 1.3 IoU cost signal | `_compute_iou_cost()` — velocity-predicted bbox IoU; 10% normal, 5% crowded |
+| 2026-03-12 | Match gate ratio 0.90→0.95 | Richer cost signal (IoU+trajectory+separation) makes discriminative matching more reliable; looser gate reduces marginal rejections that fall to FORCE_UPDATE |
+| 2026-03-12 | Merge direction swap cooldown (8f) | `_merge_swap_cooldown` dict — prevents swap↔re-swap oscillation during sustained crossovers |
 
 ---
 
@@ -355,7 +349,7 @@ All items complete. See `TrackingLogger` in `tracking_logger.py`.
 
 **1d Merge direction swap** [DONE]: `_check_merge_direction_swaps()` + `_vx_history` + velocity clamp.
 
-**1.3 IoU cost signal** [NOT STARTED]: See Next Steps §2.
+**1.3 IoU cost signal** [DONE]: `_compute_iou_cost()` helper — velocity-predicted bbox vs detection bbox, `1.0 - IoU`. Weights: 10% normal (`TRACKER_IOU_WEIGHT`), 5% crowded (`TRACKER_CLOSE_IOU_WEIGHT`). Wired into `_combine_assignment_cost()` across all weight tiers.
 
 </details>
 
@@ -366,14 +360,14 @@ All items complete. See `TrackingLogger` in `tracking_logger.py`.
 
 **2.2 Trajectory cost in cost matrix** [DONE]: `trajectory_cost()` method with exponential decay weighting (0.7^age). 30% weight in crowded zones via `_combine_assignment_cost()`.
 
-**2.3 Post-assignment swap detector** [NOT STARTED]: See Next Steps §3.
+**2.3 Post-assignment swap detector** [NOT STARTED]: See Next Steps §2.
 
 </details>
 
 <details>
 <summary>Phase 3 — Optical Flow Bridge</summary>
 
-Not started. See Next Steps §4 for specification.
+Not started. See Next Steps §3 for specification.
 
 **3.1** Sparse LK optical flow module (`optical_flow.py`)
 **3.2** Flow-assisted prediction for missing tracks
@@ -385,7 +379,7 @@ Not started. See Next Steps §4 for specification.
 <summary>Phase 4 — Track Lifecycle Refinements</summary>
 
 Structural cleanup (creation gate, expiry, dormant aging helpers) is done.
-Behavioral enhancements not started. See Next Steps §5.
+Behavioral enhancements not started. See Next Steps §4.
 
 **4.1** Aggressive dormant matching for recent deaths
 **4.2** Anti-steal cooldown

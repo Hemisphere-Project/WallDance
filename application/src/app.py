@@ -350,6 +350,7 @@ class WallDanceApp:
             "on_rec_slot_click": self._cb_rec_slot_click,
             "on_playback_speed_change": self._cb_playback_speed_change,
             "on_playback_pause": self._cb_playback_pause,
+            "on_playback_force_pause": self._cb_playback_force_pause,
             "on_playback_next_frame": self._cb_playback_next_frame,
             "on_playback_prev_frame": self._cb_playback_prev_frame,
             "on_report_issue_request": self._cb_report_issue_request,
@@ -1493,6 +1494,13 @@ class WallDanceApp:
             self.recorder.pause_playback()
             self.tracker.logger.flush()  # Phase 0: flush log on pause
         self._update_recording_ui()
+
+    def _cb_playback_force_pause(self):
+        """Pause playback without toggling — no-op if already paused."""
+        if self.recorder.is_playing and not self.recorder.is_paused():
+            self.recorder.pause_playback()
+            self.tracker.logger.flush()
+            self._update_recording_ui()
     
     def _cb_playback_next_frame(self):
         """Handle next frame button."""
@@ -2006,6 +2014,11 @@ class WallDanceApp:
             self.gui and self.gui.sync_checkbox("preview", self.preview_enabled)
             print(f"Preview: {'ON' if self.preview_enabled else 'OFF (measure raw FPS)'}")
         elif key == dpg.mvKey_F8:
+            # Pause playback (only if playing, never resume)
+            if self.recorder.is_playing and not self.recorder.is_paused():
+                self.recorder.pause_playback()
+                self.tracker.logger.flush()
+                self._update_recording_ui()
             context = self._cb_report_issue_request()
             if context and self.gui:
                 self.gui.show_issue_report_dialog(context)

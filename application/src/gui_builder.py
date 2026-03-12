@@ -503,7 +503,7 @@ def build_bottom_bar(gui: Any):
                 with dpg.group(horizontal=True, tag="source_playback_group", show=False):
                     dpg.add_text("", tag="rec_playback_progress", color=(100, 180, 220))
                     dpg.add_combo(
-                        items=["x0.25", "x0.5", "x0.75", "x1.0", "x1.5", "x2.0", "x4.0"],
+                        items=["x0.1", "x0.25", "x0.5", "x0.75", "x1.0", "x1.5", "x2.0", "x4.0"],
                         tag="rec_speed_combo",
                         default_value="x1.0",
                         width=scaled(65),

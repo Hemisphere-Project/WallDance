@@ -157,7 +157,7 @@ TRACKER_MEASUREMENT_NOISE = 2.0     # Kalman R - smoothing
 
 # --- Robust tracking (Phases 2-4) ---
 # Match gate ratios (scale factors applied to PERSON_HEIGHT_PX)
-TRACKER_MATCH_GATE_RATIO = 0.90        # Match gate as fraction of person_height
+TRACKER_MATCH_GATE_RATIO = 0.95        # Match gate as fraction of person_height
 TRACKER_NEW_TRACK_GATE_RATIO = 0.4     # New-track creation gate
 TRACKER_DUPLICATE_GATE_RATIO = 0.2     # Duplicate suppression gate
 
@@ -291,6 +291,11 @@ TRACKER_MERGE_DIRECTION_SWAP = True      # Post-cascade swap: when two tracks
                                          # on the wrong sides (velocity direction
                                          # reversed relative to pre-merge history),
                                          # swap them back.
+TRACKER_MERGE_SWAP_COOLDOWN_FRAMES = 8  # After MERGE_DIRECTION_SWAP fires for a
+                                         # pair of tracks, suppress it for this
+                                         # many frames.  Prevents oscillation
+                                         # when two crossing dancers keep
+                                         # triggering swap ↔ re-swap cycles.
 
 # =============================================================================
 # PHASE 2 — TEMPORAL POSE SIGNATURE
@@ -301,6 +306,11 @@ TRACKER_POSE_HISTORY_DEPTH = 15          # Frames of skeleton history to keep
 TRACKER_TRAJECTORY_WEIGHT = 0.30         # Weight of trajectory similarity in
                                          # the crowded-zone cost blend.  Higher
                                          # = more influence from pose history.
+TRACKER_IOU_WEIGHT = 0.10                # IoU cost weight in normal matching.
+                                         # Predicted bbox vs detection bbox.
+TRACKER_CLOSE_IOU_WEIGHT = 0.05          # IoU cost weight in crowded zones.
+                                         # Lower because skeleton shape is more
+                                         # discriminative when dancers overlap.
 
 # =============================================================================
 # OSC OUTPUT

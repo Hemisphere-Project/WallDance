@@ -651,6 +651,9 @@ class WallDanceGUI:
         """Open the issue report dialog for the current playback frame."""
         if 'on_report_issue_request' not in self.callbacks:
             return
+        # Pause playback (only if currently playing, never resume)
+        if 'on_playback_force_pause' in self.callbacks:
+            self.callbacks['on_playback_force_pause']()
         context = self.callbacks['on_report_issue_request']()
         if context:
             self.show_issue_report_dialog(context)
