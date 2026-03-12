@@ -33,20 +33,23 @@ def draw_dancer(frame, track, show_skeleton=True, show_keypoints=True,
             cv2.line(frame, pt1, pt2, color, thickness)
     
     # Draw bounding box
+    # Draw bounding box
+    is_bridged = getattr(track, 'is_bridged', False)
     if show_bbox:
         x, y, w, h = track.bbox
-        cv2.rectangle(frame, (int(x), int(y)), (int(x+w), int(y+h)), color, max(1, int(2 * scale)))
+        bbox_thickness = max(1, int(2 * scale))
+        cv2.rectangle(frame, (int(x), int(y)), (int(x+w), int(y+h)), color, bbox_thickness)
     
-    # Draw skeleton
-    if show_skeleton:
+    # Draw skeleton (skip for bridged tracks — keypoints are frozen)
+    if show_skeleton and not is_bridged:
         for start_idx, end_idx in SKELETON:
             if confidence[start_idx] > KEYPOINT_CONFIDENCE and confidence[end_idx] > KEYPOINT_CONFIDENCE:
                 x1, y1 = keypoints[start_idx]
                 x2, y2 = keypoints[end_idx]
                 cv2.line(frame, (int(x1), int(y1)), (int(x2), int(y2)), color, max(1, int(2 * scale)))
     
-    # Draw keypoints
-    if show_keypoints:
+    # Draw keypoints (skip for bridged tracks — keypoints are frozen)
+    if show_keypoints and not is_bridged:
         for i, (x, y) in enumerate(keypoints):
             if confidence[i] > KEYPOINT_CONFIDENCE:
                 radius = max(2, int(4 * scale))
@@ -56,21 +59,22 @@ def draw_dancer(frame, track, show_skeleton=True, show_keypoints=True,
     
     # Draw ID label
     if show_id:
-        # Compute centroid from bbox
         bbox = track.bbox
-        centroid_x = bbox[0] + bbox[2] / 2
-        centroid_y = bbox[1] + bbox[3] / 2
-        
-        # Compute speed from velocity
-        speed = np.linalg.norm(track.velocity)
-        
-        label = f"D{track.track_id}"
-        if speed > 5:
-            label += f" v:{speed:.0f}"
-        
-        # Position label above centroid
-        label_pos = (int(centroid_x) - int(20 * scale), int(centroid_y) - int(30 * scale))
+        box_x, box_y = int(bbox[0]), int(bbox[1])
+
+        label = f"D{track.track_id}" + ("[M]" if is_bridged else "")
+
+        # Position label above the top edge of the bounding box
+        font = cv2.FONT_HERSHEY_SIMPLEX
         font_scale = max(0.4, 0.7 * scale)
         font_thickness = max(1, int(2 * scale))
-        cv2.putText(frame, label, label_pos, cv2.FONT_HERSHEY_SIMPLEX,
-               font_scale, color, font_thickness)
+        (tw, th), baseline = cv2.getTextSize(label, font, font_scale, font_thickness)
+        label_x = box_x
+        label_y = box_y - max(4, int(6 * scale))  # just above top edge
+        # Dark background for readability
+        cv2.rectangle(frame,
+                      (label_x - 1, label_y - th - 2),
+                      (label_x + tw + 2, label_y + baseline + 1),
+                      (0, 0, 0), -1)
+        cv2.putText(frame, label, (label_x, label_y), font,
+                    font_scale, color, font_thickness)

@@ -21,11 +21,14 @@ KEY_EVENTS = [
     "DORMANT_EXPIRED",
     "FORCE_UPDATE",
     "FALLBACK_UPDATE",
+    "CLOSE_ACCEPT",
+    "MOTION_BRIDGE",
     "MATCH_REJECTED",
     "ANTI_MERGE",
     "MAHALANOBIS_GATE",
     "CASCADE_OCCLUSION_SWAP",
     "MERGE_DIRECTION_SWAP",
+    "TWO_OPT_SWAP",
     "OCCLUDED",
     "AMBIGUOUS_IGNORED",
     "DUPLICATE_IGNORED",
@@ -37,6 +40,7 @@ class SessionSlice:
     index: int
     label: str
     entries: list[dict[str, Any]]
+    settings: dict[str, Any] | None = None
 
 
 @dataclass
@@ -55,6 +59,7 @@ class ReplaySummary:
     max_dormant_tracks: int
     max_detections: int
     hotspot_frames: list[tuple[int, list[str]]]
+    settings: dict[str, Any] | None = None
 
 
 def load_entries(path: Path) -> list[dict[str, Any]]:
@@ -74,6 +79,7 @@ def load_entries(path: Path) -> list[dict[str, Any]]:
 def split_sessions(entries: list[dict[str, Any]]) -> list[SessionSlice]:
     sessions: list[SessionSlice] = []
     current: list[dict[str, Any]] = []
+    current_settings: dict[str, Any] | None = None
 
     for entry in entries:
         event = entry.get("event")
@@ -83,8 +89,13 @@ def split_sessions(entries: list[dict[str, Any]]) -> list[SessionSlice]:
                     index=len(sessions),
                     label=f"session-{len(sessions)}",
                     entries=current,
+                    settings=current_settings,
                 ))
                 current = []
+                current_settings = None
+            continue
+        if event == "SESSION_SETTINGS":
+            current_settings = entry.get("settings", {})
             continue
         current.append(entry)
 
@@ -93,6 +104,7 @@ def split_sessions(entries: list[dict[str, Any]]) -> list[SessionSlice]:
             index=len(sessions),
             label=f"session-{len(sessions)}",
             entries=current,
+            settings=current_settings,
         ))
 
     return sessions
@@ -136,6 +148,7 @@ def filter_entries(entries: list[dict[str, Any]], start: int | None,
 def summarize_session(session: SessionSlice, start: int | None,
                       end: int | None) -> ReplaySummary:
     entries = filter_entries(session.entries, start, end)
+    settings = session.settings
     event_counts: Counter = Counter()
     unique_track_ids: set[int] = set()
     new_track_ids: set[int] = set()
@@ -199,6 +212,7 @@ def summarize_session(session: SessionSlice, start: int | None,
         max_dormant_tracks=max_dormant_tracks,
         max_detections=max_detections,
         hotspot_frames=hotspot_frames,
+        settings=settings,
     )
 
 
@@ -215,9 +229,33 @@ def format_summary(summary: ReplaySummary) -> str:
             f"resurrected={len(summary.resurrected_track_ids)} "
             f"dormant={len(summary.dormant_track_ids)}"
         ),
-        "",
-        "Key events:",
     ]
+
+    if summary.settings:
+        lines.append("")
+        lines.append("Settings:")
+        # Show the most important settings first
+        _important_keys = [
+            "model", "yolo_imgsz", "confidence", "use_tensorrt",
+            "person_height_px", "clahe_clip", "gamma", "brightness_threshold",
+            "enhance_enabled",
+        ]
+        shown = set()
+        for key in _important_keys:
+            if key in summary.settings:
+                lines.append(f"  {key:24s} {summary.settings[key]}")
+                shown.add(key)
+        # Then the rest, excluding internal/visual-only keys
+        _skip_keys = {
+            "_meta", "show_skeleton", "show_keypoints", "show_bbox",
+            "show_trails", "show_ids", "preview_enabled", "preview_fps_cap",
+            "preview_scale", "input_fps_cap",
+        }
+        for key, val in sorted(summary.settings.items()):
+            if key not in shown and key not in _skip_keys:
+                lines.append(f"  {key:24s} {val}")
+
+    lines.extend(["", "Key events:"])
 
     for event in KEY_EVENTS:
         lines.append(f"  {event:24s} {summary.event_counts.get(event, 0)}")
@@ -288,7 +326,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def to_json_payload(summary: ReplaySummary) -> dict[str, Any]:
-    return {
+    payload = {
         "label": summary.label,
         "frame_start": summary.frame_start,
         "frame_end": summary.frame_end,
@@ -307,6 +345,9 @@ def to_json_payload(summary: ReplaySummary) -> dict[str, Any]:
             for frame, events in summary.hotspot_frames
         ],
     }
+    if summary.settings:
+        payload["settings"] = summary.settings
+    return payload
 
 
 def main() -> int:

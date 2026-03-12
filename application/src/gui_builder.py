@@ -647,13 +647,13 @@ def build_detection_section(gui: Any):
             height_slider = dpg.add_slider_int(
                 tag="person_height_slider",
                 default_value=gui.config.get("person_height_px", 200),
-                min_value=50,
+                min_value=20,
                 max_value=800,
                 format="%d px",
                 width=scaled(90),
                 callback=gui._on_person_height_change,
             )
-            _add_slider_row("person_height_slider", 10, 50, 800, gui._on_person_height_change)
+            _add_slider_row("person_height_slider", 10, 20, 800, gui._on_person_height_change)
         with dpg.tooltip(height_slider):
             dpg.add_text("Expected dancer height in pixels at current\ncamera distance. All tracking thresholds\nscale from this value. Measure on the\npreview and adjust per venue.")
         

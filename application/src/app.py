@@ -1098,6 +1098,10 @@ class WallDanceApp:
 
     def _cb_tracker_reset(self):
         self.tracker.reset()
+        # Reset MOG2 background model so it re-learns the scene
+        if hasattr(self.processor, 'motion_detector') and self.processor.motion_detector is not None:
+            self.processor.motion_detector.reset()
+        self.tracker.logger.log_settings(self._get_saveable_config())
         if self.osc:
             self.osc.send_clear()
         print("Tracker reset")
@@ -1136,10 +1140,15 @@ class WallDanceApp:
             "tracker_max_age": self.tracker.max_age,
             "person_height_px": self.settings.person_height_px,
             "system_state": self.gui.get_system_state().name if self.gui else "UNKNOWN",
+            "active_dancer_ids": sorted([t.track_id for t in self.last_tracked]),
         }
 
     def _cb_issue_submit(self, context: Dict, issue_type: str, note: str):
-        """Persist a structured review issue for the current playback frame."""
+        """Persist a structured review issue for the current playback frame.
+
+        issue_type contains comma-separated selected dancer IDs (e.g. "D1,D3")
+        or empty string if none selected.
+        """
         issue_dir = os.path.join(
             self.config_store.config_dir,
             self._current_project,
@@ -1904,7 +1913,9 @@ class WallDanceApp:
             self._last_budget_log_time = now
             budget_keys = ["camera_read", "process_wall", "yolo", "preview_upload",
                            "preview_draw", "dpg_render", "gui_stats",
-                           "preview_download", "extract_cpu_total"]
+                           "preview_download", "extract_cpu_total",
+                           "mog2_cvt", "mog2_feed", "tracker_update",
+                           "track", "enhance"]
             parts = []
             for k in budget_keys:
                 v = timing.get(k)

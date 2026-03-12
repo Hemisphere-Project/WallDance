@@ -86,6 +86,25 @@ class TrackingLogger:
         if now - self._last_flush_time >= self.flush_interval:
             self.flush()
 
+    def log_settings(self, settings: Dict[str, Any]):
+        """Emit a SESSION_SETTINGS event with all active config values.
+
+        Should be called once at the start of each run (after reset)
+        so that the JSONL log is self-describing — no need to guess
+        which model / imgsz / confidence / enhancement was used.
+        """
+        if not self.enabled:
+            return
+
+        entry = {
+            "event": "SESSION_SETTINGS",
+            "timestamp": time.time(),
+            "settings": settings,
+        }
+        self._buffer.append(entry)
+        self._pending.append(entry)
+        self.flush()
+
     def log_frame_summary(
         self,
         n_detections: int,

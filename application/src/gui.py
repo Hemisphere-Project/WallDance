@@ -11,6 +11,7 @@ import dearpygui.dearpygui as dpg
 import numpy as np
 
 from gui_builder import build_ui, create_texture, setup_theme, load_icon_font, SystemState, scaled, CONTROL_PANEL_WIDTH
+from config import DANCER_COLORS
 from gui_icons import Icons
 
 # GPU monitoring (optional - works with NVIDIA GPUs)
@@ -802,14 +803,15 @@ class WallDanceGUI:
             dpg.delete_item("issue_report_dialog")
 
         self._issue_report_context = context
-        frame_text = f"Frame {context.get('frame', 0)} / Slot {context.get('slot', 0)}"
-        if context.get('playback_path'):
-            frame_text += f"\n{os.path.basename(context['playback_path'])}"
+        self._issue_selected_ids: set[int] = set()
+        frame_num = context.get('frame', 0)
+        slot_num = context.get('slot', 0)
+        active_ids = context.get('active_dancer_ids', [])
 
-        dlg_w = scaled(520)
-        dlg_h = scaled(280)
+        dlg_w = scaled(420)
+        dlg_h = scaled(240)
         with dpg.window(
-            label="Report Tracking Issue",
+            label="Report Issue",
             modal=True,
             tag="issue_report_dialog",
             width=dlg_w,
@@ -818,49 +820,73 @@ class WallDanceGUI:
             no_resize=True,
             no_move=False,
         ):
-            dpg.add_text(frame_text, color=(120, 200, 255))
-            dpg.add_spacer(height=scaled(8))
-            dpg.add_text("Issue type")
-            dpg.add_combo(
-                items=[
-                    "id_swap",
-                    "abusive_merge",
-                    "ghost_track",
-                    "false_new_id",
-                    "track_loss",
-                    "other",
-                ],
-                default_value="id_swap",
-                tag="issue_type_combo",
-                width=-1,
+            dpg.add_text(
+                f"F{frame_num}  Slot {slot_num}",
+                color=(120, 200, 255),
             )
-            dpg.add_spacer(height=scaled(8))
-            dpg.add_text("Notes")
+            dpg.add_spacer(height=scaled(6))
+            dpg.add_text("Select involved dancers:")
+            with dpg.group(horizontal=True):
+                for did in active_ids:
+                    # Convert BGR (config) to RGB (DearPyGui)
+                    bgr = DANCER_COLORS[(did - 1) % len(DANCER_COLORS)]
+                    rgb = (bgr[2], bgr[1], bgr[0])
+                    btn_tag = f"issue_id_btn_{did}"
+                    with dpg.theme() as btn_theme:
+                        with dpg.theme_component(dpg.mvButton):
+                            dpg.add_theme_color(dpg.mvThemeCol_Text, rgb)
+                    dpg.add_button(
+                        label=f"D{did}",
+                        tag=btn_tag,
+                        width=scaled(44),
+                        callback=self._toggle_issue_id,
+                        user_data=did,
+                    )
+                    dpg.bind_item_theme(btn_tag, btn_theme)
+            dpg.add_spacer(height=scaled(6))
+            dpg.add_text("Note:")
             dpg.add_input_text(
                 tag="issue_note_input",
-                multiline=True,
                 width=-1,
-                height=scaled(90),
-                hint="Describe the visible problem on screen",
+                height=scaled(50),
+                multiline=True,
+                hint="e.g. D2 and D3 swapped after crossing",
             )
-            dpg.add_spacer(height=scaled(10))
+            dpg.add_spacer(height=scaled(8))
             with dpg.group(horizontal=True):
                 dpg.add_button(
-                    label="Save Issue",
-                    width=scaled(240),
+                    label="Save",
+                    width=scaled(190),
                     callback=self._submit_issue_report,
                 )
                 dpg.add_button(
                     label="Cancel",
-                    width=scaled(240),
+                    width=scaled(190),
                     callback=self._cancel_issue_report,
                 )
 
+    def _toggle_issue_id(self, sender, app_data, user_data):
+        """Toggle dancer ID selection in the issue dialog."""
+        did = user_data
+        if did in self._issue_selected_ids:
+            self._issue_selected_ids.discard(did)
+            # Reset button visual
+            bgr = DANCER_COLORS[(did - 1) % len(DANCER_COLORS)]
+            rgb = (bgr[2], bgr[1], bgr[0])
+            dpg.configure_item(sender, label=f"D{did}")
+        else:
+            self._issue_selected_ids.add(did)
+            # Highlight selected button
+            dpg.configure_item(sender, label=f"[D{did}]")
+
     def _submit_issue_report(self):
         """Submit the current issue report dialog."""
-        issue_type = dpg.get_value("issue_type_combo") if dpg.does_item_exist("issue_type_combo") else "other"
+        selected_ids = sorted(getattr(self, '_issue_selected_ids', set()))
+        issue_type = ",".join(f"D{d}" for d in selected_ids) if selected_ids else ""
         note = dpg.get_value("issue_note_input") if dpg.does_item_exist("issue_note_input") else ""
         context = getattr(self, '_issue_report_context', None)
+        if context:
+            context['selected_dancer_ids'] = selected_ids
         try:
             if context and 'on_issue_submit' in self.callbacks:
                 self.callbacks['on_issue_submit'](context, issue_type, note)

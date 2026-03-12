@@ -108,7 +108,7 @@ IDS_USER_SET = "UserSet1"
 # Expected height of a person in pixels (at camera resolution)
 # Use the calibration slider in GUI to adjust based on your scene
 # This helps filter false detections and scale tracking thresholds
-PERSON_HEIGHT_PX = 150              # Expected person height in pixels (50-800)
+PERSON_HEIGHT_PX = 150              # Expected person height in pixels (20-800)
                                     # Small figures at 50m: ~100-150px
                                     # Medium distance: ~200-400px
                                     # Close up (webcam): ~500-800px
@@ -296,6 +296,23 @@ TRACKER_MERGE_SWAP_COOLDOWN_FRAMES = 8  # After MERGE_DIRECTION_SWAP fires for a
                                          # many frames.  Prevents oscillation
                                          # when two crossing dancers keep
                                          # triggering swap ↔ re-swap cycles.
+TRACKER_TWO_OPT_SWAP = True              # Post-assignment 2-opt swap detector.
+                                         # For each pair of nearby matched tracks,
+                                         # check if swapping their detections
+                                         # reduces total cost.  Catches wrong
+                                         # assignments that heuristic swaps miss.
+TRACKER_TWO_OPT_MIN_GAIN = 0.10          # Minimum relative cost reduction to
+                                         # accept a 2-opt swap (fraction of
+                                         # original cost sum).  Prevents noisy
+                                         # micro-swaps.
+TRACKER_CLOSE_ACCEPT_RATIO = 0.20        # Unconditional match acceptance: if
+                                         # raw centroid distance < person_height
+                                         # × this ratio, accept the Hungarian
+                                         # assignment regardless of blended cost.
+                                         # Prevents false rejections when the
+                                         # track is physically right on top of
+                                         # the detection but cost is inflated by
+                                         # crowded-zone multipliers / penalties.
 
 # =============================================================================
 # PHASE 2 — TEMPORAL POSE SIGNATURE
@@ -373,12 +390,37 @@ BG_SUBTRACT_ENABLED = False         # Enable static background subtraction
 BG_SUBTRACT_SENSITIVITY = 30       # Threshold 0-255 (lower = more aggressive removal)
                                     # 20-40 works well for most scenes
 
-# Colors for different dancers (BGR)
+# =============================================================================
+# MOTION BRIDGE (Phase 3) — MOG2 foreground blobs for YOLO gap bridging
+# =============================================================================
+# Bridges lost tracks using MOG2 foreground blobs when YOLO drops detection.
+# Designed for fixed-camera IR static background setups.
+MOTION_BRIDGE_ENABLED = True
+MOTION_BRIDGE_MAX_FRAMES = 80       # Max consecutive blob-only frames per track
+MOTION_BRIDGE_GATE_RATIO = 0.5      # Blob must be within person_height × this
+MOTION_BRIDGE_MOG2_HISTORY = 500    # MOG2 background model history (frames)
+MOTION_BRIDGE_MOG2_VAR_THRESHOLD = 40  # Pixel deviation for foreground (raise for noisy BG)
+MOTION_BRIDGE_MOG2_LEARN_RATE = 0.001  # Very slow → dancers stay foreground
+MOTION_BRIDGE_MIN_AREA = 100        # Min blob area in px² (filter noise)
+# Progressive Kalman noise inflation: (bridge_frame_threshold, R_multiplier)
+MOTION_BRIDGE_NOISE_STAGES = [(10, 2.0), (30, 4.0), (80, 8.0)]
+
+# 15 perceptually distinct colors for dancer IDs (BGR).
+# Deterministic by track_id: color = DANCER_COLORS[(id-1) % 15].
 DANCER_COLORS = [
-    (0, 255, 0),      # Green
-    (255, 100, 0),    # Blue
-    (0, 100, 255),    # Orange
-    (255, 255, 0),    # Cyan
-    (255, 0, 255),    # Magenta
-    (0, 255, 255),    # Yellow
+    (0, 255, 0),       #  1  Green
+    (255, 100, 0),     #  2  Blue
+    (0, 100, 255),     #  3  Orange
+    (255, 255, 0),     #  4  Cyan
+    (255, 0, 255),     #  5  Magenta
+    (0, 255, 255),     #  6  Yellow
+    (255, 180, 100),   #  7  Light blue
+    (80, 200, 255),    #  8  Gold
+    (200, 110, 255),   #  9  Pink
+    (100, 255, 170),   # 10  Mint
+    (50, 50, 255),     # 11  Red
+    (255, 220, 180),   # 12  Ice blue
+    (60, 180, 75),     # 13  Forest green
+    (190, 130, 60),    # 14  Teal
+    (130, 80, 230),    # 15  Salmon
 ]

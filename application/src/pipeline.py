@@ -7,6 +7,7 @@ Supports full GPU pipeline for zero-copy processing (see gpu_pipeline.py).
 from __future__ import annotations
 
 import time
+import threading
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -26,9 +27,11 @@ from config import (
     SHADOW_QUALITY_MIN_KEYPOINTS,
     SHADOW_QUALITY_MIN_CONFIDENCE,
     SHADOW_PROXIMITY_RATIO,
+    MOTION_BRIDGE_ENABLED,
 )
 from background import BackgroundSubtractor
 from enhancer import ImageEnhancer, TORCH_CUDA_AVAILABLE
+from motion_detector import MotionDetector
 from osc_output import OSCSender
 from tracker import DancerTrack, DancerTracker
 
@@ -81,6 +84,34 @@ class ScaledTrack:
     history: List[np.ndarray]
     velocity: np.ndarray
     smoothed_centroid: Optional[np.ndarray] = None  # EMA-smoothed, jitter-free
+    is_bridged: bool = False  # True when track is in motion-bridge mode
+
+
+class _LetterboxMotionProxy:
+    """Proxy that scales blob coords from original to letterboxed space.
+
+    The tracker works in letterboxed YOLO coordinates (GPU path), but
+    the MotionDetector runs on the original-resolution frame.  This
+    proxy transparently scales detect() results.
+    """
+
+    def __init__(self, detector, lb_scale: float, pad_x: int, pad_y: int):
+        self._detector = detector
+        self._lb_scale = lb_scale
+        self._pad_x = pad_x
+        self._pad_y = pad_y
+
+    def detect(self, person_height: int):
+        blobs = self._detector.detect(person_height)
+        if blobs and (self._lb_scale != 1.0 or self._pad_x or self._pad_y):
+            for blob in blobs:
+                blob.bbox[0] = blob.bbox[0] * self._lb_scale + self._pad_x
+                blob.bbox[1] = blob.bbox[1] * self._lb_scale + self._pad_y
+                blob.bbox[2] *= self._lb_scale
+                blob.bbox[3] *= self._lb_scale
+                blob.centroid[0] = blob.centroid[0] * self._lb_scale + self._pad_x
+                blob.centroid[1] = blob.centroid[1] * self._lb_scale + self._pad_y
+        return blobs
 
 
 class FrameProcessor:
@@ -104,6 +135,12 @@ class FrameProcessor:
         
         # Background subtraction
         self.bg_subtractor = BackgroundSubtractor()
+
+        # Motion bridge detector (Phase 3)
+        self.motion_detector = MotionDetector() if MOTION_BRIDGE_ENABLED else None
+        self._motion_lb_scale = 1.0
+        self._motion_pad_x = 0
+        self._motion_pad_y = 0
         
         # GPU pipeline (zero-copy path)
         self._gpu_pipeline: Optional[GpuPipeline] = None
@@ -229,7 +266,9 @@ class FrameProcessor:
         timing["path_enhance"] = "gpu"
         
         # 2-6. YOLO → Track → OSC
-        scaled_tracks = self._run_yolo_and_track(yolo_tensor, gpu_timing, timing, original_w, original_h, frame_number=frame_number)
+        scaled_tracks = self._run_yolo_and_track(
+            yolo_tensor, gpu_timing, timing, original_w, original_h,
+            frame_number=frame_number, raw_frame=frame)
         
         latency_ms = (time.time() - frame_start) * 1000
         timing["total"] = latency_ms
@@ -297,12 +336,25 @@ class FrameProcessor:
         original_w: int,
         original_h: int,
         frame_number: int | None = None,
+        raw_frame: np.ndarray | None = None,
     ) -> List[ScaledTrack]:
         """Shared YOLO inference → extract → track → unscale → OSC pipeline.
 
         Mutates *timing* in place and returns the final scaled tracks.
+        MOG2 feed runs in a background thread overlapping YOLO (CPU ∥ GPU).
         """
-        # YOLO inference
+        # Start MOG2 feed in background thread — runs on CPU while YOLO uses GPU
+        mog2_thread = None
+        if self.motion_detector is not None and raw_frame is not None:
+            t_mog_start = time.time()
+            gray_for_motion = cv2.cvtColor(raw_frame, cv2.COLOR_BGR2GRAY)
+            timing["mog2_cvt"] = (time.time() - t_mog_start) * 1000
+            mog2_thread = threading.Thread(
+                target=self.motion_detector.feed, args=(gray_for_motion,),
+                daemon=True)
+            mog2_thread.start()
+
+        # YOLO inference (GPU) — runs in parallel with MOG2 feed (CPU)
         t0 = time.time()
         results = self.model(
             yolo_tensor,
@@ -322,6 +374,11 @@ class FrameProcessor:
         timing["extract"] = (time.time() - t0) * 1000
         timing.update(self._extract_transfer_timing)
 
+        # Join MOG2 thread before tracker needs blobs
+        if mog2_thread is not None:
+            mog2_thread.join()
+            timing["mog2_feed"] = (time.time() - t_mog_start) * 1000 - timing.get("mog2_cvt", 0)
+
         # Tracking
         t0 = time.time()
         # Set content-area bounds for edge-exit detection.
@@ -332,7 +389,18 @@ class FrameProcessor:
         pad_x = letterbox.get('pad_x', 0)
         pad_y = letterbox.get('pad_y', 0)
         self.tracker.set_frame_dimensions(self.settings.imgsz, pad_x=pad_x)
-        tracked = self.tracker.update(detections, frame_number=frame_number)
+
+        if self.motion_detector is not None and raw_frame is not None:
+            # Wrap detector to scale blob coords to letterboxed YOLO space
+            self._motion_lb_scale = lb_scale
+            self._motion_pad_x = pad_x
+            self._motion_pad_y = pad_y
+
+        t_trk = time.time()
+        tracked = self.tracker.update(
+            detections, frame_number=frame_number,
+            motion_detector=self._get_letterbox_motion_detector())
+        timing["tracker_update"] = (time.time() - t_trk) * 1000
         timing["track"] = (time.time() - t0) * 1000
         timing["path_track"] = "cpu"
 
@@ -426,7 +494,19 @@ class FrameProcessor:
         timing["path_enhance"] = "gpu" if enhance_on_gpu else "cpu"
         timing["brightness"] = brightness
 
-        # 2. YOLO inference
+        # Start MOG2 feed in background thread — runs on CPU while YOLO uses GPU
+        mog2_thread = None
+        t_mog_start = None
+        if self.motion_detector is not None:
+            t_mog_start = time.time()
+            gray_for_motion = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            timing["mog2_cvt"] = (time.time() - t_mog_start) * 1000
+            mog2_thread = threading.Thread(
+                target=self.motion_detector.feed, args=(gray_for_motion,),
+                daemon=True)
+            mog2_thread.start()
+
+        # 2. YOLO inference (GPU) — runs in parallel with MOG2 feed (CPU)
         t0 = time.time()
         results = self.model(
             enhanced,
@@ -446,11 +526,21 @@ class FrameProcessor:
         timing["extract"] = (time.time() - t0) * 1000
         timing.update(self._extract_transfer_timing)
 
+        # Join MOG2 thread before tracker needs blobs
+        if mog2_thread is not None:
+            mog2_thread.join()
+            timing["mog2_feed"] = (time.time() - t_mog_start) * 1000 - timing.get("mog2_cvt", 0)
+
         # 4. Tracking
         t0 = time.time()
         # CPU path: YOLO outputs in original frame coords
         self.tracker.set_frame_dimensions(original_w)
-        tracked = self.tracker.update(detections, frame_number=frame_number)
+
+        t_trk = time.time()
+        tracked = self.tracker.update(
+            detections, frame_number=frame_number,
+            motion_detector=self.motion_detector)
+        timing["tracker_update"] = (time.time() - t_trk) * 1000
         timing["track"] = (time.time() - t0) * 1000
         timing["path_track"] = "cpu"
 
@@ -464,6 +554,7 @@ class FrameProcessor:
                 history=[pt.copy() for pt in t.history],
                 velocity=t.get_velocity().copy(),
                 smoothed_centroid=t.get_smoothed_centroid().copy(),
+                is_bridged=getattr(t, 'is_bridged', False),
             ) for t in tracked
         ]
 
@@ -475,6 +566,17 @@ class FrameProcessor:
         timing["total"] = latency_ms
         self._timing = timing
         return scaled_tracks, enhanced, timing, latency_ms
+
+    def _get_letterbox_motion_detector(self):
+        """Return a proxy that scales blob coords to letterboxed space, or None."""
+        if self.motion_detector is None:
+            return None
+        return _LetterboxMotionProxy(
+            self.motion_detector,
+            self._motion_lb_scale,
+            self._motion_pad_x,
+            self._motion_pad_y,
+        )
 
     def _unscale_letterbox(self, track: DancerTrack, lb_scale: float, pad_x: int, pad_y: int) -> ScaledTrack:
         """
@@ -520,6 +622,7 @@ class FrameProcessor:
             history=history,
             velocity=velocity,
             smoothed_centroid=sm_centroid,
+            is_bridged=getattr(track, 'is_bridged', False),
         )
 
     # ------------------------------------------------------------------

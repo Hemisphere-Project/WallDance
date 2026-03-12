@@ -36,6 +36,10 @@ from config import (
     TRACKER_POSE_HISTORY_DEPTH, TRACKER_TRAJECTORY_WEIGHT,
     TRACKER_IOU_WEIGHT, TRACKER_CLOSE_IOU_WEIGHT,
     TRACKER_MERGE_SWAP_COOLDOWN_FRAMES,
+    TRACKER_TWO_OPT_SWAP, TRACKER_TWO_OPT_MIN_GAIN,
+    TRACKER_CLOSE_ACCEPT_RATIO,
+    MOTION_BRIDGE_ENABLED, MOTION_BRIDGE_MAX_FRAMES,
+    MOTION_BRIDGE_GATE_RATIO, MOTION_BRIDGE_NOISE_STAGES,
 )
 from tracking_logger import TrackingLogger
 
@@ -138,6 +142,11 @@ class DancerTrack:
         self._shadow_streak = 0          # Consecutive frames detected as shadow
         self._fractional_age = 0.0       # Sub-frame occlusion aging accumulator
         self.smoothing_depth = smoothing_depth
+
+        # Motion bridge state (Phase 3)
+        self.bridge_frames: int = 0      # Consecutive motion-only frames
+        self.is_bridged: bool = False    # Currently in motion-bridge mode
+
         self._last_match_frame = -1
         self._last_occluded_frame = -1
         self._occlusion_start_frame: int | None = None
@@ -278,6 +287,10 @@ class DancerTrack:
         self.hits += 1
         self.time_since_update = 0
         self._fractional_age = 0.0
+
+        # Clear motion bridge state on YOLO match
+        self.bridge_frames = 0
+        self.is_bridged = False
         
         # Store confidence for temporal smoothing
         self.confidence_history.append(confidence.copy())
@@ -580,6 +593,7 @@ class FrameUpdateContext:
     merge_frame: bool = False
     pending_updates: list[PendingTrackUpdate] = field(default_factory=list)
     post_update_clamp_indices: set[int] = field(default_factory=set)
+    swapped_update_indices: set[int] = field(default_factory=set)
 
 
 @dataclass
@@ -662,6 +676,10 @@ class DancerTracker:
         self.distance_threshold = max(floor, int(height_px * TRACKER_MATCH_GATE_RATIO))
         self.new_track_min_distance = max(floor // 2, int(height_px * TRACKER_NEW_TRACK_GATE_RATIO))
         self.duplicate_distance = max(floor // 5, int(height_px * TRACKER_DUPLICATE_GATE_RATIO))
+
+    def get_person_height(self) -> int:
+        """Return current person height in pixels."""
+        return self._person_height_px
 
     def set_frame_dimensions(self, width: int, pad_x: int = 0):
         """Store content-area boundaries for edge-exit detection.
@@ -1138,6 +1156,9 @@ class DancerTracker:
             # deferred .update() so the clamp isn't undone by Kalman gain).
             frame_ctx.post_update_clamp_indices.add(tent_idx)
 
+            # Mark this pending_update slot so 2-opt won't undo the swap.
+            frame_ctx.swapped_update_indices.add(upd_i)
+
             # Update matched sets
             matched_trk.discard(est_trk_idx)
             matched_trk.add(tent_idx)
@@ -1288,6 +1309,10 @@ class DancerTracker:
             frame_ctx.post_update_clamp_indices.add(trk_i)
             frame_ctx.post_update_clamp_indices.add(trk_j)
 
+            # Mark these pending_update slots so 2-opt won't undo the swap.
+            frame_ctx.swapped_update_indices.add(i)
+            frame_ctx.swapped_update_indices.add(j)
+
             self.logger.log("MERGE_DIRECTION_SWAP", {
                 "track_a_id": track_i.track_id,
                 "track_b_id": track_j.track_id,
@@ -1316,6 +1341,164 @@ class DancerTracker:
             })
             matched_pairs_log.append({
                 "det": det_i, "track_id": track_j.track_id, "cost": -1.0,
+            })
+
+    # ------------------------------------------------------------------
+    # Post-assignment 2-opt swap detector (Phase 2.3)
+    # ------------------------------------------------------------------
+    def _compute_single_pair_cost(self, detection, track) -> float:
+        """Compute full assignment cost for one (detection, track) pair.
+
+        Mirrors the logic in ``_compute_cost_matrix`` for a single cell.
+        Returns 1e6 when the Mahalanobis gate blocks the pair.
+        """
+        kpts, conf, bbox = detection
+        det_centroid = self._compute_centroid(kpts, conf, bbox)
+        det_height = bbox[3]
+
+        if not self._mahalanobis_gate_allows(-1, det_centroid, track):
+            return 1e6
+
+        mask_det = conf > KEYPOINT_CONFIDENCE
+        det_kpts_norm = kpts - det_centroid
+
+        close_dist = self.distance_threshold * TRACKER_CLOSE_PROXIMITY_RATIO
+        is_crowded = self._is_detection_in_crowded_zone(
+            det_centroid, self.tracks, close_dist)
+
+        pos_cost, last_known_pos, velocity = self._compute_position_cost(
+            det_centroid, track)
+        kpt_cost, n_both = self._compute_keypoint_cost(
+            det_kpts_norm, mask_det, track)
+        size_cost = abs(det_height - track.bbox[3])
+        sep_penalty = self._compute_separation_penalty(
+            det_centroid, track, self.tracks)
+        dir_penalty = self._compute_direction_penalty(
+            det_centroid, last_known_pos, velocity, track, is_crowded)
+        iou_cost = self._compute_iou_cost(bbox, track)
+
+        traj_cost = None
+        if is_crowded and len(track._pose_history) >= 3:
+            det_aspect = float(bbox[2]) / max(1.0, float(bbox[3]))
+            traj_cost = track.trajectory_cost(
+                det_kpts_norm, mask_det, det_aspect)
+
+        base_cost = self._combine_assignment_cost(
+            pos_cost, kpt_cost, size_cost, iou_cost, traj_cost,
+            is_crowded, n_both)
+        return base_cost + sep_penalty + dir_penalty
+
+    def _check_two_opt_swaps(self, detections, frame_ctx,
+                             matched_det, matched_trk,
+                             matched_pairs_log):
+        """Swap nearby matched pairs when doing so reduces total cost.
+
+        For every pair of pending updates (i, j) whose tracks are within
+        ``close_dist``, compute the current and swapped total cost.  If
+        the swap saves at least ``TRACKER_TWO_OPT_MIN_GAIN`` (relative),
+        apply it.  This is the classic 2-opt local-search improvement
+        over the Hungarian global assignment.
+        """
+        if len(frame_ctx.pending_updates) < 2:
+            return
+
+        close_dist = self.distance_threshold * TRACKER_CLOSE_PROXIMITY_RATIO
+        swaps = []   # (i, j) indices into pending_updates
+        used = set(frame_ctx.swapped_update_indices)  # skip MDS/cascade swaps
+
+        for i in range(len(frame_ctx.pending_updates)):
+            if i in used:
+                continue
+            upd_i = frame_ctx.pending_updates[i]
+            track_i = self.tracks[upd_i.trk_idx]
+            pos_i = track_i.get_centroid()
+
+            best_swap = None
+            best_gain = TRACKER_TWO_OPT_MIN_GAIN  # minimum bar
+
+            for j in range(i + 1, len(frame_ctx.pending_updates)):
+                if j in used:
+                    continue
+                upd_j = frame_ctx.pending_updates[j]
+                track_j = self.tracks[upd_j.trk_idx]
+                pos_j = track_j.get_centroid()
+
+                # Only consider nearby pairs
+                if np.linalg.norm(pos_i - pos_j) > close_dist:
+                    continue
+
+                det_i = detections[upd_i.det_idx]
+                det_j = detections[upd_j.det_idx]
+
+                # Current assignment cost
+                cost_curr = (self._compute_single_pair_cost(det_i, track_i)
+                             + self._compute_single_pair_cost(det_j, track_j))
+                # Swapped assignment cost
+                cost_swap = (self._compute_single_pair_cost(det_j, track_i)
+                             + self._compute_single_pair_cost(det_i, track_j))
+
+                if cost_curr <= 0:
+                    continue
+                gain = (cost_curr - cost_swap) / cost_curr
+                if gain > best_gain:
+                    best_gain = gain
+                    best_swap = (j, cost_curr, cost_swap)
+
+            if best_swap is not None:
+                j, cost_curr, cost_swap = best_swap
+                swaps.append((i, j, cost_curr, cost_swap))
+                used.add(i)
+                used.add(j)
+
+        # Apply swaps
+        for i, j, cost_curr, cost_swap in swaps:
+            upd_i = frame_ctx.pending_updates[i]
+            upd_j = frame_ctx.pending_updates[j]
+            track_i = self.tracks[upd_i.trk_idx]
+            track_j = self.tracks[upd_j.trk_idx]
+
+            frame_ctx.pending_updates[i] = PendingTrackUpdate(
+                trk_idx=upd_i.trk_idx,
+                det_idx=upd_j.det_idx,
+                kpts=upd_j.kpts,
+                conf=upd_j.conf,
+                bbox=upd_j.bbox,
+            )
+            frame_ctx.pending_updates[j] = PendingTrackUpdate(
+                trk_idx=upd_j.trk_idx,
+                det_idx=upd_i.det_idx,
+                kpts=upd_i.kpts,
+                conf=upd_i.conf,
+                bbox=upd_i.bbox,
+            )
+
+            frame_ctx.post_update_clamp_indices.add(upd_i.trk_idx)
+            frame_ctx.post_update_clamp_indices.add(upd_j.trk_idx)
+
+            self.logger.log("TWO_OPT_SWAP", {
+                "track_a_id": track_i.track_id,
+                "track_b_id": track_j.track_id,
+                "cost_before": round(cost_curr, 1),
+                "cost_after": round(cost_swap, 1),
+                "gain_pct": round((cost_curr - cost_swap) / cost_curr * 100, 1),
+            })
+            if TRACKER_DEBUG:
+                print(f"[TRACKER] 2-opt swap: "
+                      f"#{track_i.track_id} ↔ #{track_j.track_id}  "
+                      f"cost {cost_curr:.1f} → {cost_swap:.1f}")
+
+            # Update matched_pairs_log
+            matched_pairs_log[:] = [
+                p for p in matched_pairs_log
+                if p["track_id"] not in (track_i.track_id, track_j.track_id)
+            ]
+            matched_pairs_log.append({
+                "det": upd_j.det_idx, "track_id": track_i.track_id,
+                "cost": round(cost_swap / 2, 1),
+            })
+            matched_pairs_log.append({
+                "det": upd_i.det_idx, "track_id": track_j.track_id,
+                "cost": round(cost_swap / 2, 1),
             })
 
     # ------------------------------------------------------------------
@@ -1365,20 +1548,28 @@ class DancerTracker:
 
         row_idx, col_idx = linear_sum_assignment(cost_matrix)
 
+        close_accept_dist = self._person_height_px * TRACKER_CLOSE_ACCEPT_RATIO
+
         for row, col in zip(row_idx, col_idx):
             actual_det = det_indices[row]
             actual_trk = trk_indices[col]
             track = self.tracks[actual_trk]
             dynamic_thresh = self._compute_dynamic_match_threshold(track)
+            cost_val = round(float(cost_matrix[row, col]), 1)
 
-            if cost_matrix[row, col] < dynamic_thresh:
-                kpts, conf, bbox = detections[actual_det]
-                det_centroid = self._compute_centroid(kpts, conf, bbox)
+            # Compute raw centroid distance for close-acceptance check
+            kpts, conf, bbox = detections[actual_det]
+            det_centroid = self._compute_centroid(kpts, conf, bbox)
+            raw_dist = float(np.linalg.norm(
+                det_centroid - track.get_last_known_position()))
+
+            # Accept if cost < threshold OR track is physically very close
+            if cost_val < dynamic_thresh or raw_dist < close_accept_dist:
                 if self._is_suspicious_merge_candidate(track, bbox, det_centroid):
                     matched_det.add(actual_det)
                     continue
 
-                cost_val = round(float(cost_matrix[row, col]), 1)
+                was_close_accept = cost_val >= dynamic_thresh
                 self._commit_match(
                     trk_idx=actual_trk,
                     det_idx=actual_det,
@@ -1391,24 +1582,27 @@ class DancerTracker:
                     frame_ctx=frame_ctx,
                     defer_update=defer_updates,
                     cost_val=cost_val,
-                    log_event="MATCH",
+                    log_event="CLOSE_ACCEPT" if was_close_accept else "MATCH",
                     log_data={
                         "threshold": round(dynamic_thresh, 1),
                         "is_established": track.is_established,
+                        "raw_dist": round(raw_dist, 1),
                     },
                 )
             else:
                 self.logger.log("MATCH_REJECTED", {
                     "det": actual_det,
                     "track_id": track.track_id,
-                    "cost": round(float(cost_matrix[row, col]), 1),
+                    "cost": cost_val,
                     "threshold": round(dynamic_thresh, 1),
+                    "raw_dist": round(raw_dist, 1),
                     "time_since_update": track.time_since_update,
                 })
                 if TRACKER_DEBUG:
                     print(f"[TRACKER] Match rejected: "
                           f"cost={cost_matrix[row, col]:.1f} > "
                           f"thresh={dynamic_thresh:.1f} "
+                          f"dist={raw_dist:.1f} "
                           f"(t_miss={track.time_since_update})")
 
     def _commit_match(self, trk_idx, det_idx, kpts, conf, bbox,
@@ -1609,7 +1803,8 @@ class DancerTracker:
 
         return new_track
 
-    def update(self, detections, frame_number: int | None = None):
+    def update(self, detections, frame_number: int | None = None,
+               motion_detector=None):
         """
         Update tracker with new detections.
         
@@ -1618,6 +1813,9 @@ class DancerTracker:
             frame_number: External frame number (from overlay) so that
                 log entries match the frame shown on screen.  When None,
                 the tracker increments its own counter (legacy path).
+            motion_detector: Optional MotionDetector (already fed this
+                frame).  detect() is called lazily — only when there
+                are unmatched active tracks that could be bridged.
         
         Returns:
             List of DancerTrack objects for confirmed tracks
@@ -1643,6 +1841,8 @@ class DancerTracker:
             matched_pairs_log,
             frame_ctx,
         )
+        if MOTION_BRIDGE_ENABLED and motion_detector is not None:
+            self._lazy_bridge_with_motion(motion_detector, matched_trk)
         self._apply_occlusion_aging(matched_trk, frame_ctx)
         self._finalize_track_lifecycle()
 
@@ -1745,6 +1945,12 @@ class DancerTracker:
             # --- Post-merge direction swap check (Phase 1d) ---
             if TRACKER_MERGE_DIRECTION_SWAP:
                 self._check_merge_direction_swaps(
+                    detections, frame_ctx,
+                    matched_det, matched_trk, matched_pairs_log)
+
+            # --- Post-assignment 2-opt swap detector (Phase 2.3) ---
+            if TRACKER_TWO_OPT_SWAP:
+                self._check_two_opt_swaps(
                     detections, frame_ctx,
                     matched_det, matched_trk, matched_pairs_log)
 
@@ -1980,6 +2186,143 @@ class DancerTracker:
             merge_frame=frame_ctx.merge_frame,
         )
         self.tracks.append(new_track)
+
+    # ------------------------------------------------------------------
+    # Phase 3: Motion bridge — MOG2 blob fallback for YOLO gaps
+    # ------------------------------------------------------------------
+    def _lazy_bridge_with_motion(self, motion_detector, matched_trk):
+        """Check for bridge candidates, then lazily call detect().
+
+        Avoids the expensive contour extraction when all tracks are
+        YOLO-matched (the common case).
+        """
+        # Quick check: any unmatched track that could be bridged?
+        has_candidates = False
+        for idx, track in enumerate(self.tracks):
+            if idx in matched_trk:
+                continue
+            if track.time_since_update == 0:
+                continue
+            if track.bridge_frames >= MOTION_BRIDGE_MAX_FRAMES:
+                continue
+            has_candidates = True
+            break
+
+        if not has_candidates:
+            return
+
+        motion_blobs = motion_detector.detect(self._person_height_px)
+        if motion_blobs:
+            self._bridge_unmatched_with_motion(motion_blobs, matched_trk)
+
+    def _bridge_unmatched_with_motion(self, motion_blobs, matched_trk):
+        """Bridge lost tracks using MOG2 foreground blobs (TIER 2).
+
+        For each unmatched active track (recently YOLO-confirmed, within
+        MOTION_BRIDGE_MAX_FRAMES), find the nearest unused motion blob
+        and update the track's bbox+centroid from it.  Keypoints stay
+        frozen from the last YOLO match.
+        """
+        if not motion_blobs:
+            return
+
+        # Remove blobs that overlap with YOLO-matched track bboxes
+        matched_centroids = [self.tracks[i].get_centroid() for i in matched_trk]
+        used_blob_indices: set[int] = set()
+
+        bridge_gate = self._person_height_px * MOTION_BRIDGE_GATE_RATIO
+
+        for idx, track in enumerate(self.tracks):
+            if idx in matched_trk:
+                # Already YOLO-matched this frame
+                continue
+            if track.time_since_update == 0:
+                # Matched by force-update or other late-match
+                continue
+            if track.bridge_frames >= MOTION_BRIDGE_MAX_FRAMES:
+                # Exhausted bridge allowance
+                continue
+
+            pred_pos = track.get_centroid()
+
+            # Find nearest available blob
+            best_blob = None
+            best_blob_idx = -1
+            best_dist = float('inf')
+            for bi, blob in enumerate(motion_blobs):
+                if bi in used_blob_indices:
+                    continue
+                dist = float(np.linalg.norm(pred_pos - blob.centroid))
+                if dist < best_dist:
+                    best_dist = dist
+                    best_blob = blob
+                    best_blob_idx = bi
+
+            if best_blob is None or best_dist > bridge_gate:
+                # Mark track as not bridged this frame
+                track.is_bridged = False
+                continue
+
+            # Skip blobs that are very close to already-matched tracks
+            # (they're probably the same person detected by YOLO)
+            blob_near_matched = False
+            for mpos in matched_centroids:
+                if float(np.linalg.norm(best_blob.centroid - mpos)) < bridge_gate * 0.5:
+                    blob_near_matched = True
+                    break
+            if blob_near_matched:
+                track.is_bridged = False
+                continue
+
+            # Apply motion bridge update
+            self._apply_motion_bridge(track, best_blob, best_dist)
+            used_blob_indices.add(best_blob_idx)
+
+    def _apply_motion_bridge(self, track, blob, dist: float):
+        """Update track bbox+centroid from a motion blob with inflated Kalman noise."""
+        track.bridge_frames += 1
+        track.is_bridged = True
+
+        # Reposition bbox center from blob centroid, keep last YOLO w/h
+        # so the bbox stays a stable dancer-sized rectangle.
+        old_w, old_h = track.bbox[2], track.bbox[3]
+        track.bbox = np.array([
+            blob.centroid[0] - old_w / 2.0,
+            blob.centroid[1] - old_h / 2.0,
+            old_w,
+            old_h,
+        ], dtype=np.float64)
+
+        # Kalman measurement update with progressive noise inflation
+        noise_mult = MOTION_BRIDGE_NOISE_STAGES[-1][1]  # default to highest
+        for threshold, mult in MOTION_BRIDGE_NOISE_STAGES:
+            if track.bridge_frames <= threshold:
+                noise_mult = mult
+                break
+
+        # Temporarily inflate R, do measurement update, restore R
+        original_R = track.kf.R.copy()
+        track.kf.R = original_R * noise_mult
+        track.kf.update(blob.centroid.reshape(2, 1))
+        track.kf.R = original_R
+
+        # Reset time_since_update so track stays alive
+        track.time_since_update = 0
+        track._fractional_age = 0.0
+
+        # Update history and smoothed centroid
+        track.history.append(blob.centroid.copy())
+        alpha = CENTROID_OUTPUT_SMOOTHING
+        track._smoothed_centroid = (
+            alpha * blob.centroid + (1.0 - alpha) * track._smoothed_centroid)
+
+        self.logger.log("MOTION_BRIDGE", {
+            "track_id": track.track_id,
+            "blob_dist": round(dist, 1),
+            "blob_area": round(blob.area, 0),
+            "bridge_frames": track.bridge_frames,
+            "noise_mult": noise_mult,
+        })
 
     def _apply_occlusion_aging(self, matched_trk,
                                frame_ctx: FrameUpdateContext):

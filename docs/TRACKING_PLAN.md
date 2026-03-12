@@ -25,7 +25,8 @@
 | Replay regression report | **DONE** | `replay_report.sh` for session summary / comparison |
 | IoU cost signal (Phase 1.3) | **DONE** | 6th cost term — predicted-bbox IoU, 10%/5% weight |
 | Playback frame-drop fix | **DONE** | Decoder waits for consumer — deterministic at all speeds |
-| Optical flow bridge (Phase 3) | Not started | LK flow for occluded-track prediction |
+| Post-assignment 2-opt swap (Phase 2.3) | **DONE** | Cost-based local swap for nearby matched pairs |
+| Motion bridge (Phase 3) | **IN PROGRESS** | MOG2 foreground blobs keep lost tracks alive up to 80 frames |
 | Occupancy grid (Phase 5) | Not started | Only if residual multi-body crossover issues remain |
 
 ### Slot 6 Known Issues
@@ -56,27 +57,52 @@ Then compare sessions:
 
 Target: zero new `NEW_TRACK` inflation, zero lost swap corrections.
 
-### 2. Phase 2.3 — Post-assignment swap detector (2-opt)
+### 2. Phase 3 — Motion bridge (MOG2)
 
-For each pair of matched (detection, track) assignments where both tracks are in close proximity:
+Bridge YOLO detection gaps using MOG2 background subtraction foreground blobs.
+Designed for fixed-camera IR-bandpass setups with static background (building façade).
+Small dancers (~50px) lose YOLO detection frequently; MOG2 blobs maintain track
+continuity for up to 80 frames (~2.7s at 30fps).
 
-- Check if swapping the two assignments reduces total cost
-- Also check: did the assignment cause velocity reversal AND skeleton jump simultaneously?
-- Only runs on nearby matched pairs — O(k²) where k is typically 2–4
-- **Config**: `TRACKER_SWAP_DETECT_ENABLED = True`
+**Why MOG2 over optical flow / frame differencing:**
+- Frame diff: blob disappears when dancer pauses → breaks bridge
+- Sparse LK: small 50px dancers produce few good features → unreliable
+- MOG2: full silhouette, survives pauses, built-in shadow rejection, handles slow BG drift (wind/vibration)
 
-### 3. Phase 3 — Optical flow bridge
+**Architecture — 3-tier fallback per track:**
 
-Track pixel motion through detector gaps using sparse LK optical flow:
+| Tier | Condition | Update source | Keypoints |
+|------|-----------|---------------|-----------|
+| 1 | YOLO matched | Full detection | Live |
+| 2 | No YOLO, blob available | MOG2 blob bbox+centroid | Frozen from last YOLO |
+| 3 | No YOLO, no blob | Kalman-only prediction | Frozen |
 
-- `FlowTracker` class in `optical_flow.py` — 5-8 highest-confidence keypoints per track
-- LK parameters: window 21×21, 3 pyramid levels
-- Flow-assisted Kalman measurement update for missing tracks (inflated noise R×4)
-- Flow-predicted position in `_compute_cost_matrix` for `time_since_update > 0` tracks
-- Cost: ~1-3ms for 6 dancers × 8 points, CPU only
-- **Config**: `TRACKER_OPTICAL_FLOW_ENABLED = True`, `TRACKER_FLOW_MAX_POINTS = 8`
+**Components:**
+- `MotionDetector` class in `motion_detector.py` — MOG2 with low learning rate (0.001)
+- Blob filters: min area, height within person_height×[0.3, 2.5], aspect ratio [0.15, 3.0]
+- Morphology: erode 3×3 + dilate 5×5 (breaks projection speckle, fills dancer gaps)
+- MOG2 shadow detection ON → rejects projection leak shadows
+- Pipeline: `motion_detector.detect(gray)` called after YOLO, blobs passed to tracker
+- Tracker: `_bridge_unmatched_with_motion()` after matching, before lifecycle
+- Progressive Kalman noise: R×2 (1-10f), R×4 (11-30f), R×8 (31-80f)
+- Visualization: `[M]` suffix on bridged track labels, thinner bbox
+- Logging: `MOTION_BRIDGE` event with distance, area, bridge frame count
 
-### 4. Phase 4 — Track lifecycle refinements
+**Config:**
+- `MOTION_BRIDGE_ENABLED = True`
+- `MOTION_BRIDGE_MAX_FRAMES = 80`
+- `MOTION_BRIDGE_GATE_RATIO = 0.5`
+- `MOTION_BRIDGE_MOG2_HISTORY = 500`
+- `MOTION_BRIDGE_MOG2_VAR_THRESHOLD = 40`
+- `MOTION_BRIDGE_MOG2_LEARN_RATE = 0.001`
+- `MOTION_BRIDGE_MIN_AREA = 100`
+- `MOTION_BRIDGE_NOISE_STAGES = [(10, 2.0), (30, 4.0), (80, 8.0)]`
+
+**Safety:** Blobs never create new tracks or resurrect dormant ones. Only bridge existing YOLO-confirmed tracks. Worst case for false blob: delays dormancy by a few frames.
+
+**Cost:** ~0.5-1ms CPU per frame. Zero GPU impact.
+
+### 3. Phase 4 — Track lifecycle refinements
 
 - **4.1 Aggressive dormant matching**: Before creating any new track, check dormant pool for tracks that died < 10 frames ago using relaxed position gate (2×) + pose trajectory similarity
 - **4.2 Anti-steal cooldown**: Freeze victim's aging for 5 frames when the swap detector identifies a steal
@@ -95,12 +121,14 @@ Track pixel motion through detector gaps using sparse LK optical flow:
    - **Pass 2**: tentative + suppressed tracks vs remaining detections → deferred
    - **Phase 1c**: `_check_occlusion_cascade_swaps()` — swap if est steals from tent
    - **Phase 1d**: `_check_merge_direction_swaps()` — swap if direction-reversed
+   - **Phase 2.3**: `_check_two_opt_swaps()` — swap if cost-reducing for nearby pairs
    - Apply all deferred updates via `FrameUpdateContext.pending_updates`
    - Post-update velocity clamp on swapped tracks
 4. `_resolve_unmatched_detections()` — force-update / fallback / resurrect / new track
-5. `_apply_occlusion_aging()` — fractional aging for tracks near matched tracks
-6. `_finalize_track_lifecycle()` — expire → dormant, age dormant, shadow detection
-7. `_log_frame_summary()` — structured `FRAME_SUMMARY` event
+5. `_bridge_unmatched_with_motion()` — MOG2 blob bridge for lost tracks (Phase 3)
+6. `_apply_occlusion_aging()` — fractional aging for tracks near matched tracks
+7. `_finalize_track_lifecycle()` — expire → dormant, age dormant, shadow detection
+8. `_log_frame_summary()` — structured `FRAME_SUMMARY` event
 
 ### Key data structures
 
@@ -121,7 +149,7 @@ Track pixel motion through detector gaps using sparse LK optical flow:
 | Unmatched resolution | `_find_closest_track`, `_get_creation_gate`, `_select_force_update_target`, `_try_force_update_unmatched_detection`, `_try_fallback_update_unmatched_detection`, `_create_new_track` |
 | Occlusion aging | `_collect_matched_positions`, `_occlusion_distance_for_track`, `_is_track_near_matched_positions`, `_apply_fractional_occlusion_aging`, `_mark_track_occluded` |
 | Lifecycle | `_effective_max_age_for_track`, `_retire_track_to_dormant`, `_retire_expired_active_tracks`, `_age_and_prune_dormant_tracks` |
-| Swap corrections | `_check_occlusion_cascade_swaps`, `_check_merge_direction_swaps`, `_tracks_share_recent_merge_context` |
+| Swap corrections | `_check_occlusion_cascade_swaps`, `_check_merge_direction_swaps`, `_check_two_opt_swaps`, `_compute_single_pair_cost`, `_tracks_share_recent_merge_context` |
 
 ### Key files
 
@@ -133,6 +161,7 @@ Track pixel motion through detector gaps using sparse LK optical flow:
 | [app.py](../application/src/app.py) | Main app, frame overlay, review mode, issue reporting |
 | [replay_report.py](../application/replay_report.py) | Offline session summary and comparison tool |
 | [replay_report.sh](../replay_report.sh) | Safe launcher (uses `uv run --no-sync` to preserve CUDA) |
+| [motion_detector.py](../application/src/motion_detector.py) | MOG2 foreground blob detector for motion bridge (Phase 3) |
 
 ### Key config flags
 
@@ -144,6 +173,8 @@ Track pixel motion through detector gaps using sparse LK optical flow:
 | `TRACKER_CASCADE_OCCLUSION_SWAP` | True | Post-cascade swap for est-steals-from-tent |
 | `TRACKER_CASCADE_SUPPRESSION_FRAMES` | 5 | Frames to suppress swapped est from Pass 1 |
 | `TRACKER_MERGE_DIRECTION_SWAP` | True | Post-merge velocity-direction swap |
+| `TRACKER_TWO_OPT_SWAP` | True | Post-assignment 2-opt cost-based swap |
+| `TRACKER_TWO_OPT_MIN_GAIN` | 0.10 | Minimum relative cost reduction for 2-opt swap |
 | `TRACKER_ESTABLISHED_FRAMES` | 15 | Hits before a track is "established" |
 | `TRACKER_CLOSE_PROXIMITY_RATIO` | 0.6 | Proximity ratio for swap detection |
 | `TRACKER_MATCH_GATE_RATIO` | 0.90 | Match distance as fraction of person height |
@@ -240,6 +271,10 @@ Completed 2026-03-11 / 2026-03-12. Steps executed in order:
 | 2026-03-12 | Phase 1.3 IoU cost signal | `_compute_iou_cost()` — velocity-predicted bbox IoU; 10% normal, 5% crowded |
 | 2026-03-12 | Match gate ratio 0.90→0.95 | Richer cost signal (IoU+trajectory+separation) makes discriminative matching more reliable; looser gate reduces marginal rejections that fall to FORCE_UPDATE |
 | 2026-03-12 | Merge direction swap cooldown (8f) | `_merge_swap_cooldown` dict — prevents swap↔re-swap oscillation during sustained crossovers |
+| 2026-03-12 | Phase 2.3 two-opt swap detector | `_check_two_opt_swaps()` — cost-based local improvement; catches wrong assignments that heuristic swaps miss. 10% min gain threshold prevents noisy micro-swaps |
+| 2026-03-12 | Phase 3: MOG2 replaces LK optical flow | Small dancers (~50px) have too few corner features for sparse LK. MOG2 gives full silhouette, survives pauses, handles BG drift from wind/vibration. ~1ms CPU vs ~2ms for LK. |
+| 2026-03-12 | Motion bridge: blobs never create tracks | Safety constraint — blobs only bridge existing YOLO-confirmed tracks. Prevents false positives from projection leak or BG artifacts. |
+| 2026-03-12 | Progressive Kalman noise for long bridges | R×2 (1-10f), R×4 (11-30f), R×8 (31-80f). Keeps track tethered to blob reality without causing jitter over 80-frame bridges. |
 
 ---
 
@@ -360,18 +395,24 @@ All items complete. See `TrackingLogger` in `tracking_logger.py`.
 
 **2.2 Trajectory cost in cost matrix** [DONE]: `trajectory_cost()` method with exponential decay weighting (0.7^age). 30% weight in crowded zones via `_combine_assignment_cost()`.
 
-**2.3 Post-assignment swap detector** [NOT STARTED]: See Next Steps §2.
+**2.3 Post-assignment swap detector** [DONE]: `_check_two_opt_swaps()` — for each pair of nearby matched tracks (`close_dist`), recomputes costs for current and swapped assignments using `_compute_single_pair_cost()`. Accepts swap when relative gain exceeds `TRACKER_TWO_OPT_MIN_GAIN` (10%). Runs after heuristic swap checks (1c/1d), before applying deferred updates. Config: `TRACKER_TWO_OPT_SWAP = True`, `TRACKER_TWO_OPT_MIN_GAIN = 0.10`.
 
 </details>
 
 <details>
-<summary>Phase 3 — Optical Flow Bridge</summary>
+<summary>Phase 3 — Motion Bridge (MOG2)</summary>
 
-Not started. See Next Steps §3 for specification.
+IN PROGRESS. MOG2-based foreground blob tracking replaces the original LK optical flow plan.
 
-**3.1** Sparse LK optical flow module (`optical_flow.py`)
-**3.2** Flow-assisted prediction for missing tracks
-**3.3** Flow-enhanced cost matrix
+**3.1** `MotionDetector` class in `motion_detector.py` — MOG2 (history=500, varThreshold=40, learnRate=0.001, shadows=True). Blob filtering: min area, person-height range, aspect ratio, morphological cleanup.
+
+**3.2** Pipeline integration — `detect(gray)` after YOLO extraction, blobs forwarded to `tracker.update(detections, motion_blobs=...)`.
+
+**3.3** Tracker bridge step — `_bridge_unmatched_with_motion()` matches nearest unused blob to each unmatched active track within `person_height × 0.5`. Updates bbox+centroid via Kalman with progressive noise inflation. Keypoints frozen from last YOLO match. `bridge_frames` counter, max 80.
+
+**3.4** Visualization — `[M]` suffix on ID label, thinner bbox for bridged tracks.
+
+**Decision**: MOG2 chosen over LK optical flow because small dancers (~50px) produce too few corner features for reliable sparse tracking, and MOG2 handles dancer pauses (foreground persists until absorbed, which takes ~1000 frames at 0.001 learn rate).
 
 </details>
 
