@@ -546,6 +546,10 @@ class WallDanceGUI:
         if 'on_tracker_age_change' in self.callbacks:
             self.callbacks['on_tracker_age_change'](value)
     
+    def _on_mog2_scale_change(self, sender, value):
+        if 'on_mog2_scale_change' in self.callbacks:
+            self.callbacks['on_mog2_scale_change'](float(value))
+
     def _on_tracker_reset(self):
         if 'on_tracker_reset' in self.callbacks:
             self.callbacks['on_tracker_reset']()
@@ -1296,6 +1300,7 @@ class WallDanceGUI:
             'ids_gain_db': ['adv_ids_gain_slider'],
             'ids_exposure_us': ['adv_ids_exposure_slider'],
             'bg_sensitivity': ['bg_sensitivity_slider'],
+            'mog2_scale': ['mog2_scale_slider'],
         }
         if name in tag_map:
             for tag in tag_map[name]:

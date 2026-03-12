@@ -329,6 +329,7 @@ class WallDanceApp:
             "on_person_height_change": self._cb_person_height_change,
             "on_visualization_toggle": self._cb_visualization_toggle,
             "on_tracker_age_change": self._cb_tracker_age_change,
+            "on_mog2_scale_change": self._cb_mog2_scale_change,
             "on_tracker_reset": self._cb_tracker_reset,
             "on_osc_toggle": self._cb_osc_toggle,
             "on_osc_config": self._cb_osc_config,
@@ -398,6 +399,7 @@ class WallDanceApp:
             "ids_exposure_us": self.ids_exposure_us,
             "bg_subtract_enabled": self.settings.bg_subtract_enabled,
             "bg_subtract_sensitivity": self.settings.bg_subtract_sensitivity,
+            "mog2_scale": self.processor.motion_detector._scale if self.processor.motion_detector else 0.75,
         }
 
     def _update_topbar_state(self, selected_filepath: Optional[str] = None):
@@ -702,6 +704,10 @@ class WallDanceApp:
         if "bg_subtract_sensitivity" in config:
             self.settings.bg_subtract_sensitivity = config["bg_subtract_sensitivity"]
             self.gui and self.gui.sync_slider("bg_sensitivity", config["bg_subtract_sensitivity"])
+        # MOG2 scale
+        if "mog2_scale" in config and self.processor.motion_detector is not None:
+            self.processor.motion_detector.set_scale(config["mog2_scale"])
+            self.gui and self.gui.sync_slider("mog2_scale", config["mog2_scale"])
         # Update BG status display
         if self.gui:
             bg = self.processor.bg_subtractor
@@ -1095,6 +1101,11 @@ class WallDanceApp:
     def _cb_tracker_age_change(self, value: int):
         self.tracker.max_age = value
         print(f"Tracker max age: {value} frames")
+
+    def _cb_mog2_scale_change(self, value: float):
+        if self.processor.motion_detector is not None:
+            self.processor.motion_detector.set_scale(value)
+            print(f"MOG2 scale: {value:.2f} ({int(1920*value)}x{int(1080*value)})")
 
     def _cb_tracker_reset(self):
         self.tracker.reset()

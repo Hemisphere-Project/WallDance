@@ -20,6 +20,7 @@ from config import (
     MOTION_BRIDGE_MOG2_HISTORY,
     MOTION_BRIDGE_MOG2_VAR_THRESHOLD,
     MOTION_BRIDGE_MOG2_LEARN_RATE,
+    MOTION_BRIDGE_MOG2_SCALE,
     MOTION_BRIDGE_MIN_AREA,
 )
 
@@ -40,8 +41,6 @@ class MotionDetector:
     (value 127 in the MOG2 mask) is rejected automatically.
     """
 
-    _DOWNSAMPLE = 0.5  # Half-resolution for MOG2 (50px dancers → 25px, still OK for centroids)
-
     def __init__(self):
         self._mog2 = cv2.createBackgroundSubtractorMOG2(
             history=MOTION_BRIDGE_MOG2_HISTORY,
@@ -55,7 +54,17 @@ class MotionDetector:
         self._dilate_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
         # Cached foreground mask from last feed()
         self._fg_mask: np.ndarray | None = None
-        self._inv_scale = 1.0 / self._DOWNSAMPLE
+        self._scale = MOTION_BRIDGE_MOG2_SCALE
+        self._inv_scale = 1.0 / self._scale
+
+    def set_scale(self, scale: float) -> None:
+        """Change downscale factor and reset MOG2 model."""
+        scale = max(0.25, min(1.0, scale))
+        if abs(scale - self._scale) < 0.01:
+            return
+        self._scale = scale
+        self._inv_scale = 1.0 / scale
+        self.reset()
 
     def feed(self, gray: np.ndarray) -> None:
         """Update the MOG2 background model on a downscaled frame.
@@ -63,8 +72,11 @@ class MotionDetector:
         Call every frame to keep the model current.  The expensive
         contour extraction only happens when detect() is called.
         """
-        small = cv2.resize(gray, None, fx=self._DOWNSAMPLE, fy=self._DOWNSAMPLE,
-                           interpolation=cv2.INTER_AREA)
+        if self._scale < 1.0:
+            small = cv2.resize(gray, None, fx=self._scale, fy=self._scale,
+                               interpolation=cv2.INTER_AREA)
+        else:
+            small = gray
         # MOG2 apply — returns 0=bg, 127=shadow, 255=fg
         self._fg_mask = self._mog2.apply(small, learningRate=self._learn_rate)
 
@@ -84,7 +96,7 @@ class MotionDetector:
             return []
 
         # person_height in downscaled space
-        scaled_ph = max(1, int(person_height * self._DOWNSAMPLE))
+        scaled_ph = max(1, int(person_height * self._scale))
 
         # Keep only definite foreground (discard shadows at 127)
         fg_mask = (self._fg_mask == 255).astype(np.uint8) * 255
@@ -102,7 +114,7 @@ class MotionDetector:
         max_h = int(scaled_ph * 2.5)
         frame_area = fg_mask.shape[0] * fg_mask.shape[1]
         max_area = frame_area * 0.25  # no single blob > 25% of frame
-        min_area = max(10, int(self._min_area * self._DOWNSAMPLE * self._DOWNSAMPLE))
+        min_area = max(10, int(self._min_area * self._scale * self._scale))
 
         inv = self._inv_scale
         blobs: List[MotionBlob] = []

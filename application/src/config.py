@@ -401,6 +401,7 @@ MOTION_BRIDGE_GATE_RATIO = 0.5      # Blob must be within person_height × this
 MOTION_BRIDGE_MOG2_HISTORY = 500    # MOG2 background model history (frames)
 MOTION_BRIDGE_MOG2_VAR_THRESHOLD = 40  # Pixel deviation for foreground (raise for noisy BG)
 MOTION_BRIDGE_MOG2_LEARN_RATE = 0.001  # Very slow → dancers stay foreground
+MOTION_BRIDGE_MOG2_SCALE = 0.75    # Downscale factor for MOG2 (0.25-1.0, runs behind YOLO)
 MOTION_BRIDGE_MIN_AREA = 100        # Min blob area in px² (filter noise)
 # Progressive Kalman noise inflation: (bridge_frame_threshold, R_multiplier)
 MOTION_BRIDGE_NOISE_STAGES = [(10, 2.0), (30, 4.0), (80, 8.0)]

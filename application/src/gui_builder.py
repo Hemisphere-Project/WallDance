@@ -692,6 +692,24 @@ def build_detection_section(gui: Any):
         with dpg.tooltip(age_slider):
             dpg.add_text("How long (in frames) to remember a dancer\nwho disappears. Higher = keeps ID longer\nduring occlusions but slower to drop\nstale tracks. 30-45 is a good default.")
 
+        dpg.add_spacer(height=scaled(6))
+
+        # MOG2 Resolution
+        dpg.add_text("Motion Bridge Resolution", color=(180, 180, 180))
+        with dpg.group(horizontal=True):
+            mog2_slider = dpg.add_slider_float(
+                tag="mog2_scale_slider",
+                default_value=gui.config.get("mog2_scale", 0.75),
+                min_value=0.25,
+                max_value=1.0,
+                format="%.2f",
+                width=scaled(-90),
+                callback=gui._on_mog2_scale_change,
+            )
+            _add_slider_row("mog2_scale_slider", 0.05, 0.25, 1.0, gui._on_mog2_scale_change)
+        with dpg.tooltip(mog2_slider):
+            dpg.add_text("MOG2 background subtraction resolution.\nRuns in parallel with YOLO so cost is hidden.\n0.50 = fastest, 1.00 = best blob accuracy.\n0.75 is a good default for ~50px dancers.")
+
 
 def build_visualization_toolbar(gui: Any):
     """Compact icon-based visualization toggles."""
