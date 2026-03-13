@@ -672,7 +672,7 @@ class WallDanceApp:
             self.preview_enabled = config["preview_enabled"]
             self.gui and self.gui.sync_checkbox("preview", config["preview_enabled"])
         if "preview_fps_cap" in config:
-            self.preview_fps_cap = config["preview_fps_cap"]
+            self._cb_preview_cap_toggle(config["preview_fps_cap"])
             self.gui and self.gui.sync_checkbox("preview_cap", self.preview_fps_cap)
         if "input_fps_cap" in config:
             self.input_fps_cap = config["input_fps_cap"]
