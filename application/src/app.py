@@ -160,6 +160,7 @@ class WallDanceApp:
 
         self.enhancer = ImageEnhancer()
         self.tracker = DancerTracker()
+        self.tracker.logger.camera_id = CAMERA_INDEX
         self.tracker.set_person_height(PERSON_HEIGHT_PX)
         self.processor = FrameProcessor(
             model=self.model,
@@ -1136,11 +1137,57 @@ class WallDanceApp:
     def _on_playback_start_event(self, event: str):
         """Called by VideoRecorder on playback start/restart/loop.
         
-        Resets the tracker to avoid stale IDs carrying across takes.
+        Resets the tracker and creates a per-run session directory
+        so that logs and issue reports are isolated per take.
         """
         print(f"[Playback] Event '{event}' — resetting tracker")
         self._total_frame_count = 0
         self._cb_tracker_reset()
+        self._start_session()
+
+    def _start_session(self):
+        """Create a per-run session directory and redirect the logger."""
+        slot = self.recorder.status.current_slot
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        session_name = f"{stamp}_slot{slot}"
+        sessions_root = os.path.join(
+            self.config_store.config_dir,
+            self._current_project,
+            "sessions",
+        )
+        session_dir = os.path.join(sessions_root, session_name)
+        os.makedirs(session_dir, exist_ok=True)
+
+        # Redirect logger to the new session directory
+        self.tracker.logger.start_session(session_dir)
+        self.tracker.logger.log_settings(self._get_saveable_config())
+
+        # Write session metadata
+        meta = {
+            "session": session_name,
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "project": self._current_project,
+            "slot": slot,
+            "model": self.current_model_name,
+            "imgsz": self.settings.imgsz,
+            "playback_path": self.recorder.playback_path,
+        }
+        meta_path = os.path.join(session_dir, "session.json")
+        with open(meta_path, "w", encoding="utf-8") as fh:
+            json.dump(meta, fh, indent=2, default=_json_default)
+
+        # Maintain a 'latest' symlink
+        latest_link = os.path.join(sessions_root, "latest")
+        try:
+            if os.path.islink(latest_link):
+                os.remove(latest_link)
+            elif os.path.exists(latest_link):
+                os.remove(latest_link)
+            os.symlink(session_name, latest_link)
+        except OSError as exc:
+            print(f"[Session] Could not create 'latest' symlink: {exc}")
+
+        print(f"[Session] {session_dir}")
 
     def _cb_report_issue_request(self):
         """Build the current playback context for issue reporting."""
@@ -1175,12 +1222,19 @@ class WallDanceApp:
 
         issue_type contains comma-separated selected dancer IDs (e.g. "D1,D3")
         or empty string if none selected.
+
+        When a session directory is active, issues are written there;
+        otherwise falls back to the legacy ``review_issues/`` folder.
         """
-        issue_dir = os.path.join(
-            self.config_store.config_dir,
-            self._current_project,
-            "review_issues",
-        )
+        session_dir = self.tracker.logger.session_dir
+        if session_dir:
+            issue_dir = os.path.join(session_dir, "issues")
+        else:
+            issue_dir = os.path.join(
+                self.config_store.config_dir,
+                self._current_project,
+                "review_issues",
+            )
         os.makedirs(issue_dir, exist_ok=True)
 
         self.tracker.logger.flush()
