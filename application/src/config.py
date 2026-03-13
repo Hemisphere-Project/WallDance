@@ -207,7 +207,7 @@ SHADOW_TRACK_FRAMES = 12                # Consecutive shadow-correlated frames
 # gets special treatment to preserve identity during close dancing.
 TRACKER_ESTABLISHED_MAX_AGE_MULT = 3.0  # Established tracks survive this ×
                                          # longer without matches vs new tracks
-TRACKER_CLOSE_PROXIMITY_RATIO = 0.6     # Two tracks are "close" when distance
+TRACKER_CLOSE_PROXIMITY_RATIO = 0.35    # Two tracks are "close" when distance
                                          # < person_height × this.  Triggers
                                          # skeleton-dominant matching.
 TRACKER_CLOSE_POS_WEIGHT = 0.10         # Position weight when tracks are close
@@ -255,11 +255,14 @@ TRACKER_EVENT_LOG_FLUSH_INTERVAL = 2.0  # Seconds between auto-flushes
 # =============================================================================
 # PHASE 1 — HARDENED ASSOCIATION
 # =============================================================================
-TRACKER_MAHALANOBIS_GATE = 9.21         # Chi² gate (df=2, 99% confidence).
+TRACKER_MAHALANOBIS_GATE = 16.27        # Chi² gate (df=2, 99.97% confidence).
                                          # Rejects detection↔track pairs where
                                          # the detection is statistically too far
                                          # from the track's Kalman-predicted pos.
                                          # Prevents "teleport" assignments.
+                                         # Relaxed from 9.21 (99%) to avoid gating
+                                         # correct matches when Kalman velocity is
+                                         # amplified during track convergence.
                                          # Set to 0 to disable.
 TRACKER_MAHALANOBIS_GATE_NOISE = 700.0   # Measurement noise used ONLY for the
                                          # Mahalanobis gate covariance S.
@@ -296,6 +299,13 @@ TRACKER_MERGE_SWAP_COOLDOWN_FRAMES = 30 # After MERGE_DIRECTION_SWAP fires for a
                                          # many frames.  Prevents oscillation
                                          # when two crossing dancers keep
                                          # triggering swap ↔ re-swap cycles.
+TRACKER_MAX_DISPLACEMENT_RATIO = 0.5     # Max displacement (as fraction of
+                                         # distance_threshold) from last measured
+                                         # position for recently-matched established
+                                         # tracks.  Rejects cost-matrix entries
+                                         # where skeleton matching masks a bad
+                                         # centroid jump.  With dist_thresh=76px
+                                         # → cap ≈ 38px (p99 of good matches ≈ 18).
 TRACKER_TWO_OPT_SWAP = True              # Post-assignment 2-opt swap detector.
                                          # For each pair of nearby matched tracks,
                                          # check if swapping their detections

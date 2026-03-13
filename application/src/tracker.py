@@ -38,6 +38,7 @@ from config import (
     TRACKER_MERGE_SWAP_COOLDOWN_FRAMES,
     TRACKER_TWO_OPT_SWAP, TRACKER_TWO_OPT_MIN_GAIN,
     TRACKER_CLOSE_ACCEPT_RATIO,
+    TRACKER_MAX_DISPLACEMENT_RATIO,
     MOTION_BRIDGE_ENABLED, MOTION_BRIDGE_MAX_FRAMES,
     MOTION_BRIDGE_GATE_RATIO, MOTION_BRIDGE_NOISE_STAGES,
 )
@@ -594,6 +595,7 @@ class FrameUpdateContext:
     pending_updates: list[PendingTrackUpdate] = field(default_factory=list)
     post_update_clamp_indices: set[int] = field(default_factory=set)
     swapped_update_indices: set[int] = field(default_factory=set)
+    merge_zone_trk_indices: set[int] = field(default_factory=set)
 
 
 @dataclass
@@ -1001,6 +1003,27 @@ class DancerTracker:
                     cost_matrix[d, t] = 1e6
                     continue
 
+                # Displacement gate: for recently-matched established
+                # tracks, cap the per-frame displacement from last
+                # measured position.  Prevents skeleton-weighted cost
+                # from masking a bad centroid jump (→ ID swap).
+                if (TRACKER_MAX_DISPLACEMENT_RATIO > 0
+                        and track.is_established
+                        and track.time_since_update <= 1):
+                    max_disp = (self.distance_threshold
+                                * TRACKER_MAX_DISPLACEMENT_RATIO)
+                    raw_disp = float(np.linalg.norm(
+                        det_centroid - track.get_last_known_position()))
+                    if raw_disp > max_disp:
+                        cost_matrix[d, t] = 1e6
+                        self.logger.log("DISPLACEMENT_GATE", {
+                            "det": d,
+                            "track_id": track.track_id,
+                            "raw_disp": round(raw_disp, 1),
+                            "gate": round(max_disp, 1),
+                        })
+                        continue
+
                 pos_cost, last_known_pos, velocity = self._compute_position_cost(
                     det_centroid, track)
                 kpt_cost, n_both = self._compute_keypoint_cost(
@@ -1359,6 +1382,17 @@ class DancerTracker:
         if not self._mahalanobis_gate_allows(-1, det_centroid, track):
             return 1e6
 
+        # Displacement gate (mirrors _compute_cost_matrix)
+        if (TRACKER_MAX_DISPLACEMENT_RATIO > 0
+                and track.is_established
+                and track.time_since_update <= 1):
+            max_disp = (self.distance_threshold
+                        * TRACKER_MAX_DISPLACEMENT_RATIO)
+            raw_disp = float(np.linalg.norm(
+                det_centroid - track.get_last_known_position()))
+            if raw_disp > max_disp:
+                return 1e6
+
         mask_det = conf > KEYPOINT_CONFIDENCE
         det_kpts_norm = kpts - det_centroid
 
@@ -1647,11 +1681,21 @@ class DancerTracker:
 
     def _apply_track_update(self, trk_idx, kpts, conf, bbox,
                             frame_ctx: FrameUpdateContext | None):
-        """Apply an accepted match and stamp frame-level continuity metadata."""
+        """Apply an accepted match and stamp per-track merge metadata.
+
+        Only tracks whose detection centroid is close to another matched
+        track's detection get merge context.  This prevents far-apart
+        tracks from receiving spurious merge stamps when the frame-level
+        ``merge_frame`` flag fires due to an unrelated missing detection.
+        """
         track = self.tracks[trk_idx]
-        merge_frame = frame_ctx.merge_frame if frame_ctx is not None else False
-        track.update(kpts, conf, bbox, merge_frame=merge_frame)
-        track.note_match_event(self.frame_count, merge_frame=merge_frame)
+        in_merge_zone = (
+            frame_ctx is not None
+            and frame_ctx.merge_frame
+            and trk_idx in frame_ctx.merge_zone_trk_indices
+        )
+        track.update(kpts, conf, bbox, merge_frame=in_merge_zone)
+        track.note_match_event(self.frame_count, merge_frame=in_merge_zone)
 
     def _tracks_share_recent_merge_context(self, track_a: DancerTrack,
                                            track_b: DancerTrack) -> bool:
@@ -1678,9 +1722,19 @@ class DancerTracker:
         if not track_b.has_recent_merge_context(self.frame_count, window):
             return False
 
-        # Both have merge frames → require temporal correlation.
+        # Both have merge frames → require temporal correlation
+        # AND at least one must have been recently occluded.
+        # Without occlusion, neither track was hidden during a merge;
+        # they just happened to receive merge_frame stamps from an
+        # unrelated detection dropout.
         if has_merge_a and has_merge_b:
-            return abs(merge_a - merge_b) <= window
+            if abs(merge_a - merge_b) > window:
+                return False
+            occ_a = track_a._last_occluded_frame
+            occ_b = track_b._last_occluded_frame
+            recent_occ_a = occ_a >= 0 and (self.frame_count - occ_a) <= window
+            recent_occ_b = occ_b >= 0 and (self.frame_count - occ_b) <= window
+            return recent_occ_a or recent_occ_b
 
         # One merge + one occlusion → require occlusion is temporally close
         # to the merge (the occluded track was the one that lost detection).
@@ -1803,7 +1857,7 @@ class DancerTracker:
         # Restore counter — only advance past old value if needed
         DancerTrack._id_counter = max(saved_counter, new_track.track_id)
         new_track.restore_continuity(snap)
-        new_track.note_match_event(self.frame_count, merge_frame=frame_ctx.merge_frame)
+        new_track.note_match_event(self.frame_count, merge_frame=False)
         new_track.hits = max(self.min_hits, snap.hits)  # immediately confirmed
 
         self.logger.log("RESURRECT", {
@@ -1910,9 +1964,17 @@ class DancerTracker:
         for track in self.tracks:
             track.predict()
 
-        # Merge-frame detection: fewer detections than active tracks
-        # means YOLO merged bodies → skip pose history recording.
-        frame_ctx.merge_frame = len(detections) < len(self.tracks)
+        # Merge-frame detection: fewer detections than active established
+        # tracks means YOLO merged bodies → skip pose history recording.
+        # Only count established tracks that were matched recently — ghost
+        # tracks (from wind/trees/artefacts) must not inflate the count,
+        # otherwise merge_frame fires almost every frame and all tracks
+        # accumulate spurious merge context.
+        active_established = sum(
+            1 for t in self.tracks
+            if t.is_established and t.time_since_update <= 1
+        )
+        frame_ctx.merge_frame = len(detections) < active_established
 
     def _run_matching_phase(self, detections, matched_det, matched_trk,
                             matched_pairs_log, frame_ctx: FrameUpdateContext):
@@ -1971,6 +2033,41 @@ class DancerTracker:
                 self._check_two_opt_swaps(
                     detections, frame_ctx,
                     matched_det, matched_trk, matched_pairs_log)
+
+            # Compute per-track merge zones: only tracks whose
+            # detection is close to another matched detection OR to
+            # a recently-occluded track should get merge context.
+            # This prevents far-apart tracks from being tagged as
+            # merge participants when the missing detection is
+            # unrelated (ghost / artefact).
+            if frame_ctx.merge_frame:
+                merge_dist = self.distance_threshold * TRACKER_CLOSE_PROXIMITY_RATIO
+                centroids = []
+                for upd in frame_ctx.pending_updates:
+                    centroids.append(
+                        (upd.trk_idx,
+                         self._compute_centroid(upd.kpts, upd.conf, upd.bbox))
+                    )
+                # Check proximity among pending updates
+                for ai, (trk_a, cen_a) in enumerate(centroids):
+                    for bi in range(ai + 1, len(centroids)):
+                        trk_b, cen_b = centroids[bi]
+                        if abs(cen_a[0] - cen_b[0]) <= merge_dist:
+                            frame_ctx.merge_zone_trk_indices.add(trk_a)
+                            frame_ctx.merge_zone_trk_indices.add(trk_b)
+                # Also include tracks near a recently-occluded track's
+                # last position — handles genuine merges where the
+                # occluded partner has no pending_update.
+                occ_centroids = []
+                for ti, t in enumerate(self.tracks):
+                    if t.time_since_update > 0 and t._occluded:
+                        occ_centroids.append(t.get_centroid())
+                if occ_centroids:
+                    for trk_idx, cen in centroids:
+                        for occ_cen in occ_centroids:
+                            if abs(cen[0] - occ_cen[0]) <= merge_dist:
+                                frame_ctx.merge_zone_trk_indices.add(trk_idx)
+                                break
 
             # Apply all deferred updates
             for update in frame_ctx.pending_updates:
@@ -2556,8 +2653,11 @@ class DancerTracker:
         2. Velocity direction is highly correlated (cosine similarity
            ≥ SHADOW_TRACK_VELOCITY_CORR).
         3. Lower skeleton quality than the parent track.
+        4. The shadow candidate is NOT an established track — established
+           tracks are real dancers that happen to move in sync
+           (choreography), not ghost duplicates.
 
-        Tracks that satisfy all three for SHADOW_TRACK_FRAMES consecutive
+        Tracks that satisfy all four for SHADOW_TRACK_FRAMES consecutive
         frames are removed.
         """
         shadow_proximity = self.distance_threshold * SHADOW_PROXIMITY_RATIO
@@ -2603,6 +2703,12 @@ class DancerTracker:
                     shadow, parent = track_b, track_a
                 else:
                     continue  # equal quality — can't tell, skip
+
+                # Established tracks are real dancers moving in sync
+                # (choreography), not ghost duplicates.  Only kill
+                # tentative tracks that emerged recently.
+                if shadow.is_established:
+                    continue
 
                 shadow._shadow_streak += 1
                 incremented.add(shadow.track_id)
