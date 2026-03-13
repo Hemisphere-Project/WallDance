@@ -1666,10 +1666,12 @@ class WallDanceApp:
         # Sync to GPU pipeline if active
         if self.processor:
             self.processor.set_preview_fps_cap(10.0 if enabled else None)
+            # Also halve preview resolution when capped to reduce GPU→CPU transfer
+            self._sync_preview_size_to_gpu()
         if enabled:
-            print("Preview FPS cap: ON (10 FPS limit)")
+            print("Preview FPS cap: ON (10 FPS limit, 0.5x preview)")
         else:
-            print("Preview FPS cap: OFF (uncapped)")
+            print("Preview FPS cap: OFF (uncapped, full preview)")
 
     def _apply_preview_scale(self, value: float, force: bool = False):
         value = max(0.05, min(1.0, float(value)))
@@ -1682,11 +1684,20 @@ class WallDanceApp:
         self.preview.height = int(cam_h * self.preview.render_scale)
         self._pending_preview_resize = True
         # Sync to GPU pipeline if active (exact dimensions for GPU resize)
-        if self.processor:
-            self.processor.set_preview_size(self.preview.width, self.preview.height)
+        self._sync_preview_size_to_gpu()
         print(
             f"Preview render scale set: {self.preview.render_scale:.2f}x -> tex {self.preview.width}x{self.preview.height} (will resize)"
         )
+
+    def _sync_preview_size_to_gpu(self):
+        """Send preview dimensions to GPU pipeline, halved when cap is on."""
+        if not self.processor:
+            return
+        w, h = self.preview.width, self.preview.height
+        if self.preview_fps_cap:
+            w = max(1, w // 2)
+            h = max(1, h // 2)
+        self.processor.set_preview_size(w, h)
 
     def _cb_preview_scale_change(self, value: float):
         # Manual slider removed; kept for backward compat with configs
@@ -2684,13 +2695,14 @@ class WallDanceApp:
 
                 try:
                     _proc_t0 = time.perf_counter()
+                    _need_preview = self.preview_enabled and (self.frame_count % self.preview_stride == 0)
                     if gpu_tensor is not None:
                         tracked, display_frame, timing, latency_ms = self.processor.process_gpu_direct(
-                            gpu_tensor, frame_number=_display_frame_num
+                            gpu_tensor, need_preview=_need_preview, frame_number=_display_frame_num
                         )
                     elif frame is not None:
                         tracked, display_frame, timing, latency_ms = self.processor.process(
-                            frame, need_preview=True, frame_number=_display_frame_num
+                            frame, need_preview=_need_preview, frame_number=_display_frame_num
                         )
                     else:
                         time.sleep(0.001)

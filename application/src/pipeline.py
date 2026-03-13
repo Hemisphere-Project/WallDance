@@ -446,6 +446,7 @@ class FrameProcessor:
         if self._gpu_pipeline is not None:
             self._gpu_pipeline.settings.preview_width = width
             self._gpu_pipeline.settings.preview_height = height
+            self._gpu_pipeline._cached_preview = None
     
     def set_preview_fps_cap(self, fps_cap: Optional[float]):
         """Set preview FPS cap for GPU pipeline rate limiting."""

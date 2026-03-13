@@ -291,7 +291,7 @@ TRACKER_MERGE_DIRECTION_SWAP = True      # Post-cascade swap: when two tracks
                                          # on the wrong sides (velocity direction
                                          # reversed relative to pre-merge history),
                                          # swap them back.
-TRACKER_MERGE_SWAP_COOLDOWN_FRAMES = 8  # After MERGE_DIRECTION_SWAP fires for a
+TRACKER_MERGE_SWAP_COOLDOWN_FRAMES = 30 # After MERGE_DIRECTION_SWAP fires for a
                                          # pair of tracks, suppress it for this
                                          # many frames.  Prevents oscillation
                                          # when two crossing dancers keep

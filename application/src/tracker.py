@@ -1655,24 +1655,42 @@ class DancerTracker:
 
     def _tracks_share_recent_merge_context(self, track_a: DancerTrack,
                                            track_b: DancerTrack) -> bool:
-        """Check whether two tracks likely emerged from the same recent merge."""
-        window = max(4, min(TRACKER_POSE_HISTORY_DEPTH, 12))
+        """Check whether two tracks likely emerged from the same recent merge.
+
+        Require at least one track to have an actual merge frame (not just
+        occlusion) to avoid false positives from generic detection misses.
+        """
+        window = max(4, min(TRACKER_POSE_HISTORY_DEPTH, 6))
+
+        merge_a = track_a._last_merge_frame
+        merge_b = track_b._last_merge_frame
+
+        # At least one track must have actual merge context (not just
+        # occlusion) — a true merge means YOLO fused two bodies.
+        has_merge_a = merge_a >= 0 and (self.frame_count - merge_a) <= window
+        has_merge_b = merge_b >= 0 and (self.frame_count - merge_b) <= window
+        if not has_merge_a and not has_merge_b:
+            return False
+
+        # The non-merge track must at least have recent occlusion context.
         if not track_a.has_recent_merge_context(self.frame_count, window):
             return False
         if not track_b.has_recent_merge_context(self.frame_count, window):
             return False
 
-        merge_a = track_a._last_merge_frame
-        merge_b = track_b._last_merge_frame
-        if merge_a >= 0 and merge_b >= 0:
+        # Both have merge frames → require temporal correlation.
+        if has_merge_a and has_merge_b:
             return abs(merge_a - merge_b) <= window
 
-        occ_a = track_a._last_occluded_frame
-        occ_b = track_b._last_occluded_frame
-        if occ_a >= 0 and occ_b >= 0:
-            return abs(occ_a - occ_b) <= window
+        # One merge + one occlusion → require occlusion is temporally close
+        # to the merge (the occluded track was the one that lost detection).
+        merge_frame = merge_a if has_merge_a else merge_b
+        other = track_b if has_merge_a else track_a
+        occ = other._last_occluded_frame
+        if occ >= 0:
+            return abs(merge_frame - occ) <= window
 
-        return True
+        return False
 
     # ------------------------------------------------------------------
     # Dormant pool re-identification

@@ -1205,10 +1205,10 @@ class WallDanceGUI:
             path_yolo = timing.get('path_yolo', 'gpu')
             path_track = timing.get('path_track', 'cpu')
             
-            # Preview timing: only update when non-zero to avoid flickering
-            preview_time = pdraw + pup
-            if preview_time > 0:
-                self._last_preview_time = preview_time
+            # Preview timing: GPU download + CPU draw + texture upload
+            pdown = timing.get('preview_download', 0)
+            preview_time = pdown + pdraw + pup
+            self._last_preview_time = preview_time
 
             dpg.set_value("time_enhance", f"{enh:.0f}")
             dpg.set_value("time_yolo", f"{yolo:.0f}")
