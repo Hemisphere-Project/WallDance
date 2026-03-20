@@ -106,6 +106,37 @@ class IDSCameraState:
 import math as _math
 
 
+IDS_EXPOSURE_WARNING_FPS = 20.0
+IDS_EXPOSURE_MIN_FPS = 15.0
+
+
+def max_exposure_for_fps(min_fps: float) -> float:
+    """Return the theoretical max exposure time that still sustains min_fps."""
+    min_fps = float(min_fps)
+    if min_fps <= 0:
+        return 0.0
+    return 1_000_000.0 / min_fps
+
+
+def clamp_exposure_for_min_fps(
+    exposure_us: float,
+    min_fps: float = IDS_EXPOSURE_MIN_FPS,
+) -> float:
+    """Clamp manual exposure so it cannot theoretically push FPS below min_fps."""
+    exposure_us = float(exposure_us)
+    if exposure_us <= 0:
+        return 0.0
+    return min(exposure_us, max_exposure_for_fps(min_fps))
+
+
+def exposure_limited_fps(exposure_us: float) -> float:
+    """Return the FPS ceiling implied by a given exposure time."""
+    exposure_us = float(exposure_us)
+    if exposure_us <= 0:
+        return float("inf")
+    return 1_000_000.0 / exposure_us
+
+
 def compute_crop_from_budget(pixel_budget: int, ratio: float,
                              sensor_w: int = 0, sensor_h: int = 0) -> Tuple[int, int]:
     """Derive crop (W, H) from a pixel budget and aspect ratio.
@@ -700,8 +731,10 @@ class IDSCamera:
             if not self.settings.exposure_auto:
                 exp_node = nm.FindNode("ExposureTime")
                 requested_exp = self.settings.exposure_us if self.settings.exposure_us > 0 else self.settings.fallback_exposure_us
+                requested_exp = clamp_exposure_for_min_fps(requested_exp)
                 target_exp = max(exp_node.Minimum(), min(requested_exp, exp_node.Maximum()))
                 exp_node.SetValue(target_exp)
+                self.settings.exposure_us = exp_node.Value()
                 print(f"[IDSCamera] Exposure: Manual {exp_node.Value():.0f} µs")
 
             try:
@@ -1336,9 +1369,16 @@ class IDSCamera:
                 pass
             
             exp_node = self._node_map.FindNode("ExposureTime")
-            target = max(exp_node.Minimum(), min(exposure_us, exp_node.Maximum()))
+            clamped_request = clamp_exposure_for_min_fps(exposure_us)
+            if clamped_request < float(exposure_us):
+                print(
+                    f"[IDSCamera] Exposure request {float(exposure_us):.0f} µs exceeds "
+                    f"{IDS_EXPOSURE_MIN_FPS:.0f} FPS limit; clamping to {clamped_request:.0f} µs"
+                )
+            target = max(exp_node.Minimum(), min(clamped_request, exp_node.Maximum()))
             exp_node.SetValue(target)
             self.state.exposure_us = exp_node.Value()
+            self.settings.exposure_us = self.state.exposure_us
             self.settings.exposure_auto = False
             return True
         except Exception as e:

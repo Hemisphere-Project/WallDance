@@ -75,13 +75,36 @@ from video_recorder import VideoRecorder, RecorderState
 
 # IDS Camera support (optional, falls back to OpenCV)
 try:
-    from ids_camera import UnifiedCamera, IDSCamera, IDS_PEAK_AVAILABLE, CameraSource
+    from ids_camera import (
+        UnifiedCamera,
+        IDSCamera,
+        IDS_EXPOSURE_MIN_FPS,
+        IDS_EXPOSURE_WARNING_FPS,
+        IDS_PEAK_AVAILABLE,
+        CameraSource,
+        clamp_exposure_for_min_fps,
+        max_exposure_for_fps,
+    )
     UNIFIED_CAMERA_AVAILABLE = True
 except ImportError:
     UNIFIED_CAMERA_AVAILABLE = False
     IDS_PEAK_AVAILABLE = False
     UnifiedCamera = None
     CameraSource = None
+    IDS_EXPOSURE_MIN_FPS = 15.0
+    IDS_EXPOSURE_WARNING_FPS = 20.0
+
+    def max_exposure_for_fps(min_fps: float) -> float:
+        min_fps = float(min_fps)
+        if min_fps <= 0:
+            return 0.0
+        return 1_000_000.0 / min_fps
+
+    def clamp_exposure_for_min_fps(exposure_us: float, min_fps: float = IDS_EXPOSURE_MIN_FPS) -> float:
+        exposure_us = float(exposure_us)
+        if exposure_us <= 0:
+            return 0.0
+        return min(exposure_us, max_exposure_for_fps(min_fps))
 
 
 @dataclass
@@ -297,6 +320,9 @@ class WallDanceApp:
             "ids_ratio": self.ids_ratio,
             "ids_gain_db": self.ids_gain_db,
             "ids_exposure_us": self.ids_exposure_us,
+            "ids_exposure_max_us": max_exposure_for_fps(IDS_EXPOSURE_MIN_FPS),
+            "ids_exposure_min_fps": IDS_EXPOSURE_MIN_FPS,
+            "ids_exposure_warning_fps": IDS_EXPOSURE_WARNING_FPS,
             "texture_width": self.preview.width,
             "texture_height": self.preview.height,
             "camera_running": self.camera.state.is_open,
@@ -696,7 +722,7 @@ class WallDanceApp:
         # IDS exposure
         if "ids_exposure_us" in config:
             self._cb_ids_exposure_change(config["ids_exposure_us"])
-            self.gui and self.gui.sync_slider("ids_exposure_us", config["ids_exposure_us"])
+            self.gui and self.gui.sync_slider("ids_exposure_us", self.ids_exposure_us)
 
         # Background subtraction
         if "bg_subtract_enabled" in config:
@@ -1557,12 +1583,20 @@ class WallDanceApp:
 
     def _cb_ids_exposure_change(self, value: float):
         """Handle IDS exposure slider change."""
-        self.ids_exposure_us = float(value)
+        requested = float(value)
+        clamped = clamp_exposure_for_min_fps(requested, IDS_EXPOSURE_MIN_FPS)
+        if clamped < requested:
+            print(
+                f"[IDS Exposure] Requested {requested:.0f} µs exceeds "
+                f"{IDS_EXPOSURE_MIN_FPS:.0f} FPS limit; using {clamped:.0f} µs"
+            )
+        self.ids_exposure_us = clamped
         self.ids_exposure_auto = False
         if self._use_unified_camera and self.unified_camera is not None:
             self.unified_camera.set_exposure(self.ids_exposure_us)
             print(f"[IDS Exposure] {self.ids_exposure_us:.0f} µs")
         if self.gui:
+            self.gui.sync_slider("ids_exposure_us", self.ids_exposure_us)
             self.gui.sync_checkbox("ids_exposure_auto", False)
 
     def _cb_ids_exposure_auto_toggle(self, enabled: bool):

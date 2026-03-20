@@ -286,6 +286,7 @@ class WallDanceGUI:
             self.config.get('enhance_enabled', False),
             bypass=False
         )
+        self.update_ids_exposure_warning(self.config.get('ids_exposure_us', 0.0))
         
     def _setup_theme(self):
         setup_theme(self)
@@ -445,6 +446,7 @@ class WallDanceGUI:
             self.callbacks['on_ids_gain_change'](float(value))
 
     def _on_ids_exposure_change(self, sender, value):
+        self.update_ids_exposure_warning(float(value))
         if 'on_ids_exposure_change' in self.callbacks:
             self.callbacks['on_ids_exposure_change'](float(value))
 
@@ -1306,6 +1308,29 @@ class WallDanceGUI:
             for tag in tag_map[name]:
                 if dpg.does_item_exist(tag):
                     dpg.set_value(tag, value)
+        if name == 'ids_exposure_us':
+            self.update_ids_exposure_warning(value)
+
+    def update_ids_exposure_warning(self, exposure_us: float):
+        """Show an exposure warning only when manual exposure implies 15-20 FPS."""
+        tag = "adv_ids_exposure_warning"
+        if not dpg.does_item_exist(tag):
+            return
+
+        exposure_us = float(exposure_us)
+        if exposure_us <= 0:
+            dpg.configure_item(tag, show=False)
+            return
+
+        min_fps = float(self.config.get('ids_exposure_min_fps', 15.0))
+        warning_fps = float(self.config.get('ids_exposure_warning_fps', 20.0))
+        implied_fps = 1_000_000.0 / exposure_us
+
+        if min_fps <= implied_fps < warning_fps:
+            dpg.set_value(tag, f"Exposure-limited: {implied_fps:.1f} FPS")
+            dpg.configure_item(tag, color=(255, 180, 80), show=True)
+        else:
+            dpg.configure_item(tag, show=False)
     
     def sync_combo(self, name: str, value: str):
         """Sync combo box state."""

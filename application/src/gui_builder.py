@@ -1022,17 +1022,24 @@ def build_input_section(gui: Any):
 
             dpg.add_spacer(height=scaled(4))
             dpg.add_text("IDS Exposure (\u00b5s)", color=(180, 180, 180))
+            ids_exposure_max = float(gui.config.get("ids_exposure_max_us", 100000.0))
             with dpg.group(horizontal=True):
                 dpg.add_slider_float(
                     tag="adv_ids_exposure_slider",
                     default_value=gui.config.get("ids_exposure_us", 10000.0),
                     min_value=100.0,
-                    max_value=100000.0,
+                    max_value=ids_exposure_max,
                     format="%.0f",
                     width=scaled(-90),
                     callback=gui._on_ids_exposure_change,
                 )
-                _add_slider_row("adv_ids_exposure_slider", 500.0, 100.0, 100000.0, gui._on_ids_exposure_change)
+                _add_slider_row("adv_ids_exposure_slider", 500.0, 100.0, ids_exposure_max, gui._on_ids_exposure_change)
+            dpg.add_text(
+                "",
+                tag="adv_ids_exposure_warning",
+                color=(255, 180, 80),
+                show=False,
+            )
 
 
 def build_preview_section(gui: Any):
