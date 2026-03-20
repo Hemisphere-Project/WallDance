@@ -1,2 +1,13 @@
-- BG capture is not working with Playback
- 
+
+TODO =
++ mirror horizontal camera (+ rotate 90°)
+++ mask sides / ROI 
++++ camera selection weird avec IDS (plante ou necessite refresh+start)
++++ FPS 11 sur IDS
++ IDS ratio should not change preview for playback :)
++ clamp IDS exposure time to allow 15fps
+- Motion detect fallback avant Yolo (pour petits guguss sur fond fixe)
+- Desactiver mise à jour auto Windows
+
+TEST =
++++ launcher update broken !! -> git stash shit

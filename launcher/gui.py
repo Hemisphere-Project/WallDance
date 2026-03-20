@@ -161,18 +161,14 @@ class LauncherGUI(ctk.CTk):
                     # Ask user in main thread safely
                     update_choice = self.ask_update_sync()
                     if update_choice:
-                        if self.git_manager.has_local_changes():
-                            self.show_warning_sync("Conflict", "You have local changes that might conflict. Skipping update to prevent data loss.")
-                            self.append_log("Skipped update due to local changes.\n")
-                        else:
-                            self.update_status("Updating repository...")
-                            self.append_log("Pulling latest changes...\n")
-                            try:
-                                self.needs_install = self.git_manager.pull()
-                                self.append_log("Update complete.\n")
-                            except Exception as e:
-                                self.append_log(f"Failed to pull updates: {e}\n")
-                                self.show_error_sync("Update Failed", f"Failed to update: {e}")
+                        self.update_status("Updating repository...")
+                        self.append_log("Syncing to latest version...\n")
+                        try:
+                            self.needs_install = self.git_manager.update()
+                            self.append_log("Update complete.\n")
+                        except Exception as e:
+                            self.append_log(f"Failed to update: {e}\n")
+                            self.show_error_sync("Update Failed", f"Failed to update: {e}")
                 else:
                     self.append_log("No updates available.\n")
 

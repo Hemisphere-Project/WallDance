@@ -17,55 +17,63 @@ class GitManager:
         # without overriding client methods, so we'll just run it synchronously.
         porcelain.clone(self.repo_url, self.target_dir)
 
-    def has_local_changes(self):
-        if not self.is_cloned():
-            return False
-        repo = Repo(self.target_dir)
-        st = porcelain.status(repo)
-        # st is a namedtuple: Status(staged, unstaged, untracked)
-        # We consider staged or unstaged as local changes that might conflict.
-        # Untracked files usually don't conflict unless they have the same name as incoming files.
-        has_staged = bool(st.staged['add'] or st.staged['delete'] or st.staged['modify'])
-        has_unstaged = bool(st.unstaged)
-        return has_staged or has_unstaged
-
     def check_updates(self):
+        """Fetch from remote and return True if local HEAD is behind."""
         if not self.is_cloned():
             return False
         try:
             repo = Repo(self.target_dir)
-            # Fetch latest from remote
             porcelain.fetch(repo, self.repo_url)
-            
+
             local_head = repo.head()
-            
-            # Get remote HEAD
-            remote_refs = porcelain.ls_remote(self.repo_url)
-            remote_head = remote_refs.get(b'HEAD')
-            
-            if remote_head is None:
-                return False
-                
+            remote_head = repo.refs[b'refs/remotes/origin/HEAD']
+
             return local_head != remote_head
+        except KeyError:
+            # refs/remotes/origin/HEAD may not exist; fall back to origin/main
+            try:
+                repo = Repo(self.target_dir)
+                local_head = repo.head()
+                remote_head = repo.refs[b'refs/remotes/origin/main']
+                return local_head != remote_head
+            except Exception:
+                return False
         except Exception as e:
             print(f"Error checking updates: {e}")
             return False
 
-    def pull(self):
+    def update(self):
+        """Force-sync working tree to remote HEAD (fetch already done by check_updates)."""
         if not self.is_cloned():
             return False
         repo = Repo(self.target_dir)
         local_head_before = repo.head()
-        
-        porcelain.pull(self.target_dir, self.repo_url)
-        
-        local_head_after = repo.head()
-        
+
+        # Resolve the remote target commit
+        try:
+            remote_sha = repo.refs[b'refs/remotes/origin/HEAD']
+        except KeyError:
+            remote_sha = repo.refs[b'refs/remotes/origin/main']
+
+        # Update HEAD and main branch ref to the remote commit
+        repo.refs[b'refs/heads/main'] = remote_sha
+        repo.refs[b'HEAD'] = remote_sha
+
+        # Hard-reset: rebuild index and working tree from the new HEAD
+        import dulwich.index
+        indexfile = repo.index_path()
+        tree = repo[repo[remote_sha].tree]
+        dulwich.index.build_index_from_tree(
+            root_path=self.target_dir,
+            index_path=indexfile,
+            object_store=repo.object_store,
+            tree_id=tree.id,
+        )
+
         # Check if install.bat or application/pyproject.toml changed
-        changed_files = self._get_changed_files(repo, local_head_before, local_head_after)
-        
+        changed_files = self._get_changed_files(repo, local_head_before, remote_sha)
         needs_install = any(
-            f in [b'install.bat', b'application/pyproject.toml'] 
+            f in [b'install.bat', b'application/pyproject.toml']
             for f in changed_files
         )
         return needs_install
