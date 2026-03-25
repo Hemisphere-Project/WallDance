@@ -168,7 +168,7 @@ class WallDanceApp:
         self.ids_gain_db: float = 0.0        # Current IDS gain (dB), 0 = default
         self.ids_exposure_us: float = 10000.0  # Current IDS exposure (µs)
         if self._use_unified_camera:
-            self.unified_camera = UnifiedCamera(prefer_ids=True)
+            self.unified_camera = UnifiedCamera()
             self.camera = CameraManager()  # Keep for compatibility with camera state
             print(f"[Camera] UnifiedCamera available (IDS Peak: {IDS_PEAK_AVAILABLE})")
         else:
@@ -255,6 +255,12 @@ class WallDanceApp:
         # Pending operations (deferred to main loop)
         self._pending_camera_refresh = False
         self._pending_project_switch: Optional[str] = None  # Config filepath to switch to
+        self._camera_retry_backoff_s = 1.0
+        self._camera_retry_max_s = 5.0
+        self._next_camera_retry_time = 0.0
+        self._camera_reconnecting = False
+        self._ids_disconnect_timeout_s = 2.5
+        self._last_camera_open_time = 0.0
 
     # ------------------------------------------------------------------
     # OSC
@@ -274,7 +280,9 @@ class WallDanceApp:
     def _get_gui_config(self) -> Dict:
         state = self.camera.state
         all_sources = list(set(state.available + state.unavailable))
-        all_sources.sort(key=lambda x: (x not in state.available, x))
+        if state.source and state.source not in all_sources:
+            all_sources.append(state.source)
+        all_sources.sort(key=lambda x: (x not in state.available, x != "ids", x))
         
         # Get DPI scale for video display sizing
         dpi_scale = get_display_scale()
@@ -326,6 +334,7 @@ class WallDanceApp:
             "texture_width": self.preview.width,
             "texture_height": self.preview.height,
             "camera_running": self.camera.state.is_open,
+            "camera_reconnecting": self._camera_reconnecting,
         }
 
     def _get_gui_callbacks(self) -> Dict:
@@ -350,7 +359,6 @@ class WallDanceApp:
             "on_ids_gain_change": self._cb_ids_gain_change,
             "on_ids_exposure_change": self._cb_ids_exposure_change,
             "on_camera_change": self._cb_camera_change,
-            "on_camera_toggle": self._cb_camera_toggle,
             "on_camera_refresh": self._cb_camera_refresh,
             "on_imgsz_change": self._cb_imgsz_change,
             "on_person_height_change": self._cb_person_height_change,
@@ -386,6 +394,80 @@ class WallDanceApp:
             "on_issue_dialog_closed": self._cb_issue_dialog_closed,
             "on_quit": self._cb_quit,
         }
+
+    def _normalize_camera_source(self, source: Optional[str]) -> str:
+        normalized = (source or self.camera.state.source or str(CAMERA_INDEX)).replace(" (unavailable)", "").strip()
+        if normalized.lower().startswith("ids"):
+            return "ids"
+        return normalized
+
+    def _camera_ui_sources(self) -> List[str]:
+        sources = list(set(self.camera.state.available + self.camera.state.unavailable))
+        current = self._normalize_camera_source(self.camera.state.source)
+        if current and current not in sources:
+            sources.append(current)
+        sources.sort(key=lambda value: (value not in self.camera.state.available, value != "ids", value))
+        return sources
+
+    def _reset_camera_retry(self) -> None:
+        self._camera_retry_backoff_s = 1.0
+        self._next_camera_retry_time = 0.0
+        self._camera_reconnecting = False
+
+    def _schedule_camera_retry(self, delay: Optional[float] = None) -> None:
+        if delay is None:
+            delay = self._camera_retry_backoff_s
+            self._camera_retry_backoff_s = min(self._camera_retry_backoff_s * 1.5, self._camera_retry_max_s)
+        self._next_camera_retry_time = time.perf_counter() + max(0.0, delay)
+        self._camera_reconnecting = True
+
+    def _mark_camera_unavailable(self, source: Optional[str] = None, close_active: bool = False) -> None:
+        source = self._normalize_camera_source(source)
+        self.camera.state.source = source
+        self.camera.state.is_open = False
+        self._last_camera_open_time = 0.0
+
+        if close_active:
+            try:
+                if self._use_unified_camera and self.unified_camera is not None:
+                    self.unified_camera.close()
+                else:
+                    self.camera.close()
+            except Exception as exc:
+                print(f"[Camera] Close exception: {exc}")
+
+        if source in self.camera.state.available:
+            self.camera.state.available.remove(source)
+        if source not in self.camera.state.unavailable:
+            self.camera.state.unavailable.append(source)
+
+        if self.gui:
+            self.gui.update_camera_sources(self._camera_ui_sources(), source, self.camera.state.unavailable)
+            self.gui.update_camera_status(False, source, reconnecting=self._camera_reconnecting)
+            self.gui.config['camera_type'] = ""
+
+    def _attempt_camera_connect(self, source: Optional[str] = None, retry_on_fail: bool = True) -> bool:
+        source = self._normalize_camera_source(source)
+        self.camera.state.source = source
+        opened = self._open_camera(source)
+        if opened:
+            self._last_camera_open_time = time.perf_counter()
+            self._reset_camera_retry()
+            return True
+        self._mark_camera_unavailable(source)
+        if retry_on_fail:
+            self._schedule_camera_retry()
+        return False
+
+    def _ids_stream_timed_out(self) -> bool:
+        if not self._is_ids_camera_active() or self.unified_camera is None:
+            return False
+        frame_count, _ = self.unified_camera.get_ids_counters()
+        if frame_count <= 0:
+            if self._last_camera_open_time <= 0:
+                return False
+            return (time.perf_counter() - self._last_camera_open_time) > self._ids_disconnect_timeout_s
+        return self.unified_camera.get_last_acquired_age_s() > self._ids_disconnect_timeout_s
 
     # ------------------------------------------------------------------
     # Config persistence
@@ -566,17 +648,11 @@ class WallDanceApp:
         camera_source = config.get("camera_source", self.camera.state.source)
         if camera_was_open or camera_source != self.camera.state.source:
             print(f"[Project Switch] Opening camera {camera_source}...")
-            if CameraManager.check_camera_available(camera_source):
-                self._open_camera(camera_source)
+            if self._attempt_camera_connect(camera_source):
                 time.sleep(0.3)
                 if self.camera.cap:
                     for _ in range(5):
                         self.camera.cap.grab()
-            else:
-                print(f"[Project Switch] Camera {camera_source} not available")
-                self.camera.state.source = camera_source
-                if camera_source not in self.camera.state.unavailable:
-                    self.camera.state.unavailable.append(camera_source)
         
         # 14. Update UI
         self._update_topbar_state(selected_filepath=config_filepath)
@@ -584,9 +660,7 @@ class WallDanceApp:
         if self.gui:
             self.gui.sync_combo("model", base_name)
             self.gui.set_trt_checkbox(self.model_manager.is_using_tensorrt())
-            all_sources = list(set(self.camera.state.available + self.camera.state.unavailable))
-            all_sources.sort()
-            self.gui.update_camera_sources(all_sources, self.camera.state.source, self.camera.state.unavailable)
+            self.gui.update_camera_sources(self._camera_ui_sources(), self.camera.state.source, self.camera.state.unavailable)
             
             cam_type_str = ""
             if self._use_unified_camera and self.unified_camera is not None and self.unified_camera.is_open:
@@ -598,7 +672,11 @@ class WallDanceApp:
                 cam_type_str = "OPENCV"
             self.gui.config['camera_type'] = cam_type_str
             
-            self.gui.update_camera_status(self.camera.state.is_open, self.camera.state.source)
+            self.gui.update_camera_status(
+                self.camera.state.is_open,
+                self.camera.state.source,
+                reconnecting=self._camera_reconnecting,
+            )
         
         # 15. Resume processing
         self._model_loading = False
@@ -861,40 +939,17 @@ class WallDanceApp:
         self._request_reprocess()
 
     def _cb_camera_change(self, value: str):
-        source = value.replace(" (unavailable)", "").strip()
-        if source == self.camera.state.source:
+        source = self._normalize_camera_source(value)
+        if source == self.camera.state.source and self.camera.state.is_open:
             return
-        print(f"Switching camera to: {source}")
+        print(f"Selecting camera source: {source}")
         try:
-            self._open_camera(source)
+            self._attempt_camera_connect(source)
         except Exception as e:
             print(f"[Camera] Switch to '{source}' crashed: {e}")
             import traceback; traceback.print_exc()
-            # Mark unavailable so user sees the failure
-            self.camera.state.is_open = False
-            if source not in self.camera.state.unavailable:
-                self.camera.state.unavailable.append(source)
-            if self.gui:
-                all_sources = list(set(self.camera.state.available + self.camera.state.unavailable))
-                all_sources.sort()
-                self.gui.update_camera_sources(all_sources, source, self.camera.state.unavailable)
-                self.gui.update_camera_status(False, source)
-
-    def _cb_camera_toggle(self):
-        if self.camera.state.is_open:
-            print(f"Stopping camera {self.camera.state.source}...")
-            self.camera.close()
-            self.camera.state.is_open = False
-            if self.gui:
-                all_sources = list(set(self.camera.state.available + self.camera.state.unavailable))
-                all_sources.sort()
-                self.gui.update_camera_sources(all_sources, self.camera.state.source, self.camera.state.unavailable)
-                self.gui.update_camera_status(False, self.camera.state.source)
-        else:
-            print(f"Starting camera {self.camera.state.source}...")
-            opened = self._open_camera(self.camera.state.source)
-            if self.gui:
-                self.gui.update_camera_status(opened, self.camera.state.source)
+            self._mark_camera_unavailable(source)
+            self._schedule_camera_retry()
 
     def _cb_camera_refresh(self):
         """Request a camera list refresh (deferred to main loop)."""
@@ -904,7 +959,7 @@ class WallDanceApp:
         """Actually perform camera refresh - called from main loop."""
         print("Refreshing camera list...")
         # Remember current source and whether it was open
-        current_source = self.camera.state.source
+        current_source = self._normalize_camera_source(self.camera.state.source)
         was_open = self.camera.state.is_open
         
         # Close camera first so detection can find all cameras
@@ -926,10 +981,9 @@ class WallDanceApp:
         if IDS_PEAK_AVAILABLE:
             try:
                 ids_cameras = IDSCamera.list_cameras()
-                for cam in ids_cameras:
-                    source_id = f"ids:{cam.serial}"
-                    available_sources.append(source_id)
-                    print(f"IDS camera: {cam.model} (SN: {cam.serial})")
+                if ids_cameras:
+                    available_sources.append("ids")
+                    print(f"IDS cameras detected: {len(ids_cameras)}")
             except Exception as e:
                 print(f"IDS camera detection error: {e}")
             # Release IDS library NOW so OpenCV doesn't fight GenTL for USB
@@ -944,30 +998,39 @@ class WallDanceApp:
         opencv_cameras = CameraManager.detect_cameras()
         available_sources.extend(opencv_cameras)
         print(f"OpenCV cameras: {opencv_cameras}")
-        
-        # Add "auto" option for automatic detection
-        if "auto" not in available_sources:
-            available_sources.insert(0, "auto")
-        
+
+        available_sources = sorted(set(available_sources), key=lambda value: (value != "ids", value))
+        unavailable_sources = []
+        if current_source and current_source not in available_sources:
+            unavailable_sources.append(current_source)
+
         self.camera.state.available = available_sources
-        self.camera.state.unavailable = []
+        self.camera.state.unavailable = unavailable_sources
+        self.camera.state.source = current_source
         print(f"Available cameras: {available_sources}")
         
         # Update GUI
         if self.gui:
-            self.gui.update_camera_sources(self.camera.state.available, current_source, [])
+            self.gui.update_camera_sources(self._camera_ui_sources(), current_source, unavailable_sources)
+
+        if self.running and not was_open and current_source in self.camera.state.available:
+            self._attempt_camera_connect(current_source)
+            return
         
         # Reopen the camera if it was open and is still available
         if was_open:
             if current_source in self.camera.state.available:
-                self._open_camera(current_source)
+                self._attempt_camera_connect(current_source)
             else:
                 print(f"Camera {current_source} no longer available")
+                self._mark_camera_unavailable(current_source)
+                self._schedule_camera_retry()
                 if self.gui:
-                    self.gui.update_camera_status(False, current_source)
+                    self.gui.update_camera_status(False, current_source, reconnecting=self._camera_reconnecting)
 
     def _open_camera(self, source: str) -> bool:
         """Open camera using UnifiedCamera (IDS+OpenCV) or legacy CameraManager."""
+        source = self._normalize_camera_source(source)
         if self._use_unified_camera and self.unified_camera is not None:
             return self._open_camera_unified(source)
         else:
@@ -975,6 +1038,7 @@ class WallDanceApp:
     
     def _open_camera_unified(self, source: str) -> bool:
         """Open camera using UnifiedCamera (supports IDS and OpenCV)."""
+        source = self._normalize_camera_source(source)
         # Close any existing camera (guarded — close must not prevent re-open)
         try:
             self.unified_camera.close()
@@ -982,13 +1046,9 @@ class WallDanceApp:
             print(f"[Camera] Warning: close before switch failed: {e}")
         
         # Determine source type
-        # "ids" or "ids:SERIAL" for IDS cameras
-        # "auto" for auto-detection (IDS first, then OpenCV)
-        # numeric string for OpenCV index
-        if source.lower() == "auto" or source.lower().startswith("ids"):
+        if source.lower().startswith("ids"):
             camera_source = source
         else:
-            # Numeric source - use OpenCV
             camera_source = source
         
         opened = self.unified_camera.open(camera_source)
@@ -999,6 +1059,11 @@ class WallDanceApp:
             self.camera.state.width = self.unified_camera.width
             self.camera.state.height = self.unified_camera.height
             self.camera.state.source = source
+            if source in self.camera.state.unavailable:
+                self.camera.state.unavailable.remove(source)
+            if source not in self.camera.state.available:
+                self.camera.state.available.append(source)
+            self.camera.state.available.sort(key=lambda value: (value != "ids", value))
             
             # Report camera type
             source_type = self.unified_camera.source_type
@@ -1010,10 +1075,8 @@ class WallDanceApp:
                 cam_type_str = "OPENCV"
             
             if self.gui:
-                all_sources = list(set(self.camera.state.available + [source]))
-                all_sources.sort()
-                self.gui.update_camera_sources(all_sources, source, self.camera.state.unavailable)
-                self.gui.update_camera_status(True, source)
+                self.gui.update_camera_sources(self._camera_ui_sources(), source, self.camera.state.unavailable)
+                self.gui.update_camera_status(True, source, reconnecting=False)
                 self.gui.config['camera_type'] = cam_type_str
             
             # Update preview geometry
@@ -1027,14 +1090,13 @@ class WallDanceApp:
             self._pending_preview_resize = True
         else:
             self.camera.state.is_open = False
+            self._last_camera_open_time = 0.0
             if source not in self.camera.state.unavailable:
                 self.camera.state.unavailable.append(source)
             
             if self.gui:
-                all_sources = list(set(self.camera.state.available + self.camera.state.unavailable))
-                all_sources.sort()
-                self.gui.update_camera_sources(all_sources, source, self.camera.state.unavailable)
-                self.gui.update_camera_status(False, source)
+                self.gui.update_camera_sources(self._camera_ui_sources(), source, self.camera.state.unavailable)
+                self.gui.update_camera_status(False, source, reconnecting=self._camera_reconnecting)
                 self.gui.config['camera_type'] = ""
             print(f"[Camera] Failed to open: {source}")
         
@@ -1042,14 +1104,14 @@ class WallDanceApp:
     
     def _open_camera_legacy(self, source: str) -> bool:
         """Open camera using legacy CameraManager (OpenCV only)."""
+        source = self._normalize_camera_source(source)
         opened = self.camera.open(source)
         state = self.camera.state
         if opened:
+            self._last_camera_open_time = time.perf_counter()
             if self.gui:
-                all_sources = list(set(state.available + [source]))
-                all_sources.sort()
-                self.gui.update_camera_sources(all_sources, source, state.unavailable)
-                self.gui.update_camera_status(True, source)
+                self.gui.update_camera_sources(self._camera_ui_sources(), source, state.unavailable)
+                self.gui.update_camera_status(True, source, reconnecting=False)
                 self.gui.config['camera_type'] = "OPENCV"
             # Update preview geometry to match actual camera size
             self.preview.width = int(state.width * self.preview.render_scale)
@@ -1062,11 +1124,10 @@ class WallDanceApp:
             self._pending_preview_resize = True
             print(f"Camera {source} opened: {state.width}x{state.height}")
         else:
+            self._last_camera_open_time = 0.0
             if self.gui:
-                all_sources = list(set(state.available + state.unavailable))
-                all_sources.sort()
-                self.gui.update_camera_sources(all_sources, source, state.unavailable)
-                self.gui.update_camera_status(False, source)
+                self.gui.update_camera_sources(self._camera_ui_sources(), source, state.unavailable)
+                self.gui.update_camera_status(False, source, reconnecting=self._camera_reconnecting)
                 self.gui.config['camera_type'] = ""
             print(f"Camera {source} unavailable")
         return opened
@@ -2435,15 +2496,9 @@ class WallDanceApp:
         print("Detecting cameras...")
         self._do_camera_refresh()
 
-        ids_sources = [s for s in self.camera.state.available if s.startswith("ids:")]
-        if ids_sources and self.camera.state.source == str(CAMERA_INDEX):
-            self.camera.state.source = "auto"
-
         print(f"Opening camera {self.camera.state.source}...")
-        if not self._open_camera(self.camera.state.source):
+        if not self._attempt_camera_connect(self.camera.state.source):
             print(f"Warning: Camera {self.camera.state.source} not available, app will start without camera")
-            if self.camera.state.source not in self.camera.state.unavailable:
-                self.camera.state.unavailable.append(self.camera.state.source)
 
         print("Initializing GUI...")
         self.gui = WallDanceGUI(config=self._get_gui_config(), callbacks=self._get_gui_callbacks())
@@ -2532,6 +2587,15 @@ class WallDanceApp:
                 self._pending_camera_refresh = False
                 self._do_camera_refresh()
                 continue  # Restart loop after refresh
+
+            if (
+                not self.recorder.is_playing
+                and not self.camera.state.is_open
+                and self._next_camera_retry_time > 0.0
+                and time.perf_counter() >= self._next_camera_retry_time
+            ):
+                self._attempt_camera_connect(self.camera.state.source)
+                continue
             
             # Handle pending TRT build request (user clicked TRT checkbox, engine doesn't exist)
             if self._pending_trt_build is not None:
@@ -2670,6 +2734,12 @@ class WallDanceApp:
                     time.sleep(0.033)
                     continue
 
+                if self._ids_stream_timed_out():
+                    print("[Camera] IDS stream stalled, reconnecting silently")
+                    self._mark_camera_unavailable(self.camera.state.source, close_active=True)
+                    self._schedule_camera_retry(delay=0.5)
+                    continue
+
                 # Read frame (BGR numpy or GPU tensor for IDS)
                 gpu_tensor = None
                 frame = None
@@ -2698,23 +2768,9 @@ class WallDanceApp:
                 # ret=False means camera error, ret=True with frame=None means still initializing
                 if not ret:
                     print("Camera read failed, marking as unavailable")
-                    if self.camera.state.source not in self.camera.state.unavailable:
-                        self.camera.state.unavailable.append(self.camera.state.source)
-                    self.camera.state.is_open = False
-                    try:
-                        if self._use_unified_camera and self.unified_camera is not None:
-                            self.unified_camera.close()
-                        else:
-                            self.camera.close()
-                    except Exception as e:
-                        print(f"Camera close exception: {e}")
-                        if hasattr(self.camera, 'cap'):
-                            self.camera.cap = None
+                    self._mark_camera_unavailable(self.camera.state.source, close_active=True)
+                    self._schedule_camera_retry(delay=0.5)
                     if self.gui:
-                        all_sources = list(set(self.camera.state.available + self.camera.state.unavailable))
-                        all_sources.sort()
-                        self.gui.update_camera_sources(all_sources, self.camera.state.source, self.camera.state.unavailable)
-                        self.gui.update_camera_status(False, self.camera.state.source)
                         self.gui.render_frame()
                         # Update GPU stats
                         self._update_gpu_stats_if_due()
@@ -3014,6 +3070,7 @@ class WallDanceApp:
                 osc_ip=self.osc_ip,
                 osc_port=self.osc_port,
                 camera_running=self.camera.state.is_open,
+                camera_reconnecting=self._camera_reconnecting,
                 camera_type=self.gui.config.get('camera_type', ''),
                 enhance_bypassed=enhance_bypassed,
                 gpu_fallback_reason=self.processor.gpu_fallback_reason or "",

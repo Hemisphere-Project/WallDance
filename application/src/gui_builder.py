@@ -397,6 +397,13 @@ def build_top_bar(gui: Any):
                 cam_type_badge = dpg.add_text("[--]", tag="badge_cam_type", color=(150, 150, 150))
                 with dpg.tooltip(cam_type_badge):
                     dpg.add_text("Camera Source Type:\n[IDS] = IDS Peak SDK\n[CV] = OpenCV Fallback")
+                dpg.add_spacer(width=scaled(4))
+                dpg.add_text(
+                    "RECONNECTING",
+                    tag="camera_reconnect_label",
+                    color=(255, 200, 80),
+                    show=gui.config.get("camera_reconnecting", False),
+                )
                 dpg.add_spacer(width=scaled(6))
                 dpg.add_text("OSC:", color=(180, 180, 180))
                 osc_badge = dpg.add_text("OFF", tag="badge_osc", color=(255, 120, 120))
@@ -974,12 +981,6 @@ def build_input_section(gui: Any):
             )
             if gui._icon_font:
                 dpg.bind_item_font(refresh_btn, gui._icon_font)
-            dpg.add_button(
-                label="Stop" if gui.config.get("camera_running", True) else "Start",
-                tag="adv_camera_toggle_btn",
-                width=scaled(50),
-                callback=gui._on_camera_toggle,
-            )
 
         dpg.add_spacer(height=scaled(4))
         dpg.add_checkbox(

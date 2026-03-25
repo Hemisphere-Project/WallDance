@@ -453,10 +453,6 @@ class WallDanceGUI:
     def _on_camera_change(self, sender, value):
         if 'on_camera_change' in self.callbacks:
             self.callbacks['on_camera_change'](value)
-
-    def _on_camera_toggle(self, sender=None, value=None):
-        if 'on_camera_toggle' in self.callbacks:
-            self.callbacks['on_camera_toggle']()
     
     def _on_camera_refresh(self, sender=None, value=None):
         if 'on_camera_refresh' in self.callbacks:
@@ -1121,6 +1117,7 @@ class WallDanceGUI:
         osc_ip: str = "",
         osc_port: int = 0,
         camera_running: bool = True,
+        camera_reconnecting: bool = False,
         camera_type: str = "",
         enhance_bypassed: bool = False,
         gpu_fallback_reason: str = "",
@@ -1161,6 +1158,8 @@ class WallDanceGUI:
         if dpg.does_item_exist("badge_cam"):
             dpg.set_value("badge_cam", "ON" if camera_running else "OFF")
             dpg.configure_item("badge_cam", color=cam_color)
+        if dpg.does_item_exist("camera_reconnect_label"):
+            dpg.configure_item("camera_reconnect_label", show=camera_reconnecting)
             
         if dpg.does_item_exist("badge_cam_type"):
             if camera_type == "IDS_PEAK":
@@ -1436,6 +1435,9 @@ class WallDanceGUI:
         """
         if unavailable is None:
             unavailable = []
+
+        if current and current not in sources:
+            sources = list(sources) + [current]
         
         # Create display items with unavailable markers
         display_items = []
@@ -1455,22 +1457,15 @@ class WallDanceGUI:
                 elif current:
                     dpg.set_value(combo_tag, current)
 
-        # Disable toggle if current source is unavailable
-        if dpg.does_item_exist("adv_camera_toggle_btn"):
-            disabled = current in unavailable
-            dpg.configure_item("adv_camera_toggle_btn", enabled=not disabled)
-            if disabled:
-                dpg.configure_item("adv_camera_toggle_btn", label="Start")
-
-    def update_camera_status(self, running: bool, source: str = ""):
-        """Update camera toggle label and badge color."""
+    def update_camera_status(self, running: bool, source: str = "", reconnecting: bool = False):
+        """Update camera badge color."""
         self.camera_running = running
-        if dpg.does_item_exist("adv_camera_toggle_btn"):
-            dpg.configure_item("adv_camera_toggle_btn", label="Stop" if running else "Start")
         cam_color = (120, 255, 120) if running else (255, 120, 120)
         if dpg.does_item_exist("badge_cam"):
             dpg.set_value("badge_cam", "ON" if running else "OFF")
             dpg.configure_item("badge_cam", color=cam_color)
+        if dpg.does_item_exist("camera_reconnect_label"):
+            dpg.configure_item("camera_reconnect_label", show=reconnecting)
     
     def sync_input(self, name: str, value):
         """Sync input field state."""

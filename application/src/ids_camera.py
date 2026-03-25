@@ -1539,18 +1539,15 @@ class UnifiedCamera:
     """
     Unified camera interface supporting both OpenCV and IDS cameras.
     
-    Automatically uses IDS camera if available, falls back to OpenCV.
     Provides consistent interface for the rest of the application.
     """
     
-    def __init__(self, prefer_ids: bool = True, threaded: bool = True):
+    def __init__(self, threaded: bool = True):
         """Initialize unified camera.
         
         Args:
-            prefer_ids: If True, prefer IDS camera over OpenCV
             threaded: Use threaded capture for OpenCV (ignored for IDS)
         """
-        self.prefer_ids = prefer_ids
         self._threaded = threaded
         
         self._ids_camera: Optional[IDSCamera] = None
@@ -1563,12 +1560,11 @@ class UnifiedCamera:
         self.height: int = 0
         self.fps: float = 0.0
     
-    def open(self, source: str = "auto") -> bool:
+    def open(self, source: str = "ids") -> bool:
         """Open camera.
         
         Args:
-            source: "auto" for automatic, "ids" for IDS, "ids:SERIAL" for specific IDS,
-                   or integer/path for OpenCV
+            source: "ids" for any IDS camera, or integer/path for OpenCV
                    
         Returns:
             True if successful
@@ -1576,29 +1572,12 @@ class UnifiedCamera:
         self.close()
         
         # Determine source type
-        if source == "auto":
-            # Try IDS first if preferred
-            if self.prefer_ids and IDS_PEAK_AVAILABLE:
-                cameras = IDSCamera.list_cameras()
-                if cameras:
-                    return self._open_ids(cameras[0].serial)
-            # Fall back to OpenCV
-            return self._open_opencv("0")
-        
-        elif source.startswith("ids"):
-            # IDS camera
-            if source == "ids":
-                return self._open_ids(None)
-            else:
-                # ids:SERIAL format
-                serial = source.split(":", 1)[1] if ":" in source else None
-                return self._open_ids(serial)
-        
-        else:
-            # OpenCV source
-            return self._open_opencv(source)
+        if source.startswith("ids"):
+            return self._open_ids()
+
+        return self._open_opencv(source)
     
-    def _open_ids(self, serial: Optional[str]) -> bool:
+    def _open_ids(self) -> bool:
         """Open IDS camera."""
         if not IDS_PEAK_AVAILABLE:
             print("[UnifiedCamera] IDS Peak SDK not available")
@@ -1620,7 +1599,7 @@ class UnifiedCamera:
             )
             self._ids_camera = IDSCamera(settings)
             
-            if not self._ids_camera.open(serial):
+            if not self._ids_camera.open(None):
                 self._ids_camera = None
                 return False
             
@@ -1863,7 +1842,7 @@ def main():
         print("No IDS cameras found. Testing with OpenCV fallback...")
         
         # Test unified camera with OpenCV
-        unified = UnifiedCamera(prefer_ids=False)
+        unified = UnifiedCamera()
         if unified.open("0"):
             print(f"Opened OpenCV camera: {unified.width}x{unified.height}")
             
