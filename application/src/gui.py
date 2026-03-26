@@ -54,6 +54,8 @@ def get_display_scale() -> float:
     
     Supports: Windows, Linux (GNOME, KDE), macOS (basic)
     """
+    if hasattr(get_display_scale, "_cached"):
+        return get_display_scale._cached
     # Allow manual override via environment variable
     env_scale = os.environ.get('WALLDANCE_UI_SCALE')
     if env_scale:
@@ -189,6 +191,7 @@ def get_display_scale() -> float:
     print(f"[GUI] Screen width: {screen_width}, System scale: {system_scale}, "
           f"Logical width: {logical_width:.0f}, Base: {base_scale}, Using UI scale: {final_scale}")
     
+    get_display_scale._cached = final_scale
     return final_scale
 
 
