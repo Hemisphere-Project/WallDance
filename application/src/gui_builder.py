@@ -979,6 +979,15 @@ def build_input_section(gui: Any):
             )
             if gui._icon_font:
                 dpg.bind_item_font(refresh_btn, gui._icon_font)
+            settings_btn = dpg.add_button(
+                label=Icons.GEAR,
+                tag="ids_settings_toggle_btn",
+                width=scaled(25),
+                callback=gui._on_ids_settings_toggle,
+                show=(gui.config.get("camera_type", "") == "IDS_PEAK"),
+            )
+            if gui._icon_font:
+                dpg.bind_item_font(settings_btn, gui._icon_font)
 
         dpg.add_spacer(height=scaled(4))
         dpg.add_checkbox(
@@ -1005,6 +1014,8 @@ def build_input_section(gui: Any):
                 )
                 _add_slider_row("adv_ids_ratio_slider", 0.05, 0.5, 2.0, gui._on_ids_ratio_change)
 
+        # --- IDS hardware settings (gain/exposure) — toggled by gear button ---
+        with dpg.group(tag="ids_hw_settings_group", show=False):
             dpg.add_spacer(height=scaled(4))
             dpg.add_text("IDS Gain (dB)", color=(180, 180, 180))
             with dpg.group(horizontal=True):
@@ -1033,12 +1044,14 @@ def build_input_section(gui: Any):
                     callback=gui._on_ids_exposure_change,
                 )
                 _add_slider_row("adv_ids_exposure_slider", 500.0, 100.0, ids_exposure_max, gui._on_ids_exposure_change)
-            dpg.add_text(
-                "",
-                tag="adv_ids_exposure_warning",
-                color=(255, 180, 80),
-                show=False,
-            )
+
+        # Exposure warning — always visible (outside collapsible group)
+        dpg.add_text(
+            "",
+            tag="adv_ids_exposure_warning",
+            color=(255, 180, 80),
+            show=False,
+        )
 
 
 def build_preview_section(gui: Any):

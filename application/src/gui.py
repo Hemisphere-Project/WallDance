@@ -457,6 +457,13 @@ class WallDanceGUI:
     def _on_camera_refresh(self, sender=None, value=None):
         if 'on_camera_refresh' in self.callbacks:
             self.callbacks['on_camera_refresh']()
+
+    def _on_ids_settings_toggle(self, sender=None, value=None):
+        """Toggle visibility of IDS hardware settings (gain/exposure)."""
+        tag = "ids_hw_settings_group"
+        if dpg.does_item_exist(tag):
+            visible = dpg.get_item_configuration(tag)["show"]
+            dpg.configure_item(tag, show=not visible)
     
     def _on_imgsz_change(self, sender, value):
         if 'on_imgsz_change' in self.callbacks:
@@ -1173,8 +1180,13 @@ class WallDanceGUI:
                 dpg.configure_item("badge_cam_type", color=(150, 150, 150))
 
         # Show/hide IDS-specific sliders based on camera type
+        is_ids = (camera_type == "IDS_PEAK")
         if dpg.does_item_exist("ids_sliders_group"):
-            dpg.configure_item("ids_sliders_group", show=(camera_type == "IDS_PEAK"))
+            dpg.configure_item("ids_sliders_group", show=is_ids)
+        if dpg.does_item_exist("ids_settings_toggle_btn"):
+            dpg.configure_item("ids_settings_toggle_btn", show=is_ids)
+        if not is_ids and dpg.does_item_exist("ids_hw_settings_group"):
+            dpg.configure_item("ids_hw_settings_group", show=False)
 
         osc_color = (120, 255, 120) if osc_enabled else (255, 120, 120)
         if dpg.does_item_exist("badge_osc"):
