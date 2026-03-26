@@ -10,4 +10,4 @@ TODO =
 TEST =
 +++ launcher update broken !! -> git stash shit
 +++ camera selection weird avec IDS (plante ou necessite refresh+start)
-+ clamp IDS exposure time to allow 15fps  
++ clamp IDS exposure time to allow 15fps   
