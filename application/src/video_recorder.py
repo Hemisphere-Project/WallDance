@@ -53,6 +53,8 @@ class RecorderStatus:
     playback_frame: int = 0
     playback_total: int = 0
     playback_fps: float = 30.0  # FPS of the video being played
+    playback_width: int = 0
+    playback_height: int = 0
 
 
 class VideoRecorder:
@@ -529,6 +531,8 @@ class VideoRecorder:
         self._status.playback_frame = 0
         self._status.playback_total = int(self._reader.get(cv2.CAP_PROP_FRAME_COUNT))
         self._status.playback_fps = self._playback_fps
+        self._status.playback_width = int(self._reader.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self._status.playback_height = int(self._reader.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
         if start_frame is not None and self._status.playback_total > 0:
             target = max(0, min(int(start_frame), self._status.playback_total - 1))

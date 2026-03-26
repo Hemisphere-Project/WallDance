@@ -1894,8 +1894,17 @@ class WallDanceApp:
         self.recorder.go_live()
         self._pending_rec_slot = None
         self._rec_armed = False
+        # Restore live camera dimensions for preview aspect ratio
+        if self.gui and self.unified_camera and self.unified_camera.is_open:
+            self.gui.set_camera_dimensions(self.unified_camera.width, self.unified_camera.height)
         self._update_recording_ui()
         print("Switched to LIVE input")
+
+    def _apply_playback_dimensions(self):
+        """Update GUI preview dimensions to match the video being played."""
+        status = self.recorder.status
+        if self.gui and status.playback_width > 0 and status.playback_height > 0:
+            self.gui.set_camera_dimensions(status.playback_width, status.playback_height)
 
     def _cb_rec_toggle(self):
         """Toggle recording mode."""
@@ -1966,6 +1975,7 @@ class WallDanceApp:
         if slot_info.has_recordings:
             self.recorder.start_playback(slot)
             self._pending_rec_slot = None
+            self._apply_playback_dimensions()
             self._update_recording_ui()
         else:
             print(f"Slot {slot} is empty")
@@ -1976,6 +1986,7 @@ class WallDanceApp:
         for idx, (display, path) in enumerate(slot_info.recordings):
             if path == filepath:
                 self.recorder.start_playback(slot, idx)
+                self._apply_playback_dimensions()
                 self._update_recording_ui()
                 return
         print(f"Recording not found: {filepath}")
@@ -2734,6 +2745,8 @@ class WallDanceApp:
                         continue
                     # Decoder thread exited — playback truly ended
                     self.recorder.go_live()
+                    if self.unified_camera and self.unified_camera.is_open:
+                        self.gui.set_camera_dimensions(self.unified_camera.width, self.unified_camera.height)
                     self._update_recording_ui()
                     continue
             else:
