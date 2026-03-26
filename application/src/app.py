@@ -150,7 +150,7 @@ class WallDanceApp:
         self.settings = ProcessingSettings(
             confidence=YOLO_CONFIDENCE,
             imgsz=YOLO_IMGSZ,
-            use_fp16=False,
+            use_fp16=True,
             enhance_enabled=ENHANCE_ENABLED,
             enhance_lite=False,
             enhance_force=False,
@@ -354,7 +354,6 @@ class WallDanceApp:
             "on_confidence_change": self._cb_confidence_change,
             "on_model_change": self._cb_model_change,
             "on_trt_toggle": self._cb_trt_toggle,
-            "on_fp16_toggle": self._cb_fp16_toggle,
             "on_ids_ratio_change": self._cb_ids_ratio_change,
             "on_ids_gain_change": self._cb_ids_gain_change,
             "on_ids_exposure_change": self._cb_ids_exposure_change,
@@ -691,9 +690,6 @@ class WallDanceApp:
         if "confidence" in config:
             self.settings.confidence = config["confidence"]
             self.gui and self.gui.sync_slider("confidence", config["confidence"])
-        if "fp16" in config:
-            self.settings.use_fp16 = config["fp16"]
-            self.gui and self.gui.sync_checkbox("fp16", config["fp16"])
         if "person_height_px" in config:
             self.settings.person_height_px = config["person_height_px"]
             self.tracker.set_person_height(config["person_height_px"])
@@ -1603,10 +1599,6 @@ class WallDanceApp:
             self._pending_trt_switch = False
             self._pending_model_switch = base_name
             self._model_loading = True  # Block processing until model is reloaded
-
-    def _cb_fp16_toggle(self, enabled: bool):
-        self.settings.use_fp16 = enabled
-        print(f"FP16 inference: {'ON' if enabled else 'OFF'}")
 
     def _cb_ids_ratio_change(self, value: float):
         """Handle IDS crop-ratio slider change."""

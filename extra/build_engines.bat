@@ -20,6 +20,44 @@ if not %errorlevel%==0 (
     exit /b 1
 )
 
+rem Prevent ultralytics from auto-installing packages into the venv
+set "YOLO_AUTOINSTALL=0"
+
+rem ── Offer to download missing pose models ──────────────────────────
+set "MISSING_LIST="
+set "MISSING_COUNT=0"
+set "TOTAL_MODELS=5"
+
+for %%N in (
+    yolo11n-pose yolo11s-pose yolo11m-pose yolo11l-pose yolo11x-pose
+) do (
+    if not exist "%MODELS_DIR%\%%N.pt" (
+        set "MISSING_LIST=!MISSING_LIST! %%N"
+        set /a MISSING_COUNT+=1
+    )
+)
+
+if !MISSING_COUNT! GTR 0 (
+    echo === Missing pose models ^(!MISSING_COUNT!/!TOTAL_MODELS!^): ===
+    for %%N in (!MISSING_LIST!) do echo   - %%N.pt
+    echo.
+    set /p "DL_ANSWER=Download missing models before building engines? [Y/n] "
+    if "!DL_ANSWER!"=="" set "DL_ANSWER=Y"
+    if /i "!DL_ANSWER!"=="Y" (
+        for %%N in (!MISSING_LIST!) do (
+            echo === Downloading %%N.pt ===
+            uv run --no-sync python -c "import shutil,os;from ultralytics import YOLO;YOLO('%%N.pt');s='%%N.pt';d=os.path.join(r'%MODELS_DIR%',s);(os.path.isfile(s) and not os.path.abspath(s)==os.path.abspath(d)) and shutil.move(s,d)"
+            if errorlevel 1 (
+                echo === Warning: failed to download %%N.pt ===
+            )
+        )
+        echo === Downloads complete ===
+    ) else (
+        echo Skipping downloads.
+    )
+    echo.
+)
+
 set "FOUND_PT=0"
 set "TOTAL_VARIANTS=0"
 set "BUILT_VARIANTS=0"

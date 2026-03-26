@@ -23,6 +23,9 @@ gpu = [
     "nvidia-ml-py>=13.580.82",
     "tensorrt>=10.0.0",
     "kornia>=0.8.2",
+    "onnx>=1.12.0,<2.0.0",
+    "onnxslim>=0.1.71",
+    "onnxruntime-gpu",
 ]
 # IDS industrial camera SDK (requires IDS Peak installed on system)
 ids = [

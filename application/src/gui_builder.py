@@ -821,8 +821,6 @@ def build_model_section(gui: Any):
         with dpg.group(horizontal=True):
             dpg.add_combo(
                 items=[
-                    "yolo26n-pose", "yolo26s-pose", "yolo26m-pose",
-                    "yolo26l-pose", "yolo26x-pose",
                     "yolo11n-pose", "yolo11s-pose", "yolo11m-pose", 
                     "yolo11l-pose", "yolo11x-pose",
                 ],
@@ -830,12 +828,6 @@ def build_model_section(gui: Any):
                 default_value=gui.config.get("model", "yolo11m-pose"),
                 width=scaled(140),
                 callback=gui._on_model_change,
-            )
-            dpg.add_text("FP16:")
-            dpg.add_checkbox(
-                tag="adv_fp16_checkbox",
-                default_value=gui.config.get("fp16", False),
-                callback=gui._on_fp16_toggle,
             )
         
         dpg.add_spacer(height=scaled(4))

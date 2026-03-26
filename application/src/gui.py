@@ -433,10 +433,6 @@ class WallDanceGUI:
         if 'on_trt_toggle' in self.callbacks:
             self.callbacks['on_trt_toggle'](value)
     
-    def _on_fp16_toggle(self, sender, value):
-        if 'on_fp16_toggle' in self.callbacks:
-            self.callbacks['on_fp16_toggle'](value)
-    
     def _on_ids_ratio_change(self, sender, value):
         if 'on_ids_ratio_change' in self.callbacks:
             self.callbacks['on_ids_ratio_change'](float(value))
@@ -1275,7 +1271,6 @@ class WallDanceGUI:
             'preview': ['adv_preview_checkbox'],
             'preview_cap': ['adv_preview_cap_checkbox'],
             'input_fps_cap': ['adv_input_fps_cap_checkbox'],
-            'fp16': ['adv_fp16_checkbox'],
             'trt': ['adv_trt_checkbox'],
             'osc': ['osc_checkbox'],
             'bg_enable': ['bg_enable_checkbox'],

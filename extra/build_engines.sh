@@ -20,6 +20,49 @@ fi
 
 # Models are in the workspace models folder
 MODELS_DIR="$ROOT_DIR/models"
+mkdir -p "$MODELS_DIR"
+
+# Prevent ultralytics from auto-installing packages into the venv
+export YOLO_AUTOINSTALL=0
+
+# ── Offer to download missing pose models ──────────────────────────
+ALL_MODELS=(
+    yolo11n-pose yolo11s-pose yolo11m-pose yolo11l-pose yolo11x-pose
+)
+
+MISSING=()
+for m in "${ALL_MODELS[@]}"; do
+    [ ! -f "$MODELS_DIR/${m}.pt" ] && MISSING+=("$m")
+done
+
+if [ ${#MISSING[@]} -gt 0 ]; then
+    echo "=== Missing pose models (${#MISSING[@]}/${#ALL_MODELS[@]}): ==="
+    for m in "${MISSING[@]}"; do echo "  - ${m}.pt"; done
+    echo ""
+    read -rp "Download missing models before building engines? [Y/n] " answer
+    answer=${answer:-Y}
+    if [[ "$answer" =~ ^[Yy] ]]; then
+        for m in "${MISSING[@]}"; do
+            echo "=== Downloading ${m}.pt ==="
+            uv run --no-sync python -c "
+from ultralytics import YOLO
+import shutil, os
+m = YOLO('${m}.pt')            # auto-downloads from Ultralytics hub
+src = '${m}.pt'
+dst = os.path.join(r'$MODELS_DIR', src)
+if os.path.abspath(src) != os.path.abspath(dst) and os.path.isfile(src):
+    shutil.move(src, dst)
+"
+            if [ $? -ne 0 ]; then
+                echo "=== Warning: failed to download ${m}.pt ==="
+            fi
+        done
+        echo "=== Downloads complete ==="
+    else
+        echo "Skipping downloads."
+    fi
+    echo ""
+fi
 
 SIZES=(640 800 960 1280 1536 1920)
 
