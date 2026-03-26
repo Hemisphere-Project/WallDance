@@ -2036,15 +2036,6 @@ class WallDanceApp:
         cv2.line(frame, (x, y_top), (x, y_bottom), color, line_thickness)
         cv2.line(frame, (x - cap_width // 2, y_top), (x + cap_width // 2, y_top), color, line_thickness)
         cv2.line(frame, (x - cap_width // 2, y_bottom), (x + cap_width // 2, y_bottom), color, line_thickness)
-        label = f"{height_px}px"
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = max(0.3, 0.5 * ts)
-        thickness = max(1, int(1 * ts))
-        (tw, th), _ = cv2.getTextSize(label, font, font_scale, thickness)
-        text_x = x - tw // 2
-        text_y = y_bottom + th + int(8 * ts)
-        cv2.rectangle(frame, (text_x - 2, text_y - th - 2), (text_x + tw + 2, text_y + 2), bg_color, -1)
-        cv2.putText(frame, label, (text_x, text_y), font, font_scale, color, thickness)
 
     def _draw_frame_number_overlay(self, frame, frame_number: int):
         """Phase 0: Draw frame number overlay in the top-right corner.
