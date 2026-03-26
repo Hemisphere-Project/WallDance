@@ -23,21 +23,17 @@ class GitManager:
             return False
         try:
             repo = Repo(self.target_dir)
-            porcelain.fetch(repo, self.repo_url)
+            # Use remote name "origin" (not the raw URL) so dulwich resolves the
+            # refspec from .git/config and updates refs/remotes/origin/* properly.
+            fetch_result = porcelain.fetch(repo, "origin")
 
             local_head = repo.head()
-            remote_head = repo.refs[b'refs/remotes/origin/HEAD']
+            # Use the fetch result's refs (always fresh from the server)
+            remote_head = fetch_result.refs.get(b'refs/heads/main') or fetch_result.refs.get(b'HEAD')
+            if remote_head is None:
+                return False
 
             return local_head != remote_head
-        except KeyError:
-            # refs/remotes/origin/HEAD may not exist; fall back to origin/main
-            try:
-                repo = Repo(self.target_dir)
-                local_head = repo.head()
-                remote_head = repo.refs[b'refs/remotes/origin/main']
-                return local_head != remote_head
-            except Exception:
-                return False
         except Exception as e:
             print(f"Error checking updates: {e}")
             return False
@@ -63,11 +59,23 @@ class GitManager:
         import dulwich.index
         indexfile = repo.index_path()
         tree = repo[repo[remote_sha].tree]
+
+        def _safe_symlink(source, link_name):
+            """On Windows without developer mode, symlinks require admin privileges.
+            Fall back to writing the link target as a plain text file."""
+            try:
+                os.symlink(source, link_name)
+            except OSError:
+                with open(link_name, 'w') as f:
+                    f.write(source if isinstance(source, str) else source.decode())
+
         dulwich.index.build_index_from_tree(
             root_path=self.target_dir,
             index_path=indexfile,
             object_store=repo.object_store,
             tree_id=tree.id,
+            honor_filemode=False,
+            symlink_fn=_safe_symlink,
         )
 
         # Check if install.bat or application/pyproject.toml changed
