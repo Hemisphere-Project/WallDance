@@ -142,6 +142,7 @@ class WallDanceApp:
         self.current_model_name = YOLO_MODEL.replace(".pt", "").replace(".engine", "")
         self._model_loaded = False
         self._model_loading = False  # True while model is being loaded/switched
+        self._source_transitioning = False  # True during playback↔live transitions
         self._pending_model_switch: Optional[str] = None  # Deferred model switch
         self._pending_trt_switch: Optional[bool] = None  # True=switch to TRT, False=switch to PT
         self._pending_trt_build: Optional[str] = None  # Model name to build TRT engine for
@@ -550,7 +551,7 @@ class WallDanceApp:
         
         # 1. Stop any recording/playback (clear callback first)
         print("[Project Switch] Stopping recorder...")
-        self.camera.set_frame_callback(None)
+        self._set_camera_frame_callback(None)
         self.recorder.stop_recording()
         self.recorder.stop_playback()
         
@@ -1885,15 +1886,22 @@ class WallDanceApp:
     
     def _cb_rec_live(self):
         """Switch to live camera mode."""
-        self._set_camera_frame_callback(None)  # Clear recording callback
-        self.recorder.go_live()
-        self._pending_rec_slot = None
-        self._rec_armed = False
-        # Restore live camera dimensions for preview aspect ratio
-        if self.gui and self.unified_camera and self.unified_camera.is_open:
-            self.gui.set_camera_dimensions(self.unified_camera.width, self.unified_camera.height)
-        self._update_recording_ui()
-        print("Switched to LIVE input")
+        self._source_transitioning = True
+        try:
+            self._set_camera_frame_callback(None)  # Clear recording callback
+            self.recorder.go_live()
+            self._pending_rec_slot = None
+            self._rec_armed = False
+            # Restart IDS acquisition (was stopped during playback)
+            if self._use_unified_camera and self.unified_camera is not None:
+                self.unified_camera.start_acquisition()
+            # Restore live camera dimensions for preview aspect ratio
+            if self.gui and self.unified_camera and self.unified_camera.is_open:
+                self.gui.set_camera_dimensions(self.unified_camera.width, self.unified_camera.height)
+            self._update_recording_ui()
+            print("Switched to LIVE input")
+        finally:
+            self._source_transitioning = False
 
     def _apply_playback_dimensions(self):
         """Update GUI preview dimensions to match the video being played."""
@@ -1968,21 +1976,52 @@ class WallDanceApp:
         
         # Normal click: play if has recordings, show empty otherwise
         if slot_info.has_recordings:
-            self.recorder.start_playback(slot)
+            self._start_playback_safe(slot)
+        else:
+            print(f"Slot {slot} is empty")
+
+    def _start_playback_safe(self, slot: int, recording_index: int = 0):
+        """Start playback with proper IDS acquisition pause and transition guard.
+
+        Ensures USB3 DMA from the IDS camera is stopped before playback
+        begins, preventing PCIe bus contention with CUDA uploads that
+        can trigger driver-level IRQ conflicts (BSOD).
+        """
+        self._source_transitioning = True
+        try:
+            # Flush any in-flight GPU work from the previous source
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+            except Exception:
+                pass
+
+            # Stop IDS acquisition BEFORE opening the new VideoCapture.
+            # This eliminates USB3 DMA traffic during the transition and
+            # prevents the main loop from reading a stale IDS frame in
+            # the brief LIVE window inside start_playback().
+            if self._use_unified_camera and self.unified_camera is not None:
+                self.unified_camera.stop_acquisition()
+
+            if not self.recorder.start_playback(slot, recording_index):
+                # Playback failed — restart acquisition
+                if self._use_unified_camera and self.unified_camera is not None:
+                    self.unified_camera.start_acquisition()
+                return
+
             self._pending_rec_slot = None
             self._apply_playback_dimensions()
             self._update_recording_ui()
-        else:
-            print(f"Slot {slot} is empty")
+        finally:
+            self._source_transitioning = False
 
     def _play_recording(self, slot: int, filepath: str):
         """Play a specific recording from history."""
         slot_info = self.recorder.get_slot_info(slot)
         for idx, (display, path) in enumerate(slot_info.recordings):
             if path == filepath:
-                self.recorder.start_playback(slot, idx)
-                self._apply_playback_dimensions()
-                self._update_recording_ui()
+                self._start_playback_safe(slot, idx)
                 return
         print(f"Recording not found: {filepath}")
 
@@ -2697,7 +2736,7 @@ class WallDanceApp:
                 continue  # Restart loop after model switch
             
             # Skip processing while model is loading/switching
-            if self._model_loading:
+            if self._model_loading or self._source_transitioning:
                 dpg.render_dearpygui_frame()
                 time.sleep(0.016)  # ~60 FPS UI update
                 continue
@@ -2738,6 +2777,9 @@ class WallDanceApp:
                         continue
                     # Decoder thread exited — playback truly ended
                     self.recorder.go_live()
+                    # Restart IDS acquisition (was stopped when playback started)
+                    if self._use_unified_camera and self.unified_camera is not None:
+                        self.unified_camera.start_acquisition()
                     if self.unified_camera and self.unified_camera.is_open:
                         self.gui.set_camera_dimensions(self.unified_camera.width, self.unified_camera.height)
                     self._update_recording_ui()

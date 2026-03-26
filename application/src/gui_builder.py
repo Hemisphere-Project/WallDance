@@ -660,7 +660,7 @@ def build_detection_section(gui: Any):
                 width=scaled(90),
                 callback=gui._on_person_height_change,
             )
-            _add_slider_row("person_height_slider", 10, 20, 800, gui._on_person_height_change)
+            _add_slider_row("person_height_slider", 5, 20, 800, gui._on_person_height_change)
         with dpg.tooltip(height_slider):
             dpg.add_text("Expected dancer height in pixels at current\ncamera distance. All tracking thresholds\nscale from this value. Measure on the\npreview and adjust per venue.")
         
@@ -678,7 +678,7 @@ def build_detection_section(gui: Any):
                 width=scaled(-90),
                 callback=gui._on_confidence_change,
             )
-            _add_slider_row("show_conf_slider", 0.05, 0.1, 0.9, gui._on_confidence_change)
+            _add_slider_row("show_conf_slider", 0.01, 0.1, 0.9, gui._on_confidence_change)
         with dpg.tooltip(conf_slider):
             dpg.add_text("Detection sensitivity.\nLower = catches more dancers but may create\nghost detections from shadows or rigging.\nHigher = only confident detections.\nStart at 0.25, raise if you see ghosts.")
 

@@ -1847,6 +1847,24 @@ class UnifiedCamera:
             return (int(self._ids_camera.state.frame_count), int(self._ids_camera.state.dropped_frames))
         return (0, 0)
 
+    def stop_acquisition(self) -> None:
+        """Stop IDS acquisition (no-op for OpenCV).
+
+        Call before entering playback to eliminate USB3 DMA traffic and
+        prevent PCIe bus contention with CUDA uploads.
+        """
+        if self._source_type == CameraSource.IDS_PEAK and self._ids_camera is not None:
+            self._ids_camera.stop_acquisition()
+
+    def start_acquisition(self) -> bool:
+        """Restart IDS acquisition after playback (no-op for OpenCV).
+
+        Returns True on success or when not applicable.
+        """
+        if self._source_type == CameraSource.IDS_PEAK and self._ids_camera is not None:
+            return self._ids_camera.start_acquisition()
+        return True
+
 
 # =============================================================================
 # CLI Test
