@@ -1070,6 +1070,8 @@ class WallDanceApp:
             if source_type == CameraSource.IDS_PEAK:
                 print(f"[Camera] IDS camera opened: {self.unified_camera.width}x{self.unified_camera.height}")
                 cam_type_str = "IDS_PEAK"
+                # Re-apply stored gain/exposure so they survive webcam round-trips
+                self._reapply_ids_settings()
             else:
                 print(f"[Camera] OpenCV camera opened: {self.unified_camera.width}x{self.unified_camera.height}")
                 cam_type_str = "OPENCV"
@@ -1624,6 +1626,25 @@ class WallDanceApp:
                 print(f"[IDS Ratio] {ratio:.2f} → {self.unified_camera.width}x{self.unified_camera.height}")
             else:
                 print(f"[IDS Ratio] update_crop_ratio failed for ratio={ratio:.2f}")
+
+    def _reapply_ids_settings(self):
+        """Re-apply stored IDS gain/exposure after camera reopen."""
+        if not self._use_unified_camera or self.unified_camera is None:
+            return
+        # Exposure
+        if getattr(self, 'ids_exposure_auto', True):
+            self.unified_camera.set_exposure_auto(True)
+            print("[IDS Reopen] Exposure: auto")
+        else:
+            self.unified_camera.set_exposure(self.ids_exposure_us)
+            print(f"[IDS Reopen] Exposure: {self.ids_exposure_us:.0f} µs")
+        # Gain
+        if getattr(self, 'ids_gain_auto', True):
+            self.unified_camera.set_gain_auto(True)
+            print("[IDS Reopen] Gain: auto")
+        else:
+            self.unified_camera.set_gain(self.ids_gain_db)
+            print(f"[IDS Reopen] Gain: {self.ids_gain_db:.1f} dB")
 
     def _cb_ids_gain_change(self, value: float):
         """Handle IDS gain slider change."""

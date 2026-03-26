@@ -1348,6 +1348,27 @@ class IDSCamera:
     # ------------------------------------------------------------------
     # Controls (runtime adjustable)
     # ------------------------------------------------------------------
+    def _renegotiate_fps(self) -> None:
+        """Push AcquisitionFrameRate back up to target after exposure changes.
+
+        IDS cameras lower the HW max FPS when exposure is long, but do NOT
+        automatically raise it back when exposure is reduced.  We re-read
+        the (now higher) Maximum and set the frame rate to
+        min(target_fps, new_max).
+        """
+        if self._node_map is None:
+            return
+        try:
+            fps_node = self._node_map.FindNode("AcquisitionFrameRate")
+            new_max = fps_node.Maximum()
+            desired = min(self.settings.target_fps, new_max) if self.settings.target_fps > 0 else new_max
+            if abs(fps_node.Value() - desired) > 0.1:
+                fps_node.SetValue(desired)
+                self.state.fps = fps_node.Value()
+                print(f"[IDSCamera] FPS re-negotiated: {self.state.fps:.1f} (max {new_max:.1f})")
+        except Exception as e:
+            print(f"[IDSCamera] Could not re-negotiate FPS: {e}")
+
     def set_exposure(self, exposure_us: float) -> bool:
         """Set exposure time in microseconds.
         
@@ -1380,6 +1401,11 @@ class IDSCamera:
             self.state.exposure_us = exp_node.Value()
             self.settings.exposure_us = self.state.exposure_us
             self.settings.exposure_auto = False
+
+            # Re-negotiate FPS upward: after reducing exposure the HW max FPS
+            # increases, but AcquisitionFrameRate stays at the old clamped value
+            # unless we explicitly push it back up.
+            self._renegotiate_fps()
             return True
         except Exception as e:
             print(f"[IDSCamera] Failed to set exposure: {e}")

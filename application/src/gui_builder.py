@@ -825,8 +825,6 @@ def build_model_section(gui: Any):
                     "yolo26l-pose", "yolo26x-pose",
                     "yolo11n-pose", "yolo11s-pose", "yolo11m-pose", 
                     "yolo11l-pose", "yolo11x-pose",
-                    "yolov8n-pose", "yolov8s-pose", "yolov8m-pose", 
-                    "yolov8l-pose", "yolov8x-pose",
                 ],
                 tag="adv_model_combo",
                 default_value=gui.config.get("model", "yolo11m-pose"),

@@ -47,11 +47,9 @@ DENOISE_STRENGTH = 0.0              # 0.0 = Off, 0.9 = Strong smoothing
 # =============================================================================
 YOLO_MODEL = "yolo11m-pose.pt"      # Options: yolo26n/s/m/l/x-pose.pt (latest, NMS-free)
                                     #          yolo11n/s/m/l/x-pose.pt
-                                    #          yolov8n/s/m/l/x-pose.pt
                                     # n=fastest, x=most accurate
                                     # YOLO26: Latest, end-to-end NMS-free, optimized for edge
                                     # YOLO11: Well-balanced, production-ready
-                                    # YOLOv8: Older but well-tested
 YOLO_CONFIDENCE = 0.25              # Detection confidence threshold (0.1-0.9)
 YOLO_IOU_THRESHOLD = 0.45           # NMS IoU threshold
 YOLO_IMGSZ = 800                    # YOLO input size (640, 800, 960, 1280, 1536, 1920, 2560)
