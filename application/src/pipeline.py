@@ -367,10 +367,19 @@ class FrameProcessor:
         timing["yolo"] = (time.time() - t0) * 1000
         timing["path_yolo"] = "gpu"
 
+        # Scale person_height_px from original-camera space to letterboxed
+        # YOLO-tensor space.  Detections and the tracker both operate in
+        # the letterboxed coordinate system in the GPU path.
+        letterbox = gpu_timing.get('letterbox', {})
+        lb_scale = letterbox.get('scale', 1.0)
+        pad_x = letterbox.get('pad_x', 0)
+        pad_y = letterbox.get('pad_y', 0)
+        scaled_person_height = max(1, int(self.settings.person_height_px * lb_scale))
+
         # Extract detections
         t0 = time.time()
         detections = self._extract_detections(results)
-        detections = self._filter_duplicate_detections(detections)
+        detections = self._filter_duplicate_detections(detections, effective_person_height=scaled_person_height)
         timing["extract"] = (time.time() - t0) * 1000
         timing.update(self._extract_transfer_timing)
 
@@ -384,11 +393,8 @@ class FrameProcessor:
         # Set content-area bounds for edge-exit detection.
         # In the GPU path, tracker coords are in letterboxed imgsz-space;
         # the actual content sits between pad_x and imgsz - pad_x.
-        letterbox = gpu_timing.get('letterbox', {})
-        lb_scale = letterbox.get('scale', 1.0)
-        pad_x = letterbox.get('pad_x', 0)
-        pad_y = letterbox.get('pad_y', 0)
         self.tracker.set_frame_dimensions(self.settings.imgsz, pad_x=pad_x)
+        self.tracker.set_person_height(scaled_person_height)
 
         if self.motion_detector is not None and raw_frame is not None:
             # Wrap detector to scale blob coords to letterboxed YOLO space
@@ -534,8 +540,9 @@ class FrameProcessor:
 
         # 4. Tracking
         t0 = time.time()
-        # CPU path: YOLO outputs in original frame coords
+        # CPU path: YOLO outputs in original frame coords — no scaling needed
         self.tracker.set_frame_dimensions(original_w)
+        self.tracker.set_person_height(self.settings.person_height_px)
 
         t_trk = time.time()
         tracked = self.tracker.update(
@@ -670,16 +677,18 @@ class FrameProcessor:
                 }
         return detections
 
-    def _filter_duplicate_detections(self, detections):
+    def _filter_duplicate_detections(self, detections, effective_person_height: int | None = None):
         if len(detections) <= 1:
             return detections
 
+        ph = effective_person_height if effective_person_height is not None else self.settings.person_height_px
+
         # Conservative thresholds — require strong evidence before merging.
         # Centroid AND keypoint must BOTH be close (except for very-high IoU).
-        centroid_dist_thresh = self.settings.person_height_px * 0.3
-        keypoint_dist_thresh = self.settings.person_height_px * 0.1
-        min_height = self.settings.person_height_px * self.settings.person_height_min_ratio
-        max_height = self.settings.person_height_px * self.settings.person_height_max_ratio
+        centroid_dist_thresh = ph * 0.3
+        keypoint_dist_thresh = ph * 0.1
+        min_height = ph * self.settings.person_height_min_ratio
+        max_height = ph * self.settings.person_height_max_ratio
 
         size_filtered = []
         small_detections = []
@@ -699,7 +708,7 @@ class FrameProcessor:
             for i, (_, _, bbox) in enumerate(size_filtered):
                 main_center = np.array([bbox[0] + bbox[2] / 2, bbox[1] + bbox[3] / 2])
                 dist = np.linalg.norm(small_center - main_center)
-                if dist < self.settings.person_height_px * 1.5 and dist < best_dist:
+                if dist < ph * 1.5 and dist < best_dist:
                     best_dist = dist
                     best_match = i
             if best_match is not None:
@@ -718,7 +727,7 @@ class FrameProcessor:
         # --- Shadow suppression (pre-tracker) ---
         # Low-quality detections near a high-quality detection are likely
         # shadow ghosts. Suppress them before pairwise NMS.
-        shadow_radius = self.settings.person_height_px * SHADOW_PROXIMITY_RATIO
+        shadow_radius = ph * SHADOW_PROXIMITY_RATIO
         shadow_suppressed = set()
         for i, (kpts_i, conf_i, bbox_i) in enumerate(size_filtered):
             n_valid_i = int(np.sum(conf_i > KEYPOINT_CONFIDENCE))
