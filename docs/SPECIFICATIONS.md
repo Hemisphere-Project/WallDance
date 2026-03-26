@@ -1,8 +1,8 @@
-# WallDance - Technical Specifications
+﻿# WallDance - Technical Specifications
 
 **Project:** Multi-Person Pose Detection for Wall Dancers  
-**Version:** 1.6  
-**Last Updated:** December 9, 2025  
+**Version:** 2.0  
+**Last Updated:** March 26, 2026  
 **Status:** Production
 
 ---
@@ -21,8 +21,6 @@
 10. [Technical Challenges & Solutions](#10-technical-challenges--solutions)
 11. [Application Status](#11-application-status)
 12. [Future Enhancements](#12-future-enhancements)
-13. [Proposed Improvements](#13-proposed-improvements-dec-2025)
-14. [GPU Path Implementation](#14-gpu-path-implementation)
 - [Appendix A: Dependencies](#appendix-a-dependencies)
 - [Appendix B: OSC Testing](#appendix-b-osc-testing)
 - [Appendix C: Troubleshooting](#appendix-c-troubleshooting)
@@ -74,9 +72,9 @@ WallDance is a real-time computer vision system designed to detect and track mul
 | Component | Model | Specification | Rationale |
 |---|---|---|---|
 | Camera | IDS U3-34E0XCP-M-GL Rev.1.2 | 4MP Sony IMX664 Starvis 2, Monochrome | Excellent low-light, USB3 Vision, industrial grade |
-| Lens | Tamron M118FM08 | 8mm, 1/1.8", C-Mount, F1.8 | Wide FOV (~50° HFOV), bright aperture for low-light |
+| Lens | Tamron M118FM08 | 8mm, 1/1.8", C-Mount, F1.8 | Wide FOV (~50Â° HFOV), bright aperture for low-light |
 | IR Filter | MidOpt BP850-25.4 | 850nm bandpass, C-Mount | Blocks projector light, passes IR illumination |
-| Resolution | 2688×1520 (4MP native) | Native 4MP, can crop/bin to 1080p | High resolution for distant subjects |
+| Resolution | 2688Ã—1520 (4MP native) | Native 4MP, can crop/bin to 1080p | High resolution for distant subjects |
 | Frame Rate | 30-60 FPS | Configurable via SDK | Adjustable based on exposure needs |
 | Interface | USB3 Vision | Direct to PC, no capture card | Low latency (~5-10ms), SDK control |
 | Mounting | Fixed tripod/rigging | Stable, unobstructed view | Weather housing recommended |
@@ -84,8 +82,8 @@ WallDance is a real-time computer vision system designed to detect and track mul
 **Calculated Figure Size:**
 
 -   At 1080p covering 50m width: 1920px / 50m = 38.4 px/m
--   Average dancer height (1.7m): 1.7m × 38.4 = **~65 pixels**
--   At 4MP (2688px) covering 50m: 2688px / 50m = 53.8 px/m → **~91 pixels**
+-   Average dancer height (1.7m): 1.7m Ã— 38.4 = **~65 pixels**
+-   At 4MP (2688px) covering 50m: 2688px / 50m = 53.8 px/m â†’ **~91 pixels**
 -   This is below optimal detection threshold (~100px), requiring upscaling
 -   **Production camera (IDS 4MP)** improves native resolution by ~40%
 
@@ -125,20 +123,20 @@ For detailed hardware purchasing recommendations (capture cards, machine vision 
 
 | ID | Feature | Priority | Status |
 |---|---|---|---|
-| F1 | Multi-person detection (up to 6) | Critical | ✅ Implemented |
-| F2 | 17-keypoint skeleton extraction | Critical | ✅ Implemented |
-| F3 | Persistent ID tracking across frames | Critical | ✅ Implemented |
-| F4 | Low-light image enhancement | High | ✅ Implemented |
-| F5 | OSC output protocol | High | ✅ Implemented |
-| F6 | Real-time visualization | Medium | ✅ Implemented |
-| F7 | Configurable parameters | Medium | ✅ Implemented |
-| F8 | Resolution upscaling | High | ✅ Implemented |
-| F9 | DearPyGui control panel | Medium | ✅ Implemented |
-| F10 | Runtime model switching | Medium | ✅ Implemented |
-| F11 | FP16 half-precision inference | Medium | ✅ Implemented |
-| F12 | Frame skip option | Low | ✅ Implemented |
-| F13 | TensorRT acceleration | High | ✅ Implemented |
-| F14 | Auto model download | Medium | ✅ Implemented |
+| F1 | Multi-person detection (up to 6) | Critical | âœ… Implemented |
+| F2 | 17-keypoint skeleton extraction | Critical | âœ… Implemented |
+| F3 | Persistent ID tracking across frames | Critical | âœ… Implemented |
+| F4 | Low-light image enhancement | High | âœ… Implemented |
+| F5 | OSC output protocol | High | âœ… Implemented |
+| F6 | Real-time visualization | Medium | âœ… Implemented |
+| F7 | Configurable parameters | Medium | âœ… Implemented |
+| F8 | Resolution upscaling | High | âœ… Implemented |
+| F9 | DearPyGui control panel | Medium | âœ… Implemented |
+| F10 | Runtime model switching | Medium | âœ… Implemented |
+| F11 | FP16 half-precision inference | Medium | âœ… Implemented |
+| F12 | Frame skip option | Low | âœ… Implemented |
+| F13 | TensorRT acceleration | High | âœ… Implemented |
+| F14 | Auto model download | Medium | âœ… Implemented |
 
 ### 4.2 Detection Requirements
 
@@ -165,36 +163,32 @@ For detailed hardware purchasing recommendations (capture cards, machine vision 
 ### 5.1 System Overview
 
 ```
-┌─────────────┐     ┌──────────────┐     ┌─────────────────┐
-│   Camera    │────▶│ Capture Card │────▶│   WallDance     │
-│ (Sony A7)   │     │  (HDMI/SDI)  │     │   Application   │
-└─────────────┘     └──────────────┘     └────────┬────────┘
-                                                  │
-                    ┌─────────────────────────────┴─────────────────────────────┐
-                    │                             ▼                             │
-                    │  ┌─────────────┐    ┌──────────────┐    ┌──────────────┐  │
-                    │  │  Enhancer   │───▶│   Detector   │───▶│   Tracker    │  │
-                    │  │ (CLAHE+γ)   │    │  (YOLO11m)   │    │(Kalman+Hung) │  │
-                    │  └─────────────┘    └──────────────┘    └──────┬───────┘  │
-                    │                                                │          │
-                    │  ┌─────────────────────────────────────────────┼───────┐  │
-                    │  │                                             ▼       │  │
-                    │  │  ┌──────────────┐              ┌──────────────────┐ │  │
-                    │  │  │    OSC       │◀─────────────│  Visualization   │ │  │
-                    │  │  │   Output     │              │     Display      │ │  │
-                    │  │  └──────┬───────┘              └──────────────────┘ │  │
-                    │  │         │                                           │  │
-                    │  └─────────┼───────────────────────────────────────────┘  │
-                    │            │                   WallDance Application      │
-                    └────────────┼──────────────────────────────────────────────┘
-                                 │
-                                 ▼
-                    ┌─────────────────────────┐
-                    │   OSC Receivers         │
-                    │  - VJ Software          │
-                    │  - Lighting DMX         │
-                    │  - Projection Mapping   │
-                    └─────────────────────────┘
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”     â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚   IDS Camera      â”‚â”€â”€â”€â”€â–¶â”‚     WallDance        â”‚
+â”‚ (U3-34E0XCP, USB3)â”‚     â”‚     Application      â”‚
+â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜     â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+                                     â”‚
+                    â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”´â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+                    â”‚                    â–¼                        â”‚
+                    â”‚  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”  â”‚
+                    â”‚  â”‚  Enhancer   â”‚â”€â–¶â”‚   Detector   â”‚â”€â–¶â”‚  Tracker   â”‚  â”‚
+                    â”‚  â”‚(CLAHE+Î³ GPU)â”‚  â”‚ (YOLO11 TRT) â”‚  â”‚(Kalman+Hung)â”‚ â”‚
+                    â”‚  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜  â””â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”˜ â”‚
+                    â”‚                                           â”‚        â”‚
+                    â”‚  â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”              â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”´â”€â”€â”€â”€â”€â”€â” â”‚
+                    â”‚  â”‚    OSC       â”‚â—€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”‚  Visualization  â”‚ â”‚
+                    â”‚  â”‚   Output     â”‚              â”‚     Display     â”‚ â”‚
+                    â”‚  â””â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”˜              â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜ â”‚
+                    â”‚         â”‚                   WallDance Application  â”‚
+                    â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”¼â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+                              â”‚
+                              â–¼
+                    â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+                    â”‚   OSC Receivers         â”‚
+                    â”‚  - VJ Software          â”‚
+                    â”‚  - Lighting DMX         â”‚
+                    â”‚  - Projection Mapping   â”‚
+                    â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
 ```
 
 ### 5.2 Software Stack
@@ -202,10 +196,11 @@ For detailed hardware purchasing recommendations (capture cards, machine vision 
 | Layer | Technology | Version | Purpose |
 |---|---|---|---|
 | Runtime | Python | 3.10+ | Main application |
-| ML Framework | PyTorch | 2.4.1+cu121 | GPU inference |
+| ML Framework | PyTorch | 2.10+ | GPU inference |
 | Detection | Ultralytics YOLO11 | Latest | Pose estimation |
-| Tracking | FilterPy + SciPy | Latest | Kalman filter, Hungarian algorithm |
-| Image Processing | OpenCV | 4.x | Enhancement, upscaling |
+| Tracking | SciPy | Latest | Kalman filter, Hungarian algorithm |
+| GPU Processing | Kornia | Latest | GPU enhancement (CLAHE, gamma) |
+| Image Processing | OpenCV | 4.x | CPU fallback, video I/O |
 | GUI | DearPyGui | 2.1+ | GPU-accelerated control panel |
 | OSC | python-osc | Latest | Network output |
 | Package Manager | uv | Latest | Fast dependency management |
@@ -214,34 +209,41 @@ For detailed hardware purchasing recommendations (capture cards, machine vision 
 
 ```
 application/
-├── src/
-│   ├── main.py          # Application entry point
-│   ├── app.py           # Main application orchestrator
-│   ├── gui.py           # DearPyGui control panel
-│   ├── gui_builder.py   # UI component builders
-│   ├── config.py        # Configuration parameters
-│   ├── config_store.py  # Project/config persistence
-│   ├── enhancer.py      # Low-light enhancement (CLAHE + gamma)
-│   ├── tracker.py       # Kalman filter + Hungarian tracking
-│   ├── osc_output.py    # OSC message formatting
-│   ├── visualization.py # Drawing helpers, overlays
-│   ├── camera_manager.py# Camera handling
-│   ├── model_manager.py # YOLO model loading/switching
-│   ├── pipeline.py      # Processing pipeline
-│   └── video_recorder.py# Recording functionality
-├── assets/              # Icons, fonts
-└── pyproject.toml       # Dependencies
+â”œâ”€â”€ src/
+â”‚   â”œâ”€â”€ main.py          # Application entry point
+â”‚   â”œâ”€â”€ app.py           # Main application orchestrator
+â”‚   â”œâ”€â”€ gui.py           # DearPyGui control panel
+â”‚   â”œâ”€â”€ gui_builder.py   # UI component builders
+â”‚   â”œâ”€â”€ gui_icons.py     # Icon/theme helpers
+â”‚   â”œâ”€â”€ config.py        # Configuration parameters
+â”‚   â”œâ”€â”€ config_store.py  # Project/config persistence
+â”‚   â”œâ”€â”€ enhancer.py      # Low-light enhancement (CLAHE + gamma)
+â”‚   â”œâ”€â”€ tracker.py       # Kalman filter + Hungarian tracking
+â”‚   â”œâ”€â”€ tracking_logger.py # Structured JSONL event logger
+â”‚   â”œâ”€â”€ osc_output.py    # OSC message formatting
+â”‚   â”œâ”€â”€ visualization.py # Drawing helpers, overlays
+â”‚   â”œâ”€â”€ camera_manager.py# Camera handling (OpenCV)
+â”‚   â”œâ”€â”€ ids_camera.py    # IDS Peak SDK camera + UnifiedCamera
+â”‚   â”œâ”€â”€ model_manager.py # YOLO model loading/switching
+â”‚   â”œâ”€â”€ pipeline.py      # Processing pipeline (CPU + GPU paths)
+â”‚   â”œâ”€â”€ gpu_pipeline.py  # Zero-copy GPU pipeline (Kornia)
+â”‚   â”œâ”€â”€ background.py    # Static background subtraction
+â”‚   â”œâ”€â”€ motion_detector.py # MOG2 foreground blob detector
+â”‚   â””â”€â”€ video_recorder.py# Recording functionality
+â”œâ”€â”€ assets/              # Icons, fonts
+â””â”€â”€ pyproject.toml       # Dependencies
 
 # Workspace root scripts:
-├── run.sh               # Launch application
-├── install.sh           # Install dependencies
+â”œâ”€â”€ run.sh / run.bat     # Launch application
+â”œâ”€â”€ install.sh / install.bat # Install dependencies
+â””â”€â”€ projects/            # Per-project configs and recordings
 
 # Extra scripts:
-└── extra/
-    ├── build_engines.sh   # Build TensorRT engines (Linux)
-    ├── build_engines.bat  # Build TensorRT engines (Windows)
-    ├── gpu_limiter.sh     # Set NVIDIA GPU power limit (Linux)
-    └── gpu_limiter.bat    # Set NVIDIA GPU power limit (Windows)
+â””â”€â”€ extra/
+    â”œâ”€â”€ build_engines.sh   # Build TensorRT engines (Linux)
+    â”œâ”€â”€ build_engines.bat  # Build TensorRT engines (Windows)
+    â”œâ”€â”€ gpu_limiter.sh     # Set NVIDIA GPU power limit (Linux)
+    â””â”€â”€ gpu_limiter.bat    # Set NVIDIA GPU power limit (Windows)
 ```
 
 ---
@@ -251,39 +253,33 @@ application/
 ### 6.1 Pipeline Stages
 
 ```
-Frame Input (1920×1080)
-       │
-       ▼
-┌───────────────────┐
-│ 1. Enhancement    │  CLAHE (clip=3.0, tile=8×8) + Gamma (1.2)
-│    (if dark)      │  Auto-detect brightness < 60
-└───────┬───────────┘
-       │
-       ▼
-┌───────────────────┐
-│ 2. Upscale        │  2.0× → 3840×2160 (4K equivalent)
-│    (configurable) │  Improves small figure detection
-└───────┬───────────┘
-       │
-       ▼
-┌───────────────────┐
-│ 3. YOLO Inference │  yolo11m-pose.pt
-│                   │  Outputs: bboxes, 17 keypoints per person
-└───────┬───────────┘
-       │
-       ▼
-┌───────────────────┐
-│ 4. Tracking       │  Associate detections with existing tracks
-│    (Kalman+Hung)  │  Predict, update, handle lost tracks
-└───────┬───────────┘
-       │
-       ▼
-┌───────────────────┐
-│ 5. Scale Back     │  Convert coordinates to original resolution
-│                   │  Create output copies (don't modify tracker state)
-└───────┬───────────┘
-       │
-       ▼
+Camera Frame
+       â”‚
+       â–¼
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚ 1. GPU Upload     â”‚  Upload to GPU once (zero-copy for IDS)
+â””â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+       â”‚
+       â–¼
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚ 2. Enhancement    â”‚  Kornia CLAHE + Gamma (GPU)
+â”‚    (if dark)      â”‚  Auto-detect brightness, progressive blend
+â””â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+       â”‚
+       â–¼
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚ 3. YOLO Inference â”‚  YOLO11 via TensorRT or PyTorch
+â”‚    (zero-copy)    â”‚  GPU tensor passed directly to model
+â””â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+       â”‚
+       â–¼
+â”Œâ”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”
+â”‚ 4. Tracking       â”‚  Cascaded matching, Mahalanobis gate,
+â”‚    (Kalman+Hung)  â”‚  displacement gate, swap correction,
+â”‚                   â”‚  MOG2 motion bridge for lost tracks
+â””â”€â”€â”€â”€â”€â”€â”€â”¬â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”˜
+       â”‚
+       â–¼
 OSC Output + Visualization
 ```
 
@@ -299,18 +295,20 @@ All models are selectable at runtime via the GUI dropdown.
 | yolo11l-pose | 50M | 15+ FPS | Excellent | High accuracy needs |
 | yolo11x-pose | 100M | 10+ FPS | Maximum | Offline processing |
 
+Default `imgsz`: **800** (configurable via GUI: 640, 800, 960, 1280, 1536, 1920).
+
 ### 6.2.1 Performance Optimization Options
 
 | Option | Speedup | Notes |
 |---|---|---|
 | **TensorRT Acceleration** | +50-100% | Toggle in GUI, requires engine build (2-5 min first time) |
 | **FP16 Half Precision** | +20-30% | Toggle in GUI, minimal accuracy loss |
-| **Frame Skip** | N+1× fewer inferences | Reuses last tracking result for skipped frames |
-| **Smaller Model** | 2-4× faster | yolo11n vs yolo11m |
+| **Frame Skip** | N+1Ã— fewer inferences | Reuses last tracking result for skipped frames |
+| **Smaller Model** | 2-4Ã— faster | yolo11n vs yolo11m |
 
 ### 6.2.2 TensorRT Engine System
 
-TensorRT engines provide significant inference speedup (2×+) but are tied to specific input sizes.
+TensorRT engines provide significant inference speedup (2Ã—+) but are tied to specific input sizes.
 
 **Engine Naming Convention:**
 - Engines are named `{model}_{imgsz}.engine` (e.g., `yolo11m-pose_960.engine`)
@@ -319,8 +317,8 @@ TensorRT engines provide significant inference speedup (2×+) but are tied to sp
 
 **GUI Controls:**
 - **TRT Checkbox**: Enable/disable TensorRT for the current model
-- If engine exists for current imgsz → switches immediately
-- If engine missing → prompts to build (2-5 minutes)
+- If engine exists for current imgsz â†’ switches immediately
+- If engine missing â†’ prompts to build (2-5 minutes)
 - Engine built with FP16 for optimal speed/accuracy balance
 
 **Build Process:**
@@ -331,9 +329,9 @@ TensorRT engines provide significant inference speedup (2×+) but are tied to sp
 5. Model automatically switches to TRT engine
 
 **Automatic Fallback:**
-- If TensorRT not installed → checkbox disabled, toast shown
-- If engine load fails → falls back to PyTorch model
-- On startup with saved TRT config but missing engine → uses PyTorch
+- If TensorRT not installed â†’ checkbox disabled, toast shown
+- If engine load fails â†’ falls back to PyTorch model
+- On startup with saved TRT config but missing engine â†’ uses PyTorch
 
 ### 6.3 Keypoint Schema (COCO 17-point)
 
@@ -344,16 +342,16 @@ TensorRT engines provide significant inference speedup (2×+) but are tied to sp
      /         \
    3       4  (L/R Ear)
 
-    5───────6  (L/R Shoulder)
-    │       │
+    5â”€â”€â”€â”€â”€â”€â”€6  (L/R Shoulder)
+    â”‚       â”‚
     7       8  (L/R Elbow)
-    │       │
+    â”‚       â”‚
     9      10  (L/R Wrist)
 
-   11──────12  (L/R Hip)
-    │       │
+   11â”€â”€â”€â”€â”€â”€12  (L/R Hip)
+    â”‚       â”‚
    13      14  (L/R Knee)
-    │       │
+    â”‚       â”‚
    15      16  (L/R Ankle)
 ```
 
@@ -362,39 +360,54 @@ TensorRT engines provide significant inference speedup (2×+) but are tied to sp
 **State Vector (6 dimensions):**
 
 ```
-x = [x, y, vx, vy, ax, ay]ᵀ
-     │  │   │   │   │   └── Y acceleration
-     │  │   │   │   └────── X acceleration  
-     │  │   │   └────────── Y velocity
-     │  │   └────────────── X velocity
-     │  └──────────────────  Y position (centroid)
-     └─────────────────────  X position (centroid)
+x = [x, y, vx, vy, ax, ay]áµ€
+     â”‚  â”‚   â”‚   â”‚   â”‚   â””â”€â”€ Y acceleration
+     â”‚  â”‚   â”‚   â”‚   â””â”€â”€â”€â”€â”€â”€ X acceleration  
+     â”‚  â”‚   â”‚   â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Y velocity
+     â”‚  â”‚   â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ X velocity
+     â”‚  â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€  Y position (centroid)
+     â””â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€  X position (centroid)
 ```
 
 **Motion Model:** Constant acceleration
 
 ```
-F = [1  0  dt  0   0.5dt²   0     ]
-    [0  1  0   dt  0        0.5dt²]
+F = [1  0  dt  0   0.5dtÂ²   0     ]
+    [0  1  0   dt  0        0.5dtÂ²]
     [0  0  1   0   dt       0     ]
     [0  0  0   1   0        dt    ]
     [0  0  0   0   1        0     ]
     [0  0  0   0   0        1     ]
 ```
 
-### 6.5 Hungarian Algorithm Assignment
+### 6.5 Multi-Stage Association
 
 **Cost Matrix Construction:**
 
--   Distance = Euclidean distance between predicted track position and detection centroid
--   Velocity-adjusted prediction: `predicted_pos + velocity × weight`
--   Dynamic threshold based on track speed
+-   Cascaded matching: established tracks matched first, then tentative/suppressed
+-   Mahalanobis gate (chiÂ² > 16.27, df=2) blocks implausible pairs
+-   Displacement gate (max 0.5Ã— distance threshold) prevents centroid jumps
+-   Weighted cost: position + skeleton shape + size + IoU + trajectory + separation + direction
+-   Per-track merge zones detect close-proximity situations and apply specialized weights
 
 **Assignment:**
 
 -   Optimal bipartite matching using `scipy.optimize.linear_sum_assignment`
--   Unmatched detections → new tracks
--   Unmatched tracks → increment age, delete if age > max_age
+-   Post-assignment swap correction: occlusion swap, merge-direction swap, 2-opt swap
+-   Unmatched detections â†’ force-update / fallback / resurrect from dormant / new track
+-   Unmatched tracks â†’ MOG2 motion bridge (up to 80 frames) or age toward dormant
+
+### 6.6 Motion Bridge (MOG2)
+
+Bridges YOLO detection gaps using background subtraction foreground blobs:
+
+| Tier | Condition | Update source | Keypoints |
+|------|-----------|---------------|-----------|
+| 1 | YOLO matched | Full detection | Live |
+| 2 | No YOLO, blob available | MOG2 blob centroid | Frozen from last YOLO |
+| 3 | No YOLO, no blob | Kalman-only prediction | Frozen |
+
+Blobs never create new tracks or resurrect dormant ones. Progressive Kalman noise: RÃ—2 (1-10f), RÃ—4 (11-30f), RÃ—8 (31-80f).
 
 ---
 
@@ -410,14 +423,14 @@ F = [1  0  dt  0   0.5dt²   0     ]
 | `/walldance/dancer/centroid` | `[id, x, y]` | int, float | Normalized 0-1 |
 | `/walldance/dancer/bbox` | `[id, x, y, w, h]` | int, float | Normalized 0-1 |
 | `/walldance/dancer/velocity` | `[id, vx, vy]` | int, float | Normalized per frame |
-| `/walldance/dancer/keypoints` | `[id, x0,y0,c0, ...]` | int, float | 1 + 51 values (id + 17×3) |
+| `/walldance/dancer/keypoints` | `[id, x0,y0,c0, ...]` | int, float | 1 + 51 values (id + 17Ã—3) |
 | `/walldance/clear` | `[1]` | int | Reset signal |
 
 **Coordinate System:**
 
 -   Origin: Top-left (0, 0)
--   X: 0 (left) → 1 (right)
--   Y: 0 (top) → 1 (bottom)
+-   X: 0 (left) â†’ 1 (right)
+-   Y: 0 (top) â†’ 1 (bottom)
 
 ### 7.2 OSC Configuration
 
@@ -431,7 +444,7 @@ F = [1  0  dt  0   0.5dt²   0     ]
 
 | Protocol | Use Case | Complexity |
 |---|---|---|
-| **OSC** | VJ/Audio software | ✅ Implemented |
+| **OSC** | VJ/Audio software | âœ… Implemented |
 | MQTT | IoT, distributed systems | Medium |
 | WebSocket | Web-based visualizers | Medium |
 | DMX/ArtNet | Direct lighting control | High |
@@ -443,66 +456,71 @@ F = [1  0  dt  0   0.5dt²   0     ]
 
 ### 8.1 Latency Budget
 
-| Stage | Target | Current | Notes |
+| Stage | Target | Typical | Notes |
 |---|---|---|---|
-| Capture | <50ms | ~30-100ms | Depends on capture card |
-| Enhancement | <5ms | ~8-12ms | Target: GPU CLAHE (see Section 14) |
-| Upscale | <5ms | ~3-5ms | Target: GPU resize (see Section 14) |
-| YOLO Inference | <40ms | ~30-50ms | RTX 3090, 2× upscale |
+| Capture | <10ms | ~0.3ms (IDS GPU direct) | IDS USB3 zero-copy; ~3ms OpenCV |
+| Enhancement | <5ms | ~2-4ms | GPU Kornia CLAHE+gamma |
+| YOLO Inference | <30ms | ~15-18ms | TensorRT FP16, imgsz 800 |
 | Tracking | <2ms | ~1ms | CPU, lightweight |
 | OSC Send | <1ms | <1ms | UDP, no confirmation |
-| **Total** | **<100ms** | **~70-150ms** | Glass-to-glass |
+| **Total** | **<50ms** | **~20-25ms** | Glass-to-OSC (GPU path) |
 
 ### 8.2 Frame Rate Targets
 
-| Upscale | Resolution | Target FPS | Achieved FPS |
-|---|---|---|---|
-| 1.0× | 1920×1080 | 30+ | ~35 |
-| 1.5× | 2880×1620 | 25+ | ~28 |
-| **2.0×** | 3840×2160 | 20+ | **~22** |
-| 2.5× | 4800×2700 | 15+ | ~16 |
-| 3.0× | 5760×3240 | 12+ | ~12 |
+Frame rate depends on model, imgsz, and inference backend (TRT vs PyTorch).
 
-### 8.3 Resource Utilization (RTX 3090)
+| Model | imgsz | Backend | Typical FPS (RTX 5080) |
+|---|---|---|---|
+| yolo11n-pose | 800 | TensorRT | ~60+ |
+| yolo11s-pose | 800 | TensorRT | ~50+ |
+| yolo11m-pose | 800 | TensorRT | ~35-40 |
+| yolo11m-pose | 1280 | TensorRT | ~20-25 |
+| yolo11l-pose | 800 | TensorRT | ~20-25 |
+| yolo11x-pose | 1280 | TensorRT | ~10-15 |
+
+### 8.3 Resource Utilization (RTX 5080 Laptop)
 
 | Resource | Typical Usage | Peak |
 |---|---|---|
-| GPU Compute | 60-80% | 95% |
-| VRAM | 4-6 GB | 8 GB |
-| CPU | 15-25% | 40% |
+| GPU Compute | 40-60% | 90% |
+| VRAM | 2-4 GB | 8 GB |
+| CPU | 10-20% | 35% |
 | RAM | 2-3 GB | 4 GB |
 
 ---
 
 ## 9. Implementation Roadmap
 
-### Phase 1: Prototyping ✅ COMPLETE
+### Phase 1: Prototyping âœ… COMPLETE
 
 Prototypes in `prototypes/` folder explored MoveNet, MMPose, YOLO11, and RTMPose tracking. The final integrated solution is in `application/`.
 
-### Phase 2: Optimization ✅ COMPLETE
+### Phase 2: Optimization âœ… COMPLETE
 
-- ✅ Detection confidence tuning
-- ✅ Tracker tuning for real scenes
-- ✅ Recording/playback mode
-- ✅ TensorRT acceleration
-- ✅ FP16 inference
+- âœ… Detection confidence tuning
+- âœ… Tracker tuning for real scenes
+- âœ… Recording/playback mode
+- âœ… TensorRT acceleration
+- âœ… FP16 inference
 
-### Phase 3: Production Hardening (Current)
+### Phase 3: Production Hardening âœ… COMPLETE
 
-- ✅ JSON configuration persistence
-- ✅ Project/preset management
-- 🔄 Robust error handling
-- 🔄 Auto-reconnect camera
-- ⬜ Logging system
-- ⬜ Health monitoring
+- âœ… JSON configuration persistence
+- âœ… Project/preset management
+- âœ… Full GPU processing pipeline (zero-copy)
+- âœ… IDS industrial camera integration
+- âœ… Advanced tracker (cascaded matching, motion bridge)
+- âœ… Structured tracking event logger
+- ðŸŸ¡ Stall detection + diagnostics logging (detection only, no auto-recovery)
+- â¬œ Auto-reconnect camera on disconnect
+- â¬œ Long-run stability test (4+ hours)
 
 ### Phase 4: Advanced Features (Future)
 
-- ⬜ 4K input support
-- ⬜ Multi-camera stitching
-- ⬜ 3D pose estimation
-- ⬜ Web dashboard
+- â¬œ Tiling for 4K inference
+- â¬œ Multi-camera stitching
+- â¬œ 3D pose estimation
+- â¬œ Web dashboard
 
 ---
 
@@ -510,60 +528,67 @@ Prototypes in `prototypes/` folder explored MoveNet, MMPose, YOLO11, and RTMPose
 
 ### 10.1 Small Figure Detection
 
-**Challenge:** Dancers appear 65 pixels tall at 1080p, below YOLO optimal range (100px+).
+**Challenge:** Dancers appear 65-91 pixels tall at native resolution, below YOLO optimal range (100px+).
 
-**Solution:** Runtime upscaling before inference.
-
--   2× upscale: 65px → 130px (good detection)
--   Trade-off: Increased GPU load, reduced FPS
--   Configurable via `UPSCALE_FACTOR` parameter
+**Solution:** Configurable `imgsz` parameter (default 800, up to 1920) controls the internal
+resolution YOLO operates at. Higher imgsz = better small-figure detection at the cost of FPS.
+The IDS 4MP camera (2688Ã—1520) provides ~91px native dancer height, improved from 1080p.
 
 **Alternative approaches considered:**
 
 | Approach | Pros | Cons |
 |---|---|---|
 | Higher resolution camera | Native quality | Bandwidth, cost |
-| **Upscaling** | Flexible, cheap | GPU load |
-| Tiled detection | Full resolution | Complexity, boundary issues |
+| **Higher imgsz** | Flexible, GPU-only cost | GPU load |
+| Tiled detection | Full resolution | Complexity (planned) |
 | Custom trained model | Optimized for small | Training data needed |
 
 ### 10.2 Low-Light Performance
 
 **Challenge:** Outdoor night performance with minimal lighting.
 
-**Solution:** Adaptive image enhancement pipeline.
+**Solution:** GPU-accelerated adaptive enhancement pipeline (Kornia on CUDA).
 
-1.  **Brightness detection**: Calculate mean brightness
-2.  **CLAHE**: Contrast-limited adaptive histogram equalization
-3.  **Gamma correction**: Brighten dark regions
-4.  **Auto-toggle**: Skip enhancement if scene is bright enough
+1.  **Brightness detection**: Calculate mean brightness (decimated to every 10th frame)
+2.  **CLAHE**: Contrast-limited adaptive histogram equalization (GPU)
+3.  **Gamma correction**: Brighten dark regions (GPU)
+4.  **Progressive blend**: Smooth transition based on brightness level
+5.  **Temporal denoising**: Optional GPU exponential moving average
+6.  **Auto-toggle**: Skip enhancement if scene is bright enough
 
 **Parameters:**
 
 ```python
 CLAHE_CLIP_LIMIT = 3.0      # Contrast boost (1.0-5.0)
-CLAHE_TILE_SIZE = 8         # Local adaptation
-GAMMA_CORRECTION = 1.2      # Brightness boost
-BRIGHTNESS_THRESHOLD = 60   # Auto-detect threshold
+GAMMA_CORRECTION = 1.2       # Brightness boost
+BRIGHTNESS_THRESHOLD = 60    # Auto-detect threshold
+DENOISE_STRENGTH = 0.0       # Temporal denoising (0 = off)
 ```
 
 ### 10.3 ID Persistence During Fast Movement
 
 **Challenge:** Dancers moving quickly cause ID swaps and ghost tracks.
 
-**Solution:** Velocity-aware tracking with generous thresholds.
+**Solution:** Multi-stage hardened association pipeline.
 
 1.  **6-state Kalman filter**: Track position + velocity + acceleration
-2.  **Velocity-weighted prediction**: Anticipate where dancer will be
-3.  **Dynamic distance threshold**: Allow larger jumps for fast movers
-4.  **Extended track lifetime**: Keep lost tracks 20 frames before deletion
+2.  **Cascaded matching**: Established tracks matched first, then tentative
+3.  **Mahalanobis gate**: Statistical distance gate (chiÂ² = 16.27, df=2)
+4.  **Displacement gate**: Caps per-frame centroid jump (0.5Ã— threshold)
+5.  **Post-assignment swap correction**: Occlusion swap, merge-direction swap, 2-opt swap
+6.  **Per-track merge zones**: Only nearby tracks get merge context
+7.  **MOG2 motion bridge**: Keeps lost tracks alive up to 80 frames via foreground blobs
+8.  **Dormant pool**: Tracks sleep for 150 frames before permanent deletion; can resurrect
 
-**Parameters:**
+**Key parameters:**
 
 ```python
-TRACKER_VELOCITY_WEIGHT = 0.6       # Trust in velocity prediction
-TRACKER_MAX_AGE = 45                # Frames before track deletion
-TRACKER_PROCESS_NOISE = 2.5         # Allow velocity changes
+TRACKER_MAHALANOBIS_GATE = 16.27       # ChiÂ² gate (99.97%)
+TRACKER_MAX_DISPLACEMENT_RATIO = 0.5   # Centroid jump cap
+TRACKER_CLOSE_PROXIMITY_RATIO = 0.35   # Merge zone trigger
+TRACKER_MAX_AGE = 45                   # Frames before dormant
+TRACKER_DORMANT_MAX_AGE = 150          # Frames in dormant pool
+MOTION_BRIDGE_MAX_FRAMES = 80          # MOG2 bridge duration
 ```
 
 ### 10.4 Rotated Body Orientations
@@ -578,13 +603,14 @@ TRACKER_PROCESS_NOISE = 2.5         # Allow velocity changes
 
 ### 10.5 PyTorch/CUDA Compatibility
 
-**Challenge:** System cuDNN 9.0.0 vs PyTorch bundled cuDNN 9.8.0 mismatch.
+**Challenge:** New GPU architectures (e.g. RTX 50-series `sm_120`) may not be supported by pinned PyTorch builds.
 
-**Solution:** Pin to torch 2.4.1+cu121.
+**Solution:** `install.bat` auto-detects GPU compatibility and tries PyTorch wheel indexes in order: `cu130`, `cu129`, `cu128`, `cu126`, `cu124`. Manual override available via PyTorch selector at https://pytorch.org/get-started/locally/.
 
 ```toml
 [dependencies]
-torch = { version = "2.4.1+cu121", source = "pytorch" }
+torch = ">=2.10.0"
+torchvision = ">=0.25.0"
 ```
 
 ---
@@ -605,15 +631,20 @@ The production application is in `application/`.
 
 ```python
 # application/src/config.py
-UPSCALE_FACTOR = 2.0              # 4K equivalent processing
 YOLO_MODEL = "yolo11m-pose.pt"    # Best accuracy/speed balance
+YOLO_IMGSZ = 800                  # Default inference resolution
 YOLO_CONFIDENCE = 0.25            # Permissive detection
 MAX_PERSONS = 6                   # Target dancer count
+USE_TENSORRT = True               # TensorRT by default
+USE_GPU_PATH = True               # Full GPU pipeline
 ENHANCE_ENABLED = True            # Auto low-light enhancement
 CLAHE_CLIP_LIMIT = 3.0
 GAMMA_CORRECTION = 1.2
 TRACKER_MAX_AGE = 45              # Robust to brief occlusions
 TRACKER_VELOCITY_WEIGHT = 0.6     # Trust motion prediction
+MOTION_BRIDGE_ENABLED = True      # MOG2 gap bridging
+IDS_USE_GPU_DIRECT = True         # Zero-copy IDS path
+IDS_MAX_FPS = 20                  # Preview cap for PCIe stability
 ```
 
 ### 11.2.1 Runtime Performance Options (GUI)
@@ -628,522 +659,43 @@ TRACKER_VELOCITY_WEIGHT = 0.6     # Trust motion prediction
 
 | Limitation | Impact | Mitigation |
 |---|---|---|
-| 1080p input only | Fixed | Support 4K in Phase 4 |
-| Single camera | Limited coverage | Multi-cam in Phase 4 |
-| 2D pose only | No depth | 3D estimation in Phase 4 |
+| Single camera | Limited coverage | Multi-cam in future |
+| 2D pose only | No depth | 3D estimation in future |
 | UDP OSC | No delivery guarantee | Add TCP option |
-| Fixed scene | No auto-calibration | Manual config |
-| CPU frame copy | Extra latency | V4L2 DMA-BUF zero-copy |
+| USB3/PCIe stalls (IDS) | ~1.65s gaps under GPU load | Preview FPS cap, CUDA stream, stall detection |
+| Visualization CPU-bound | Preview-only impact | GPU shaders (future) |
 
 ---
 
 ## 12. Future Enhancements
 
-### 12.1 Near-Term (1-3 months)
+### 12.1 Near-Term
 
 | Enhancement | Description | Benefit |
 |---|---|---|
-| 4K input | Support 3840×2160 capture | Better native resolution |
-| Recording mode | Save raw + pose data | Replay, analysis |
-| Config file | YAML/JSON settings | No code changes |
-| OSC bundles | Batch messages per frame | Reduced network overhead |
-| V4L2 DMA-BUF | Zero-copy GPU capture | 5-15ms latency reduction |
+| Tiling inference | 2x1 grid for 4K input | Better pixel density at high res |
+| Auto-reconnect camera | Detect disconnect, restart | Unattended operation |
+| Per-show log folder | Timestamped metrics + configs | Post-show diagnostics |
+| OSC status broadcast | Heartbeat, state, FPS, errors | Remote monitoring |
+| Ghost track suppression | Kill low-confidence persistent tracks | Cleaner output |
 
-### 12.2 Medium-Term (3-6 months)
+### 12.2 Medium-Term
 
 | Enhancement | Description | Benefit |
 |---|---|---|
 | Multi-camera | Stitch 2-3 cameras | Wider/taller coverage |
 | Depth estimation | Monocular depth | Z-axis movement |
-| Gesture recognition | Classify poses/actions | Higher-level events |
+| Scene exclusion zones | Per-project configurable masks | Reduce false detections |
 | Web dashboard | Browser-based config/monitor | Remote management |
-| GStreamer NVMM | Hardware-accelerated pipeline | Lower CPU, better throughput |
-| TensorRT export | YOLO → TensorRT engine | 2-3× faster inference |
-| Full GPU pipeline | Zero-copy capture to inference | ~20-30ms latency reduction |
+| CSV metrics export | FPS, latency, brightness, track count | Analytics |
 
-### 12.3 Long-Term (6-12 months)
+### 12.3 Long-Term
 
 | Enhancement | Description | Benefit |
 |---|---|---|
 | 3D pose estimation | Multi-view triangulation | True 3D positions |
 | Action recognition | Temporal pose analysis | Dance move detection |
 | Edge deployment | Jetson Orin / similar | Standalone unit |
-| ML-based tracking | DeepSORT / ByteTrack | Better re-ID |
-
-### 12.4 V4L2 DMA-BUF Zero-Copy Capture
-
-**Current Architecture:**
-- OpenCV `VideoCapture` → CPU memory → NumPy → GPU upload
-- 2-3 memory copies per frame
-- ~10-20ms overhead
-
-**Proposed Architecture:**
-- V4L2 DMA-BUF → Direct GPU memory (CUDA/NVMM)
-- Zero CPU copies
-- ~5-15ms latency savings
-
-**Implementation Options:**
-
-| Option | Complexity | Performance | Notes |
-|---|---|---|---|
-| GStreamer + nvv4l2camerasrc | Medium | Excellent | NVIDIA-optimized, well-documented |
-| PyV4L2 + CuPy DMA-BUF | High | Excellent | Maximum control, complex integration |
-| pycuda + V4L2 direct | High | Excellent | Low-level, requires CUDA expertise |
-
-**GStreamer Pipeline Example:**
-```
-v4l2src device=/dev/video0 !
-video/x-raw,format=UYVY,width=1920,height=1080,framerate=30/1 !
-nvvidconv !
-video/x-raw(memory:NVMM),format=BGRx !
-appsink
-```
-
-**Requirements:**
-- NVIDIA GPU with NVMM support
-- GStreamer 1.x with nvvidconv plugin
-- Capture card with V4L2 DMA-BUF export (Magewell, Blackmagic)
-- Linux kernel 4.x+ with DMA-BUF subsystem
-
-### 12.5 TensorRT Optimization ✅ IMPLEMENTED
-
-**Status:** Fully integrated with GUI controls and automatic management.
-
-**Implementation Details:**
-- TRT checkbox in MODEL section enables/disables TensorRT
-- Engines are imgsz-specific: `{model}_{imgsz}.engine`
-- Automatic build prompt when engine doesn't exist
-- GPU/VRAM stats update during engine build
-- Graceful fallback to PyTorch if TensorRT unavailable
-
-**Measured Performance Gains:**
-
-| Mode | RTX 3090 FPS | Latency | Notes |
-|---|---|---|---|
-| PyTorch FP32 | ~25 | ~40ms | Baseline |
-| PyTorch FP16 | ~32 | ~31ms | FP16 checkbox enabled |
-| **TensorRT FP16** | ~55-65 | ~15-18ms | **TRT checkbox enabled** |
-| TensorRT INT8 | ~80 | ~12ms | Future (requires calibration) |
-
-**GUI Workflow:**
-1. Select model from dropdown (e.g., yolo11m-pose)
-2. Set desired imgsz (e.g., 960)
-3. Enable TRT checkbox
-4. If engine exists → immediate switch
-5. If engine missing → build prompt appears
-6. Click "Yes" → engine builds (2-5 minutes, GPU stats visible)
-7. Engine saved as `yolo11m-pose_960.engine`
-
-**Engine Management:**
-```python
-# Engine path includes imgsz
-engine_path = f"{model_name}_{imgsz}.engine"
-# e.g., yolo11n-pose_640.engine, yolo11n-pose_960.engine
-
-# Multiple engines can coexist for different sizes
-models/
-├── yolo11n-pose.pt
-├── yolo11n-pose_640.engine
-├── yolo11n-pose_960.engine
-├── yolo11m-pose.pt
-└── yolo11m-pose_960.engine
-```
-
-**Configuration Persistence:**
-- `use_tensorrt` flag saved in project configs
-- On startup: loads saved TRT preference
-- If engine missing for saved imgsz → falls back to PyTorch
-
-**Considerations:**
-- Engine is GPU-specific (must rebuild for different GPU)
-- Engine is imgsz-specific (different engine per input size)
-- First inference after load is slow (engine warmup)
-- INT8 requires calibration dataset (future enhancement)
-
-### 12.6 Full GPU Processing Pipeline
-
-> **Note:** Detailed implementation plan has been moved to **Section 14: GPU Path Implementation**. This section preserved for reference code examples.
-
-**Goal:** Keep frame data on GPU from capture to inference, eliminating CPU-GPU transfers. See Section 14 for phased implementation plan and status tracking.
-
-**Current vs Target Pipeline:** See Section 14.1 for analysis.
-
-**Reference Code Examples:**
-
-**CuPy CLAHE Kernel Example:**
-```python
-import cupy as cp
-
-# Upload frame to GPU once
-gpu_frame = cp.asarray(frame)
-
-# Convert BGR to YCrCb on GPU
-gpu_ycrcb = cv2.cuda.cvtColor(gpu_frame, cv2.COLOR_BGR2YCrCb)
-
-# Apply CLAHE on Y channel (GPU)
-gpu_clahe = cv2.cuda.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-gpu_y = gpu_ycrcb[:, :, 0]
-gpu_clahe.apply(gpu_y, gpu_y)
-
-# Gamma correction kernel
-gamma_kernel = cp.ElementwiseKernel(
-    'uint8 x, float32 inv_gamma',
-    'uint8 y',
-    'y = (uint8)(powf((float)x / 255.0f, inv_gamma) * 255.0f)',
-    'gamma_correction'
-)
-gpu_frame = gamma_kernel(gpu_ycrcb, 1.0/1.2)
-
-# Zero-copy to PyTorch for YOLO
-torch_frame = torch.as_tensor(gpu_frame, device='cuda')
-```
-
-**OpenGL Shader Alternative (for preview):**
-```glsl
-// Fragment shader for real-time gamma + contrast
-uniform sampler2D frame;
-uniform float gamma;
-uniform float contrast;
-
-void main() {
-    vec4 color = texture2D(frame, gl_TexCoord[0].xy);
-    // Gamma correction
-    color.rgb = pow(color.rgb, vec3(1.0 / gamma));
-    // Contrast (simplified CLAHE approximation)
-    color.rgb = (color.rgb - 0.5) * contrast + 0.5;
-    gl_FragColor = color;
-}
-```
-
----
-
-## 13. Proposed Improvements (Dec 2025)
-
-### 13.1 UI Usability
-- ✅ Start/Stop camera button next to camera selector (implemented).
-- ✅ Status badges in top bar: camera, OSC, model, FPS (implemented).
-- ✅ Tooltips for sliders and UI elements with explanatory text (implemented).
-- ✅ "Safe defaults" button (rotate icon) next to save: click to load, Ctrl+click to save safe defaults per project (implemented).
-- ✅ Compact Detection section: Max Persons and Person Height on same row (implemented).
-- ✅ Top bar TRT/PT badge with tooltip explaining engine types (implemented).
-- Searchable project/config dropdowns when many presets exist (todo).
-
-### 13.2 UI & Preview Performance
-- ✅ Preview downscale slider (0.3–1.0) already present.
-- ✅ Preview on/off (pause preview) already present; processing/OSC continue when off.
-- ✅ Preview texture uploads capped to ~15 FPS to reduce GPU/UI load (implemented).
-- "Low-impact preview" toggle (could combine downscale + throttle into one control) (todo).
-
-### 13.3 Video Playback Features
-- ✅ Threaded video decoder with frame buffer for smooth playback (implemented).
-- ✅ Playback speed control: x0.25, x0.5, x0.75, x1, x1.5, x2, x4 (implemented).
-- ✅ Pause/resume playback with keyboard shortcut (Space) (implemented).
-- ✅ Frame stepping: next/prev frame with arrow keys or buttons (implemented).
-- ✅ Font Awesome icons for playback controls (implemented).
-
-### 13.4 Detection/Tracking Robustness (Low Light, Long Distance)
-- Two-stage exposure logic: when brightness is low, force enhancement and slightly lower detection confidence (todo).
-- ✅ Temporal confidence smoothing slider (1-10 frames) to stabilize detections (implemented).
-- Dynamic NMS/IoU tuned for small boxes to reduce duplicate detections at long distance (todo).
-- Brightness/contrast watchdog that raises gamma/CLAHE when the scene darkens (todo).
-- Per-track quality score: freeze/hold OSC output for low-quality tracks instead of dropping IDs (todo).
-
-### 13.5 Detection Performance (Robustness First)
-- Auto model step-down only when FPS < target and confidence > floor; otherwise keep mid model (todo).
-- Auto imgsz downshift when GPU load >90% while keeping confidence threshold unchanged (todo).
-- Optional ROI cropping to skip sky/ground pixels and cut inference cost (todo).
-- Cache resized frames during frame-skip cycles to avoid repeated upscales (todo).
-
-### 13.6 Additional Features
-- ✅ Offline replay mode: load video files and emit OSC for QA without a live camera (implemented).
-- Logging/export: per-frame metrics (fps, brightness, latency, track counts) to CSV (todo).
-- Alerting: notifications on OSC send failure or camera disconnect; optional auto-retry (todo).
-- Model checksum/display: show model file hash and load time to verify correct weights on-site (todo).
-
----
-
-## 14. GPU Path Implementation
-
-This section documents the plan and progress for implementing a full GPU processing path to minimize CPU↔GPU memory transfers and maximize throughput.
-
-> **Cross-reference:** Section 8.1 (Latency Budget) lists target timings assuming GPU-accelerated enhancement and resize. These targets will be achieved by completing the phases below.
-
-### 14.1 Current Pipeline Workflows
-
-The pipeline now supports two processing paths depending on CUDA availability and `USE_GPU_PATH` config flag.
-
-#### CPU Path (Fallback)
-```
-Camera Frame (CPU numpy array)
-    ↓
-[1] Enhancement (CPU: CLAHE, Gamma LUT via OpenCV)
-    ↓
-[2] Upscale (CPU: cv2.resize)  
-    ↓
-[3] YOLO Inference (GPU - internal upload by Ultralytics)
-    ↓
-[4] Extract Detections (CPU: .cpu().numpy())
-    ↓
-[5] Tracking (CPU: Kalman filter, Hungarian algorithm)
-    ↓
-[6] Visualization (CPU: cv2.line, cv2.circle, cv2.putText)
-    ↓
-[7] Preview Texture (CPU→GPU upload via DearPyGui)
-```
-
-#### GPU Path (When CUDA Available)
-```
-Camera Frame (CPU numpy array)
-    ↓
-[1] Upload to GPU (GpuFrame wrapper, cv2.cuda.GpuMat)
-    ↓                                            ╭───────────────╮
-[2] Enhancement (GPU: cv2.cuda.createCLAHE,      │ Stays on GPU! │
-    cv2.cuda.cvtColor, cv2.cuda.LUT)             ╰───────────────╯
-    ↓
-[3] Upscale (TODO: cv2.cuda.resize)  ← currently still CPU
-    ↓
-[4] YOLO Inference (GPU - with CPU input, TODO: zero-copy)
-    ↓
-[5] Extract Detections (CPU: .cpu().numpy())
-    ↓
-[6] Tracking (CPU: Kalman filter, Hungarian algorithm)
-    ↓
-[7] Visualization (CPU: cv2.line, cv2.circle, cv2.putText)
-    ↓
-[8] Preview Texture (CPU→GPU upload via DearPyGui)
-```
-
-#### Phase Status Summary
-| Phase | Component | CPU Path | GPU Path | Status |
-|-------|-----------|----------|----------|--------|
-| 1 | Frame Buffer | numpy array | GpuFrame/Tensor | ✅ Done |
-| 2 | Enhancement | cv2 CLAHE/LUT | Kornia CLAHE/Gamma | ✅ Done |
-| 3 | Resize | cv2.resize | torch.nn.functional | ✅ Done |
-| 4 | YOLO Input | numpy→GPU | Tensor (Zero-Copy) | ✅ Done |
-| 5 | Visualization | cv2 drawing | Shader/GPU | ⬜ Future |
-
-#### Interface Indicators
-The GUI displays GPU/CPU status for each pipeline step in the timing breakdown:
-- **G** prefix = GPU path active (e.g., "G Enh: 3ms")
-- **C** prefix = CPU path (e.g., "C Enh: 12ms")
-- Color coding: green (<threshold), yellow (moderate), red (slow)
-- Multiple GPU↔CPU transfers per frame (3-4 round trips)
-- Visualization drawing is CPU-bound (but only affects preview)
-
-### 14.2 Implementation Phases
-
-#### Phase 1: GPU Frame Buffer (Foundation)
-**Status:** ✅ Implemented  
-**Goal:** Keep frames on GPU memory, avoid CPU↔GPU ping-pong  
-**Risk:** Low - doesn't change processing logic  
-**Files:** `pipeline.py`, `gpu_buffer.py`, `config.py`
-
-**Implementation:**
-- Created `GpuFrame` wrapper class using `cv2.cuda.GpuMat`
-- Added `USE_GPU_PATH` config flag (default True, auto-fallback if CUDA unavailable)
-- Pipeline uploads frame to GPU once at start
-- Downloads to CPU only when needed (currently: enhancement, resize, YOLO input)
-- Added timing for upload phase
-
-**Tasks:**
-1. ✅ Create `GpuFrame` wrapper class using `cv2.cuda.GpuMat`
-2. ✅ Upload camera frame to GPU once at start of pipeline
-3. ✅ Download to CPU only when needed (visualization, recording)
-4. ✅ Add `to_gpu()` / `to_cpu()` methods for explicit transfers
-5. ⬜ Benchmark: measure transfer time savings (pending testing)
-
-**API Design:**
-```python
-class GpuFrame:
-    def __init__(self, cpu_frame=None, gpu_mat=None):
-        self._cpu = cpu_frame
-        self._gpu = gpu_mat
-    
-    def to_gpu(self) -> cv2.cuda.GpuMat: ...
-    def to_cpu(self) -> np.ndarray: ...
-    def is_on_gpu(self) -> bool: ...
-```
-
----
-
-#### Phase 2: GPU Enhancement ✅
-**Status:** Implemented  
-**Goal:** CLAHE + Gamma on GPU  
-**Files:** `enhancer.py`, `pipeline.py`
-
-**Implementation:**
-- Rewrote `enhancer.py` with new `Enhancer` class supporting both CPU and GPU paths
-- GPU enhancement uses `cv2.cuda.createCLAHE()`, `cv2.cuda.cvtColor()`, `cv2.cuda.LUT()`
-- Works in LAB color space for proper luminance enhancement
-- Automatic fallback to CPU if any GPU operation fails
-- `ImageEnhancer` class provides backward compatibility for legacy API
-- `EnhancerSettings` dataclass for clean parameter passing
-
-**Key Classes:**
-```python
-@dataclass
-class EnhancerSettings:
-    enabled: bool = False
-    clahe_clip: float = 2.0
-    clahe_grid: int = 8
-    gamma: float = 1.0
-
-class Enhancer:
-    def enhance(self, frame: GpuFrame | np.ndarray, settings: EnhancerSettings) -> GpuFrame | np.ndarray
-    def _enhance_gpu(self, frame: GpuFrame, settings: EnhancerSettings) -> GpuFrame
-    def _enhance_cpu(self, frame: np.ndarray, settings: EnhancerSettings) -> np.ndarray
-
-class ImageEnhancer(Enhancer):  # Backward compatible
-    def enhance(self, frame) -> (enhanced, status_dict)
-    def enhance_simple(self, frame) -> enhanced
-    def get_status() -> {"brightness": value}
-```
-
----
-
-#### Phase 3: GPU Resize
-**Status:** Not started  
-**Goal:** Upscale on GPU  
-**Risk:** Low - straightforward CUDA call  
-**Files:** `pipeline.py`
-
-**Tasks:**
-1. Replace `cv2.resize()` with `cv2.cuda.resize()`
-2. Use `cv2.INTER_LINEAR` (fast) or `cv2.INTER_CUBIC` (quality)
-3. Chain with Phase 2: enhanced GPU frame → resized GPU frame
-4. Feed directly to YOLO (Ultralytics accepts GPU tensors)
-
-**Code change:**
-```python
-if self.settings.upscale_factor != 1.0:
-    gpu_resized = cv2.cuda.resize(gpu_enhanced, (new_w, new_h), 
-                                   interpolation=cv2.INTER_LINEAR)
-```
-
----
-
-#### Phase 4: Zero-Copy YOLO Input (Completed)
-**Status:** Implemented  
-**Goal:** Pass GPU tensor directly to Ultralytics YOLO  
-**Files:** `pipeline.py`, `gpu_pipeline.py`  
-**Implementation:**
-- `GpuPipeline.process()` returns a pre-processed `torch.Tensor`
-- `pipeline.py` passes this tensor directly to `model()`
-- Eliminates the costly `numpy` → `GPU` upload inside YOLO
-
----
-
-#### Phase 5: Advanced Features (Future)
-**Status:** Planned  
-**Goal:** High-resolution support and further optimization  
-
-**A. 4K / Smart Tiling Inference**
-- **Problem:** Small targets at 4K resolution are lost when downscaled to 640x640.
-- **Solution: "Smart Tiling"**
-    1. **Global Watch:** Run fast detection on downscaled full frame (e.g., 1280px) to find general activity.
-    2. **Active Tiling:** Divide 4K frame into overlapping tiles (e.g., 960px with 25% overlap).
-    3. **Selective Inference:** Only run high-res inference on tiles that:
-        - Contain a tracked dancer (from previous frame).
-        - Contain a potential detection (from Global Watch).
-    4. **Merge:** Stitch results back to global coordinates using NMS.
-    - *Note:* This is more robust than simple ROI cropping as it handles new entrants via the Global Watch and doesn't rely on precise ROI prediction.
-
-**B. Temporal Denoising (Implemented)**
-- **Goal:** Reduce sensor noise in low-light conditions.
-- **Method:** Weighted moving average on GPU tensor (`out = (1-α)*last + α*new`).
-- **Status:** Implemented in `gpu_pipeline.py` with Progressive Enhancement logic (fades out based on brightness).
-
-**C. Zero-Copy Capture (DALI)**
-- **Goal:** Avoid CPU decoding of video stream.
-- **Method:** Use NVIDIA DALI to decode video directly to GPU memory.
-- **Benefit:** Removes the last major CPU bottleneck (video decoding).
-
----
-
-### 14.3 Implementation Schedule
-
-| Phase | Effort | Impact | Dependencies | Status |
-|-------|--------|--------|--------------|--------|
-| 1: GPU Buffer | 2-3h | Foundation | None | ✅ Implemented |
-| 2: GPU Enhancement | 3-4h | High | Phase 1 | ✅ Implemented |
-| 3: GPU Resize | 1h | Medium | Phase 1 | ✅ Implemented |
-| 4: Zero-Copy YOLO | 4-6h | High | Phases 1-3 | ✅ Implemented |
-| 5: ROI Inference | Future | High | Phase 4 | ⬜ Planned |
-
-### 14.4 Safety Measures
-
-1. **Feature flag:** `USE_GPU_PATH = True/False` in `config.py`
-2. **Fallback:** Auto-detect CUDA availability, graceful CPU fallback
-3. **Memory monitoring:** Track GPU memory usage, warn if approaching limit
-4. **A/B testing:** Compare FPS/latency between CPU and GPU paths
-5. **Per-phase toggle:** Enable phases individually for debugging
-
-### 14.5 Expected Performance Gains
-
-| Metric | Current | After Phase 2 | After Phase 4 |
-|--------|---------|---------------|---------------|
-| Enhancement | 8-12ms | 2-4ms | 2-4ms |
-| Upscale | 3-5ms | <1ms | <1ms |
-| GPU↔CPU transfers | 3-4/frame | 1-2/frame | 1/frame |
-| Total latency | 40-60ms | 30-45ms | 25-35ms |
-| Estimated FPS gain | baseline | +20-30% | +40-50% |
-
-### 14.6 Technical Notes
-
-**OpenCV CUDA Requirements:**
-- OpenCV must be compiled with CUDA support (`cv2.cuda.getCudaEnabledDeviceCount() > 0`)
-- Pre-built pip packages typically lack CUDA; may need custom build
-- Alternative: use `opencv-contrib-python` with CUDA or build from source
-
-**Memory Considerations:**
-- GPU memory usage increases with frame buffer on GPU
-- At 1080p: ~6MB per frame (BGR uint8)
-- With upscale 2x: ~24MB per frame
-- Keep ≤3 frames on GPU simultaneously to stay under 100MB overhead
-
-**Stream Synchronization:**
-- Use `cv2.cuda.Stream` for async operations
-- Sync before CPU access: `stream.waitForCompletion()`
-- Enables overlapping GPU operations with CPU work
-
-### 14.7 Reference Implementation Code
-
-**Stage-by-Stage Savings (Target):**
-
-| Stage | Current | Target | Savings |
-|---|---|---|---|
-| Capture | OpenCV (CPU) | V4L2 DMA-BUF / GStreamer NVMM | ~10ms |
-| CLAHE | cv2.createCLAHE (CPU) | cv2.cuda.createCLAHE | ~6-8ms |
-| Gamma | cv2.LUT (CPU) | CuPy elementwise kernel | ~1ms |
-| Upscale | cv2.resize (CPU) | cv2.cuda.resize | ~2ms |
-| Inference | PyTorch FP16 | TensorRT FP16 | ~15-25ms |
-| **Total** | **~70-100ms** | **~30-50ms** | **~40-50ms** |
-
-**CuPy Gamma Kernel Example:**
-```python
-import cupy as cp
-
-gamma_kernel = cp.ElementwiseKernel(
-    'uint8 x, float32 inv_gamma',
-    'uint8 y',
-    'y = (uint8)(powf((float)x / 255.0f, inv_gamma) * 255.0f)',
-    'gamma_correction'
-)
-# Apply: gpu_frame = gamma_kernel(gpu_frame, 1.0/1.2)
-```
-
-**Zero-Copy PyTorch Bridge:**
-```python
-# Convert cv2.cuda.GpuMat to PyTorch tensor without CPU copy
-import torch
-
-# Option 1: Via CuPy (requires dlpack)
-cupy_array = cp.asarray(gpu_mat)
-torch_tensor = torch.as_tensor(cupy_array, device='cuda')
-
-# Option 2: Direct pointer (advanced, requires matching memory layout)
-# torch.cuda.memory.caching_allocator_alloc(size)
-```
 
 ---
 
@@ -1153,22 +705,28 @@ torch_tensor = torch.as_tensor(cupy_array, device='cuda')
 
 ```toml
 [dependencies]
-torch = "2.4.1+cu121"
-torchvision = "0.19.1+cu121"
-ultralytics = ">=8.0"
+torch = ">=2.10.0"
+torchvision = ">=0.25.0"
+ultralytics = ">=8.3.0"
 opencv-python = ">=4.8"
 python-osc = ">=1.8"
-filterpy = ">=1.4"
 scipy = ">=1.10"
-numpy = ">=1.24"
+numpy = ">=1.24,<2.0"
+dearpygui = ">=2.0"
+filterpy = ">=1.4.5"
+
+[project.optional-dependencies]
+gpu = ["nvidia-ml-py", "tensorrt>=10.0", "kornia>=0.8.2", "onnx", "onnxslim", "onnxruntime-gpu"]
+ids = ["ids-peak>=1.13", "ids-peak-ipl>=1.17"]
 ```
 
 ### System Requirements
 
--   CUDA 12.1+
--   cuDNN 8.x or 9.x (bundled with torch)
--   Linux (Ubuntu 22.04+ recommended) or Windows 10/11
--   GStreamer (optional, for RTSP sources)
+-   CUDA 12.x+ (bundled with torch)
+-   cuDNN (bundled with torch)
+-   Windows 10/11 or Linux (Ubuntu 22.04+ recommended)
+-   Python 3.10+ (< 3.13)
+-   `uv` package manager
 
 ---
 
@@ -1199,11 +757,14 @@ Expected output:
 | Issue | Cause | Solution |
 |---|---|---|
 | No camera found | Wrong index | Try CAMERA_INDEX = 1, 2, ... |
-| Low FPS (<10) | High upscale | Reduce UPSCALE_FACTOR |
-| Missing detections | Dark scene | Increase CLAHE_CLIP_LIMIT |
-| ID swaps | Fast movement | Increase TRACKER_DISTANCE_THRESHOLD |
+| Low FPS (<10) | Heavy model/imgsz | Use smaller model or lower imgsz |
+| Missing detections | Dark scene | Increase CLAHE_CLIP_LIMIT or raise imgsz |
+| ID swaps | Fast movement / close dancing | See TRACKING_PLAN.md for tuning |
 | Ghost tracks | False detections | Increase YOLO_CONFIDENCE |
-| CUDA OOM | Large upscale | Reduce UPSCALE_FACTOR or use smaller model |
+| CUDA OOM | Large imgsz + big model | Lower imgsz or use smaller model |
+| TRT checkbox disabled | TensorRT not installed | Install with `pip install tensorrt` |
+| USB3 stalls (IDS) | PCIe bus contention | Enable preview FPS cap, lower imgsz |
+| CPU fallback shown | PyTorch/CUDA mismatch | Re-run install.bat, check GPU driver |
 
 ---
 
@@ -1215,11 +776,11 @@ Expected output:
 | 1.1 | 2025-12-08 | AI/Human collaboration | Video recording system, UI improvements |
 | 1.2 | 2025-12-08 | AI/Human collaboration | TensorRT integration with GUI controls |
 | 1.3 | 2025-12-09 | AI/Human collaboration | Restructured: hardware guide split out, paths updated, cleanup |
-| 1.4 | 2025-12-09 | AI/Human collaboration | Video playback (threaded decoder, speed control, pause/step), tooltips, safe defaults, smoothing slider |
-| 1.5 | 2025-12-09 | AI/Human collaboration | GPU Path Implementation plan (Section 14) |
-| 1.6 | 2025-12-09 | AI/Human collaboration | GPU Path Completed (Phase 1-4), Temporal Denoising, ROI Roadmap |
-| 1.7 | 2025-12-09 | AI/Human collaboration | UI Refinement: Moved Denoise to PREPROC row |
-| 1.8 | 2026-02-01 | AI/Human collaboration | Production hardware purchased: IDS U3-34E0XCP camera, Tamron 8mm lens, MidOpt BP850 filter, ASUS ROG SCAR 16 (RTX 5080) |
+| 1.4 | 2025-12-09 | AI/Human collaboration | Video playback, tooltips, safe defaults, smoothing slider |
+| 1.5 | 2025-12-09 | AI/Human collaboration | GPU Path Implementation plan |
+| 1.6 | 2025-12-09 | AI/Human collaboration | GPU Path Completed (Phase 1-4), Temporal Denoising |
+| 1.8 | 2026-02-01 | AI/Human collaboration | Production hardware: IDS camera, RTX 5080 laptop |
+| 2.0 | 2026-03-26 | AI/Human collaboration | Major update: IDS camera integration, advanced tracker (Mahalanobis/displacement gates, cascaded matching, motion bridge), full GPU pipeline with Kornia, removed obsolete UPSCALE_FACTOR, cleaned completed items from future sections, updated all config values and diagrams |
 
 ---
 

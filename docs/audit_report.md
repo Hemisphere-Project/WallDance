@@ -31,14 +31,18 @@
 1.  **Upgrade Linux Scripts (`run.sh`, `install.sh`):**
     *   Update `run.sh` to parse the `--cpu` flag and set `export CUDA_VISIBLE_DEVICES=-1`.
     *   Update `install.sh` to include Python detection, `uv` installation/detection, and PyTorch/CUDA compatibility checks, mirroring `install.bat`.
+    *   **Status:** Still open.
 
 ### Medium Priority
 2.  **Linux Camera Fallback (`ids_camera.py`):**
     *   Currently, if the default OpenCV backend fails, Windows retries with `cv2.CAP_DSHOW`. On Linux, we should add a similar retry mechanism using `cv2.CAP_V4L2` (Video4Linux2) to improve fallback reliability.
+    *   **Status:** Still open.
 
 ### Low Priority / Cleanup
 3.  **GUI Camera Status:** Ensure the GUI clearly indicates whether the active camera is using the IDS Peak SDK or the OpenCV fallback, helping users debug hardware connection issues.
+    *   **Status:** Addressed — GUI top bar shows [IDS]/[CV] badge.
 4.  **Dependency Grouping:** In `pyproject.toml`, `ids-peak` and `ids-peak-ipl` are in the main dependencies but also in an `ids` dependency group. If IDS is optional, they should perhaps only be in the optional group, or the group can be removed if they are mandatory.
+    *   **Status:** Addressed — IDS packages are now only in optional `ids` group.
 
 ---
-*Audit performed on February 26, 2026.*
+*Audit performed on February 26, 2026. Status updated March 26, 2026.*
