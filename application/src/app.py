@@ -1402,11 +1402,14 @@ class WallDanceApp:
 
     def _cb_do_save_config(self, project_name: str):
         filepath = self.config_store.save(project_name, self._get_saveable_config())
-        self._current_project = sanitize_project_name(project_name)
-        # Update recorder to use new project's recordings folder
-        self.recorder.set_project(self._current_project)
+        new_project = sanitize_project_name(project_name)
+        # Only switch recorder project if the name actually changed
+        # (avoids stopping playback when saving to the same project)
+        if new_project != self._current_project:
+            self._current_project = new_project
+            self.recorder.set_project(self._current_project)
+            self._update_recording_ui()  # Refresh slots for new project
         self._update_topbar_state()
-        self._update_recording_ui()  # Refresh slots for new project
         if self.gui:
             self.gui.show_save_indicator("Saved!")
         print(f"Config saved: {filepath}")
@@ -2428,6 +2431,8 @@ class WallDanceApp:
                         if self.camera.cap is not None:
                             for _ in range(10):
                                 self.camera.cap.grab()
+                        if self.recorder.is_playing:
+                            self._apply_playback_dimensions()
                     return True
                 else:
                     print(f"Fallback also failed: {fallback_result['error']}")
@@ -2442,6 +2447,8 @@ class WallDanceApp:
                 if self.camera.cap is not None:
                     for _ in range(10):
                         self.camera.cap.grab()
+                if self.recorder.is_playing:
+                    self._apply_playback_dimensions()
             return False
         
         # Success path
@@ -2510,6 +2517,9 @@ class WallDanceApp:
             if self.camera.cap is not None:
                 for _ in range(10):
                     self.camera.cap.grab()
+            # If playback is active, restore video dimensions (camera reopen overwrites them)
+            if self.recorder.is_playing:
+                self._apply_playback_dimensions()
         print(f"Model loading complete: {self.current_model_name}")
         return True
 
