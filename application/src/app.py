@@ -523,35 +523,42 @@ class WallDanceApp:
         self.gui.sync_input("roi_h", self.settings.roi_h)
         self._update_imgsz_roi_warning()
 
-    def _get_recommended_imgsz_for_roi(self) -> tuple[int, int, int] | None:
+    def _get_recommended_imgsz_for_roi(self) -> tuple[int, int, int, int] | None:
         if not self.settings.roi_enabled:
             return None
+
         frame_w, frame_h = self._roi_source_size
-        roi_x, roi_y, roi_w, roi_h = self._get_effective_roi(frame_w, frame_h)
+        _, _, roi_w, roi_h = self._get_effective_roi(frame_w, frame_h)
         long_edge = max(roi_w, roi_h)
-        recommended = self._IMGSZ_PRESETS[-1]
+        min_target = long_edge * 1.5
+        max_target = long_edge * 2.0
+
+        low = self._IMGSZ_PRESETS[-1]
         for preset in self._IMGSZ_PRESETS:
-            if preset >= long_edge:
-                recommended = preset
+            if preset >= min_target:
+                low = preset
                 break
-        return recommended, roi_w, roi_h
+
+        in_range = [preset for preset in self._IMGSZ_PRESETS if min_target <= preset <= max_target]
+        high = in_range[-1] if in_range else low
+        return low, high, roi_w, roi_h
 
     def _get_imgsz_roi_warning(self) -> Optional[str]:
         roi_info = self._get_recommended_imgsz_for_roi()
         if roi_info is None:
             return None
 
-        recommended, roi_w, roi_h = roi_info
+        low, high, roi_w, roi_h = roi_info
         current = int(self.settings.imgsz)
-        if current <= recommended:
+        if current >= low:
             return None
 
-        long_edge = max(roi_w, roi_h)
-        upscale_ratio = current / max(long_edge, 1)
-        return (
-            f"ROI {roi_w}x{roi_h}: {current}px is likely overkill. "
-            f"{recommended}px already covers the ROI ({upscale_ratio:.2f}x upsample)."
-        )
+        if low == high:
+            target = f"{low}px"
+        else:
+            target = f"{low}-{high}px"
+
+        return f"ROI {roi_w}x{roi_h}: consider {target} imgsz for better detection."
 
     def _update_imgsz_roi_warning(self):
         if not self.gui:
@@ -811,12 +818,14 @@ class WallDanceApp:
             return
 
         _, _, roi_w_src, roi_h_src = self._get_effective_roi(source_w, source_h)
-        roi_info = self._get_recommended_imgsz_for_roi()
         note_lines = [f"ROI {roi_w_src}x{roi_h_src} | imgsz {self.settings.imgsz}"]
+        roi_info = self._get_recommended_imgsz_for_roi()
         if roi_info is not None:
-            recommended, _, _ = roi_info
-            if self.settings.imgsz > recommended:
-                note_lines.append(f"Recommended: {recommended}")
+            low, high, _, _ = roi_info
+            if low == high:
+                note_lines.append(f"Suggested: {low}")
+            else:
+                note_lines.append(f"Suggested: {low}-{high}")
 
         frame_h, frame_w = frame.shape[:2]
         font = cv2.FONT_HERSHEY_SIMPLEX
@@ -1577,7 +1586,7 @@ class WallDanceApp:
         self._update_imgsz_roi_warning()
         roi_warning = self._get_imgsz_roi_warning()
         if roi_warning and self.gui:
-            self.gui.show_toast("Selected imgsz is overkill for current ROI", duration=3.0, color=(255, 180, 80))
+            self.gui.show_toast("Current imgsz is below the ROI suggestion", duration=3.0, color=(255, 180, 80))
         
         max_cam_dim = max(self.camera.state.width, self.camera.state.height)
         if new_imgsz > max_cam_dim:
@@ -3536,6 +3545,8 @@ class WallDanceApp:
                         src_h = int(timing['original_h'])
                     else:
                         preview_base = display_frame if display_frame is not None else preview_source_frame
+                        if preview_base is None:
+                            continue
                         src_h, src_w = preview_base.shape[:2]
 
                     if self.settings.roi_enabled:
