@@ -73,6 +73,11 @@ class ProcessingSettings:
     use_gpu_path: bool = USE_GPU_PATH  # Enable GPU frame buffer
     bg_subtract_enabled: bool = BG_SUBTRACT_ENABLED  # Static BG subtraction
     bg_subtract_sensitivity: int = BG_SUBTRACT_SENSITIVITY  # Threshold 0-255
+    roi_enabled: bool = False
+    roi_x: int = 0
+    roi_y: int = 0
+    roi_w: int = 0
+    roi_h: int = 0
 
 
 @dataclass
@@ -111,6 +116,25 @@ class _LetterboxMotionProxy:
                 blob.bbox[3] *= self._lb_scale
                 blob.centroid[0] = blob.centroid[0] * self._lb_scale + self._pad_x
                 blob.centroid[1] = blob.centroid[1] * self._lb_scale + self._pad_y
+        return blobs
+
+
+class _OffsetMotionProxy:
+    """Proxy that offsets blob coords from ROI-local space to full-frame space."""
+
+    def __init__(self, detector, offset_x: int, offset_y: int):
+        self._detector = detector
+        self._offset_x = offset_x
+        self._offset_y = offset_y
+
+    def detect(self, person_height: int):
+        blobs = self._detector.detect(person_height)
+        if blobs and (self._offset_x or self._offset_y):
+            for blob in blobs:
+                blob.bbox[0] += self._offset_x
+                blob.bbox[1] += self._offset_y
+                blob.centroid[0] += self._offset_x
+                blob.centroid[1] += self._offset_y
         return blobs
 
 
@@ -343,11 +367,20 @@ class FrameProcessor:
         Mutates *timing* in place and returns the final scaled tracks.
         MOG2 feed runs in a background thread overlapping YOLO (CPU ∥ GPU).
         """
+        roi = gpu_timing.get('roi', {})
+        roi_x = int(roi.get('x', 0))
+        roi_y = int(roi.get('y', 0))
+
         # Start MOG2 feed in background thread — runs on CPU while YOLO uses GPU
         mog2_thread = None
         if self.motion_detector is not None and raw_frame is not None:
             t_mog_start = time.time()
-            gray_for_motion = cv2.cvtColor(raw_frame, cv2.COLOR_BGR2GRAY)
+            motion_frame = raw_frame
+            if roi.get('enabled'):
+                roi_w = int(roi.get('w', 0))
+                roi_h = int(roi.get('h', 0))
+                motion_frame = raw_frame[roi_y:roi_y + roi_h, roi_x:roi_x + roi_w]
+            gray_for_motion = cv2.cvtColor(motion_frame, cv2.COLOR_BGR2GRAY)
             timing["mog2_cvt"] = (time.time() - t_mog_start) * 1000
             mog2_thread = threading.Thread(
                 target=self.motion_detector.feed, args=(gray_for_motion,),
@@ -411,7 +444,10 @@ class FrameProcessor:
         timing["path_track"] = "cpu"
 
         # Unscale from letterboxed YOLO space to original camera space
-        scaled_tracks = [self._unscale_letterbox(track, lb_scale, pad_x, pad_y) for track in tracked]
+        scaled_tracks = [
+            self._unscale_letterbox(track, lb_scale, pad_x, pad_y, roi_x=roi_x, roi_y=roi_y)
+            for track in tracked
+        ]
 
         # OSC output
         if self.osc and self.settings.osc_enabled:
@@ -446,6 +482,43 @@ class FrameProcessor:
         # Background subtraction
         gs.bg_subtract_enabled = self.settings.bg_subtract_enabled
         gs.bg_subtract_sensitivity = self.settings.bg_subtract_sensitivity
+        gs.roi_enabled = self.settings.roi_enabled
+        gs.roi_x = self.settings.roi_x
+        gs.roi_y = self.settings.roi_y
+        gs.roi_w = self.settings.roi_w
+        gs.roi_h = self.settings.roi_h
+
+    def _resolve_roi(self, frame_w: int, frame_h: int) -> Optional[Tuple[int, int, int, int]]:
+        """Return a clamped ROI as (x, y, x2, y2) in full-frame pixels."""
+        if not self.settings.roi_enabled:
+            return None
+        if frame_w <= 1 or frame_h <= 1:
+            return None
+
+        x = max(0, min(int(self.settings.roi_x), frame_w - 1))
+        y = max(0, min(int(self.settings.roi_y), frame_h - 1))
+        w = max(1, int(self.settings.roi_w))
+        h = max(1, int(self.settings.roi_h))
+        x2 = max(x + 1, min(frame_w, x + w))
+        y2 = max(y + 1, min(frame_h, y + h))
+        return x, y, x2, y2
+
+    def _offset_detections(
+        self,
+        detections: List[Tuple[np.ndarray, np.ndarray, np.ndarray]],
+        offset_x: int,
+        offset_y: int,
+    ) -> List[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        """Offset detections from ROI-local coordinates back into full-frame space."""
+        if not detections or (offset_x == 0 and offset_y == 0):
+            return detections
+
+        offset_xy = np.array([offset_x, offset_y])
+        offset_bbox = np.array([offset_x, offset_y, 0.0, 0.0])
+        shifted = []
+        for keypoints, confidence, bbox in detections:
+            shifted.append((keypoints + offset_xy, confidence, bbox + offset_bbox))
+        return shifted
     
     def set_preview_size(self, width: int, height: int):
         """Set preview dimensions for GPU pipeline."""
@@ -475,6 +548,28 @@ class FrameProcessor:
             timing["bg_mismatched"] = self.bg_subtractor.is_mismatched
         else:
             timing["bg_subtract"] = 0.0
+
+        roi = self._resolve_roi(original_w, original_h)
+        if roi is not None:
+            roi_x, roi_y, roi_x2, roi_y2 = roi
+            frame = frame[roi_y:roi_y2, roi_x:roi_x2]
+            timing["roi"] = {
+                "enabled": True,
+                "x": roi_x,
+                "y": roi_y,
+                "w": roi_x2 - roi_x,
+                "h": roi_y2 - roi_y,
+            }
+        else:
+            roi_x = 0
+            roi_y = 0
+            timing["roi"] = {
+                "enabled": False,
+                "x": 0,
+                "y": 0,
+                "w": original_w,
+                "h": original_h,
+            }
 
         # 1. Enhancement
         t0 = time.time()
@@ -530,6 +625,7 @@ class FrameProcessor:
         t0 = time.time()
         detections = self._extract_detections(results)
         detections = self._filter_duplicate_detections(detections)
+        detections = self._offset_detections(detections, roi_x, roi_y)
         timing["extract"] = (time.time() - t0) * 1000
         timing.update(self._extract_transfer_timing)
 
@@ -543,14 +639,19 @@ class FrameProcessor:
         # CPU path: YOLO outputs in original frame coords — no scaling needed
         self.tracker.set_frame_dimensions(original_w)
         self.tracker.set_person_height(self.settings.person_height_px)
+        motion_detector = self.motion_detector
+        if motion_detector is not None and (roi_x or roi_y):
+            motion_detector = _OffsetMotionProxy(motion_detector, roi_x, roi_y)
 
         t_trk = time.time()
         tracked = self.tracker.update(
             detections, frame_number=frame_number,
-            motion_detector=self.motion_detector)
+            motion_detector=motion_detector)
         timing["tracker_update"] = (time.time() - t_trk) * 1000
         timing["track"] = (time.time() - t0) * 1000
         timing["path_track"] = "cpu"
+        timing["original_w"] = original_w
+        timing["original_h"] = original_h
 
         # 5. Convert tracks to ScaledTrack (identity scale)
         scaled_tracks = [
@@ -586,7 +687,15 @@ class FrameProcessor:
             self._motion_pad_y,
         )
 
-    def _unscale_letterbox(self, track: DancerTrack, lb_scale: float, pad_x: int, pad_y: int) -> ScaledTrack:
+    def _unscale_letterbox(
+        self,
+        track: DancerTrack,
+        lb_scale: float,
+        pad_x: int,
+        pad_y: int,
+        roi_x: int = 0,
+        roi_y: int = 0,
+    ) -> ScaledTrack:
         """
         Unscale track from letterboxed YOLO space to original camera space.
         
@@ -601,26 +710,27 @@ class FrameProcessor:
         """
         # Subtract padding, then divide by scale
         pad_xy = np.array([pad_x, pad_y])
+        roi_offset = np.array([roi_x, roi_y])
         inv_scale = 1.0 / lb_scale if lb_scale > 0 else 1.0
         
         # Keypoints: (x, y) -> subtract pad -> divide by scale
-        keypoints = (track.keypoints - pad_xy) * inv_scale
+        keypoints = (track.keypoints - pad_xy) * inv_scale + roi_offset
         
         # Bbox: (x, y, w, h) -> x,y subtract pad and scale; w,h just scale
         bbox = track.bbox.copy()
-        bbox[0] = (bbox[0] - pad_x) * inv_scale  # x
-        bbox[1] = (bbox[1] - pad_y) * inv_scale  # y
+        bbox[0] = (bbox[0] - pad_x) * inv_scale + roi_x  # x
+        bbox[1] = (bbox[1] - pad_y) * inv_scale + roi_y  # y
         bbox[2] = bbox[2] * inv_scale  # w
         bbox[3] = bbox[3] * inv_scale  # h
         
         # History and velocity (guard against overflow from inf/NaN in tracker)
-        history = [(pt - pad_xy) * inv_scale for pt in track.history]
+        history = [(pt - pad_xy) * inv_scale + roi_offset for pt in track.history]
         velocity = track.get_velocity() * inv_scale
         if not np.all(np.isfinite(velocity)):
             velocity = np.zeros(2, dtype=np.float64)
 
         # Smoothed centroid (same unscale transform)
-        sm_centroid = (track.get_smoothed_centroid() - pad_xy) * inv_scale
+        sm_centroid = (track.get_smoothed_centroid() - pad_xy) * inv_scale + roi_offset
         
         return ScaledTrack(
             track_id=track.track_id,

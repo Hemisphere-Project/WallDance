@@ -277,7 +277,7 @@ class WallDanceGUI:
         
         # Section headers for mutual exclusion
         self._section_headers = [
-            "section_input", "section_background", "section_enhancement",
+            "section_input", "section_roi", "section_background", "section_enhancement",
             "section_model", "section_detection",
             "section_preview", "section_osc"
         ]
@@ -381,6 +381,34 @@ class WallDanceGUI:
     def _on_preview_cap_toggle(self, sender, value):
         if 'on_preview_cap_toggle' in self.callbacks:
             self.callbacks['on_preview_cap_toggle'](value)
+
+    def _on_roi_toggle(self, sender, value):
+        if 'on_roi_toggle' in self.callbacks:
+            self.callbacks['on_roi_toggle'](value)
+
+    def _on_roi_edit_toggle(self, sender, value):
+        if 'on_roi_edit_toggle' in self.callbacks:
+            self.callbacks['on_roi_edit_toggle'](value)
+
+    def _on_roi_reset(self, sender=None, value=None):
+        if 'on_roi_reset' in self.callbacks:
+            self.callbacks['on_roi_reset']()
+
+    def _on_roi_x_change(self, sender, value):
+        if 'on_roi_x_change' in self.callbacks:
+            self.callbacks['on_roi_x_change'](int(value))
+
+    def _on_roi_y_change(self, sender, value):
+        if 'on_roi_y_change' in self.callbacks:
+            self.callbacks['on_roi_y_change'](int(value))
+
+    def _on_roi_w_change(self, sender, value):
+        if 'on_roi_w_change' in self.callbacks:
+            self.callbacks['on_roi_w_change'](int(value))
+
+    def _on_roi_h_change(self, sender, value):
+        if 'on_roi_h_change' in self.callbacks:
+            self.callbacks['on_roi_h_change'](int(value))
     
     def _update_preview_row_state(self, enabled: bool):
         """Grey out PREVIEW row controls when disabled."""
@@ -1277,6 +1305,8 @@ class WallDanceGUI:
             'trt': ['adv_trt_checkbox'],
             'osc': ['osc_checkbox'],
             'bg_enable': ['bg_enable_checkbox'],
+            'roi_enable': ['adv_roi_enable_checkbox'],
+            'roi_edit': ['adv_roi_edit_checkbox'],
         }
         # Visualization toggles - update toolbar button themes instead of checkboxes
         vis_toggles = ['skeleton', 'keypoints', 'bbox', 'trails', 'ids']
@@ -1337,6 +1367,17 @@ class WallDanceGUI:
 
         if min_fps <= implied_fps < warning_fps:
             dpg.set_value(tag, f"Exposure-limited: {implied_fps:.1f} FPS")
+            dpg.configure_item(tag, color=(255, 180, 80), show=True)
+        else:
+            dpg.configure_item(tag, show=False)
+
+    def update_imgsz_roi_warning(self, message: Optional[str]):
+        """Show or hide the ROI-aware imgsz warning line."""
+        tag = "adv_imgsz_roi_warning"
+        if not dpg.does_item_exist(tag):
+            return
+        if message:
+            dpg.set_value(tag, message)
             dpg.configure_item(tag, color=(255, 180, 80), show=True)
         else:
             dpg.configure_item(tag, show=False)
@@ -1482,6 +1523,10 @@ class WallDanceGUI:
         tag_map = {
             'osc_ip': 'osc_ip_input',
             'osc_port': 'osc_port_input',
+            'roi_x': 'adv_roi_x_input',
+            'roi_y': 'adv_roi_y_input',
+            'roi_w': 'adv_roi_w_input',
+            'roi_h': 'adv_roi_h_input',
         }
         if name in tag_map:
             dpg.set_value(tag_map[name], value)

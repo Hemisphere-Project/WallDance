@@ -101,6 +101,13 @@ class GpuPipelineSettings:
     # Background subtraction
     bg_subtract_enabled: bool = False
     bg_subtract_sensitivity: int = 30  # 0-255
+
+    # ROI crop (full-frame coordinates)
+    roi_enabled: bool = False
+    roi_x: int = 0
+    roi_y: int = 0
+    roi_w: int = 0
+    roi_h: int = 0
     
     # Processing
     yolo_imgsz: int = 960
@@ -355,10 +362,19 @@ class GpuEnhancer:
         
         # Extract Y channel
         y = ycbcr[:, 0:1, :, :]
+
+        _, _, h, w = y.shape
+        can_run_clahe = h >= grid and w >= grid
         
-        # Apply CLAHE on Y channel only (much faster than full RGB)
-        if clip > 1.0:
-            y = equalize_clahe(y, clip_limit=clip, grid_size=(grid, grid))
+        # Apply CLAHE on Y channel only (much faster than full RGB).
+        # Very small or extremely skinny ROIs can still fail inside Kornia's
+        # tile padding logic even when the nominal grid check passes, so fall
+        # back to gamma-only enhancement instead of crashing the app.
+        if clip > 1.0 and can_run_clahe:
+            try:
+                y = equalize_clahe(y, clip_limit=clip, grid_size=(grid, grid))
+            except (RuntimeError, ValueError):
+                pass
         
         # Apply gamma on Y channel
         if gamma != 1.0:
@@ -465,6 +481,43 @@ class GpuPipeline:
             self._preview_interval = 1.0 / settings.preview_fps_cap
         else:
             self._preview_interval = 0.0
+
+    def _resolve_roi(self, frame_w: int, frame_h: int) -> Dict[str, int | bool]:
+        """Return clamped ROI metadata in full-frame pixels."""
+        if not self.settings.roi_enabled or frame_w <= 1 or frame_h <= 1:
+            return {
+                'enabled': False,
+                'x': 0,
+                'y': 0,
+                'w': frame_w,
+                'h': frame_h,
+            }
+
+        x = max(0, min(int(self.settings.roi_x), frame_w - 1))
+        y = max(0, min(int(self.settings.roi_y), frame_h - 1))
+        w = max(1, int(self.settings.roi_w))
+        h = max(1, int(self.settings.roi_h))
+        x2 = max(x + 1, min(frame_w, x + w))
+        y2 = max(y + 1, min(frame_h, y + h))
+        return {
+            'enabled': True,
+            'x': x,
+            'y': y,
+            'w': x2 - x,
+            'h': y2 - y,
+        }
+
+    def _crop_to_roi(self, gpu_frame: GpuFrame, roi: Dict[str, int | bool]) -> GpuFrame:
+        """Crop a GPU frame to the active ROI."""
+        if not roi.get('enabled'):
+            return gpu_frame
+
+        x = int(roi['x'])
+        y = int(roi['y'])
+        w = int(roi['w'])
+        h = int(roi['h'])
+        tensor = gpu_frame.tensor[:, :, y:y + h, x:x + w]
+        return GpuFrame(tensor, is_bgr=gpu_frame._is_bgr)
     
     def process(
         self, 
@@ -489,6 +542,8 @@ class GpuPipeline:
         """
         timing: Dict[str, float] = {}
         current_time = time.time()
+        frame_h, frame_w = frame.shape[:2]
+        roi = self._resolve_roi(frame_w, frame_h)
         
         # 1. Upload to GPU (BGR -> RGB conversion happens here)
         t0 = time.time()
@@ -513,6 +568,9 @@ class GpuPipeline:
             timing['bg_mismatched'] = self._bg_subtractor.is_mismatched
         else:
             timing['bg_subtract'] = 0.0
+
+        gpu_frame = self._crop_to_roi(gpu_frame, roi)
+        timing['roi'] = roi
         
         # 2. Enhancement (on GPU, in RGB)
         t0 = time.time()
@@ -561,8 +619,8 @@ class GpuPipeline:
             timing['preview_new'] = False
         
         # Store original frame dimensions for keypoint scaling
-        timing['original_w'] = frame.shape[1]
-        timing['original_h'] = frame.shape[0]
+        timing['original_w'] = frame_w
+        timing['original_h'] = frame_h
         
         self.timing = timing
         return yolo_tensor, preview_frame, timing
@@ -587,6 +645,8 @@ class GpuPipeline:
         """
         timing: Dict[str, float] = {}
         current_time = time.time()
+        _, _, frame_h, frame_w = gpu_tensor.shape
+        roi = self._resolve_roi(frame_w, frame_h)
         
         # No upload needed - tensor is already on GPU
         timing['upload'] = 0.0
@@ -609,6 +669,9 @@ class GpuPipeline:
             timing['bg_mismatched'] = self._bg_subtractor.is_mismatched
         else:
             timing['bg_subtract'] = 0.0
+
+        gpu_frame = self._crop_to_roi(gpu_frame, roi)
+        timing['roi'] = roi
         
         # 2. Enhancement (on GPU, in RGB)
         t0 = time.time()
@@ -655,9 +718,8 @@ class GpuPipeline:
             timing['preview_new'] = False
         
         # Store dimensions from tensor shape
-        _, _, h, w = gpu_tensor.shape
-        timing['original_w'] = w
-        timing['original_h'] = h
+        timing['original_w'] = frame_w
+        timing['original_h'] = frame_h
         
         self.timing = timing
         return yolo_tensor, preview_frame, timing

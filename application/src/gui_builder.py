@@ -630,6 +630,8 @@ def build_control_panel(gui: Any):
     with dpg.child_window(width=scaled(CONTROL_PANEL_WIDTH), height=gui._middle_height, border=False, tag="control_panel"):
         build_input_section(gui)
         dpg.add_spacer(height=scaled(8))
+        build_roi_section(gui)
+        dpg.add_spacer(height=scaled(8))
         build_background_section(gui)
         dpg.add_spacer(height=scaled(8))
         build_enhancement_section(gui)
@@ -846,6 +848,13 @@ def build_model_section(gui: Any):
                 default_value=gui.config.get("use_tensorrt", False),
                 callback=gui._on_trt_toggle,
             )
+        dpg.add_text(
+            "",
+            tag="adv_imgsz_roi_warning",
+            color=(255, 180, 80),
+            wrap=scaled(300),
+            show=False,
+        )
 
 
 def build_enhancement_section(gui: Any):
@@ -1066,3 +1075,70 @@ def build_preview_section(gui: Any):
         with dpg.group(horizontal=True):
             dpg.add_text("Auto-fit scale:", color=(120, 120, 120))
             dpg.add_text("--", tag="preview_autofit_scale_text", color=(140, 180, 140))
+
+
+def build_roi_section(gui: Any):
+    """Region of interest settings."""
+    with dpg.collapsing_header(label="Region of Interest", default_open=False, tag="section_roi", closable=False):
+        with dpg.group(horizontal=True):
+            dpg.add_checkbox(
+                label="Enable ROI",
+                tag="adv_roi_enable_checkbox",
+                default_value=gui.config.get("roi_enabled", False),
+                callback=gui._on_roi_toggle,
+            )
+            dpg.add_checkbox(
+                label="Edit On Preview",
+                tag="adv_roi_edit_checkbox",
+                default_value=gui.config.get("roi_edit_mode", False),
+                callback=gui._on_roi_edit_toggle,
+            )
+            dpg.add_button(
+                label="Reset",
+                tag="adv_roi_reset_btn",
+                callback=gui._on_roi_reset,
+                width=scaled(60),
+            )
+        dpg.add_text("ROI Rect (full-frame px)", color=(180, 180, 180))
+        with dpg.group(horizontal=True):
+            dpg.add_input_int(
+                tag="adv_roi_x_input",
+                default_value=gui.config.get("roi_x", 0),
+                step=1,
+                width=scaled(72),
+                callback=gui._on_roi_x_change,
+            )
+            dpg.add_input_int(
+                tag="adv_roi_y_input",
+                default_value=gui.config.get("roi_y", 0),
+                step=1,
+                width=scaled(72),
+                callback=gui._on_roi_y_change,
+            )
+            dpg.add_input_int(
+                tag="adv_roi_w_input",
+                default_value=gui.config.get("roi_w", gui.config.get("camera_width", 1920)),
+                step=1,
+                width=scaled(72),
+                callback=gui._on_roi_w_change,
+            )
+            dpg.add_input_int(
+                tag="adv_roi_h_input",
+                default_value=gui.config.get("roi_h", gui.config.get("camera_height", 1080)),
+                step=1,
+                width=scaled(72),
+                callback=gui._on_roi_h_change,
+            )
+        with dpg.group(horizontal=True):
+            dpg.add_text("X", color=(120, 120, 120))
+            dpg.add_spacer(width=scaled(54))
+            dpg.add_text("Y", color=(120, 120, 120))
+            dpg.add_spacer(width=scaled(54))
+            dpg.add_text("W", color=(120, 120, 120))
+            dpg.add_spacer(width=scaled(54))
+            dpg.add_text("H", color=(120, 120, 120))
+        dpg.add_text(
+            "Enable edit mode, then drag in the preview to draw, move, or resize the ROI.",
+            color=(120, 120, 120),
+            wrap=scaled(300),
+        )

@@ -129,6 +129,8 @@ class ReviewStartupOptions:
 class WallDanceApp:
     """Main application orchestrator."""
 
+    _IMGSZ_PRESETS = (640, 800, 960, 1280, 1536, 1920)
+
     def __init__(self, startup_review: Optional[ReviewStartupOptions] = None):
         print("=" * 60)
         print("WallDance 1080p - Multi-Person Pose Detection")
@@ -225,6 +227,19 @@ class WallDanceApp:
         )
         self._pending_preview_resize = False
         self._last_preview_upload_time = 0.0
+
+        # ROI state (stored in full-frame source coordinates)
+        self.roi_edit_mode = False
+        self._roi_drag_active = False
+        self._roi_drag_mode: Optional[str] = None
+        self._roi_drag_origin: Optional[tuple[int, int]] = None
+        self._roi_drag_start_rect: Optional[tuple[int, int, int, int]] = None
+        self._roi_mouse_was_down = False
+        self._roi_source_size = (CAMERA_WIDTH, CAMERA_HEIGHT)
+        self.settings.roi_x = 0
+        self.settings.roi_y = 0
+        self.settings.roi_w = CAMERA_WIDTH
+        self.settings.roi_h = CAMERA_HEIGHT
 
         # Visualization flags
         self.show_trails = SHOW_TRAILS
@@ -326,6 +341,12 @@ class WallDanceApp:
             "preview_fps_cap": self.preview_fps_cap,
             "input_fps_cap": self.input_fps_cap,
             "preview_scale": self.preview.render_scale,
+            "roi_enabled": self.settings.roi_enabled,
+            "roi_edit_mode": self.roi_edit_mode,
+            "roi_x": self.settings.roi_x,
+            "roi_y": self.settings.roi_y,
+            "roi_w": self.settings.roi_w,
+            "roi_h": self.settings.roi_h,
             "ids_ratio": self.ids_ratio,
             "ids_gain_db": self.ids_gain_db,
             "ids_exposure_us": self.ids_exposure_us,
@@ -372,6 +393,13 @@ class WallDanceApp:
             "on_input_fps_cap_toggle": self._cb_input_fps_cap_toggle,
             "on_preview_cap_toggle": self._cb_preview_cap_toggle,
             "on_preview_scale_change": self._cb_preview_scale_change,
+            "on_roi_toggle": self._cb_roi_toggle,
+            "on_roi_edit_toggle": self._cb_roi_edit_toggle,
+            "on_roi_reset": self._cb_roi_reset,
+            "on_roi_x_change": self._cb_roi_x_change,
+            "on_roi_y_change": self._cb_roi_y_change,
+            "on_roi_w_change": self._cb_roi_w_change,
+            "on_roi_h_change": self._cb_roi_h_change,
             "on_save_config": self._cb_save_config,
             "on_save_as_config": self._cb_save_as_config,
             "on_save_safe_defaults": self._cb_save_safe_defaults,
@@ -469,6 +497,361 @@ class WallDanceApp:
             return (time.perf_counter() - self._last_camera_open_time) > self._ids_disconnect_timeout_s
         return self.unified_camera.get_last_acquired_age_s() > self._ids_disconnect_timeout_s
 
+    def _normalize_roi_rect(self, x: int, y: int, w: int, h: int, frame_w: int, frame_h: int) -> tuple[int, int, int, int]:
+        frame_w = max(1, int(frame_w))
+        frame_h = max(1, int(frame_h))
+        x = max(0, min(int(x), frame_w - 1))
+        y = max(0, min(int(y), frame_h - 1))
+        w = max(1, int(w))
+        h = max(1, int(h))
+        w = min(w, frame_w - x)
+        h = min(h, frame_h - y)
+        return x, y, w, h
+
+    def _sync_roi_ui(self):
+        if not self.gui:
+            return
+        self.gui.sync_checkbox("roi_enable", self.settings.roi_enabled)
+        self.gui.sync_checkbox("roi_edit", self.roi_edit_mode)
+        self.gui.sync_input("roi_x", self.settings.roi_x)
+        self.gui.sync_input("roi_y", self.settings.roi_y)
+        self.gui.sync_input("roi_w", self.settings.roi_w)
+        self.gui.sync_input("roi_h", self.settings.roi_h)
+        self._update_imgsz_roi_warning()
+
+    def _get_recommended_imgsz_for_roi(self) -> tuple[int, int, int] | None:
+        if not self.settings.roi_enabled:
+            return None
+        frame_w, frame_h = self._roi_source_size
+        roi_x, roi_y, roi_w, roi_h = self._get_effective_roi(frame_w, frame_h)
+        long_edge = max(roi_w, roi_h)
+        recommended = self._IMGSZ_PRESETS[-1]
+        for preset in self._IMGSZ_PRESETS:
+            if preset >= long_edge:
+                recommended = preset
+                break
+        return recommended, roi_w, roi_h
+
+    def _get_imgsz_roi_warning(self) -> Optional[str]:
+        roi_info = self._get_recommended_imgsz_for_roi()
+        if roi_info is None:
+            return None
+
+        recommended, roi_w, roi_h = roi_info
+        current = int(self.settings.imgsz)
+        if current <= recommended:
+            return None
+
+        long_edge = max(roi_w, roi_h)
+        upscale_ratio = current / max(long_edge, 1)
+        return (
+            f"ROI {roi_w}x{roi_h}: {current}px is likely overkill. "
+            f"{recommended}px already covers the ROI ({upscale_ratio:.2f}x upsample)."
+        )
+
+    def _update_imgsz_roi_warning(self):
+        if not self.gui:
+            return
+        self.gui.update_imgsz_roi_warning(self._get_imgsz_roi_warning())
+
+    def _set_roi_rect(
+        self,
+        x: int,
+        y: int,
+        w: int,
+        h: int,
+        *,
+        frame_w: Optional[int] = None,
+        frame_h: Optional[int] = None,
+        sync_ui: bool = True,
+        request_reprocess: bool = True,
+    ):
+        if frame_w is None or frame_h is None:
+            frame_w, frame_h = self._roi_source_size
+        x, y, w, h = self._normalize_roi_rect(x, y, w, h, frame_w, frame_h)
+        self.settings.roi_x = x
+        self.settings.roi_y = y
+        self.settings.roi_w = w
+        self.settings.roi_h = h
+        self._roi_source_size = (frame_w, frame_h)
+        if sync_ui:
+            self._sync_roi_ui()
+        if request_reprocess:
+            self._request_reprocess()
+
+    def _clamp_roi_to_source(self, frame_w: int, frame_h: int, *, sync_ui: bool = True):
+        self._set_roi_rect(
+            self.settings.roi_x,
+            self.settings.roi_y,
+            self.settings.roi_w or frame_w,
+            self.settings.roi_h or frame_h,
+            frame_w=frame_w,
+            frame_h=frame_h,
+            sync_ui=sync_ui,
+            request_reprocess=False,
+        )
+
+    def _get_effective_roi(self, frame_w: int, frame_h: int) -> tuple[int, int, int, int]:
+        x, y, w, h = self._normalize_roi_rect(
+            self.settings.roi_x,
+            self.settings.roi_y,
+            self.settings.roi_w or frame_w,
+            self.settings.roi_h or frame_h,
+            frame_w,
+            frame_h,
+        )
+        return x, y, w, h
+
+    def _get_preview_item_rect(self) -> Optional[tuple[int, int, int, int]]:
+        if not dpg.does_item_exist("video_image"):
+            return None
+        try:
+            state = dpg.get_item_state("video_image")
+        except Exception:
+            state = None
+
+        rect_min = None
+        rect_size = None
+        if isinstance(state, dict):
+            rect_min = state.get("rect_min")
+            rect_size = state.get("rect_size")
+
+        if rect_min is None or rect_size is None:
+            try:
+                rect_min = dpg.get_item_rect_min("video_image")
+                rect_size = dpg.get_item_rect_size("video_image")
+            except Exception:
+                return None
+
+        if len(rect_min) < 2 or len(rect_size) < 2:
+            return None
+
+        img_x, img_y = int(rect_min[0]), int(rect_min[1])
+        img_w, img_h = int(rect_size[0]), int(rect_size[1])
+        if img_w <= 0 or img_h <= 0:
+            return None
+        return img_x, img_y, img_w, img_h
+
+    def _get_preview_mouse_point(self) -> Optional[tuple[int, int, int, int]]:
+        if not self.gui:
+            return None
+        rect = self._get_preview_item_rect()
+        if rect is None:
+            return None
+        img_x, img_y, img_w, img_h = rect
+        try:
+            mouse_x, mouse_y = dpg.get_mouse_pos(local=False)
+        except TypeError:
+            mouse_x, mouse_y = dpg.get_mouse_pos()
+        if mouse_x < img_x or mouse_y < img_y or mouse_x >= img_x + img_w or mouse_y >= img_y + img_h:
+            return None
+        frame_w, frame_h = self._roi_source_size
+        frame_x = int((mouse_x - img_x) * frame_w / img_w)
+        frame_y = int((mouse_y - img_y) * frame_h / img_h)
+        frame_x = max(0, min(frame_w - 1, frame_x))
+        frame_y = max(0, min(frame_h - 1, frame_y))
+        return frame_x, frame_y, frame_w, frame_h
+
+    def _classify_roi_drag_mode(self, frame_x: int, frame_y: int, frame_w: int, frame_h: int) -> str:
+        roi_x, roi_y, roi_w, roi_h = self._get_effective_roi(frame_w, frame_h)
+        roi_x2 = roi_x + roi_w
+        roi_y2 = roi_y + roi_h
+        edge_margin = max(6, int(min(frame_w, frame_h) * 0.01))
+
+        near_left = abs(frame_x - roi_x) <= edge_margin
+        near_right = abs(frame_x - roi_x2) <= edge_margin
+        near_top = abs(frame_y - roi_y) <= edge_margin
+        near_bottom = abs(frame_y - roi_y2) <= edge_margin
+        inside = roi_x <= frame_x <= roi_x2 and roi_y <= frame_y <= roi_y2
+
+        if near_left and near_top:
+            return "resize_tl"
+        if near_right and near_top:
+            return "resize_tr"
+        if near_left and near_bottom:
+            return "resize_bl"
+        if near_right and near_bottom:
+            return "resize_br"
+        if near_left and inside:
+            return "resize_l"
+        if near_right and inside:
+            return "resize_r"
+        if near_top and inside:
+            return "resize_t"
+        if near_bottom and inside:
+            return "resize_b"
+        if inside:
+            return "move"
+        return "new"
+
+    def _apply_roi_drag(self, frame_x: int, frame_y: int, frame_w: int, frame_h: int):
+        if self._roi_drag_origin is None or self._roi_drag_start_rect is None or self._roi_drag_mode is None:
+            return
+
+        start_x, start_y = self._roi_drag_origin
+        roi_x, roi_y, roi_w, roi_h = self._roi_drag_start_rect
+        roi_x2 = roi_x + roi_w
+        roi_y2 = roi_y + roi_h
+        dx = frame_x - start_x
+        dy = frame_y - start_y
+        min_size = 8
+
+        if self._roi_drag_mode == "new":
+            left = min(start_x, frame_x)
+            top = min(start_y, frame_y)
+            right = max(start_x, frame_x)
+            bottom = max(start_y, frame_y)
+        elif self._roi_drag_mode == "move":
+            left = roi_x + dx
+            top = roi_y + dy
+            left = max(0, min(left, frame_w - roi_w))
+            top = max(0, min(top, frame_h - roi_h))
+            right = left + roi_w
+            bottom = top + roi_h
+        else:
+            left = roi_x
+            top = roi_y
+            right = roi_x2
+            bottom = roi_y2
+            resize_mode = self._roi_drag_mode.replace("resize_", "")
+            if "l" in resize_mode:
+                left = min(frame_x, right - min_size)
+            if "r" in resize_mode:
+                right = max(frame_x, left + min_size)
+            if "t" in resize_mode:
+                top = min(frame_y, bottom - min_size)
+            if "b" in resize_mode:
+                bottom = max(frame_y, top + min_size)
+
+        left = max(0, min(left, frame_w - 1))
+        top = max(0, min(top, frame_h - 1))
+        right = max(left + 1, min(right, frame_w))
+        bottom = max(top + 1, min(bottom, frame_h))
+
+        self._set_roi_rect(
+            left,
+            top,
+            right - left,
+            bottom - top,
+            frame_w=frame_w,
+            frame_h=frame_h,
+            sync_ui=True,
+            request_reprocess=False,
+        )
+
+    def _update_roi_drag_from_mouse(self):
+        if not self._roi_drag_active:
+            return
+        point = self._get_preview_mouse_point()
+        if point is None:
+            return
+        frame_x, frame_y, frame_w, frame_h = point
+        self._apply_roi_drag(frame_x, frame_y, frame_w, frame_h)
+
+    def _poll_roi_mouse_interaction(self):
+        if not self.roi_edit_mode or not self.settings.roi_enabled:
+            self._roi_mouse_was_down = False
+            return
+
+        try:
+            is_down = dpg.is_mouse_button_down(dpg.mvMouseButton_Left)
+        except Exception:
+            return
+
+        if is_down and not self._roi_mouse_was_down:
+            self._handle_roi_mouse_down(app_data=dpg.mvMouseButton_Left)
+        elif is_down and self._roi_mouse_was_down:
+            self._update_roi_drag_from_mouse()
+        elif (not is_down) and self._roi_mouse_was_down:
+            self._handle_roi_mouse_up(app_data=dpg.mvMouseButton_Left)
+
+        self._roi_mouse_was_down = is_down
+
+    def _draw_roi_mask(self, frame: np.ndarray, source_w: int, source_h: int):
+        if not self.settings.roi_enabled:
+            return
+        frame_h, frame_w = frame.shape[:2]
+        x, y, w, h = self._get_effective_roi(source_w, source_h)
+        x = int(round(x * frame_w / max(source_w, 1)))
+        y = int(round(y * frame_h / max(source_h, 1)))
+        w = max(1, int(round(w * frame_w / max(source_w, 1))))
+        h = max(1, int(round(h * frame_h / max(source_h, 1))))
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (0, 0), (frame_w, y), (0, 0, 0), -1)
+        cv2.rectangle(overlay, (0, y + h), (frame_w, frame_h), (0, 0, 0), -1)
+        cv2.rectangle(overlay, (0, y), (x, y + h), (0, 0, 0), -1)
+        cv2.rectangle(overlay, (x + w, y), (frame_w, y + h), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.55, frame, 0.45, 0.0, frame)
+        border_color = (80, 220, 120) if self.roi_edit_mode else (100, 180, 240)
+        cv2.rectangle(frame, (x, y), (x + w, y + h), border_color, 2)
+        if self.roi_edit_mode:
+            handle = max(4, min(10, int(min(frame_w, frame_h) * 0.01)))
+            for hx, hy in ((x, y), (x + w, y), (x, y + h), (x + w, y + h)):
+                cv2.rectangle(frame, (hx - handle, hy - handle), (hx + handle, hy + handle), border_color, -1)
+
+    def _draw_roi_note(self, frame: np.ndarray, source_w: int, source_h: int):
+        if not self.settings.roi_enabled:
+            return
+
+        _, _, roi_w_src, roi_h_src = self._get_effective_roi(source_w, source_h)
+        roi_info = self._get_recommended_imgsz_for_roi()
+        note_lines = [f"ROI {roi_w_src}x{roi_h_src} | imgsz {self.settings.imgsz}"]
+        if roi_info is not None:
+            recommended, _, _ = roi_info
+            if self.settings.imgsz > recommended:
+                note_lines.append(f"Recommended: {recommended}")
+
+        frame_h, frame_w = frame.shape[:2]
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = max(0.45, min(frame_w, frame_h) / 1400.0)
+        thickness = 1
+        line_height = max(18, int(24 * font_scale))
+        box_width = 0
+        for line in note_lines:
+            (text_width, _), _ = cv2.getTextSize(line, font, font_scale, thickness)
+            box_width = max(box_width, text_width)
+        box_height = 12 + line_height * len(note_lines)
+        cv2.rectangle(frame, (8, 8), (20 + box_width, 8 + box_height), (0, 0, 0), -1)
+        text_y = 8 + line_height
+        for idx, line in enumerate(note_lines):
+            color = (255, 200, 120) if idx > 0 else (220, 220, 220)
+            cv2.putText(frame, line, (12, text_y), font, font_scale, color, thickness, cv2.LINE_AA)
+            text_y += line_height
+
+    def _handle_roi_mouse_down(self, sender=None, app_data=None):
+        if not self.roi_edit_mode or not self.settings.roi_enabled:
+            return
+        if app_data != dpg.mvMouseButton_Left:
+            return
+        point = self._get_preview_mouse_point()
+        if point is None:
+            return
+        frame_x, frame_y, frame_w, frame_h = point
+        self._roi_drag_active = True
+        self._roi_drag_origin = (frame_x, frame_y)
+        self._roi_drag_start_rect = self._get_effective_roi(frame_w, frame_h)
+        self._roi_drag_mode = self._classify_roi_drag_mode(frame_x, frame_y, frame_w, frame_h)
+        self._clamp_roi_to_source(frame_w, frame_h, sync_ui=False)
+
+    def _handle_roi_mouse_move(self, sender=None, app_data=None):
+        if not self._roi_drag_active:
+            return
+        point = self._get_preview_mouse_point()
+        if point is None:
+            return
+        frame_x, frame_y, frame_w, frame_h = point
+        self._apply_roi_drag(frame_x, frame_y, frame_w, frame_h)
+
+    def _handle_roi_mouse_up(self, sender=None, app_data=None):
+        if app_data != dpg.mvMouseButton_Left:
+            return
+        if self._roi_drag_active:
+            self._roi_drag_active = False
+            self._roi_drag_mode = None
+            self._roi_drag_origin = None
+            self._roi_drag_start_rect = None
+            self._request_reprocess()
+
     # ------------------------------------------------------------------
     # Config persistence
     # ------------------------------------------------------------------
@@ -503,6 +886,11 @@ class WallDanceApp:
             "preview_fps_cap": self.preview_fps_cap,
             "input_fps_cap": self.input_fps_cap,
             "preview_scale": self.preview.render_scale,
+            "roi_enabled": self.settings.roi_enabled,
+            "roi_x": self.settings.roi_x,
+            "roi_y": self.settings.roi_y,
+            "roi_w": self.settings.roi_w,
+            "roi_h": self.settings.roi_h,
             "ids_ratio": self.ids_ratio,
             "ids_gain_db": self.ids_gain_db,
             "ids_exposure_us": self.ids_exposure_us,
@@ -586,6 +974,7 @@ class WallDanceApp:
         # 6. Update imgsz in model manager BEFORE loading model
         self.settings.imgsz = new_imgsz
         self.model_manager.set_imgsz(new_imgsz)
+        self._update_imgsz_roi_warning()
         
         # 7. Determine if we need to reload the model
         need_model_reload = (
@@ -782,6 +1171,26 @@ class WallDanceApp:
             # Legacy config value – render scale is now auto-computed from layout.
             # Just store it; actual scale will be overridden by next layout recompute.
             pass
+
+        if "roi_enabled" in config:
+            self.settings.roi_enabled = bool(config["roi_enabled"])
+        roi_frame_w, roi_frame_h = self._roi_source_size
+        roi_x = int(config.get("roi_x", self.settings.roi_x))
+        roi_y = int(config.get("roi_y", self.settings.roi_y))
+        roi_w = int(config.get("roi_w", self.settings.roi_w or roi_frame_w))
+        roi_h = int(config.get("roi_h", self.settings.roi_h or roi_frame_h))
+        self._set_roi_rect(
+            roi_x,
+            roi_y,
+            roi_w,
+            roi_h,
+            frame_w=roi_frame_w,
+            frame_h=roi_frame_h,
+            sync_ui=False,
+            request_reprocess=False,
+        )
+        self.roi_edit_mode = False
+        self._sync_roi_ui()
 
         # IDS crop ratio
         if "ids_ratio" in config:
@@ -1147,6 +1556,10 @@ class WallDanceApp:
         
         self.settings.imgsz = new_imgsz
         self.model_manager.set_imgsz(new_imgsz)
+        self._update_imgsz_roi_warning()
+        roi_warning = self._get_imgsz_roi_warning()
+        if roi_warning and self.gui:
+            self.gui.show_toast("Selected imgsz is overkill for current ROI", duration=3.0, color=(255, 180, 80))
         
         max_cam_dim = max(self.camera.state.width, self.camera.state.height)
         if new_imgsz > max_cam_dim:
@@ -1869,6 +2282,43 @@ class WallDanceApp:
         # Manual slider removed; kept for backward compat with configs
         pass
 
+    def _cb_roi_toggle(self, enabled: bool):
+        self.settings.roi_enabled = bool(enabled)
+        if self.settings.roi_enabled and (self.settings.roi_w <= 0 or self.settings.roi_h <= 0):
+            frame_w, frame_h = self._roi_source_size
+            self._set_roi_rect(0, 0, frame_w, frame_h, sync_ui=False, request_reprocess=False)
+        if not self.settings.roi_enabled:
+            self.roi_edit_mode = False
+        self._sync_roi_ui()
+        print(f"ROI: {'ON' if self.settings.roi_enabled else 'OFF'}")
+        self._request_reprocess()
+
+    def _cb_roi_edit_toggle(self, enabled: bool):
+        if enabled and not self.settings.roi_enabled:
+            self.settings.roi_enabled = True
+        self.roi_edit_mode = bool(enabled) and self.settings.roi_enabled
+        self._sync_roi_ui()
+        if self.gui:
+            message = "ROI edit mode: drag on preview" if self.roi_edit_mode else "ROI edit mode: off"
+            self.gui.show_toast(message, duration=2.0, color=(120, 200, 255))
+
+    def _cb_roi_reset(self):
+        frame_w, frame_h = self._roi_source_size
+        self._set_roi_rect(0, 0, frame_w, frame_h)
+        print("ROI reset to full frame")
+
+    def _cb_roi_x_change(self, value: int):
+        self._set_roi_rect(value, self.settings.roi_y, self.settings.roi_w, self.settings.roi_h)
+
+    def _cb_roi_y_change(self, value: int):
+        self._set_roi_rect(self.settings.roi_x, value, self.settings.roi_w, self.settings.roi_h)
+
+    def _cb_roi_w_change(self, value: int):
+        self._set_roi_rect(self.settings.roi_x, self.settings.roi_y, value, self.settings.roi_h)
+
+    def _cb_roi_h_change(self, value: int):
+        self._set_roi_rect(self.settings.roi_x, self.settings.roi_y, self.settings.roi_w, value)
+
     # ------------------------------------------------------------------
     # Recording callbacks
     # ------------------------------------------------------------------
@@ -2573,7 +3023,11 @@ class WallDanceApp:
         self.gui.setup(width=window_width, height=window_height)
         with dpg.handler_registry():
             dpg.add_key_press_handler(callback=self._handle_key)
+            dpg.add_mouse_down_handler(callback=self._handle_roi_mouse_down)
+            dpg.add_mouse_move_handler(callback=self._handle_roi_mouse_move)
+            dpg.add_mouse_release_handler(callback=self._handle_roi_mouse_up)
         dpg.show_viewport()
+        self._sync_roi_ui()
         
         # Load last project using the unified project switch path
         # This ensures startup and runtime project switching use the same code
@@ -2740,6 +3194,9 @@ class WallDanceApp:
                 dpg.render_dearpygui_frame()
                 time.sleep(0.016)  # ~60 FPS UI update
                 continue
+
+            self._poll_roi_mouse_interaction()
+            self._update_roi_drag_from_mouse()
                 
             if self._pending_preview_resize and self.gui:
                 self.gui.resize_preview(self.preview.width, self.preview.height)
@@ -2762,10 +3219,13 @@ class WallDanceApp:
             frame = None
             gpu_tensor = None  # GPU tensor path for IDS camera, None for playback/OpenCV
             camera_read_ms = 0.0
+            preview_source_frame = None
             
             if self.recorder.is_playing:
                 # Read from video file
                 frame = self.recorder.read_frame()
+                if frame is not None:
+                    preview_source_frame = frame
                 if frame is None:
                     # No new frame yet — decoder paces at video FPS, so we
                     # wait briefly to avoid spinning and re-processing the
@@ -2862,6 +3322,11 @@ class WallDanceApp:
                     time.sleep(0.01)
                     continue
 
+                if frame is not None:
+                    preview_source_frame = frame
+                elif gpu_tensor is not None and self.unified_camera is not None:
+                    preview_source_frame = self.unified_camera.get_last_cpu_frame()
+
                 # Input FPS cap: wait if too soon since last processed frame
                 if self.input_fps_cap and (frame is not None or gpu_tensor is not None):
                     now = time.perf_counter()
@@ -2879,6 +3344,15 @@ class WallDanceApp:
                 self._last_fresh_frame_time = time.time()
                 
                 # Recording is handled via camera callback thread - no write_frame here
+
+            if preview_source_frame is not None:
+                src_h, src_w = preview_source_frame.shape[:2]
+                if (src_w, src_h) != self._roi_source_size:
+                    self._clamp_roi_to_source(src_w, src_h, sync_ui=True)
+            elif gpu_tensor is not None:
+                _, _, src_h, src_w = gpu_tensor.shape
+                if (src_w, src_h) != self._roi_source_size:
+                    self._clamp_roi_to_source(src_w, src_h, sync_ui=True)
 
             # Stash raw frame for BG capture (before any processing)
             # Works for both camera and playback sources
@@ -2908,7 +3382,7 @@ class WallDanceApp:
 
                 try:
                     _proc_t0 = time.perf_counter()
-                    _need_preview = self.preview_enabled and (self.frame_count % self.preview_stride == 0)
+                    _need_preview = self.preview_enabled and (self.frame_count % self.preview_stride == 0) and not self.settings.roi_enabled
                     if gpu_tensor is not None:
                         tracked, display_frame, timing, latency_ms = self.processor.process_gpu_direct(
                             gpu_tensor, need_preview=_need_preview, frame_number=_display_frame_num
@@ -2946,6 +3420,8 @@ class WallDanceApp:
                 self.last_tracked = tracked
                 if display_frame is not None:
                     self._last_review_frame = display_frame.copy()
+                elif preview_source_frame is not None:
+                    self._last_review_frame = preview_source_frame.copy()
                 self.timing = timing
                 self.timing["camera_read"] = camera_read_ms
                 self.timing["process_wall"] = process_wall_ms
@@ -3006,24 +3482,32 @@ class WallDanceApp:
                     preview_new = (now_pv - self._last_preview_upload_time) >= 0.1
                 else:
                     preview_new = True
-                
-                if preview_new and display_frame is not None:
+
+                if self.settings.roi_enabled and preview_source_frame is not None:
+                    preview_new = True
+
+                if preview_new and (display_frame is not None or preview_source_frame is not None):
                     render_w, render_h = self.preview.width, self.preview.height
-                    
-                    # Keypoint coordinates are in the GPU tensor space.
-                    # timing['original_w/h'] reflects that space; use it for scaling.
-                    if 'original_w' in timing and 'original_h' in timing:
+
+                    preview_base = display_frame
+                    if self.settings.roi_enabled and preview_source_frame is not None:
+                        preview_base = preview_source_frame
+
+                    # Keypoint coordinates are in full-frame space once ROI offsets are restored.
+                    if self.settings.roi_enabled and preview_source_frame is not None:
+                        src_h, src_w = preview_source_frame.shape[:2]
+                    elif 'original_w' in timing and 'original_h' in timing:
                         src_w = int(timing['original_w'])
                         src_h = int(timing['original_h'])
                     else:
-                        src_h, src_w = display_frame.shape[:2]
+                        src_h, src_w = preview_base.shape[:2]
 
-                    # Resize display_frame to render target
-                    dh, dw = display_frame.shape[:2]
+                    # Resize preview source to render target
+                    dh, dw = preview_base.shape[:2]
                     if dw == render_w and dh == render_h:
-                        preview_frame = np.ascontiguousarray(display_frame)
+                        preview_frame = np.ascontiguousarray(preview_base)
                     else:
-                        preview_frame = cv2.resize(display_frame, (render_w, render_h))
+                        preview_frame = cv2.resize(preview_base, (render_w, render_h))
                     
                     scale_x = render_w / src_w if src_w > 0 else 1.0
                     scale_y = render_h / src_h if src_h > 0 else 1.0
@@ -3049,6 +3533,8 @@ class WallDanceApp:
                         ruler_scale = 1.0
 
                     preview_t0 = time.time()
+                    if self.settings.roi_enabled:
+                        self._draw_roi_mask(preview_frame, src_w, src_h)
                     for track in scaled_tracks:
                         draw_dancer(
                             preview_frame,
@@ -3063,6 +3549,8 @@ class WallDanceApp:
                     self._draw_height_ruler(preview_frame, scale=ruler_scale, thickness_scale=thickness_scale)
                     # Phase 0: frame number overlay (top-right)
                     self._draw_frame_number_overlay(preview_frame, _display_frame_num)
+                    if self.settings.roi_enabled:
+                        self._draw_roi_note(preview_frame, src_w, src_h)
                     preview_draw_ms = (time.time() - preview_t0) * 1000
                     upload_t0 = time.time()
                     self.gui.update_frame(preview_frame)
