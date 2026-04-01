@@ -595,10 +595,15 @@ class GpuPipeline:
         
         if should_generate:
             t0 = time.time()
+            preview_target = (
+                (int(roi['w']), int(roi['h']))
+                if roi.get('enabled')
+                else (self.settings.preview_width, self.settings.preview_height)
+            )
             # Resize to exact preview dimensions on GPU
             preview_gpu = self._resizer.resize(
                 enhanced_frame, 
-                target_size=(self.settings.preview_width, self.settings.preview_height)
+                target_size=preview_target
             )
             timing['preview_resize'] = (time.time() - t0) * 1000
             
@@ -695,9 +700,14 @@ class GpuPipeline:
         
         if should_generate:
             t0 = time.time()
+            preview_target = (
+                (int(roi['w']), int(roi['h']))
+                if roi.get('enabled')
+                else (self.settings.preview_width, self.settings.preview_height)
+            )
             preview_tensor = self._resizer.resize(
                 enhanced_frame,
-                target_size=(self.settings.preview_width, self.settings.preview_height)
+                target_size=preview_target
             )
             timing['preview_resize'] = (time.time() - t0) * 1000
             

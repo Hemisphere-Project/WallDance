@@ -776,18 +776,31 @@ class WallDanceApp:
         y = int(round(y * frame_h / max(source_h, 1)))
         w = max(1, int(round(w * frame_w / max(source_w, 1))))
         h = max(1, int(round(h * frame_h / max(source_h, 1))))
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (0, 0), (frame_w, y), (0, 0, 0), -1)
-        cv2.rectangle(overlay, (0, y + h), (frame_w, frame_h), (0, 0, 0), -1)
-        cv2.rectangle(overlay, (0, y), (x, y + h), (0, 0, 0), -1)
-        cv2.rectangle(overlay, (x + w, y), (frame_w, y + h), (0, 0, 0), -1)
-        cv2.addWeighted(overlay, 0.55, frame, 0.45, 0.0, frame)
         border_color = (80, 220, 120) if self.roi_edit_mode else (100, 180, 240)
         cv2.rectangle(frame, (x, y), (x + w, y + h), border_color, 2)
         if self.roi_edit_mode:
             handle = max(4, min(10, int(min(frame_w, frame_h) * 0.01)))
             for hx, hy in ((x, y), (x + w, y), (x, y + h), (x + w, y + h)):
                 cv2.rectangle(frame, (hx - handle, hy - handle), (hx + handle, hy + handle), border_color, -1)
+
+    def _compose_roi_preview(self, preview_frame: Optional[np.ndarray], source_w: int, source_h: int) -> Optional[np.ndarray]:
+        if preview_frame is None or source_w <= 0 or source_h <= 0:
+            return None
+
+        x, y, w, h = self._get_effective_roi(source_w, source_h)
+        roi_frame = preview_frame
+        if preview_frame.shape[1] == source_w and preview_frame.shape[0] == source_h:
+            roi_frame = preview_frame[y:y + h, x:x + w]
+
+        if roi_frame.size == 0:
+            return None
+
+        if roi_frame.shape[1] != w or roi_frame.shape[0] != h:
+            roi_frame = cv2.resize(roi_frame, (w, h))
+
+        canvas = np.zeros((source_h, source_w, 3), dtype=roi_frame.dtype)
+        canvas[y:y + h, x:x + w] = roi_frame
+        return canvas
 
     def _draw_roi_note(self, frame: np.ndarray, source_w: int, source_h: int):
         if not self.settings.roi_enabled:
@@ -814,7 +827,7 @@ class WallDanceApp:
         cv2.rectangle(frame, (8, 8), (20 + box_width, 8 + box_height), (0, 0, 0), -1)
         text_y = 8 + line_height
         for idx, line in enumerate(note_lines):
-            color = (255, 200, 120) if idx > 0 else (220, 220, 220)
+            color = (0, 140, 255) if idx > 0 else (220, 220, 220)
             cv2.putText(frame, line, (12, text_y), font, font_scale, color, thickness, cv2.LINE_AA)
             text_y += line_height
 
@@ -1229,6 +1242,7 @@ class WallDanceApp:
     # ------------------------------------------------------------------
     def _request_reprocess(self):
         """When paused, re-mark the current frame so the pipeline reruns it."""
+        self.processor.invalidate_preview_cache()
         self.recorder.requeue_frame()
 
     def _cb_enhance_toggle(self, enabled: bool):
@@ -3382,7 +3396,7 @@ class WallDanceApp:
 
                 try:
                     _proc_t0 = time.perf_counter()
-                    _need_preview = self.preview_enabled and (self.frame_count % self.preview_stride == 0) and not self.settings.roi_enabled
+                    _need_preview = self.preview_enabled and (self.frame_count % self.preview_stride == 0)
                     if gpu_tensor is not None:
                         tracked, display_frame, timing, latency_ms = self.processor.process_gpu_direct(
                             gpu_tensor, need_preview=_need_preview, frame_number=_display_frame_num
@@ -3483,24 +3497,30 @@ class WallDanceApp:
                 else:
                     preview_new = True
 
-                if self.settings.roi_enabled and preview_source_frame is not None:
-                    preview_new = True
-
-                if preview_new and (display_frame is not None or preview_source_frame is not None):
+                preview_input_available = display_frame is not None or (
+                    (not self.settings.roi_enabled) and preview_source_frame is not None
+                )
+                if preview_new and preview_input_available:
                     render_w, render_h = self.preview.width, self.preview.height
 
-                    preview_base = display_frame
-                    if self.settings.roi_enabled and preview_source_frame is not None:
-                        preview_base = preview_source_frame
-
-                    # Keypoint coordinates are in full-frame space once ROI offsets are restored.
                     if self.settings.roi_enabled and preview_source_frame is not None:
                         src_h, src_w = preview_source_frame.shape[:2]
+                    elif self.settings.roi_enabled:
+                        src_w, src_h = self._roi_source_size
                     elif 'original_w' in timing and 'original_h' in timing:
                         src_w = int(timing['original_w'])
                         src_h = int(timing['original_h'])
                     else:
+                        preview_base = display_frame if display_frame is not None else preview_source_frame
                         src_h, src_w = preview_base.shape[:2]
+
+                    if self.settings.roi_enabled:
+                        preview_base = self._compose_roi_preview(display_frame, src_w, src_h)
+                    else:
+                        preview_base = display_frame if display_frame is not None else preview_source_frame
+
+                    if preview_base is None:
+                        continue
 
                     # Resize preview source to render target
                     dh, dw = preview_base.shape[:2]
@@ -3551,6 +3571,7 @@ class WallDanceApp:
                     self._draw_frame_number_overlay(preview_frame, _display_frame_num)
                     if self.settings.roi_enabled:
                         self._draw_roi_note(preview_frame, src_w, src_h)
+                    self._last_review_frame = preview_frame.copy()
                     preview_draw_ms = (time.time() - preview_t0) * 1000
                     upload_t0 = time.time()
                     self.gui.update_frame(preview_frame)

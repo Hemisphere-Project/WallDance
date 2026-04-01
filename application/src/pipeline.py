@@ -532,6 +532,11 @@ class FrameProcessor:
         if self._gpu_pipeline is not None:
             self._gpu_pipeline.settings.preview_fps_cap = fps_cap
             self._gpu_pipeline.update_settings(self._gpu_pipeline.settings)
+
+    def invalidate_preview_cache(self):
+        """Drop any cached GPU preview so the next preview reflects current settings."""
+        if self._gpu_pipeline is not None:
+            self._gpu_pipeline._cached_preview = None
     
     def _process_cpu(self, frame: np.ndarray, frame_number: int | None = None) -> Tuple[List[ScaledTrack], np.ndarray, Dict[str, float], float]:
         """CPU pipeline: traditional enhancement + YOLO."""
