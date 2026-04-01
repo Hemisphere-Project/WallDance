@@ -11,12 +11,14 @@ This module keeps the runtime glue small by delegating to:
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import json
 import os
 import sys
+import threading
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Deque, Dict, List, Optional
 
 import cv2
 import dearpygui.dearpygui as dpg
@@ -271,6 +273,8 @@ class WallDanceApp:
         # Pending operations (deferred to main loop)
         self._pending_camera_refresh = False
         self._pending_project_switch: Optional[str] = None  # Config filepath to switch to
+        self._pending_playback_events: Deque[str] = deque()
+        self._pending_playback_events_lock = threading.Lock()
         self._camera_retry_backoff_s = 1.0
         self._camera_retry_max_s = 5.0
         self._next_camera_retry_time = 0.0
@@ -1649,10 +1653,24 @@ class WallDanceApp:
 
     def _on_playback_start_event(self, event: str):
         """Called by VideoRecorder on playback start/restart/loop.
-        
-        Resets the tracker and creates a per-run session directory
-        so that logs and issue reports are isolated per take.
+
+        The callback may be invoked by the playback decoder thread on
+        loop/restart. Queue the work and let the main loop perform the
+        reset/session rollover so tracker state is mutated from one thread.
         """
+        print(f"[Playback] Event '{event}' — queueing tracker reset")
+        with self._pending_playback_events_lock:
+            self._pending_playback_events.append(event)
+
+    def _drain_pending_playback_event(self) -> Optional[str]:
+        """Return the next deferred playback event, if any."""
+        with self._pending_playback_events_lock:
+            if not self._pending_playback_events:
+                return None
+            return self._pending_playback_events.popleft()
+
+    def _handle_playback_start_event(self, event: str):
+        """Apply deferred playback start/restart/loop handling."""
         print(f"[Playback] Event '{event}' — resetting tracker")
         self._total_frame_count = 0
         self._cb_tracker_reset()
@@ -3113,6 +3131,12 @@ class WallDanceApp:
                 self._pending_project_switch = None
                 self._execute_project_switch(config_filepath)
                 continue  # Restart loop after switch
+
+            # Handle pending playback events (deferred from decoder thread)
+            pending_playback_event = self._drain_pending_playback_event()
+            if pending_playback_event is not None:
+                self._handle_playback_start_event(pending_playback_event)
+                continue  # Restart loop after tracker/session reset
             
             # Handle pending camera refresh (deferred from callback)
             if self._pending_camera_refresh:
