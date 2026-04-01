@@ -4,6 +4,7 @@ TODO =
 ++ mask sides / ROI         
 ++ Motion detect fallback avant Yolo (pour petits guguss sur fond fixe)
 - Desactiver mise à jour auto Windows
+++ password and accounts !
 
 
 DONE =
