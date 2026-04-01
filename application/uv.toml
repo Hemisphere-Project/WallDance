@@ -1,6 +1,0 @@
-index-strategy = "unsafe-best-match"
-
-[[index]]
-name = "pytorch"
-url = "https://download.pytorch.org/whl/cu130"
-explicit = true
