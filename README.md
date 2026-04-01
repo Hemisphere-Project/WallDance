@@ -8,16 +8,18 @@ Multi-person pose detection and tracking for wall dancers in low-light outdoor s
 
 ```bash
 chmod +x install.sh run.sh
-./install.sh         # installs dependencies via uv
+./install.sh         # installs dependencies via uv and verifies torch + cv2
 ./run.sh             # launches GUI + camera processing
 ```
 
 ### Windows 11
 
 ```bat
-install.bat          REM installs dependencies via uv
+install.bat          REM installs dependencies via uv and verifies torch + cv2
 run.bat              REM launches GUI + camera processing
 ```
+
+If `run.sh` or `run.bat` reports that `cv2` or `torch` is missing, the install did not complete successfully. Re-run the installer and fix the reported dependency error before launching the app.
 
 ### Windows GPU compatibility note (PyTorch/CUDA)
 
@@ -33,7 +35,7 @@ Important: this is usually a **PyTorch wheel compatibility** issue, not a missin
 Simple fix steps:
 
 1. Update NVIDIA driver (latest Studio/Game Ready).
-2. Run `install.bat` again. It will auto-try PyTorch wheel indexes in this order: `cu130`, `cu129`, `cu128`, `cu126`, `cu124`.
+2. Run `install.bat` again. It installs `torch` and `torchvision` from the selected PyTorch wheel index and will auto-try fallback CUDA indexes in this order if needed: `cu130`, `cu129`, `cu128`, `cu126`, `cu124`.
 3. If auto-fix still fails, reinstall PyTorch using the selector command from https://pytorch.org/get-started/locally/ (latest stable/nightly CUDA option).
 4. Re-run:
 

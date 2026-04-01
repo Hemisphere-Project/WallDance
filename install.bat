@@ -56,23 +56,15 @@ if "%HAS_GPU%"=="1" (
     echo [WallDance] No NVIDIA GPU detected - installing CPU-only ^(lower FPS, but works for dev/test^).
 )
 
-rem ── Generate uv.toml – override the "pytorch" named index URL ──────────────
-rem pyproject.toml declares a named index "pytorch" (explicit = true) so only
-rem torch and torchvision are fetched from it; everything else uses PyPI.
+rem ── Select the PyTorch wheel index for the current install target ──────────
 if "%HAS_GPU%"=="1" (
     set "PYTORCH_INDEX=https://download.pytorch.org/whl/cu130"
 ) else (
     set "PYTORCH_INDEX=https://download.pytorch.org/whl/cpu"
 )
 
-(
-    echo index-strategy = "unsafe-best-match"
-    echo.
-    echo [[index]]
-    echo name = "pytorch"
-    echo url = "!PYTORCH_INDEX!"
-    echo explicit = true
-) > uv.toml
+rem ── Remove stale resolver config (old installs generated uv.toml) ─────────
+if exist "uv.toml" del /q uv.toml
 
 rem ── Remove stale lock file (index URLs may have changed) ──────────────────
 if exist "uv.lock" del /q uv.lock
@@ -95,8 +87,24 @@ if errorlevel 1 (
     exit /b 1
 )
 
+echo [WallDance] Installing torch/torchvision from %PYTORCH_INDEX%...
+%UV_CMD% pip install --upgrade torch torchvision --index-url %PYTORCH_INDEX%
+if errorlevel 1 (
+    echo ERROR: Failed to install torch/torchvision from the selected PyTorch index.
+    exit /b 1
+)
+
 echo [WallDance] Checking PyTorch/CUDA compatibility...
 call :check_torch_cuda
+if errorlevel 1 exit /b 1
+
+echo [WallDance] Verifying core runtime dependencies...
+%UV_CMD% run --no-sync python -c "import cv2, torch"
+if errorlevel 1 (
+    echo ERROR: Core dependencies failed to import inside the WallDance environment.
+    echo Hint: inspect the errors above, then run install.bat again after fixing the dependency issue.
+    exit /b 1
+)
 
 echo.
 echo Installation complete!

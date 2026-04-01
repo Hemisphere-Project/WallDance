@@ -33,6 +33,11 @@ ids = [
     "ids-peak-ipl>=1.17.1.0.5",
 ]
 
+[[tool.uv.index]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
 [tool.uv.sources]
 torch       = { index = "pytorch" }
 torchvision = { index = "pytorch" }

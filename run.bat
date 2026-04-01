@@ -27,6 +27,19 @@ if defined FORCE_CPU (
     set "CUDA_VISIBLE_DEVICES=-1"
 )
 
+if not exist ".venv\" (
+    echo ERROR: WallDance is not installed in application/.venv.
+    echo Hint: run install.bat first.
+    exit /b 1
+)
+
+%UV_CMD% run --no-sync python -c "import cv2, torch" >nul 2>nul
+if errorlevel 1 (
+    echo ERROR: WallDance dependencies are incomplete in application/.venv.
+    echo Hint: rerun install.bat and fix any dependency errors before starting the app.
+    exit /b 1
+)
+
 %UV_CMD% run --no-sync python src/main.py %*
 exit /b %errorlevel%
 

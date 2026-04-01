@@ -52,27 +52,27 @@ else
     echo "[WallDance] No NVIDIA GPU detected → installing CPU-only (lower FPS, but works for dev/test)."
 fi
 
-# ── Generate uv.toml – override the "pytorch" named index URL ────────────────
-# pyproject.toml declares a named index "pytorch" (explicit = true) so only
-# torch and torchvision are fetched from it; everything else uses PyPI.
-# We just need to point it at the right variant (CPU vs CUDA).
+# ── Select the PyTorch wheel index for the current install target ────────────
 if [ "$HAS_GPU" -eq 1 ]; then
     PYTORCH_INDEX="https://download.pytorch.org/whl/cu130"
 else
     PYTORCH_INDEX="https://download.pytorch.org/whl/cpu"
 fi
 
-cat > uv.toml <<UVEOF
-index-strategy = "unsafe-best-match"
+# ── Remove stale resolver config (old installs generated uv.toml) ───────────
+rm -f uv.toml
 
-[[index]]
-name = "pytorch"
-url = "$PYTORCH_INDEX"
-explicit = true
-UVEOF
-
-# ── Remove stale venv + lock (index URLs may have changed) ──────────────────
+# ── Remove stale lock (index URLs may have changed) ─────────────────────────
 rm -f uv.lock
+
+install_selected_torch() {
+    echo "[WallDance] Installing torch/torchvision from $PYTORCH_INDEX..."
+    uv pip install --upgrade torch torchvision --index-url "$PYTORCH_INDEX"
+}
+
+verify_runtime_deps() {
+    uv run --no-sync python -c "import cv2, torch"
+}
 
 # ── Sync dependencies ───────────────────────────────────────────────────────
 UV_EXTRAS=""
@@ -89,6 +89,8 @@ if ! uv sync $UV_EXTRAS --extra ids; then
     echo "[WallDance] (This is normal on laptops / dev machines.)"
     uv sync $UV_EXTRAS
 fi
+
+install_selected_torch
 
 # ── Auto-fix: force-install CUDA PyTorch via uv pip ─────────────────────────
 auto_fix_torch() {
@@ -143,6 +145,13 @@ else
         echo "Tip: use a smaller model for better CPU performance:"
         echo "     In config.py set YOLO_MODEL = \"yolo11n-pose.pt\" and YOLO_IMGSZ = 640"
     fi
+fi
+
+echo "[WallDance] Verifying core runtime dependencies..."
+if ! verify_runtime_deps; then
+    echo "ERROR: Core dependencies failed to import inside the WallDance environment."
+    echo "Hint: inspect the errors above, then rerun install.sh after fixing the dependency issue."
+    exit 1
 fi
 
 echo ""

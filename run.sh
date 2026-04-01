@@ -25,6 +25,12 @@ if [ "$FORCE_CPU" -eq 1 ]; then
     export CUDA_VISIBLE_DEVICES="-1"
 fi
 
+if [ ! -d ".venv" ]; then
+    echo "ERROR: WallDance is not installed in application/.venv."
+    echo "Hint: run ./install.sh first."
+    exit 1
+fi
+
 # Ensure PyTorch's bundled CUDA/cuDNN libs take priority over
 # potentially outdated system-installed versions.
 NVIDIA_PACKAGES="$ROOT_DIR/application/.venv/lib/python3.10/site-packages/nvidia"
@@ -36,6 +42,12 @@ if [ -d "$NVIDIA_PACKAGES" ]; then
     if [ -n "$_EXTRA_LD" ]; then
         export LD_LIBRARY_PATH="$_EXTRA_LD${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
     fi
+fi
+
+if ! uv run --no-sync python -c "import cv2, torch" &> /dev/null; then
+    echo "ERROR: WallDance dependencies are incomplete in application/.venv."
+    echo "Hint: rerun ./install.sh and fix any dependency errors before starting the app."
+    exit 1
 fi
 
 uv run --no-sync python src/main.py "$@"
