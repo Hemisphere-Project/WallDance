@@ -347,9 +347,21 @@ def _emit_text_report(session_dir, session_meta, stats, tracks, issues, summary,
     print(f"\n--- USER-FLAGGED ISSUES ({len(issues)}) ---")
     for iss in issues:
         ctx = iss.get("context", {})
-        print(f"  F{iss.get('frame','?'):>5} | {iss.get('issue_type','?'):>12} | "
-              f"D{iss.get('dancer_id', '-'):>3} | "
-              f"IDs={ctx.get('active_dancer_ids', [])} | "
+        labels = iss.get("dancer_labels", {})
+        # Format per-ID labels if present
+        if labels:
+            label_parts = []
+            for did_str, info in sorted(labels.items(), key=lambda x: int(x[0]) if str(x[0]).isdigit() else 0):
+                lbl = info.get("label", "?") if isinstance(info, dict) else info
+                cmt = info.get("comment", "") if isinstance(info, dict) else ""
+                tag = f"D{did_str}={lbl}"
+                if cmt:
+                    tag += f"({cmt})"
+                label_parts.append(tag)
+            labels_str = " ".join(label_parts)
+        else:
+            labels_str = f"IDs={ctx.get('active_dancer_ids', [])}"
+        print(f"  F{iss.get('frame','?'):>5} | {labels_str} | "
               f"{iss.get('note', '')}")
 
     # Swap events

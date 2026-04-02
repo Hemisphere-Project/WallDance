@@ -1817,6 +1817,7 @@ class WallDanceApp:
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "issue_type": issue_type,
             "note": note.strip(),
+            "dancer_labels": context.get("dancer_labels", {}),
             "context": context,
             "tracker_events": self.tracker.logger.get_events_around_frame(frame_num, window=30),
             "config_snapshot": self._get_saveable_config(),
@@ -1838,6 +1839,7 @@ class WallDanceApp:
         summary = {
             "created_at": payload["created_at"],
             "issue_type": issue_type,
+            "dancer_labels": payload["dancer_labels"],
             "frame": frame_num,
             "slot": slot_num,
             "project": self._current_project,

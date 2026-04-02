@@ -838,6 +838,15 @@ class WallDanceGUI:
                     user_data=filepath,
                 )
 
+    # --- Issue classification labels (order matters for cycling) ---
+    _ISSUE_LABELS = ["dancer", "swapped", "ghost", "comment"]
+    _ISSUE_LABEL_COLORS = {
+        "dancer":  (100, 220, 100),   # green
+        "swapped": (255, 180, 60),    # orange
+        "ghost":   (180, 80, 80),     # red-ish
+        "comment": (160, 160, 255),   # blue-ish
+    }
+
     def show_issue_report_dialog(self, context: Dict[str, Any]):
         """Show a modal dialog to record a playback review issue."""
         if dpg.does_item_exist("issue_report_dialog"):
@@ -845,12 +854,16 @@ class WallDanceGUI:
 
         self._issue_report_context = context
         self._issue_selected_ids: set[int] = set()
+        # Per-ID classification: {dancer_id: "dancer"|"swapped"|"ghost"|"comment"}
+        self._issue_id_labels: dict[int, str] = {}
+        # Per-ID free comment (only used when label == "comment")
+        self._issue_id_comments: dict[int, str] = {}
         frame_num = context.get('frame', 0)
         slot_num = context.get('slot', 0)
         active_ids = context.get('active_dancer_ids', [])
 
-        dlg_w = scaled(420)
-        dlg_h = scaled(240)
+        dlg_w = scaled(440)
+        dlg_h = scaled(300)
         with dpg.window(
             label="Report Issue",
             modal=True,
@@ -865,11 +878,10 @@ class WallDanceGUI:
                 f"F{frame_num}  Slot {slot_num}",
                 color=(120, 200, 255),
             )
-            dpg.add_spacer(height=scaled(6))
-            dpg.add_text("Select involved dancers:")
+            dpg.add_spacer(height=scaled(4))
+            dpg.add_text("Click ID to classify (cycle: dancer > swapped > ghost > comment > off):")
             with dpg.group(horizontal=True):
                 for did in active_ids:
-                    # Convert BGR (config) to RGB (DearPyGui)
                     bgr = DANCER_COLORS[(did - 1) % len(DANCER_COLORS)]
                     rgb = (bgr[2], bgr[1], bgr[0])
                     btn_tag = f"issue_id_btn_{did}"
@@ -884,6 +896,10 @@ class WallDanceGUI:
                         user_data=did,
                     )
                     dpg.bind_item_theme(btn_tag, btn_theme)
+
+            # Container for per-ID detail rows (comment inputs appear here)
+            dpg.add_group(tag="issue_id_detail_group")
+
             dpg.add_spacer(height=scaled(6))
             dpg.add_text("Note:")
             dpg.add_input_text(
@@ -891,7 +907,7 @@ class WallDanceGUI:
                 width=-1,
                 height=scaled(50),
                 multiline=True,
-                hint="e.g. D2 and D3 swapped after crossing",
+                hint="General comment on the frame",
             )
             dpg.add_spacer(height=scaled(8))
             with dpg.group(horizontal=True):
@@ -907,27 +923,85 @@ class WallDanceGUI:
                 )
 
     def _toggle_issue_id(self, sender, app_data, user_data):
-        """Toggle dancer ID selection in the issue dialog."""
+        """Cycle dancer ID classification: dancer → swapped → ghost → comment → off."""
         did = user_data
-        if did in self._issue_selected_ids:
+        labels = self._ISSUE_LABELS
+        current = self._issue_id_labels.get(did)
+
+        if current is None:
+            # First click → "dancer"
+            next_label = labels[0]
+        else:
+            idx = labels.index(current)
+            if idx + 1 < len(labels):
+                next_label = labels[idx + 1]
+            else:
+                next_label = None  # cycle back to unselected
+
+        # Remove per-ID comment input if leaving "comment" state
+        comment_tag = f"issue_id_comment_{did}"
+        if current == "comment" and dpg.does_item_exist(comment_tag):
+            # Save any typed text before removing
+            self._issue_id_comments[did] = dpg.get_value(comment_tag)
+        row_tag = f"issue_id_row_{did}"
+        if dpg.does_item_exist(row_tag):
+            dpg.delete_item(row_tag)
+
+        if next_label is None:
+            # Deselect
             self._issue_selected_ids.discard(did)
-            # Reset button visual
-            bgr = DANCER_COLORS[(did - 1) % len(DANCER_COLORS)]
-            rgb = (bgr[2], bgr[1], bgr[0])
+            self._issue_id_labels.pop(did, None)
             dpg.configure_item(sender, label=f"D{did}")
         else:
             self._issue_selected_ids.add(did)
-            # Highlight selected button
-            dpg.configure_item(sender, label=f"[D{did}]")
+            self._issue_id_labels[did] = next_label
+            color = self._ISSUE_LABEL_COLORS[next_label]
+            dpg.configure_item(sender, label=f"D{did}:{next_label[:3]}")
+            # Show inline label row
+            if dpg.does_item_exist("issue_id_detail_group"):
+                with dpg.group(
+                    horizontal=True,
+                    tag=row_tag,
+                    parent="issue_id_detail_group",
+                ):
+                    dpg.add_text(f"  D{did}:", color=color)
+                    dpg.add_text(next_label, color=color)
+                    if next_label == "comment":
+                        dpg.add_input_text(
+                            tag=comment_tag,
+                            width=scaled(250),
+                            hint="describe...",
+                            default_value=self._issue_id_comments.get(did, ""),
+                        )
 
     def _submit_issue_report(self):
         """Submit the current issue report dialog."""
         selected_ids = sorted(getattr(self, '_issue_selected_ids', set()))
+        id_labels = getattr(self, '_issue_id_labels', {})
+        id_comments = getattr(self, '_issue_id_comments', {})
+
+        # Collect final comment text from any open input fields
+        for did in list(id_labels.keys()):
+            comment_tag = f"issue_id_comment_{did}"
+            if id_labels.get(did) == "comment" and dpg.does_item_exist(comment_tag):
+                id_comments[did] = dpg.get_value(comment_tag)
+
+        # Build dancer_labels dict: {dancer_id: {"label": ..., "comment": ...}}
+        dancer_labels = {}
+        for did in selected_ids:
+            entry: dict = {"label": id_labels.get(did, "unspecified")}
+            if did in id_comments and id_comments[did].strip():
+                entry["comment"] = id_comments[did].strip()
+            dancer_labels[did] = entry
+
+        # Legacy issue_type for backward compat
         issue_type = ",".join(f"D{d}" for d in selected_ids) if selected_ids else ""
         note = dpg.get_value("issue_note_input") if dpg.does_item_exist("issue_note_input") else ""
+
         context = getattr(self, '_issue_report_context', None)
         if context:
             context['selected_dancer_ids'] = selected_ids
+            context['dancer_labels'] = dancer_labels
         try:
             if context and 'on_issue_submit' in self.callbacks:
                 self.callbacks['on_issue_submit'](context, issue_type, note)
