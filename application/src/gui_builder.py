@@ -650,6 +650,20 @@ def build_control_panel(gui: Any):
 def build_detection_section(gui: Any):
     """Detection settings - person height, confidence, max dancers."""
     with dpg.collapsing_header(label="Detection", default_open=False, tag="section_detection"):
+        # Tracking Mode
+        dpg.add_text("Tracking Mode", color=(180, 180, 180))
+        tracking_mode_combo = dpg.add_combo(
+            items=["YOLO First", "Motion First"],
+            tag="tracking_mode_combo",
+            default_value="Motion First" if gui.config.get("tracking_mode", "yolo_first") == "motion_first" else "YOLO First",
+            width=scaled(150),
+            callback=gui._on_tracking_mode_change,
+        )
+        with dpg.tooltip(tracking_mode_combo):
+            dpg.add_text("YOLO First: YOLO detects dancers, motion\nblobs only bridge gaps when YOLO drops.\n\nMotion First: motion blobs are primary\ndetections alongside YOLO. Better for\nweird angles, painted backgrounds, or\npartial body visibility.")
+
+        dpg.add_spacer(height=scaled(6))
+
         # Person Height
         dpg.add_text("Person Height", color=(180, 180, 180))
         with dpg.group(horizontal=True):

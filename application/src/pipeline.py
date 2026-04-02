@@ -28,6 +28,33 @@ from config import (
     SHADOW_QUALITY_MIN_CONFIDENCE,
     SHADOW_PROXIMITY_RATIO,
     MOTION_BRIDGE_ENABLED,
+    MOTION_BRIDGE_MOG2_LEARN_RATE,
+    TrackingMode,
+    MOTION_FIRST_BLOB_OVERLAP_RATIO,
+    MOTION_FIRST_ASPECT_RANGE,
+    MOTION_CROSSVAL_ENABLED,
+    MOTION_CROSSVAL_CORE_SCALE,
+    MOTION_CROSSVAL_EMA_ALPHA,
+    MOTION_CROSSVAL_STICKY_RATIO,
+    MOTION_CROSSVAL_CELL_RATIO,
+    MOTION_CROSSVAL_MIN_FG_RATIO,
+    MOTION_CROSSVAL_EXISTING_TRACK_BYPASS,
+    MOTION_CROSSVAL_BYPASS_MAX_AGE,
+    MOTION_CROSSVAL_WARMUP_FRAMES,
+    MOTION_CROSSVAL_WARMUP_MIN_KPTS,
+    MOTION_CROSSVAL_WARMUP_MIN_CONF,
+    MOTION_CROSSVAL_MOG2_LEARN_RATE,
+    MOTION_FIRST_MOG2_LEARN_RATE,
+    MOTION_LOWLIGHT_LUMA_THRESHOLD,
+    MOTION_CROSSVAL_LOWLIGHT_RATIO_MULT,
+    MOTION_CROSSVAL_LOWLIGHT_MIN_VALID_KPTS,
+    MOTION_CROSSVAL_LOWLIGHT_MIN_MEAN_CONF,
+    MOTION_CROSSVAL_REACQUIRE_FRAMES,
+    MOTION_CROSSVAL_REACQUIRE_MIN_KPTS,
+    MOTION_CROSSVAL_REACQUIRE_MIN_CONF,
+    MOTION_CROSSVAL_BYPASS_MIN_WARMUP,
+    MOTION_CROSSVAL_CONFIDENT_MIN_KPTS,
+    MOTION_CROSSVAL_CONFIDENT_MIN_CONF,
 )
 from background import BackgroundSubtractor
 from enhancer import ImageEnhancer, TORCH_CUDA_AVAILABLE
@@ -160,11 +187,22 @@ class FrameProcessor:
         # Background subtraction
         self.bg_subtractor = BackgroundSubtractor()
 
-        # Motion bridge detector (Phase 3)
-        self.motion_detector = MotionDetector() if MOTION_BRIDGE_ENABLED else None
+        # Motion models:
+        # - bridge_motion_detector keeps slower memory for continuity bridging
+        # - crossval_motion_detector adapts faster to lighting drift
+        self.bridge_motion_detector = MotionDetector() if MOTION_BRIDGE_ENABLED else None
+        self.crossval_motion_detector = MotionDetector() if MOTION_CROSSVAL_ENABLED else None
+        if self.crossval_motion_detector is not None:
+            self.crossval_motion_detector.set_learn_rate(
+                MOTION_CROSSVAL_MOG2_LEARN_RATE)
+        self._tracking_mode = TrackingMode.YOLO_FIRST
         self._motion_lb_scale = 1.0
         self._motion_pad_x = 0
         self._motion_pad_y = 0
+        self._crossval_motion_memory: Dict[tuple[int, int], float] = {}
+        self._crossval_no_track_frames: int = 0  # consecutive frames with 0 confirmed tracks
+        self._crossval_motion_cells: Dict[tuple[int, int], int] = {}  # cell → last frame with real motion
+        self._configure_motion_detectors()
         
         # GPU pipeline (zero-copy path)
         self._gpu_pipeline: Optional[GpuPipeline] = None
@@ -373,7 +411,8 @@ class FrameProcessor:
 
         # Start MOG2 feed in background thread — runs on CPU while YOLO uses GPU
         mog2_thread = None
-        if self.motion_detector is not None and raw_frame is not None:
+        if (self.bridge_motion_detector is not None
+                or self.crossval_motion_detector is not None) and raw_frame is not None:
             t_mog_start = time.time()
             motion_frame = raw_frame
             if roi.get('enabled'):
@@ -383,7 +422,7 @@ class FrameProcessor:
             gray_for_motion = cv2.cvtColor(motion_frame, cv2.COLOR_BGR2GRAY)
             timing["mog2_cvt"] = (time.time() - t_mog_start) * 1000
             mog2_thread = threading.Thread(
-                target=self.motion_detector.feed, args=(gray_for_motion,),
+                target=self._feed_motion_detectors, args=(gray_for_motion,),
                 daemon=True)
             mog2_thread.start()
 
@@ -421,6 +460,28 @@ class FrameProcessor:
             mog2_thread.join()
             timing["mog2_feed"] = (time.time() - t_mog_start) * 1000 - timing.get("mog2_cvt", 0)
 
+        # Cross-validate YOLO detections against MOG2 motion mask
+        n_before_xval = len(detections)
+        detections, crossval_stats = self._crossval_motion_filter(
+            detections,
+            self.crossval_motion_detector,
+            scaled_person_height,
+            scale=lb_scale,
+            letterbox_pad_x=pad_x,
+            letterbox_pad_y=pad_y,
+            roi_x=roi_x,
+            roi_y=roi_y,
+            roi_local_after_unscale=True,
+        )
+        timing.update(crossval_stats)
+        timing["crossval_rejected"] = n_before_xval - len(detections)
+
+        # In MOTION_FIRST mode, eagerly detect blobs for synthetic detections
+        eager_blobs = None
+        if self._tracking_mode == TrackingMode.MOTION_FIRST and self.bridge_motion_detector is not None:
+            eager_blobs = self.bridge_motion_detector.detect(
+                scaled_person_height, aspect_range=MOTION_FIRST_ASPECT_RANGE)
+
         # Tracking
         t0 = time.time()
         # Set content-area bounds for edge-exit detection.
@@ -429,19 +490,39 @@ class FrameProcessor:
         self.tracker.set_frame_dimensions(self.settings.imgsz, pad_x=pad_x)
         self.tracker.set_person_height(scaled_person_height)
 
-        if self.motion_detector is not None and raw_frame is not None:
+        if self.bridge_motion_detector is not None and raw_frame is not None:
             # Wrap detector to scale blob coords to letterboxed YOLO space
             self._motion_lb_scale = lb_scale
             self._motion_pad_x = pad_x
             self._motion_pad_y = pad_y
 
+        # Scale eager blobs to letterboxed space if needed
+        lb_motion = self._get_letterbox_motion_detector()
+        if eager_blobs is not None and lb_motion is not None:
+            # Blobs are in original coords; apply letterbox transform
+            for blob in eager_blobs:
+                blob.bbox[0] = blob.bbox[0] * lb_scale + pad_x
+                blob.bbox[1] = blob.bbox[1] * lb_scale + pad_y
+                blob.bbox[2] *= lb_scale
+                blob.bbox[3] *= lb_scale
+                blob.centroid[0] = blob.centroid[0] * lb_scale + pad_x
+                blob.centroid[1] = blob.centroid[1] * lb_scale + pad_y
+
         t_trk = time.time()
         tracked = self.tracker.update(
             detections, frame_number=frame_number,
-            motion_detector=self._get_letterbox_motion_detector())
+            motion_detector=lb_motion,
+            motion_blobs=eager_blobs)
         timing["tracker_update"] = (time.time() - t_trk) * 1000
         timing["track"] = (time.time() - t0) * 1000
         timing["path_track"] = "cpu"
+
+        # Update re-acquisition counter for crossval death-spiral prevention
+        if tracked:
+            self._crossval_no_track_frames = 0
+        else:
+            self._crossval_no_track_frames += 1
+        timing["crossval_no_track_frames"] = self._crossval_no_track_frames
 
         # Unscale from letterboxed YOLO space to original camera space
         scaled_tracks = [
@@ -604,12 +685,12 @@ class FrameProcessor:
         # Start MOG2 feed in background thread — runs on CPU while YOLO uses GPU
         mog2_thread = None
         t_mog_start = None
-        if self.motion_detector is not None:
+        if self.bridge_motion_detector is not None or self.crossval_motion_detector is not None:
             t_mog_start = time.time()
             gray_for_motion = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             timing["mog2_cvt"] = (time.time() - t_mog_start) * 1000
             mog2_thread = threading.Thread(
-                target=self.motion_detector.feed, args=(gray_for_motion,),
+                target=self._feed_motion_detectors, args=(gray_for_motion,),
                 daemon=True)
             mog2_thread.start()
 
@@ -639,24 +720,58 @@ class FrameProcessor:
             mog2_thread.join()
             timing["mog2_feed"] = (time.time() - t_mog_start) * 1000 - timing.get("mog2_cvt", 0)
 
+        # Cross-validate YOLO detections against MOG2 motion mask
+        n_before_xval = len(detections)
+        detections, crossval_stats = self._crossval_motion_filter(
+            detections,
+            self.crossval_motion_detector,
+            self.settings.person_height_px,
+            roi_x=roi_x,
+            roi_y=roi_y,
+        )
+        timing.update(crossval_stats)
+        timing["crossval_rejected"] = n_before_xval - len(detections)
+
+        # In MOTION_FIRST mode, eagerly detect blobs for synthetic detections
+        eager_blobs = None
+        if self._tracking_mode == TrackingMode.MOTION_FIRST and self.bridge_motion_detector is not None:
+            eager_blobs = self.bridge_motion_detector.detect(
+                self.settings.person_height_px,
+                aspect_range=MOTION_FIRST_ASPECT_RANGE)
+            # Apply ROI offset to blobs
+            if eager_blobs and (roi_x or roi_y):
+                for blob in eager_blobs:
+                    blob.bbox[0] += roi_x
+                    blob.bbox[1] += roi_y
+                    blob.centroid[0] += roi_x
+                    blob.centroid[1] += roi_y
+
         # 4. Tracking
         t0 = time.time()
         # CPU path: YOLO outputs in original frame coords — no scaling needed
         self.tracker.set_frame_dimensions(original_w)
         self.tracker.set_person_height(self.settings.person_height_px)
-        motion_detector = self.motion_detector
+        motion_detector = self.bridge_motion_detector
         if motion_detector is not None and (roi_x or roi_y):
             motion_detector = _OffsetMotionProxy(motion_detector, roi_x, roi_y)
 
         t_trk = time.time()
         tracked = self.tracker.update(
             detections, frame_number=frame_number,
-            motion_detector=motion_detector)
+            motion_detector=motion_detector,
+            motion_blobs=eager_blobs)
         timing["tracker_update"] = (time.time() - t_trk) * 1000
         timing["track"] = (time.time() - t0) * 1000
         timing["path_track"] = "cpu"
         timing["original_w"] = original_w
         timing["original_h"] = original_h
+
+        # Update re-acquisition counter for crossval death-spiral prevention
+        if tracked:
+            self._crossval_no_track_frames = 0
+        else:
+            self._crossval_no_track_frames += 1
+        timing["crossval_no_track_frames"] = self._crossval_no_track_frames
 
         # 5. Convert tracks to ScaledTrack (identity scale)
         scaled_tracks = [
@@ -681,16 +796,108 @@ class FrameProcessor:
         self._timing = timing
         return scaled_tracks, enhanced, timing, latency_ms
 
+    def _configure_motion_detectors(self):
+        """Apply mode-specific learning rates to the motion detectors."""
+        if self.bridge_motion_detector is not None:
+            if self._tracking_mode == TrackingMode.MOTION_FIRST:
+                self.bridge_motion_detector.set_learn_rate(
+                    MOTION_FIRST_MOG2_LEARN_RATE)
+            else:
+                self.bridge_motion_detector.set_learn_rate(
+                    MOTION_BRIDGE_MOG2_LEARN_RATE)
+        if self.crossval_motion_detector is not None:
+            self.crossval_motion_detector.set_learn_rate(
+                MOTION_CROSSVAL_MOG2_LEARN_RATE)
+
+    def _feed_motion_detectors(self, gray: np.ndarray) -> None:
+        """Feed all active motion detectors from one grayscale frame.
+
+        Preprocessing (blur + resize) runs once and is shared across
+        detectors that use the same scale.
+        """
+        detectors = []
+        if self.bridge_motion_detector is not None:
+            detectors.append(self.bridge_motion_detector)
+        if self.crossval_motion_detector is not None:
+            detectors.append(self.crossval_motion_detector)
+
+        seen = set()
+        # Cache preprocessed frames keyed by scale to avoid redundant work
+        preprocess_cache: dict[float, tuple] = {}
+        for detector in detectors:
+            detector_id = id(detector)
+            if detector_id in seen:
+                continue
+            scale = detector._scale
+            if scale not in preprocess_cache:
+                from motion_detector import MotionDetector as MD
+                preprocess_cache[scale] = MD.preprocess(gray, scale)
+            small, brightness = preprocess_cache[scale]
+            detector.feed_preprocessed(small, brightness)
+            seen.add(detector_id)
+
+    @property
+    def motion_detector(self):
+        """Backward-compatible primary motion detector accessor."""
+        return self.bridge_motion_detector or self.crossval_motion_detector
+
+    def get_motion_scale(self) -> float:
+        """Return the current MOG2 scale from any active detector."""
+        detector = self.motion_detector
+        return detector._scale if detector is not None else 0.75
+
+    def set_motion_scale(self, scale: float) -> None:
+        """Apply the same MOG2 scale to all active motion detectors."""
+        detectors = []
+        if self.bridge_motion_detector is not None:
+            detectors.append(self.bridge_motion_detector)
+        if self.crossval_motion_detector is not None:
+            detectors.append(self.crossval_motion_detector)
+        seen = set()
+        for detector in detectors:
+            detector_id = id(detector)
+            if detector_id in seen:
+                continue
+            detector.set_scale(scale)
+            seen.add(detector_id)
+
+    def reset_motion_detectors(self) -> None:
+        """Reset all active motion detectors and clear cross-validation state."""
+        detectors = []
+        if self.bridge_motion_detector is not None:
+            detectors.append(self.bridge_motion_detector)
+        if self.crossval_motion_detector is not None:
+            detectors.append(self.crossval_motion_detector)
+        seen = set()
+        for detector in detectors:
+            detector_id = id(detector)
+            if detector_id in seen:
+                continue
+            detector.reset()
+            seen.add(detector_id)
+        self._crossval_motion_memory.clear()
+        self._crossval_no_track_frames = 0
+        self._crossval_motion_cells.clear()
+
     def _get_letterbox_motion_detector(self):
         """Return a proxy that scales blob coords to letterboxed space, or None."""
-        if self.motion_detector is None:
+        if self.bridge_motion_detector is None:
             return None
         return _LetterboxMotionProxy(
-            self.motion_detector,
+            self.bridge_motion_detector,
             self._motion_lb_scale,
             self._motion_pad_x,
             self._motion_pad_y,
         )
+
+    def set_tracking_mode(self, mode: TrackingMode):
+        """Switch tracking mode and keep bridge/cross-validation models aligned."""
+        self._tracking_mode = mode
+        if mode == TrackingMode.MOTION_FIRST and self.bridge_motion_detector is None:
+            current_scale = self.get_motion_scale()
+            self.bridge_motion_detector = MotionDetector()
+            self.bridge_motion_detector.set_scale(current_scale)
+        self._configure_motion_detectors()
 
     def _unscale_letterbox(
         self,
@@ -791,6 +998,250 @@ class FrameProcessor:
                     "extract_cpu_total": kpts_cpu_ms + boxes_cpu_ms,
                 }
         return detections
+
+    @staticmethod
+    def _bbox_iou_xywh(box_a: np.ndarray, box_b: np.ndarray) -> float:
+        """Return IoU for two (x, y, w, h) boxes."""
+        ax1, ay1, aw, ah = box_a
+        bx1, by1, bw, bh = box_b
+        ax2, ay2 = ax1 + aw, ay1 + ah
+        bx2, by2 = bx1 + bw, by1 + bh
+        inter_x1 = max(ax1, bx1)
+        inter_y1 = max(ay1, by1)
+        inter_x2 = min(ax2, bx2)
+        inter_y2 = min(ay2, by2)
+        inter_w = max(0.0, inter_x2 - inter_x1)
+        inter_h = max(0.0, inter_y2 - inter_y1)
+        inter_area = inter_w * inter_h
+        if inter_area <= 0.0:
+            return 0.0
+        area_a = max(0.0, aw) * max(0.0, ah)
+        area_b = max(0.0, bw) * max(0.0, bh)
+        denom = area_a + area_b - inter_area
+        if denom <= 0.0:
+            return 0.0
+        return float(inter_area / denom)
+
+    def _crossval_cell_key(self, bbox: np.ndarray, person_height: int) -> tuple[int, int]:
+        """Stable spatial key for cross-validation hysteresis."""
+        cell_size = max(16.0, person_height * MOTION_CROSSVAL_CELL_RATIO)
+        cx = bbox[0] + bbox[2] * 0.5
+        cy = bbox[1] + bbox[3] * 0.5
+        return int(cx / cell_size), int(cy / cell_size)
+
+    def _crossval_motion_filter(
+        self,
+        detections,
+        motion_det: MotionDetector | None,
+        person_height: int,
+        scale: float = 1.0,
+        letterbox_pad_x: float = 0.0,
+        letterbox_pad_y: float = 0.0,
+        roi_x: float = 0.0,
+        roi_y: float = 0.0,
+        roi_local_after_unscale: bool = False,
+    ):
+        """Reject YOLO detections that do not show enough recent motion.
+
+        Decision tree (first match wins):
+          1. BYPASS    — detection overlaps a recently-matched track
+          2. MOTION    — MOG2 foreground ratio exceeds threshold
+          3. HYSTERESIS — smoothed EMA score above sticky threshold
+          4. CONFIDENT — strong skeleton (≥8 kpts, ≥0.45 conf)
+          5. REACQUIRE — no tracks for N frames, decent skeleton
+          6. REJECT
+
+        Returns:
+            Tuple of (kept_detections, stats_dict)
+        """
+        stats = {
+            "crossval_kept_motion": 0,
+            "crossval_kept_hysteresis": 0,
+            "crossval_kept_bypass": 0,
+            "crossval_kept_confident": 0,
+            "crossval_kept_reacquire": 0,
+            "crossval_rejected_low_motion": 0,
+            "crossval_rejected_weak_skeleton": 0,
+            "crossval_rejected_warmup_quality": 0,
+            "crossval_skip_disabled": 0,
+            "crossval_skip_no_mask": 0,
+            "crossval_skip_warmup": 0,
+        }
+        if not MOTION_CROSSVAL_ENABLED:
+            stats["crossval_skip_disabled"] = 1
+            return detections, stats
+        if motion_det is None or not motion_det.has_mask:
+            stats["crossval_skip_no_mask"] = 1
+            return detections, stats
+
+        # During MOG2 warmup, cross-validation is off but apply skeleton
+        # quality filter to prevent ghost floods at low YOLO confidence.
+        if motion_det.frame_count < MOTION_CROSSVAL_WARMUP_FRAMES:
+            stats["crossval_skip_warmup"] = 1
+            if not detections:
+                return detections, stats
+            kept_warmup = []
+            for kpts, conf, bbox in detections:
+                visible = conf > KEYPOINT_CONFIDENCE
+                n_valid = int(np.sum(visible))
+                mean_conf = (float(np.mean(conf[visible]))
+                             if n_valid > 0 else 0.0)
+                if (n_valid >= MOTION_CROSSVAL_WARMUP_MIN_KPTS
+                        and mean_conf >= MOTION_CROSSVAL_WARMUP_MIN_CONF):
+                    kept_warmup.append((kpts, conf, bbox))
+                else:
+                    stats["crossval_rejected_warmup_quality"] += 1
+            return kept_warmup, stats
+        if not detections:
+            self._crossval_motion_memory = {}
+            return detections, stats
+
+        bypass_candidates = []
+        bypass_gate = person_height * 0.6
+        current_frame = getattr(self.tracker, 'frame_count', 0)
+        if MOTION_CROSSVAL_EXISTING_TRACK_BYPASS:
+            for track in self.tracker.tracks:
+                if track.time_since_update > MOTION_CROSSVAL_BYPASS_MAX_AGE:
+                    continue
+                if getattr(track, '_warmup_score', 0.0) < MOTION_CROSSVAL_BYPASS_MIN_WARMUP:
+                    continue
+                # Only bypass if track centroid is near a recently motion-
+                # confirmed cell.  Wall-painting ghosts sit at static
+                # positions that never produce real MOG2 motion.
+                track_cell = self._crossval_cell_key(track.bbox, person_height)
+                motion_age = current_frame - self._crossval_motion_cells.get(track_cell, -9999)
+                if motion_age > MOTION_CROSSVAL_BYPASS_MAX_AGE * 3:
+                    # Also check adjacent cells (dancer may drift slightly)
+                    tx, ty = track_cell
+                    any_near = any(
+                        (current_frame - self._crossval_motion_cells.get((tx+dx, ty+dy), -9999))
+                        <= MOTION_CROSSVAL_BYPASS_MAX_AGE * 3
+                        for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+                        if (dx, dy) != (0, 0)
+                    )
+                    if not any_near:
+                        continue
+                bypass_candidates.append(track)
+
+        # Re-acquisition mode: if we have had zero confirmed tracks for too
+        # long, let strong skeletons through to break the death spiral.
+        reacquire_mode = (
+            self._crossval_no_track_frames >= MOTION_CROSSVAL_REACQUIRE_FRAMES
+        )
+
+        kept = []
+        next_memory: Dict[tuple[int, int], float] = {}
+        sticky_threshold = MOTION_CROSSVAL_MIN_FG_RATIO * MOTION_CROSSVAL_STICKY_RATIO
+        is_lowlight = motion_det.last_brightness < MOTION_LOWLIGHT_LUMA_THRESHOLD
+
+        for kpts, conf, bbox in detections:
+            cell = self._crossval_cell_key(bbox, person_height)
+
+            # Convert tracker-space bbox -> original-space -> ROI-local mask space
+            ox = (bbox[0] - letterbox_pad_x) / scale if scale != 1.0 else bbox[0]
+            oy = (bbox[1] - letterbox_pad_y) / scale if scale != 1.0 else bbox[1]
+            ow = bbox[2] / scale if scale != 1.0 else bbox[2]
+            oh = bbox[3] / scale if scale != 1.0 else bbox[3]
+            if roi_local_after_unscale:
+                mask_x = ox
+                mask_y = oy
+            else:
+                mask_x = ox - roi_x
+                mask_y = oy - roi_y
+
+            ratio = motion_det.motion_ratio_in_bbox(
+                mask_x, mask_y, ow, oh,
+                core_scale=MOTION_CROSSVAL_CORE_SCALE)
+            prev_score = self._crossval_motion_memory.get(cell, 0.0)
+            smoothed = (MOTION_CROSSVAL_EMA_ALPHA * ratio
+                        + (1.0 - MOTION_CROSSVAL_EMA_ALPHA) * prev_score)
+            next_memory[cell] = smoothed
+
+            visible = conf > KEYPOINT_CONFIDENCE
+            n_valid = int(np.sum(visible))
+            mean_conf = (float(np.mean(conf[visible]))
+                         if n_valid > 0 else 0.0)
+            motion_threshold = MOTION_CROSSVAL_MIN_FG_RATIO
+            if is_lowlight:
+                motion_threshold *= MOTION_CROSSVAL_LOWLIGHT_RATIO_MULT
+
+            # ── Step 1: BYPASS — near an existing tracked dancer ────────
+            # First priority: if a detection overlaps a recently-matched
+            # track, keep it unconditionally.  This makes tracked dancers
+            # hard to lose during brief low-motion moments.
+            det_centroid = np.array([
+                bbox[0] + bbox[2] * 0.5,
+                bbox[1] + bbox[3] * 0.5,
+            ])
+            bypassed = False
+            for track in bypass_candidates:
+                track_centroid = track.get_centroid()
+                if float(np.linalg.norm(det_centroid - track_centroid)) > bypass_gate:
+                    if self._bbox_iou_xywh(bbox, track.bbox) <= 0.1:
+                        continue
+                kept.append((kpts, conf, bbox))
+                stats["crossval_kept_bypass"] += 1
+                bypassed = True
+                break
+            if bypassed:
+                continue
+
+            # ── Step 2: Weak skeleton early rejection (low light) ───────
+            # In low light, ghost detections with few keypoints and poor
+            # confidence are rejected before they can benefit from motion
+            # noise or hysteresis.
+            is_weak_skeleton = (
+                is_lowlight
+                and n_valid < MOTION_CROSSVAL_LOWLIGHT_MIN_VALID_KPTS
+                and mean_conf < MOTION_CROSSVAL_LOWLIGHT_MIN_MEAN_CONF
+            )
+            if is_weak_skeleton and ratio < motion_threshold:
+                stats["crossval_rejected_weak_skeleton"] += 1
+                continue
+
+            # ── Step 3: MOTION — MOG2 confirms real movement ───────────
+            if ratio >= motion_threshold:
+                # Even with motion, reject truly garbage skeletons in low
+                # light that have almost no visible keypoints.
+                if is_lowlight and n_valid <= 2:
+                    stats["crossval_rejected_weak_skeleton"] += 1
+                    continue
+                kept.append((kpts, conf, bbox))
+                stats["crossval_kept_motion"] += 1
+                # Mark this cell as motion-confirmed for bypass eligibility
+                self._crossval_motion_cells[cell] = current_frame
+                continue
+
+            # ── Step 4: HYSTERESIS — temporal persistence ──────────────
+            if smoothed >= sticky_threshold * (MOTION_CROSSVAL_LOWLIGHT_RATIO_MULT if is_lowlight else 1.0):
+                kept.append((kpts, conf, bbox))
+                stats["crossval_kept_hysteresis"] += 1
+                self._crossval_motion_cells[cell] = current_frame
+                continue
+
+            # ── Step 5: CONFIDENT — strong skeleton, no motion needed ──
+            # A very confident detection (many keypoints at high conf) is
+            # accepted without motion proof.  This lets clearly-visible
+            # stationary dancers through while still blocking ghosts.
+            if (n_valid >= MOTION_CROSSVAL_CONFIDENT_MIN_KPTS
+                    and mean_conf >= MOTION_CROSSVAL_CONFIDENT_MIN_CONF):
+                kept.append((kpts, conf, bbox))
+                stats["crossval_kept_confident"] += 1
+                continue
+
+            # ── Step 6: REACQUIRE — death-spiral escape ────────────────
+            if (reacquire_mode
+                    and n_valid >= MOTION_CROSSVAL_REACQUIRE_MIN_KPTS
+                    and mean_conf >= MOTION_CROSSVAL_REACQUIRE_MIN_CONF):
+                kept.append((kpts, conf, bbox))
+                stats["crossval_kept_reacquire"] += 1
+                continue
+
+            # ── Step 7: REJECT ─────────────────────────────────────────
+            stats["crossval_rejected_low_motion"] += 1
+
+        self._crossval_motion_memory = next_memory
+        return kept, stats
 
     def _filter_duplicate_detections(self, detections, effective_person_height: int | None = None):
         if len(detections) <= 1:

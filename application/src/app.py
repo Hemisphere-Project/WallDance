@@ -61,6 +61,7 @@ from config import (
     YOLO_CONFIDENCE,
     YOLO_IMGSZ,
     YOLO_MODEL,
+    TrackingMode,
 )
 from config_store import ConfigStore, format_config_display, sanitize_project_name
 from model_manager import ModelManager, ModelProgress, ModelStatus
@@ -338,6 +339,7 @@ class WallDanceApp:
             "show_ids": self.show_ids,
             "tracker_max_age": TRACKER_MAX_AGE,
             "tracker_smoothing": 1,
+            "tracking_mode": self.tracker.tracking_mode.value,
             "osc_enabled": self.osc_enabled,
             "osc_ip": self.osc_ip,
             "osc_port": self.osc_port,
@@ -378,6 +380,7 @@ class WallDanceApp:
             "on_bg_clear": self._cb_bg_clear,
             "on_bg_sensitivity_change": self._cb_bg_sensitivity_change,
             "on_confidence_change": self._cb_confidence_change,
+            "on_tracking_mode_change": self._cb_tracking_mode_change,
             "on_model_change": self._cb_model_change,
             "on_trt_toggle": self._cb_trt_toggle,
             "on_ids_ratio_change": self._cb_ids_ratio_change,
@@ -903,6 +906,7 @@ class WallDanceApp:
             "show_bbox": self.show_bbox,
             "show_trails": self.show_trails,
             "show_ids": self.show_ids,
+            "tracking_mode": self.tracker.tracking_mode.value,
             "tracker_max_age": self.tracker.max_age,
             "tracker_smoothing": self.tracker.smoothing_depth,
             "osc_enabled": self.osc_enabled,
@@ -917,12 +921,14 @@ class WallDanceApp:
             "roi_y": self.settings.roi_y,
             "roi_w": self.settings.roi_w,
             "roi_h": self.settings.roi_h,
+            "roi_source_w": self._roi_source_size[0],
+            "roi_source_h": self._roi_source_size[1],
             "ids_ratio": self.ids_ratio,
             "ids_gain_db": self.ids_gain_db,
             "ids_exposure_us": self.ids_exposure_us,
             "bg_subtract_enabled": self.settings.bg_subtract_enabled,
             "bg_subtract_sensitivity": self.settings.bg_subtract_sensitivity,
-            "mog2_scale": self.processor.motion_detector._scale if self.processor.motion_detector else 0.75,
+            "mog2_scale": self.processor.get_motion_scale(),
         }
 
     def _update_topbar_state(self, selected_filepath: Optional[str] = None):
@@ -1162,6 +1168,16 @@ class WallDanceApp:
         # Tracker
         if "tracker_distance" in config:
             pass  # Legacy: distance is now auto-derived from person_height_px
+        # Load tracking_mode FIRST so its defaults don't clobber user settings
+        if "tracking_mode" in config:
+            try:
+                mode = TrackingMode(config["tracking_mode"])
+            except ValueError:
+                mode = TrackingMode.YOLO_FIRST
+            self.tracker.set_tracking_mode(mode)
+            self.processor.set_tracking_mode(mode)
+            self.gui and self.gui.sync_combo("tracking_mode", "Motion First" if mode == TrackingMode.MOTION_FIRST else "YOLO First")
+        # Load tracker_max_age AFTER tracking_mode so user value wins
         if "tracker_max_age" in config:
             self.tracker.max_age = config["tracker_max_age"]
             self.gui and self.gui.sync_slider("tracker_max_age", config["tracker_max_age"])
@@ -1200,7 +1216,11 @@ class WallDanceApp:
 
         if "roi_enabled" in config:
             self.settings.roi_enabled = bool(config["roi_enabled"])
-        roi_frame_w, roi_frame_h = self._roi_source_size
+        # Use the frame size that was active when the config was saved so
+        # that _normalize_roi_rect clamps against the correct dimensions
+        # (not the current _roi_source_size which may be stale/default).
+        roi_frame_w = int(config.get("roi_source_w", self._roi_source_size[0]))
+        roi_frame_h = int(config.get("roi_source_h", self._roi_source_size[1]))
         roi_x = int(config.get("roi_x", self.settings.roi_x))
         roi_y = int(config.get("roi_y", self.settings.roi_y))
         roi_w = int(config.get("roi_w", self.settings.roi_w or roi_frame_w))
@@ -1243,7 +1263,7 @@ class WallDanceApp:
             self.gui and self.gui.sync_slider("bg_sensitivity", config["bg_subtract_sensitivity"])
         # MOG2 scale
         if "mog2_scale" in config and self.processor.motion_detector is not None:
-            self.processor.motion_detector.set_scale(config["mog2_scale"])
+            self.processor.set_motion_scale(config["mog2_scale"])
             self.gui and self.gui.sync_slider("mog2_scale", config["mog2_scale"])
         # Update BG status display
         if self.gui:
@@ -1369,6 +1389,13 @@ class WallDanceApp:
     def _cb_confidence_change(self, value: float):
         self.settings.confidence = value
         print(f"Confidence: {value:.2f}")
+        self._request_reprocess()
+
+    def _cb_tracking_mode_change(self, mode_str: str):
+        mode = TrackingMode(mode_str)
+        self.tracker.set_tracking_mode(mode)
+        self.processor.set_tracking_mode(mode)
+        print(f"Tracking mode: {mode.value}")
         self._request_reprocess()
 
     def _cb_camera_change(self, value: str):
@@ -1647,14 +1674,14 @@ class WallDanceApp:
 
     def _cb_mog2_scale_change(self, value: float):
         if self.processor.motion_detector is not None:
-            self.processor.motion_detector.set_scale(value)
+            self.processor.set_motion_scale(value)
             print(f"MOG2 scale: {value:.2f} ({int(1920*value)}x{int(1080*value)})")
 
     def _cb_tracker_reset(self):
         self.tracker.reset()
         # Reset MOG2 background model so it re-learns the scene
         if hasattr(self.processor, 'motion_detector') and self.processor.motion_detector is not None:
-            self.processor.motion_detector.reset()
+            self.processor.reset_motion_detectors()
         self.tracker.logger.log_settings(self._get_saveable_config())
         if self.osc:
             self.osc.send_clear()

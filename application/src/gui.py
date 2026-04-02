@@ -451,6 +451,11 @@ class WallDanceGUI:
     def _on_confidence_change(self, sender, value):
         if 'on_confidence_change' in self.callbacks:
             self.callbacks['on_confidence_change'](value)
+
+    def _on_tracking_mode_change(self, sender, value):
+        if 'on_tracking_mode_change' in self.callbacks:
+            mode_str = "motion_first" if value == "Motion First" else "yolo_first"
+            self.callbacks['on_tracking_mode_change'](mode_str)
     
     def _on_max_persons_change(self, sender, value):
         if 'on_max_persons_change' in self.callbacks:
@@ -1388,6 +1393,7 @@ class WallDanceGUI:
             'model': ['adv_model_combo'],
             'imgsz': ['adv_imgsz_combo'],
             'camera': ['adv_camera_combo'],
+            'tracking_mode': ['tracking_mode_combo'],
         }
         if name in tag_map:
             for tag in tag_map[name]:

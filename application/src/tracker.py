@@ -41,6 +41,13 @@ from config import (
     TRACKER_MAX_DISPLACEMENT_RATIO,
     MOTION_BRIDGE_ENABLED, MOTION_BRIDGE_MAX_FRAMES,
     MOTION_BRIDGE_GATE_RATIO, MOTION_BRIDGE_NOISE_STAGES,
+    MOTION_BRIDGE_GATE_GROWTH_PER_MISS, MOTION_BRIDGE_GATE_ESTABLISHED_MULT,
+    TrackingMode, TRACKING_MODE,
+    MOTION_FIRST_MIN_HITS, MOTION_FIRST_BRIDGE_MAX_FRAMES,
+    MOTION_FIRST_BLOB_OVERLAP_RATIO,
+    MOTION_FIRST_SYNTHETIC_MIN_FRAMES,
+    MOTION_FIRST_SYNTHETIC_CELL_RATIO,
+    TRACK_WARMUP_THRESHOLD, TRACK_WARMUP_DECAY,
 )
 from tracking_logger import TrackingLogger
 
@@ -148,6 +155,11 @@ class DancerTrack:
         self.bridge_frames: int = 0      # Consecutive motion-only frames
         self.is_bridged: bool = False    # Currently in motion-bridge mode
 
+        # Track warmup scoring — grows with consecutive matches,
+        # decays on misses.  Track only output once score reaches
+        # TRACK_WARMUP_THRESHOLD.
+        self._warmup_score: float = 1.0  # First detection = 1.0
+
         self._last_match_frame = -1
         self._last_occluded_frame = -1
         self._occlusion_start_frame: int | None = None
@@ -246,6 +258,9 @@ class DancerTrack:
         if self.time_since_update > 0:
             self.kf.x[2:4] *= 0.9  # coast through occlusion (10% dampening)
             self.kf.x[4:6] *= 0.5  # drop acceleration completely
+            # Decay warmup score on miss (but don't let it drop below 0)
+            self._warmup_score = max(0.0,
+                                     self._warmup_score - TRACK_WARMUP_DECAY)
             
         self.kf.predict()
         self.age += 1
@@ -288,6 +303,8 @@ class DancerTrack:
         self.hits += 1
         self.time_since_update = 0
         self._fractional_age = 0.0
+        self._warmup_score = min(self._warmup_score + 1.0,
+                                 TRACK_WARMUP_THRESHOLD + 5.0)
 
         # Clear motion bridge state on YOLO match
         self.bridge_frames = 0
@@ -596,6 +613,8 @@ class FrameUpdateContext:
     post_update_clamp_indices: set[int] = field(default_factory=set)
     swapped_update_indices: set[int] = field(default_factory=set)
     merge_zone_trk_indices: set[int] = field(default_factory=set)
+    n_yolo_detections: int = 0
+    n_total_detections: int = 0
 
 
 @dataclass
@@ -659,6 +678,11 @@ class DancerTracker:
             flush_interval=TRACKER_EVENT_LOG_FLUSH_INTERVAL,
         )
 
+        # Tracking mode — YOLO_FIRST (default) or MOTION_FIRST
+        self.tracking_mode: TrackingMode = TRACKING_MODE
+        # Motion-first synthetic blob persistence memory.
+        self._motion_blob_cells: dict[tuple[int, int], int] = {}
+
     # ------------------------------------------------------------------
     # Person-height master dial
     # ------------------------------------------------------------------
@@ -682,6 +706,23 @@ class DancerTracker:
     def get_person_height(self) -> int:
         """Return current person height in pixels."""
         return self._person_height_px
+
+    def set_tracking_mode(self, mode: TrackingMode):
+        """Switch between YOLO-first and Motion-first detection priority."""
+        if mode == self.tracking_mode:
+            return
+        self.tracking_mode = mode
+        if mode == TrackingMode.MOTION_FIRST:
+            self.min_hits = MOTION_FIRST_MIN_HITS
+            self.max_age = MOTION_FIRST_BRIDGE_MAX_FRAMES
+        else:
+            self.min_hits = TRACKER_MIN_HITS
+            self.max_age = TRACKER_MAX_AGE
+        self.logger.log("TRACKING_MODE_CHANGE", {
+            "mode": mode.value,
+            "min_hits": self.min_hits,
+            "max_age": self.max_age,
+        })
 
     def set_frame_dimensions(self, width: int, pad_x: int = 0):
         """Store content-area boundaries for edge-exit detection.
@@ -725,6 +766,7 @@ class DancerTracker:
         self.tracks = []
         self._dormant = []
         self._pair_distances = {}
+        self._motion_blob_cells = {}
         self._merge_swap_cooldown = {}
         self.frame_count = 0
         DancerTrack._id_counter = 0
@@ -809,7 +851,8 @@ class DancerTracker:
         return kpt_cost, n_both
 
     def _compute_separation_penalty(self, det_centroid: np.ndarray,
-                                    track: DancerTrack, tracks) -> float:
+                                    track: DancerTrack, tracks,
+                                    centroid_cache: dict | None = None) -> float:
         """Penalty for assigning a detection near a historically separate track pair."""
         sep_penalty = 0.0
         for other_track in tracks:
@@ -824,7 +867,10 @@ class DancerTracker:
             avg_sep = float(np.mean(hist))
             if avg_sep < self.distance_threshold * 0.5:
                 continue
-            other_pos = other_track.get_centroid()
+            if centroid_cache is not None:
+                other_pos = centroid_cache[other_track.track_id]
+            else:
+                other_pos = other_track.get_centroid()
             dist_to_other = np.linalg.norm(det_centroid - other_pos)
             if dist_to_other < avg_sep * 0.6:
                 penalty = ((avg_sep - dist_to_other)
@@ -983,6 +1029,11 @@ class DancerTracker:
         
         cost_matrix = np.zeros((len(detections), len(tracks)))
         close_dist = self.distance_threshold * TRACKER_CLOSE_PROXIMITY_RATIO
+
+        # Pre-compute track centroids once to avoid redundant calls in
+        # _is_detection_in_crowded_zone and _compute_separation_penalty.
+        centroid_cache = {t.track_id: t.get_centroid() for t in tracks}
+        centroid_arr = np.array([centroid_cache[t.track_id] for t in tracks])  # (T, 2)
         
         for d, (kpts, conf, bbox) in enumerate(detections):
             det_centroid = self._compute_centroid(kpts, conf, bbox)
@@ -993,10 +1044,9 @@ class DancerTracker:
             det_centroid_kpt = det_centroid  # already weighted centroid
             det_kpts_norm = kpts - det_centroid_kpt  # (17,2) relative
             
-            # Check if this detection is in a crowded zone
-            # (near multiple tracks → must rely on shape)
-            is_crowded = self._is_detection_in_crowded_zone(
-                det_centroid, tracks, close_dist)
+            # Vectorised crowded-zone test (replaces per-track loop)
+            dists_to_tracks = np.linalg.norm(centroid_arr - det_centroid, axis=1)
+            is_crowded = int(np.sum(dists_to_tracks < close_dist)) >= 2
             
             for t, track in enumerate(tracks):
                 if not self._mahalanobis_gate_allows(d, det_centroid, track):
@@ -1034,7 +1084,7 @@ class DancerTracker:
                 size_cost = abs(det_height - trk_height)
                 
                 sep_penalty = self._compute_separation_penalty(
-                    det_centroid, track, tracks)
+                    det_centroid, track, tracks, centroid_cache)
                 dir_penalty = self._compute_direction_penalty(
                     det_centroid, last_known_pos, velocity, track, is_crowded)
                 
@@ -1876,7 +1926,7 @@ class DancerTracker:
         return new_track
 
     def update(self, detections, frame_number: int | None = None,
-               motion_detector=None):
+               motion_detector=None, motion_blobs=None):
         """
         Update tracker with new detections.
         
@@ -1888,11 +1938,23 @@ class DancerTracker:
             motion_detector: Optional MotionDetector (already fed this
                 frame).  detect() is called lazily — only when there
                 are unmatched active tracks that could be bridged.
+            motion_blobs: Pre-detected motion blobs (MOTION_FIRST mode).
+                When provided, blobs not overlapping YOLO detections
+                are promoted to synthetic detections for the matcher.
         
         Returns:
             List of DancerTrack objects for confirmed tracks
         """
         frame_ctx = self._begin_frame_update(frame_number)
+
+        # In MOTION_FIRST mode, fuse motion blobs as synthetic detections
+        n_yolo = len(detections)
+        if (self.tracking_mode == TrackingMode.MOTION_FIRST
+                and motion_blobs):
+            detections = self._fuse_motion_blobs(detections, motion_blobs)
+        frame_ctx.n_yolo_detections = n_yolo
+        frame_ctx.n_total_detections = len(detections)
+
         self._predict_tracks_for_frame(detections, frame_ctx)
 
         matched_det = set()
@@ -1913,7 +1975,7 @@ class DancerTracker:
             matched_pairs_log,
             frame_ctx,
         )
-        if MOTION_BRIDGE_ENABLED and motion_detector is not None:
+        if (MOTION_BRIDGE_ENABLED or self.tracking_mode == TrackingMode.MOTION_FIRST) and motion_detector is not None:
             self._lazy_bridge_with_motion(motion_detector, matched_trk)
         self._apply_occlusion_aging(matched_trk, frame_ctx)
         self._finalize_track_lifecycle()
@@ -2303,6 +2365,89 @@ class DancerTracker:
         self.tracks.append(new_track)
 
     # ------------------------------------------------------------------
+    # Motion-first fusion — promote blobs to synthetic detections
+    # ------------------------------------------------------------------
+    def _update_motion_blob_persistence(self, motion_blobs) -> dict[tuple[int, int], int]:
+        """Track coarse blob persistence across consecutive frames.
+
+        Use a neighborhood carry-over so a real dancer can move across
+        adjacent cells without resetting persistence to zero.
+        """
+        if not motion_blobs:
+            self._motion_blob_cells = {}
+            return {}
+
+        cell_size = max(16, int(self._person_height_px * MOTION_FIRST_SYNTHETIC_CELL_RATIO))
+        prev = self._motion_blob_cells
+        current: dict[tuple[int, int], int] = {}
+        for blob in motion_blobs:
+            cell = (
+                int(float(blob.centroid[0]) / cell_size),
+                int(float(blob.centroid[1]) / cell_size),
+            )
+            best_prev = 0
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    best_prev = max(best_prev, prev.get((cell[0] + dx, cell[1] + dy), 0))
+            current[cell] = max(current.get(cell, 0), best_prev + 1)
+
+        self._motion_blob_cells = current
+        return current
+
+    def _fuse_motion_blobs(self, detections, motion_blobs):
+        """Merge motion blobs as synthetic detections alongside YOLO.
+
+        For each blob NOT overlapping a YOLO detection, create a
+        synthetic detection tuple (zero-confidence keypoints, blob bbox).
+        Returns a new list with YOLO detections first, then synthetics.
+        """
+        if not motion_blobs:
+            return detections
+
+        overlap_gate = self._person_height_px * MOTION_FIRST_BLOB_OVERLAP_RATIO
+        yolo_centroids = []
+        for kpts, conf, bbox in detections:
+            cx = bbox[0] + bbox[2] / 2.0
+            cy = bbox[1] + bbox[3] / 2.0
+            yolo_centroids.append(np.array([cx, cy]))
+
+        blob_persistence = self._update_motion_blob_persistence(motion_blobs)
+        cell_size = max(16, int(self._person_height_px * MOTION_FIRST_SYNTHETIC_CELL_RATIO))
+        merged = list(detections)
+        for blob in motion_blobs:
+            cell = (
+                int(float(blob.centroid[0]) / cell_size),
+                int(float(blob.centroid[1]) / cell_size),
+            )
+            # Check if blob overlaps any YOLO detection
+            overlaps_yolo = False
+            for yc in yolo_centroids:
+                if float(np.linalg.norm(blob.centroid - yc)) < overlap_gate:
+                    overlaps_yolo = True
+                    break
+            if overlaps_yolo:
+                continue
+
+            persistence = blob_persistence.get(cell, 0)
+            if persistence < MOTION_FIRST_SYNTHETIC_MIN_FRAMES:
+                continue
+
+            # Create synthetic detection: zero-confidence keypoints, blob bbox
+            synth_kpts = np.full((17, 2), blob.centroid, dtype=np.float64)
+            synth_conf = np.zeros(17, dtype=np.float64)
+            synth_bbox = blob.bbox.copy()
+            merged.append((synth_kpts, synth_conf, synth_bbox))
+
+            self.logger.log("MOTION_SYNTHETIC_DET", {
+                "blob_centroid": [round(float(blob.centroid[0]), 1),
+                                  round(float(blob.centroid[1]), 1)],
+                "blob_area": round(blob.area, 0),
+                "persistence": persistence,
+            })
+
+        return merged
+
+    # ------------------------------------------------------------------
     # Phase 3: Motion bridge — MOG2 blob fallback for YOLO gaps
     # ------------------------------------------------------------------
     def _lazy_bridge_with_motion(self, motion_detector, matched_trk):
@@ -2318,7 +2463,10 @@ class DancerTracker:
                 continue
             if track.time_since_update == 0:
                 continue
-            if track.bridge_frames >= MOTION_BRIDGE_MAX_FRAMES:
+            max_bridge = (MOTION_FIRST_BRIDGE_MAX_FRAMES
+                          if self.tracking_mode == TrackingMode.MOTION_FIRST
+                          else MOTION_BRIDGE_MAX_FRAMES)
+            if track.bridge_frames >= max_bridge:
                 continue
             has_candidates = True
             break
@@ -2333,65 +2481,84 @@ class DancerTracker:
     def _bridge_unmatched_with_motion(self, motion_blobs, matched_trk):
         """Bridge lost tracks using MOG2 foreground blobs (TIER 2).
 
-        For each unmatched active track (recently YOLO-confirmed, within
-        MOTION_BRIDGE_MAX_FRAMES), find the nearest unused motion blob
-        and update the track's bbox+centroid from it.  Keypoints stay
-        frozen from the last YOLO match.
+        Uses Hungarian assignment (instead of greedy nearest-blob) for
+        optimal track-to-blob matching.  For each unmatched active track
+        (recently YOLO-confirmed, within bridge frame limit), blobs are
+        scored by distance to the track's predicted position.
         """
         if not motion_blobs:
             return
 
-        # Remove blobs that overlap with YOLO-matched track bboxes
         matched_centroids = [self.tracks[i].get_centroid() for i in matched_trk]
-        used_blob_indices: set[int] = set()
+        base_bridge_gate = self._person_height_px * MOTION_BRIDGE_GATE_RATIO
 
-        bridge_gate = self._person_height_px * MOTION_BRIDGE_GATE_RATIO
-
+        # Collect candidate tracks (unmatched, within bridge budget)
+        cand_indices = []
         for idx, track in enumerate(self.tracks):
             if idx in matched_trk:
-                # Already YOLO-matched this frame
                 continue
             if track.time_since_update == 0:
-                # Matched by force-update or other late-match
                 continue
-            if track.bridge_frames >= MOTION_BRIDGE_MAX_FRAMES:
-                # Exhausted bridge allowance
+            max_bridge = (MOTION_FIRST_BRIDGE_MAX_FRAMES
+                          if self.tracking_mode == TrackingMode.MOTION_FIRST
+                          else MOTION_BRIDGE_MAX_FRAMES)
+            if track.bridge_frames >= max_bridge:
                 continue
+            cand_indices.append(idx)
 
-            pred_pos = track.get_centroid()
+        if not cand_indices:
+            return
 
-            # Find nearest available blob
-            best_blob = None
-            best_blob_idx = -1
-            best_dist = float('inf')
-            for bi, blob in enumerate(motion_blobs):
-                if bi in used_blob_indices:
-                    continue
-                dist = float(np.linalg.norm(pred_pos - blob.centroid))
-                if dist < best_dist:
-                    best_dist = dist
-                    best_blob = blob
-                    best_blob_idx = bi
-
-            if best_blob is None or best_dist > bridge_gate:
-                # Mark track as not bridged this frame
-                track.is_bridged = False
-                continue
-
-            # Skip blobs that are very close to already-matched tracks
-            # (they're probably the same person detected by YOLO)
-            blob_near_matched = False
+        # Filter out blobs too close to YOLO-matched tracks
+        valid_blobs = []
+        valid_blob_indices = []
+        for bi, blob in enumerate(motion_blobs):
+            near_matched = False
             for mpos in matched_centroids:
-                if float(np.linalg.norm(best_blob.centroid - mpos)) < bridge_gate * 0.5:
-                    blob_near_matched = True
+                if float(np.linalg.norm(blob.centroid - mpos)) < base_bridge_gate * 0.5:
+                    near_matched = True
                     break
-            if blob_near_matched:
-                track.is_bridged = False
-                continue
+            if not near_matched:
+                valid_blobs.append(blob)
+                valid_blob_indices.append(bi)
 
-            # Apply motion bridge update
-            self._apply_motion_bridge(track, best_blob, best_dist)
-            used_blob_indices.add(best_blob_idx)
+        if not valid_blobs:
+            for idx in cand_indices:
+                self.tracks[idx].is_bridged = False
+            return
+
+        # Build cost matrix [tracks × blobs]
+        n_trk = len(cand_indices)
+        n_blob = len(valid_blobs)
+        cost = np.full((n_trk, n_blob), 1e6, dtype=np.float64)
+
+        for ti, trk_idx in enumerate(cand_indices):
+            track = self.tracks[trk_idx]
+            pred_pos = track.get_centroid()
+            track_gate = base_bridge_gate * (1.0 + track.time_since_update * MOTION_BRIDGE_GATE_GROWTH_PER_MISS)
+            if track.is_established:
+                track_gate *= MOTION_BRIDGE_GATE_ESTABLISHED_MULT
+            for bi, blob in enumerate(valid_blobs):
+                d = float(np.linalg.norm(pred_pos - blob.centroid))
+                if d <= track_gate:
+                    cost[ti, bi] = d
+
+        row_ind, col_ind = linear_sum_assignment(cost)
+
+        assigned_trk = set()
+        for ri, ci in zip(row_ind, col_ind):
+            if cost[ri, ci] >= 1e6:
+                continue
+            trk_idx = cand_indices[ri]
+            blob = valid_blobs[ci]
+            self._apply_motion_bridge(
+                self.tracks[trk_idx], blob, cost[ri, ci])
+            assigned_trk.add(trk_idx)
+
+        # Mark unassigned candidates as not bridged
+        for idx in cand_indices:
+            if idx not in assigned_trk:
+                self.tracks[idx].is_bridged = False
 
     def _apply_motion_bridge(self, track, blob, dist: float):
         """Update track bbox+centroid from a motion blob with inflated Kalman noise."""
@@ -2424,6 +2591,9 @@ class DancerTracker:
         # Reset time_since_update so track stays alive
         track.time_since_update = 0
         track._fractional_age = 0.0
+
+        # Record match event so merge-episode bookkeeping stays coherent
+        track.note_match_event(self.frame_count, merge_frame=False)
 
         # Update history and smoothed centroid
         track.history.append(blob.centroid.copy())
@@ -2577,7 +2747,8 @@ class DancerTracker:
         confirmed = []
         for track in self.tracks:
             if track.hits >= self.min_hits or self.frame_count <= self.min_hits:
-                confirmed.append(track)
+                if track._warmup_score >= TRACK_WARMUP_THRESHOLD:
+                    confirmed.append(track)
         return confirmed
 
     def _log_frame_summary(self, detections, matched_pairs_log):
@@ -2623,13 +2794,15 @@ class DancerTracker:
         * Bodies historically far apart → penalty discourages cross-match.
         * Bodies always close (shadow artifacts) → no penalty (lenient).
         """
-        for i, track_a in enumerate(self.tracks):
-            for j in range(i + 1, len(self.tracks)):
-                track_b = self.tracks[j]
-                key = self._pair_key(track_a.track_id, track_b.track_id)
-                pos_a = track_a.get_centroid()
-                pos_b = track_b.get_centroid()
-                dist = float(np.linalg.norm(pos_a - pos_b))
+        n = len(self.tracks)
+        if n < 2:
+            return
+        centroids = np.array([t.get_centroid() for t in self.tracks])  # (n, 2)
+        for i in range(n):
+            for j in range(i + 1, n):
+                key = self._pair_key(self.tracks[i].track_id,
+                                     self.tracks[j].track_id)
+                dist = float(np.linalg.norm(centroids[i] - centroids[j]))
                 if key not in self._pair_distances:
                     self._pair_distances[key] = deque(
                         maxlen=TRACKER_SEPARATION_MEMORY_FRAMES)
