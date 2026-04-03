@@ -452,6 +452,10 @@ class WallDanceGUI:
         if 'on_confidence_change' in self.callbacks:
             self.callbacks['on_confidence_change'](value)
 
+    def _on_motion_sensitivity_change(self, sender, value):
+        if 'on_motion_sensitivity_change' in self.callbacks:
+            self.callbacks['on_motion_sensitivity_change'](float(value))
+
     def _on_tracking_mode_change(self, sender, value):
         if 'on_tracking_mode_change' in self.callbacks:
             mode_str = "motion_first" if value == "Motion First" else "yolo_first"
@@ -1410,6 +1414,7 @@ class WallDanceGUI:
         """Sync slider state (when changed via keyboard or config load)."""
         tag_map = {
             'confidence': ['show_conf_slider'],
+            'motion_sensitivity': ['motion_sensitivity_slider'],
             'clahe': ['adv_clahe_slider'],
             'gamma': ['adv_gamma_slider'],
             'brightness_threshold': ['adv_brightness_threshold_slider'],

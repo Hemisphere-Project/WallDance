@@ -412,6 +412,8 @@ MOTION_BRIDGE_MIN_AREA = 100        # Min blob area in px² (filter noise)
 MOTION_BRIDGE_MIN_AREA_LOWLIGHT_MULT = 1.8  # Raise min blob area in low light
 MOTION_BRIDGE_GATE_GROWTH_PER_MISS = 0.18   # Expand bridge gate as misses grow
 MOTION_BRIDGE_GATE_ESTABLISHED_MULT = 1.35  # Established tracks get a wider blob gate
+MOTION_BRIDGE_SENSITIVITY = 0.55           # 0.0 = conservative bridge,
+                                            # 1.0 = very permissive bridge.
 MOTION_BRIDGE_INCLUDE_SHADOWS = False       # Keep shadow-class pixels out of
                                              # bridge blobs for now.
 MOTION_BRIDGE_LOCAL_MIN_FG_RATIO = 0.02     # Track-local fallback requires this

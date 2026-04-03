@@ -9,6 +9,7 @@ from filterpy.kalman import KalmanFilter
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
+from motion_detector import MotionBlob
 from config import (
     TRACKER_MAX_AGE, TRACKER_MIN_HITS, TRACKER_DISTANCE_THRESHOLD,
     TRACKER_DORMANT_MAX_AGE,
@@ -42,6 +43,7 @@ from config import (
     MOTION_BRIDGE_ENABLED, MOTION_BRIDGE_MAX_FRAMES,
     MOTION_BRIDGE_GATE_RATIO, MOTION_BRIDGE_NOISE_STAGES,
     MOTION_BRIDGE_GATE_GROWTH_PER_MISS, MOTION_BRIDGE_GATE_ESTABLISHED_MULT,
+    MOTION_BRIDGE_SENSITIVITY,
     MOTION_BRIDGE_INCLUDE_SHADOWS,
     MOTION_BRIDGE_LOCAL_MIN_FG_RATIO,
     MOTION_BRIDGE_LOCAL_EXPAND_PER_MISS,
@@ -686,6 +688,7 @@ class DancerTracker:
         self.tracking_mode: TrackingMode = TRACKING_MODE
         # Motion-first synthetic blob persistence memory.
         self._motion_blob_cells: dict[tuple[int, int], int] = {}
+        self._motion_bridge_sensitivity: float = MOTION_BRIDGE_SENSITIVITY
 
     # ------------------------------------------------------------------
     # Person-height master dial
@@ -727,6 +730,38 @@ class DancerTracker:
             "min_hits": self.min_hits,
             "max_age": self.max_age,
         })
+
+    def set_motion_bridge_sensitivity(self, sensitivity: float):
+        """Set how permissive motion-only track recovery should be."""
+        self._motion_bridge_sensitivity = max(0.0, min(1.0, float(sensitivity)))
+
+    def _bridge_gate_sensitivity_mult(self) -> float:
+        return 1.0 + 0.85 * self._motion_bridge_sensitivity
+
+    def _bridge_min_area_scale(self) -> float:
+        return max(0.22, 1.0 - 0.70 * self._motion_bridge_sensitivity)
+
+    def _bridge_min_height_ratio(self) -> float:
+        return max(0.16, 0.30 - 0.12 * self._motion_bridge_sensitivity)
+
+    def _bridge_local_min_motion_ratio(self) -> float:
+        return max(0.003, MOTION_BRIDGE_LOCAL_MIN_FG_RATIO * (1.0 - 0.75 * self._motion_bridge_sensitivity))
+
+    def _bridge_presence_min_motion_ratio(self) -> float:
+        return max(0.002, MOTION_BRIDGE_LOCAL_MIN_FG_RATIO * (0.65 - 0.45 * self._motion_bridge_sensitivity))
+
+    def _bridge_local_expand_per_miss(self) -> float:
+        return MOTION_BRIDGE_LOCAL_EXPAND_PER_MISS * (1.0 + 1.4 * self._motion_bridge_sensitivity)
+
+    def _bridge_local_max_expansion(self) -> float:
+        return MOTION_BRIDGE_LOCAL_MAX_EXPANSION + 1.5 * self._motion_bridge_sensitivity
+
+    def _bridge_local_min_hits(self) -> int:
+        if self._motion_bridge_sensitivity >= 0.85:
+            return 1
+        if self._motion_bridge_sensitivity >= 0.40:
+            return 2
+        return 4
 
     def set_frame_dimensions(self, width: int, pad_x: int = 0):
         """Store content-area boundaries for edge-exit detection.
@@ -2486,6 +2521,8 @@ class DancerTracker:
             allow_during_warmup=True,
             suppress_static=False,
             include_shadows=MOTION_BRIDGE_INCLUDE_SHADOWS,
+            min_area_scale=self._bridge_min_area_scale(),
+            min_height_ratio=self._bridge_min_height_ratio(),
         )
         if motion_blobs:
             self._bridge_unmatched_with_motion(motion_blobs, matched_trk)
@@ -2510,18 +2547,29 @@ class DancerTracker:
                                           candidate_indices) -> bool:
         """Fallback bridge using clean-mask support inside a track-local ROI."""
         bridged_any = False
-        base_bridge_gate = self._person_height_px * MOTION_BRIDGE_GATE_RATIO
+        sensitivity = self._motion_bridge_sensitivity
+        base_bridge_gate = (
+            self._person_height_px
+            * MOTION_BRIDGE_GATE_RATIO
+            * self._bridge_gate_sensitivity_mult()
+        )
+        local_min_motion_ratio = self._bridge_local_min_motion_ratio()
+        presence_min_motion_ratio = self._bridge_presence_min_motion_ratio()
+        local_expand_per_miss = self._bridge_local_expand_per_miss()
+        local_max_expansion = self._bridge_local_max_expansion()
+        local_min_hits = self._bridge_local_min_hits()
+        presence_core_scale = max(0.6, 0.9 - 0.2 * sensitivity)
 
         for idx in candidate_indices:
             track = self.tracks[idx]
-            if not (track.is_established or track.bridge_frames > 0):
+            if not (track.is_established or track.bridge_frames > 0 or track.hits >= local_min_hits):
                 track.is_bridged = False
                 continue
 
             pred_pos = track.get_centroid()
             query_scale = min(
-                MOTION_BRIDGE_LOCAL_MAX_EXPANSION,
-                1.0 + track.time_since_update * MOTION_BRIDGE_LOCAL_EXPAND_PER_MISS,
+                local_max_expansion,
+                1.0 + track.time_since_update * local_expand_per_miss,
             )
             query_w = float(track.bbox[2]) * query_scale
             query_h = float(track.bbox[3]) * query_scale
@@ -2534,11 +2582,38 @@ class DancerTracker:
                 query_w,
                 query_h,
                 target_centroid=pred_pos,
-                min_motion_ratio=MOTION_BRIDGE_LOCAL_MIN_FG_RATIO,
+                min_motion_ratio=local_min_motion_ratio,
                 include_shadows=MOTION_BRIDGE_INCLUDE_SHADOWS,
             )
             if blob is None:
-                track.is_bridged = False
+                presence_ratio = motion_detector.motion_ratio_in_bbox(
+                    query_x,
+                    query_y,
+                    query_w,
+                    query_h,
+                    core_scale=presence_core_scale,
+                    include_shadows=MOTION_BRIDGE_INCLUDE_SHADOWS,
+                    use_clean_mask=False,
+                    require_coherence=False,
+                )
+                if presence_ratio < presence_min_motion_ratio:
+                    track.is_bridged = False
+                    continue
+
+                self._apply_motion_presence_bridge(
+                    track,
+                    pred_pos,
+                    query_w,
+                    query_h,
+                    presence_ratio,
+                )
+                bridged_any = True
+                self.logger.log("MOTION_BRIDGE_PRESENCE", {
+                    "track_id": track.track_id,
+                    "motion_ratio": round(presence_ratio, 3),
+                    "query_scale": round(query_scale, 2),
+                    "track_hits": track.hits,
+                })
                 continue
 
             track_gate = base_bridge_gate * (
@@ -2574,7 +2649,8 @@ class DancerTracker:
             return
 
         matched_centroids = [self.tracks[i].get_centroid() for i in matched_trk]
-        base_bridge_gate = self._person_height_px * MOTION_BRIDGE_GATE_RATIO
+        raw_base_bridge_gate = self._person_height_px * MOTION_BRIDGE_GATE_RATIO
+        base_bridge_gate = raw_base_bridge_gate * self._bridge_gate_sensitivity_mult()
 
         # Collect candidate tracks (unmatched, within bridge budget)
         cand_indices = []
@@ -2599,7 +2675,7 @@ class DancerTracker:
         for bi, blob in enumerate(motion_blobs):
             near_matched = False
             for mpos in matched_centroids:
-                if float(np.linalg.norm(blob.centroid - mpos)) < base_bridge_gate * 0.5:
+                if float(np.linalg.norm(blob.centroid - mpos)) < raw_base_bridge_gate * 0.5:
                     near_matched = True
                     break
             if not near_matched:
@@ -2655,6 +2731,21 @@ class DancerTracker:
                 "candidate_track_ids": [self.tracks[idx].track_id for idx in cand_indices],
                 "blob_count": len(valid_blobs),
             })
+
+    def _apply_motion_presence_bridge(self, track, pred_pos, query_w: float,
+                                      query_h: float, motion_ratio: float):
+        """Keep a track alive when local motion exists but no coherent blob forms."""
+        blob = MotionBlob(
+            bbox=np.array([
+                pred_pos[0] - track.bbox[2] / 2.0,
+                pred_pos[1] - track.bbox[3] / 2.0,
+                track.bbox[2],
+                track.bbox[3],
+            ], dtype=np.float64),
+            centroid=np.array(pred_pos, dtype=np.float64),
+            area=float(max(1.0, query_w * query_h * motion_ratio)),
+        )
+        self._apply_motion_bridge(track, blob, 0.0)
 
     def _apply_motion_bridge(self, track, blob, dist: float):
         """Update track bbox+centroid from a motion blob with inflated Kalman noise."""

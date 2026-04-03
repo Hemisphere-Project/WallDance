@@ -29,6 +29,7 @@ from config import (
     SHADOW_PROXIMITY_RATIO,
     MOTION_BRIDGE_ENABLED,
     MOTION_BRIDGE_MOG2_LEARN_RATE,
+    MOTION_BRIDGE_SENSITIVITY,
     TrackingMode,
     MOTION_FIRST_BLOB_OVERLAP_RATIO,
     MOTION_FIRST_ASPECT_RANGE,
@@ -92,6 +93,7 @@ class ProcessingSettings:
     enhance_lite: bool
     enhance_force: bool  # Force enhancement even when brightness > threshold
     person_height_px: int
+    motion_sensitivity: float = MOTION_BRIDGE_SENSITIVITY
     person_height_min_ratio: float = PERSON_HEIGHT_MIN_RATIO
     person_height_max_ratio: float = PERSON_HEIGHT_MAX_RATIO
     brightness_threshold: int = 60  # Auto-bypass threshold (0-255)
@@ -181,6 +183,17 @@ class _LetterboxMotionProxy:
             blob.centroid[1] = blob.centroid[1] * self._lb_scale + self._pad_y
         return blob, motion_ratio
 
+    def motion_ratio_in_bbox(self, x: float, y: float, w: float, h: float,
+                             **kwargs) -> float:
+        inv_scale = 1.0 / self._lb_scale if self._lb_scale != 0 else 1.0
+        return self._detector.motion_ratio_in_bbox(
+            (x - self._pad_x) * inv_scale,
+            (y - self._pad_y) * inv_scale,
+            w * inv_scale,
+            h * inv_scale,
+            **kwargs,
+        )
+
     def mask_stats_in_region(self, x: float, y: float, w: float, h: float) -> dict:
         """Query mask foreground stats for a letterbox-space region."""
         inv_scale = 1.0 / self._lb_scale if self._lb_scale != 0 else 1.0
@@ -233,6 +246,16 @@ class _OffsetMotionProxy:
             blob.centroid[1] += self._offset_y
         return blob, motion_ratio
 
+    def motion_ratio_in_bbox(self, x: float, y: float, w: float, h: float,
+                             **kwargs) -> float:
+        return self._detector.motion_ratio_in_bbox(
+            x - self._offset_x,
+            y - self._offset_y,
+            w,
+            h,
+            **kwargs,
+        )
+
 
 class FrameProcessor:
     """Encapsulates the main video processing steps."""
@@ -271,6 +294,7 @@ class FrameProcessor:
         self._crossval_motion_memory: Dict[tuple[int, int], float] = {}
         self._crossval_no_track_frames: int = 0  # consecutive frames with 0 confirmed tracks
         self._crossval_motion_cells: Dict[tuple[int, int], int] = {}  # cell → last frame with real motion
+        self.tracker.set_motion_bridge_sensitivity(settings.motion_sensitivity)
         self._configure_motion_detectors()
         
         # GPU pipeline (zero-copy path)
@@ -920,6 +944,10 @@ class FrameProcessor:
         detector = self.motion_detector
         return detector._scale if detector is not None else 0.75
 
+    def get_motion_sensitivity(self) -> float:
+        """Return the current motion-bridge sensitivity."""
+        return float(self.settings.motion_sensitivity)
+
     def set_motion_scale(self, scale: float) -> None:
         """Apply the same MOG2 scale to all active motion detectors."""
         detectors = []
@@ -934,6 +962,12 @@ class FrameProcessor:
                 continue
             detector.set_scale(scale)
             seen.add(detector_id)
+
+    def set_motion_sensitivity(self, sensitivity: float) -> None:
+        """Update bridge sensitivity for runtime recovery behavior."""
+        value = max(0.0, min(1.0, float(sensitivity)))
+        self.settings.motion_sensitivity = value
+        self.tracker.set_motion_bridge_sensitivity(value)
 
     def reset_motion_detectors(self) -> None:
         """Reset all active motion detectors and clear cross-validation state."""

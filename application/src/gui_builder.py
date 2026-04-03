@@ -733,6 +733,24 @@ def build_detection_section(gui: Any):
         with dpg.tooltip(mog2_slider):
             dpg.add_text("MOG2 background subtraction resolution.\nRuns in parallel with YOLO so cost is hidden.\n0.50 = fastest, 1.00 = best blob accuracy.\n0.75 is a good default for ~50px dancers.")
 
+        dpg.add_spacer(height=scaled(6))
+
+        # Motion Bridge Sensitivity
+        dpg.add_text("Motion Sensitivity", color=(180, 180, 180))
+        with dpg.group(horizontal=True):
+            motion_slider = dpg.add_slider_float(
+                tag="motion_sensitivity_slider",
+                default_value=gui.config.get("motion_sensitivity", 0.55),
+                min_value=0.0,
+                max_value=1.0,
+                format="%.2f",
+                width=scaled(-90),
+                callback=gui._on_motion_sensitivity_change,
+            )
+            _add_slider_row("motion_sensitivity_slider", 0.05, 0.0, 1.0, gui._on_motion_sensitivity_change)
+        with dpg.tooltip(motion_slider):
+            dpg.add_text("Bridge-only recovery sensitivity.\nHigher = smaller/weaker motion can keep an\nexisting dancer track alive when YOLO drops.\nLower = cleaner but easier to lose continuity.\nIf stale tracks linger, reduce this slider.")
+
 
 def build_visualization_toolbar(gui: Any):
     """Compact icon-based visualization toggles."""

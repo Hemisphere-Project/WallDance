@@ -47,6 +47,7 @@ from config import (
     PERSON_HEIGHT_MAX_RATIO,
     PERSON_HEIGHT_MIN_RATIO,
     PERSON_HEIGHT_PX,
+    MOTION_BRIDGE_SENSITIVITY,
     PREVIEW_ENABLED,
     PREVIEW_RENDER_SCALE,
     SHOW_BBOX,
@@ -161,6 +162,7 @@ class WallDanceApp:
             enhance_lite=False,
             enhance_force=False,
             person_height_px=PERSON_HEIGHT_PX,
+            motion_sensitivity=MOTION_BRIDGE_SENSITIVITY,
             person_height_min_ratio=PERSON_HEIGHT_MIN_RATIO,
             person_height_max_ratio=PERSON_HEIGHT_MAX_RATIO,
             brightness_threshold=BRIGHTNESS_THRESHOLD,
@@ -340,6 +342,7 @@ class WallDanceApp:
             "tracker_max_age": TRACKER_MAX_AGE,
             "tracker_smoothing": 1,
             "tracking_mode": self.tracker.tracking_mode.value,
+            "motion_sensitivity": self.settings.motion_sensitivity,
             "osc_enabled": self.osc_enabled,
             "osc_ip": self.osc_ip,
             "osc_port": self.osc_port,
@@ -380,6 +383,7 @@ class WallDanceApp:
             "on_bg_clear": self._cb_bg_clear,
             "on_bg_sensitivity_change": self._cb_bg_sensitivity_change,
             "on_confidence_change": self._cb_confidence_change,
+            "on_motion_sensitivity_change": self._cb_motion_sensitivity_change,
             "on_tracking_mode_change": self._cb_tracking_mode_change,
             "on_model_change": self._cb_model_change,
             "on_trt_toggle": self._cb_trt_toggle,
@@ -909,6 +913,7 @@ class WallDanceApp:
             "tracking_mode": self.tracker.tracking_mode.value,
             "tracker_max_age": self.tracker.max_age,
             "tracker_smoothing": self.tracker.smoothing_depth,
+            "motion_sensitivity": self.processor.get_motion_sensitivity(),
             "osc_enabled": self.osc_enabled,
             "osc_ip": self.osc_ip,
             "osc_port": self.osc_port,
@@ -1184,6 +1189,9 @@ class WallDanceApp:
         if "tracker_smoothing" in config:
             self.tracker.smoothing_depth = config["tracker_smoothing"]
             self.gui and self.gui.sync_slider("tracker_smoothing", config["tracker_smoothing"])
+        if "motion_sensitivity" in config:
+            self.processor.set_motion_sensitivity(config["motion_sensitivity"])
+            self.gui and self.gui.sync_slider("motion_sensitivity", config["motion_sensitivity"])
 
         # OSC
         if "osc_enabled" in config:
@@ -1389,6 +1397,11 @@ class WallDanceApp:
     def _cb_confidence_change(self, value: float):
         self.settings.confidence = value
         print(f"Confidence: {value:.2f}")
+        self._request_reprocess()
+
+    def _cb_motion_sensitivity_change(self, value: float):
+        self.processor.set_motion_sensitivity(value)
+        print(f"Motion bridge sensitivity: {value:.2f}")
         self._request_reprocess()
 
     def _cb_tracking_mode_change(self, mode_str: str):

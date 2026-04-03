@@ -101,7 +101,10 @@ class MotionDetector:
         return self._last_brightness
 
     def motion_ratio_in_bbox(self, x: float, y: float, w: float, h: float,
-                             core_scale: float = 1.0) -> float:
+                             core_scale: float = 1.0,
+                             include_shadows: bool = False,
+                             use_clean_mask: bool = True,
+                             require_coherence: bool = True) -> float:
         """Return fraction of cleaned foreground pixels inside a bbox.
 
         Uses the morphologically-cleaned mask (not the raw MOG2 output)
@@ -109,7 +112,15 @@ class MotionDetector:
         Coordinates are in **original** (unscaled) frame space.
         Returns 0.0 if no mask is available or bbox is degenerate.
         """
-        mask = self._clean_mask
+        if use_clean_mask:
+            mask = self._clean_mask
+        elif self._fg_mask is not None:
+            if include_shadows:
+                mask = (self._fg_mask >= 127).astype(np.uint8) * 255
+            else:
+                mask = (self._fg_mask == 255).astype(np.uint8) * 255
+        else:
+            mask = None
         if mask is None:
             return 0.0
         core_scale = max(0.1, min(1.0, core_scale))
@@ -144,7 +155,7 @@ class MotionDetector:
         # Coherence check: reject if foreground is scattered noise rather
         # than a single coherent blob.  The largest connected component must
         # account for a minimum fraction of total fg pixels in the ROI.
-        if MOTION_CROSSVAL_MIN_COHERENCE > 0.0 and fg_count >= 4:
+        if require_coherence and MOTION_CROSSVAL_MIN_COHERENCE > 0.0 and fg_count >= 4:
             n_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
                 roi, connectivity=8)
             if n_labels > 1:
@@ -220,6 +231,8 @@ class MotionDetector:
         allow_during_warmup: bool = False,
         suppress_static: bool = True,
         include_shadows: bool = False,
+        min_area_scale: float = 1.0,
+        min_height_ratio: float = 0.3,
     ) -> List[MotionBlob]:
         """Extract filtered blobs from the last feed() mask.
 
@@ -243,6 +256,10 @@ class MotionDetector:
                           darker than the background, MOG2 classifies
                           the body as shadow rather than definite
                           foreground — this flag recovers that signal.
+            min_area_scale: Multiplier for the minimum blob area. Values
+                          below 1.0 make bridge detection more permissive.
+            min_height_ratio: Minimum accepted blob height as a fraction of
+                          person_height.
 
         Returns:
             List of MotionBlob with bbox, centroid and area in original coords.
@@ -274,11 +291,12 @@ class MotionDetector:
             fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         # Height range for person filtering (in downscaled coords)
-        min_h = max(3, int(scaled_ph * 0.3))
+        min_h = max(3, int(scaled_ph * min_height_ratio))
         max_h = int(scaled_ph * 2.5)
         frame_area = fg_mask.shape[0] * fg_mask.shape[1]
         max_area = frame_area * 0.25  # no single blob > 25% of frame
-        min_area = max(10, int(self._min_area * self._scale * self._scale))
+        min_area_scale = max(0.1, float(min_area_scale))
+        min_area = max(6, int(self._min_area * min_area_scale * self._scale * self._scale))
         if self._last_brightness < MOTION_LOWLIGHT_LUMA_THRESHOLD:
             min_area = int(min_area * MOTION_BRIDGE_MIN_AREA_LOWLIGHT_MULT)
 
