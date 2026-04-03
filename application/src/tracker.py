@@ -19,6 +19,7 @@ from config import (
     TRACKER_DUPLICATE_GATE_RATIO, TRACKER_SEPARATION_MEMORY_FRAMES,
     TRACKER_SEPARATION_PENALTY_WEIGHT, TRACKER_VELOCITY_PREDICTION_INFLUENCE,
     TRACKER_ESTABLISHED_FRAMES, TRACKER_MERGE_SIZE_RATIO,
+    TRACKER_GHOST_MIN_AGE, TRACKER_GHOST_MAX_HIT_RATE,
     TRACKER_OCCLUSION_DISTANCE_RATIO, TRACKER_OCCLUSION_AGE_FACTOR,
     TRACKER_DORMANT_VELOCITY_DECAY,
     SHADOW_TRACK_VELOCITY_CORR, SHADOW_TRACK_FRAMES,
@@ -48,6 +49,12 @@ from config import (
     MOTION_BRIDGE_LOCAL_MIN_FG_RATIO,
     MOTION_BRIDGE_LOCAL_EXPAND_PER_MISS,
     MOTION_BRIDGE_LOCAL_MAX_EXPANSION,
+    MOTION_BRIDGE_FRAME_DIFF_THRESHOLD,
+    MOTION_BRIDGE_FRAME_DIFF_MIN_RATIO,
+    MOTION_BRIDGE_LOCAL_MIN_BLOB_AREA,
+    MOTION_BRIDGE_VELOCITY_FRICTION,
+    MOTION_BRIDGE_MAX_PRESENCE_FRAMES,
+    MOTION_BRIDGE_WARMUP_INCREMENT,
     TrackingMode, TRACKING_MODE,
     MOTION_FIRST_MIN_HITS, MOTION_FIRST_BRIDGE_MAX_FRAMES,
     MOTION_FIRST_BLOB_OVERLAP_RATIO,
@@ -160,6 +167,8 @@ class DancerTrack:
         # Motion bridge state (Phase 3)
         self.bridge_frames: int = 0      # Consecutive motion-only frames
         self.is_bridged: bool = False    # Currently in motion-bridge mode
+        self._bridge_prev_centroid: np.ndarray | None = None  # Last blob centroid for velocity
+        self._bridge_blobless_streak: int = 0  # Consecutive presence-only frames (no real blob)
 
         # Track warmup scoring — grows with consecutive matches,
         # decays on misses.  Track only output once score reaches
@@ -267,7 +276,13 @@ class DancerTrack:
             # Decay warmup score on miss (but don't let it drop below 0)
             self._warmup_score = max(0.0,
                                      self._warmup_score - TRACK_WARMUP_DECAY)
-            
+        elif self.bridge_frames > 0:
+            # Bridge resets time_since_update → normal friction never fires.
+            # Without explicit dampening the Kalman velocity runs away and
+            # the track walks across the entire image.
+            self.kf.x[2:4] *= MOTION_BRIDGE_VELOCITY_FRICTION
+            self.kf.x[4:6] *= 0.3
+
         self.kf.predict()
         self.age += 1
         self.time_since_update += 1
@@ -315,6 +330,8 @@ class DancerTrack:
         # Clear motion bridge state on YOLO match
         self.bridge_frames = 0
         self.is_bridged = False
+        self._bridge_prev_centroid = None
+        self._bridge_blobless_streak = 0
         
         # Store confidence for temporal smoothing
         self.confidence_history.append(confidence.copy())
@@ -2538,9 +2555,21 @@ class DancerTracker:
         for idx in candidate_indices:
             self.tracks[idx].is_bridged = False
 
+        # Diagnostic: sample one candidate track's region for debug info
+        diag = {}
+        if candidate_indices and hasattr(motion_detector, 'bridge_diagnostics'):
+            sample_track = self.tracks[candidate_indices[0]]
+            pred = sample_track.get_centroid()
+            qw = float(sample_track.bbox[2]) * 1.5
+            qh = float(sample_track.bbox[3]) * 1.5
+            qx = float(pred[0] - qw * 0.5)
+            qy = float(pred[1] - qh * 0.5)
+            diag = motion_detector.bridge_diagnostics(qx, qy, qw, qh)
+
         self.logger.log("MOTION_BRIDGE_SKIPPED", {
             "reason": "no_blobs",
             "candidate_track_ids": candidate_track_ids,
+            **diag,
         })
 
     def _bridge_with_local_motion_support(self, motion_detector, matched_trk,
@@ -2585,6 +2614,8 @@ class DancerTracker:
                 min_motion_ratio=local_min_motion_ratio,
                 include_shadows=MOTION_BRIDGE_INCLUDE_SHADOWS,
             )
+            if blob is not None and blob.area < MOTION_BRIDGE_LOCAL_MIN_BLOB_AREA:
+                blob = None  # noise — too small to be a dancer
             if blob is None:
                 presence_ratio = motion_detector.motion_ratio_in_bbox(
                     query_x,
@@ -2596,24 +2627,54 @@ class DancerTracker:
                     use_clean_mask=False,
                     require_coherence=False,
                 )
-                if presence_ratio < presence_min_motion_ratio:
-                    track.is_bridged = False
+                if presence_ratio >= presence_min_motion_ratio:
+                    self._apply_motion_presence_bridge(
+                        track,
+                        pred_pos,
+                        query_w,
+                        query_h,
+                        presence_ratio,
+                    )
+                    bridged_any = True
+                    self.logger.log("MOTION_BRIDGE_PRESENCE", {
+                        "track_id": track.track_id,
+                        "motion_ratio": round(presence_ratio, 3),
+                        "query_scale": round(query_scale, 2),
+                        "track_hits": track.hits,
+                    })
                     continue
 
-                self._apply_motion_presence_bridge(
-                    track,
-                    pred_pos,
+                # Tier 3: frame differencing — catches motion even when the
+                # MOG2 background model has fully absorbed the dancer.
+                diff_blob, diff_ratio = motion_detector.frame_diff_blob_in_bbox(
+                    query_x,
+                    query_y,
                     query_w,
                     query_h,
-                    presence_ratio,
+                    target_centroid=pred_pos,
+                    threshold=MOTION_BRIDGE_FRAME_DIFF_THRESHOLD,
+                    min_ratio=MOTION_BRIDGE_FRAME_DIFF_MIN_RATIO,
                 )
-                bridged_any = True
-                self.logger.log("MOTION_BRIDGE_PRESENCE", {
-                    "track_id": track.track_id,
-                    "motion_ratio": round(presence_ratio, 3),
-                    "query_scale": round(query_scale, 2),
-                    "track_hits": track.hits,
-                })
+                if diff_blob is not None and diff_blob.area < MOTION_BRIDGE_LOCAL_MIN_BLOB_AREA:
+                    diff_blob = None  # noise — too small to be a dancer
+                if diff_blob is not None:
+                    diff_dist = float(np.linalg.norm(pred_pos - diff_blob.centroid))
+                    diff_gate = base_bridge_gate * (
+                        1.0 + track.time_since_update * MOTION_BRIDGE_GATE_GROWTH_PER_MISS)
+                    if track.is_established:
+                        diff_gate *= MOTION_BRIDGE_GATE_ESTABLISHED_MULT
+                    if diff_dist <= diff_gate:
+                        self._apply_motion_bridge(track, diff_blob, diff_dist)
+                        bridged_any = True
+                        self.logger.log("MOTION_BRIDGE_FRAME_DIFF", {
+                            "track_id": track.track_id,
+                            "diff_ratio": round(diff_ratio, 3),
+                            "blob_area": round(diff_blob.area, 0),
+                            "query_scale": round(query_scale, 2),
+                        })
+                        continue
+
+                track.is_bridged = False
                 continue
 
             track_gate = base_bridge_gate * (
@@ -2734,21 +2795,42 @@ class DancerTracker:
 
     def _apply_motion_presence_bridge(self, track, pred_pos, query_w: float,
                                       query_h: float, motion_ratio: float):
-        """Keep a track alive when local motion exists but no coherent blob forms."""
-        blob = MotionBlob(
-            bbox=np.array([
-                pred_pos[0] - track.bbox[2] / 2.0,
-                pred_pos[1] - track.bbox[3] / 2.0,
-                track.bbox[2],
-                track.bbox[3],
-            ], dtype=np.float64),
-            centroid=np.array(pred_pos, dtype=np.float64),
-            area=float(max(1.0, query_w * query_h * motion_ratio)),
-        )
-        self._apply_motion_bridge(track, blob, 0.0)
+        """Keep a track alive when local motion exists but no coherent blob forms.
+
+        Unlike blob-based bridge, this does NOT inject a fake measurement
+        into the Kalman filter (that would feed the prediction back to
+        itself and amplify drift).  The track stays marked as bridged but
+        time_since_update is NOT reset — the track ages normally and will
+        die after max_age frames.  A blobless streak cap ensures the track
+        doesn't linger indefinitely on faint motion.
+        """
+        track._bridge_blobless_streak += 1
+        if track._bridge_blobless_streak > MOTION_BRIDGE_MAX_PRESENCE_FRAMES:
+            track.is_bridged = False
+            return
+
+        track.bridge_frames += 1
+        track.is_bridged = True
+        # Do NOT reset time_since_update — let the track age naturally.
+        # Presence-only is weak evidence; the track should die if no real
+        # blob confirms its position.
+
+        self.logger.log("MOTION_BRIDGE", {
+            "track_id": track.track_id,
+            "blob_dist": 0.0,
+            "blob_area": 0,
+            "bridge_frames": track.bridge_frames,
+            "noise_mult": 0,
+            "presence_only": True,
+        })
 
     def _apply_motion_bridge(self, track, blob, dist: float):
-        """Update track bbox+centroid from a motion blob with inflated Kalman noise."""
+        """Update track bbox+centroid from a motion blob with inflated Kalman noise.
+
+        After the Kalman measurement update, velocity is overridden with
+        actual blob displacement so trajectory follows real motion rather
+        than drifting on stale Kalman dynamics.
+        """
         track.bridge_frames += 1
         track.is_bridged = True
 
@@ -2762,7 +2844,7 @@ class DancerTracker:
             old_h,
         ], dtype=np.float64)
 
-        # Kalman measurement update with progressive noise inflation
+        # Kalman measurement update with moderate noise inflation
         noise_mult = MOTION_BRIDGE_NOISE_STAGES[-1][1]  # default to highest
         for threshold, mult in MOTION_BRIDGE_NOISE_STAGES:
             if track.bridge_frames <= threshold:
@@ -2775,9 +2857,32 @@ class DancerTracker:
         track.kf.update(blob.centroid.reshape(2, 1))
         track.kf.R = original_R
 
+        # Real blob → reset blobless streak
+        track._bridge_blobless_streak = 0
+
+        # Override Kalman velocity with actual blob displacement.
+        # This anchors trajectory to real motion instead of letting
+        # the filter coast on stale dynamics.
+        prev = track._bridge_prev_centroid
+        if prev is not None:
+            displacement = blob.centroid - prev
+            track.kf.x[2:4] = displacement.reshape(2, 1)
+        else:
+            # First bridge frame — no displacement reference yet;
+            # kill inherited YOLO velocity to avoid initial drift.
+            track.kf.x[2:4] *= 0.3
+        track.kf.x[4:6] = 0.0  # always kill acceleration during bridge
+        track._bridge_prev_centroid = blob.centroid.copy()
+
         # Reset time_since_update so track stays alive
         track.time_since_update = 0
         track._fractional_age = 0.0
+
+        # Warm up the track from blob matches so motion-first tracks
+        # can eventually reach output threshold without YOLO.
+        track._warmup_score = min(
+            track._warmup_score + MOTION_BRIDGE_WARMUP_INCREMENT,
+            TRACK_WARMUP_THRESHOLD + 5.0)
 
         # Record match event so merge-episode bookkeeping stays coherent
         track.note_match_event(self.frame_count, merge_frame=False)
@@ -2911,8 +3016,24 @@ class DancerTracker:
             effective_max_age, at_edge = self._effective_max_age_for_track(track)
             if track.time_since_update >= effective_max_age:
                 self._retire_track_to_dormant(track, at_edge)
-            else:
-                still_alive.append(track)
+                continue
+
+            # Ghost detection: a track that has been alive for many frames
+            # but barely ever matched a YOLO detection is noise, not a
+            # real dancer.  Force-expire it so it stops consuming bridge
+            # resources and outputting phantom positions.
+            if (track.age >= TRACKER_GHOST_MIN_AGE
+                    and track.hits < track.age * TRACKER_GHOST_MAX_HIT_RATE):
+                self.logger.log("GHOST_EXPIRED", {
+                    "track_id": track.track_id,
+                    "age": track.age,
+                    "hits": track.hits,
+                    "hit_rate": round(track.hits / max(1, track.age), 3),
+                })
+                self._retire_track_to_dormant(track, at_edge)
+                continue
+
+            still_alive.append(track)
         self.tracks = still_alive
 
     def _age_and_prune_dormant_tracks(self):

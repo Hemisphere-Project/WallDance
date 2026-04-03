@@ -68,6 +68,14 @@ class MotionDetector:
         self._last_brightness = 255.0
         # Warmup counter — suppress blobs until MOG2 has settled
         self._frame_count = 0
+        # Consecutive-frame buffer for frame-diff fallback.
+        # These store a lightly-downscaled (no blur) version of the raw gray
+        # so frame differencing preserves motion contrast that Gaussian blur
+        # would destroy.
+        self._prev_raw: np.ndarray | None = None
+        self._curr_raw: np.ndarray | None = None
+        self._diff_scale = min(1.0, self._scale * 2.0)  # less aggressive downscale for diff
+        self._diff_inv_scale = 1.0 / self._diff_scale
         # Static blob suppression: spatial hash → consecutive frame count
         self._static_cells: dict[tuple[int, int], int] = {}
         self._static_cell_size = 32  # grid cell size in downscaled pixels
@@ -199,16 +207,41 @@ class MotionDetector:
         contour extraction only happens when detect() is called.
         """
         small, brightness = self.preprocess(gray, self._scale)
-        self.feed_preprocessed(small, brightness)
+        self.feed_preprocessed(small, brightness, raw_gray=gray)
 
-    def feed_preprocessed(self, small: np.ndarray, brightness: float) -> None:
+    def feed_preprocessed(self, small: np.ndarray, brightness: float,
+                          raw_gray: np.ndarray | None = None) -> None:
         """Update MOG2 from an already blurred+resized frame.
 
         Use this when multiple detectors share the same scale so
         preprocessing runs once instead of per-detector.
+
+        Args:
+            small: Blurred and downscaled grayscale frame for MOG2.
+            brightness: Mean brightness of the frame.
+            raw_gray: Original grayscale frame (before blur/downscale).
+                      Used for frame-diff bridge fallback which needs
+                      unblurred pixels to detect subtle motion.
         """
         self._frame_count += 1
         self._last_brightness = brightness
+        # Keep consecutive raw-gray pair for frame-diff bridge fallback.
+        # Uses a light downscale (no blur) so motion contrast is preserved.
+        if raw_gray is not None:
+            ds = self._diff_scale
+            if ds < 1.0:
+                raw_small = cv2.resize(raw_gray, None, fx=ds, fy=ds,
+                                       interpolation=cv2.INTER_AREA)
+            else:
+                raw_small = raw_gray
+            if self._curr_raw is not None and self._curr_raw.shape == raw_small.shape:
+                peak_diff = int(cv2.absdiff(raw_small, self._curr_raw).max())
+                if peak_diff > 8:  # real motion threshold on unblurred pixels
+                    self._prev_raw = self._curr_raw
+                    self._curr_raw = raw_small
+            else:
+                self._prev_raw = None
+                self._curr_raw = raw_small
         # Adaptive varThreshold: raise in low light to reject noise at the model level
         if brightness < MOTION_LOWLIGHT_LUMA_THRESHOLD:
             target_var = MOTION_BRIDGE_MOG2_VAR_THRESHOLD * MOTION_LOWLIGHT_VAR_THRESHOLD_MULT
@@ -429,6 +462,146 @@ class MotionDetector:
             area=float(stats[best_label, cv2.CC_STAT_AREA] * inv * inv),
         )
         return blob, motion_ratio
+
+    def frame_diff_blob_in_bbox(
+        self,
+        x: float,
+        y: float,
+        w: float,
+        h: float,
+        target_centroid: np.ndarray | None = None,
+        threshold: int = 15,
+        min_ratio: float = 0.03,
+    ) -> tuple[MotionBlob | None, float]:
+        """Detect motion via absolute frame difference inside a bbox.
+
+        This is the last-resort bridge fallback: when the MOG2 background
+        model has fully absorbed the dancer (no foreground *or* shadow
+        pixels), comparing consecutive raw frames still detects any
+        pixel-intensity change.
+
+        Uses the lightly-downscaled raw gray pair (no Gaussian blur) so
+        motion contrast is preserved.
+
+        Coordinates are in **original** (unscaled) frame space.
+        """
+        if self._prev_raw is None or self._curr_raw is None:
+            return None, 0.0
+
+        s = self._diff_scale
+        inv = self._diff_inv_scale
+        sx = max(0, int(x * s))
+        sy = max(0, int(y * s))
+        sw = max(1, int(w * s))
+        sh = max(1, int(h * s))
+        mh, mw = self._curr_raw.shape[:2]
+        x1 = min(sx, mw - 1)
+        y1 = min(sy, mh - 1)
+        x2 = min(sx + sw, mw)
+        y2 = min(sy + sh, mh)
+        if x2 <= x1 or y2 <= y1:
+            return None, 0.0
+
+        roi_curr = self._curr_raw[y1:y2, x1:x2]
+        roi_prev = self._prev_raw[y1:y2, x1:x2]
+        diff = cv2.absdiff(roi_curr, roi_prev)
+        changed = (diff > threshold).astype(np.uint8) * 255
+
+        total = changed.size
+        if total == 0:
+            return None, 0.0
+        fg_count = int(np.count_nonzero(changed))
+        if fg_count == 0:
+            return None, 0.0
+        motion_ratio = fg_count / total
+        if motion_ratio < min_ratio:
+            return None, motion_ratio
+
+        n_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+            changed, connectivity=8)
+        if n_labels <= 1:
+            return None, motion_ratio
+
+        target_small = None
+        if target_centroid is not None:
+            target_small = np.array(target_centroid, dtype=np.float64) * s
+
+        best_label = None
+        best_key = None
+        for label in range(1, n_labels):
+            area = int(stats[label, cv2.CC_STAT_AREA])
+            if area <= 0:
+                continue
+            cx = float(centroids[label][0] + x1)
+            cy = float(centroids[label][1] + y1)
+            if target_small is not None:
+                dist = float(np.linalg.norm(np.array([cx, cy]) - target_small))
+                key = (dist, -area)
+            else:
+                key = (-area,)
+            if best_key is None or key < best_key:
+                best_key = key
+                best_label = label
+
+        if best_label is None:
+            return None, motion_ratio
+
+        left = int(stats[best_label, cv2.CC_STAT_LEFT]) + x1
+        top = int(stats[best_label, cv2.CC_STAT_TOP]) + y1
+        width = int(stats[best_label, cv2.CC_STAT_WIDTH])
+        height = int(stats[best_label, cv2.CC_STAT_HEIGHT])
+        cx = float(centroids[best_label][0] + x1)
+        cy = float(centroids[best_label][1] + y1)
+        blob = MotionBlob(
+            bbox=np.array([left * inv, top * inv, width * inv, height * inv],
+                          dtype=np.float64),
+            centroid=np.array([cx * inv, cy * inv], dtype=np.float64),
+            area=float(stats[best_label, cv2.CC_STAT_AREA] * inv * inv),
+        )
+        return blob, motion_ratio
+
+    def bridge_diagnostics(self, x: float, y: float, w: float, h: float,
+                           threshold: int = 6) -> dict:
+        """Return diagnostic stats for bridge debugging (original-frame coords)."""
+        info: dict = {
+            "frame_count": self._frame_count,
+            "has_fg_mask": self._fg_mask is not None,
+            "has_prev": self._prev_raw is not None,
+            "has_curr": self._curr_raw is not None,
+        }
+        s = self._scale
+        sx, sy = max(0, int(x * s)), max(0, int(y * s))
+        sw, sh = max(1, int(w * s)), max(1, int(h * s))
+        if self._fg_mask is not None:
+            mh, mw = self._fg_mask.shape[:2]
+            x1, y1 = min(sx, mw - 1), min(sy, mh - 1)
+            x2, y2 = min(sx + sw, mw), min(sy + sh, mh)
+            info["mask_shape"] = [mh, mw]
+            info["roi_px"] = [x1, y1, x2, y2]
+            if x2 > x1 and y2 > y1:
+                roi = self._fg_mask[y1:y2, x1:x2]
+                total = roi.size
+                info["roi_total_px"] = total
+                info["fg255"] = int(np.count_nonzero(roi == 255))
+                info["shadow127"] = int(np.count_nonzero(roi == 127))
+                info["bg0"] = int(np.count_nonzero(roi == 0))
+        if self._prev_raw is not None and self._curr_raw is not None:
+            ds = self._diff_scale
+            dx, dy = max(0, int(x * ds)), max(0, int(y * ds))
+            dw, dh = max(1, int(w * ds)), max(1, int(h * ds))
+            dmh, dmw = self._curr_raw.shape[:2]
+            dx1, dy1 = min(dx, dmw - 1), min(dy, dmh - 1)
+            dx2, dy2 = min(dx + dw, dmw), min(dy + dh, dmh)
+            if dx2 > dx1 and dy2 > dy1:
+                diff = cv2.absdiff(
+                    self._curr_raw[dy1:dy2, dx1:dx2],
+                    self._prev_raw[dy1:dy2, dx1:dx2],
+                )
+                info["diff_mean"] = round(float(diff.mean()), 2)
+                info["diff_max"] = int(diff.max())
+                info["diff_gt_thr"] = int(np.count_nonzero(diff > threshold))
+                info["diff_total"] = diff.size
+        return info
 
     @staticmethod
     def _merge_nearby_blobs(blobs: list, person_height: int) -> list:

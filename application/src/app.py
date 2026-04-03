@@ -3473,8 +3473,13 @@ class WallDanceApp:
                     _proc_t0 = time.perf_counter()
                     _need_preview = self.preview_enabled and (self.frame_count % self.preview_stride == 0)
                     if gpu_tensor is not None:
+                        # Pass cached CPU frame for MOG2 motion detection
+                        _raw_frame = None
+                        if self.unified_camera is not None:
+                            _raw_frame = self.unified_camera.get_last_cpu_frame()
                         tracked, display_frame, timing, latency_ms = self.processor.process_gpu_direct(
-                            gpu_tensor, need_preview=_need_preview, frame_number=_display_frame_num
+                            gpu_tensor, need_preview=_need_preview, frame_number=_display_frame_num,
+                            raw_frame=_raw_frame
                         )
                     elif frame is not None:
                         tracked, display_frame, timing, latency_ms = self.processor.process(

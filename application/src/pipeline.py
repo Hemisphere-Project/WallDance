@@ -204,6 +204,41 @@ class _LetterboxMotionProxy:
             h * inv_scale,
         )
 
+    def frame_diff_blob_in_bbox(self, x: float, y: float, w: float, h: float,
+                                target_centroid=None, **kwargs):
+        inv_scale = 1.0 / self._lb_scale if self._lb_scale != 0 else 1.0
+        ox = (x - self._pad_x) * inv_scale
+        oy = (y - self._pad_y) * inv_scale
+        ow = w * inv_scale
+        oh = h * inv_scale
+        target = None
+        if target_centroid is not None:
+            target = np.array([
+                (target_centroid[0] - self._pad_x) * inv_scale,
+                (target_centroid[1] - self._pad_y) * inv_scale,
+            ], dtype=np.float64)
+        blob, ratio = self._detector.frame_diff_blob_in_bbox(
+            ox, oy, ow, oh, target_centroid=target, **kwargs)
+        if blob is not None and (self._lb_scale != 1.0 or self._pad_x or self._pad_y):
+            blob.bbox[0] = blob.bbox[0] * self._lb_scale + self._pad_x
+            blob.bbox[1] = blob.bbox[1] * self._lb_scale + self._pad_y
+            blob.bbox[2] *= self._lb_scale
+            blob.bbox[3] *= self._lb_scale
+            blob.centroid[0] = blob.centroid[0] * self._lb_scale + self._pad_x
+            blob.centroid[1] = blob.centroid[1] * self._lb_scale + self._pad_y
+        return blob, ratio
+
+    def bridge_diagnostics(self, x: float, y: float, w: float, h: float,
+                           **kwargs) -> dict:
+        inv_scale = 1.0 / self._lb_scale if self._lb_scale != 0 else 1.0
+        return self._detector.bridge_diagnostics(
+            (x - self._pad_x) * inv_scale,
+            (y - self._pad_y) * inv_scale,
+            w * inv_scale,
+            h * inv_scale,
+            **kwargs,
+        )
+
 
 class _OffsetMotionProxy:
     """Proxy that offsets blob coords from ROI-local space to full-frame space."""
@@ -256,6 +291,39 @@ class _OffsetMotionProxy:
             **kwargs,
         )
 
+    def frame_diff_blob_in_bbox(self, x: float, y: float, w: float, h: float,
+                                target_centroid=None, **kwargs):
+        target = None
+        if target_centroid is not None:
+            target = np.array([
+                target_centroid[0] - self._offset_x,
+                target_centroid[1] - self._offset_y,
+            ], dtype=np.float64)
+        blob, ratio = self._detector.frame_diff_blob_in_bbox(
+            x - self._offset_x,
+            y - self._offset_y,
+            w,
+            h,
+            target_centroid=target,
+            **kwargs,
+        )
+        if blob is not None and (self._offset_x or self._offset_y):
+            blob.bbox[0] += self._offset_x
+            blob.bbox[1] += self._offset_y
+            blob.centroid[0] += self._offset_x
+            blob.centroid[1] += self._offset_y
+        return blob, ratio
+
+    def bridge_diagnostics(self, x: float, y: float, w: float, h: float,
+                           **kwargs) -> dict:
+        return self._detector.bridge_diagnostics(
+            x - self._offset_x,
+            y - self._offset_y,
+            w,
+            h,
+            **kwargs,
+        )
+
 
 class FrameProcessor:
     """Encapsulates the main video processing steps."""
@@ -296,7 +364,13 @@ class FrameProcessor:
         self._crossval_motion_cells: Dict[tuple[int, int], int] = {}  # cell → last frame with real motion
         self.tracker.set_motion_bridge_sensitivity(settings.motion_sensitivity)
         self._configure_motion_detectors()
-        
+
+        # Cached CLAHE / gamma LUT for motion-detector enhancement
+        self._motion_clahe: Optional[cv2.CLAHE] = None
+        self._motion_clahe_clip: float = 0.0
+        self._motion_gamma_lut: Optional[np.ndarray] = None
+        self._motion_gamma_val: float = 0.0
+
         # GPU pipeline (zero-copy path)
         self._gpu_pipeline: Optional[GpuPipeline] = None
         self._gpu_path_active = False
@@ -431,7 +505,7 @@ class FrameProcessor:
         
         return scaled_tracks, preview_frame, timing, latency_ms
     
-    def process_gpu_direct(self, gpu_tensor: 'torch.Tensor', need_preview: bool = True, frame_number: int | None = None) -> Tuple[List[ScaledTrack], np.ndarray, Dict[str, float], float]:
+    def process_gpu_direct(self, gpu_tensor: 'torch.Tensor', need_preview: bool = True, frame_number: int | None = None, raw_frame: np.ndarray | None = None) -> Tuple[List[ScaledTrack], np.ndarray, Dict[str, float], float]:
         """Process a pre-uploaded GPU tensor (optimized path for IDS camera).
         
         This bypasses the CPU→GPU upload step for lowest latency when the
@@ -441,6 +515,8 @@ class FrameProcessor:
             gpu_tensor: GPU tensor (1, 3, H, W) float32 [0,1] RGB format
             need_preview: Whether to generate preview output
             frame_number: Display frame number for tracker logging (overlay match)
+            raw_frame: Optional BGR numpy frame for MOG2 motion detection.
+                       Without this, motion bridge / motion-first are disabled.
             
         Returns:
             (tracked, enhanced_frame, timing, latency_ms)
@@ -466,7 +542,7 @@ class FrameProcessor:
             timing["path_enhance"] = "gpu-direct"
 
             # 2-6. YOLO → Track → OSC
-            scaled_tracks = self._run_yolo_and_track(yolo_tensor, gpu_timing, timing, original_w, original_h, frame_number=frame_number)
+            scaled_tracks = self._run_yolo_and_track(yolo_tensor, gpu_timing, timing, original_w, original_h, frame_number=frame_number, raw_frame=raw_frame)
 
             latency_ms = (time.time() - frame_start) * 1000
             timing["total"] = latency_ms
@@ -572,8 +648,10 @@ class FrameProcessor:
         # In MOTION_FIRST mode, eagerly detect blobs for synthetic detections
         eager_blobs = None
         if self._tracking_mode == TrackingMode.MOTION_FIRST and self.bridge_motion_detector is not None:
+            # detect() operates in original-frame coords (not letterboxed),
+            # so pass the un-scaled person_height.
             eager_blobs = self.bridge_motion_detector.detect(
-                scaled_person_height,
+                self.settings.person_height_px,
                 aspect_range=MOTION_FIRST_ASPECT_RANGE,
                 include_shadows=MOTION_FIRST_INCLUDE_SHADOWS,
             )
@@ -907,12 +985,49 @@ class FrameProcessor:
             self.crossval_motion_detector.set_learn_rate(
                 MOTION_CROSSVAL_MOG2_LEARN_RATE)
 
+    def _enhance_gray_for_motion(self, gray: np.ndarray) -> np.ndarray:
+        """Apply CLAHE + gamma to a single-channel gray frame.
+
+        Uses the same enhancer settings (clahe_clip, gamma) that the GPU
+        pipeline applies to the YOLO / preview path so the motion detector
+        sees a contrast-boosted image identical to what appears on screen.
+        """
+        clip = self.enhancer.clahe_clip
+        gamma = self.enhancer.gamma
+        force = self.settings.enhance_force
+
+        if not force and clip <= 1.0 and gamma == 1.0:
+            return gray
+
+        out = gray
+        if clip > 1.0:
+            if self._motion_clahe is None or self._motion_clahe_clip != clip:
+                self._motion_clahe = cv2.createCLAHE(
+                    clipLimit=clip, tileGridSize=(8, 8))
+                self._motion_clahe_clip = clip
+            out = self._motion_clahe.apply(out)
+
+        if gamma != 1.0:
+            if self._motion_gamma_lut is None or self._motion_gamma_val != gamma:
+                inv = 1.0 / gamma
+                self._motion_gamma_lut = np.array(
+                    [((i / 255.0) ** inv) * 255 for i in range(256)],
+                    dtype=np.uint8)
+                self._motion_gamma_val = gamma
+            out = cv2.LUT(out, self._motion_gamma_lut)
+
+        return out
+
     def _feed_motion_detectors(self, gray: np.ndarray) -> None:
         """Feed all active motion detectors from one grayscale frame.
 
         Preprocessing (blur + resize) runs once and is shared across
         detectors that use the same scale.
         """
+        # Apply the same CLAHE + gamma used for YOLO / preview so the
+        # motion detector sees the contrast-enhanced image.
+        gray = self._enhance_gray_for_motion(gray)
+
         detectors = []
         if self.bridge_motion_detector is not None:
             detectors.append(self.bridge_motion_detector)
@@ -931,7 +1046,7 @@ class FrameProcessor:
                 from motion_detector import MotionDetector as MD
                 preprocess_cache[scale] = MD.preprocess(gray, scale)
             small, brightness = preprocess_cache[scale]
-            detector.feed_preprocessed(small, brightness)
+            detector.feed_preprocessed(small, brightness, raw_gray=gray)
             seen.add(detector_id)
 
     @property

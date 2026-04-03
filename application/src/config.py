@@ -154,8 +154,10 @@ TRACKER_MEASUREMENT_NOISE = 2.0     # Kalman R - smoothing
 # --- Robust tracking (Phases 2-4) ---
 # Match gate ratios (scale factors applied to PERSON_HEIGHT_PX)
 TRACKER_MATCH_GATE_RATIO = 0.95        # Match gate as fraction of person_height
-TRACKER_NEW_TRACK_GATE_RATIO = 0.4     # New-track creation gate
-TRACKER_DUPLICATE_GATE_RATIO = 0.2     # Duplicate suppression gate
+TRACKER_NEW_TRACK_GATE_RATIO = 0.55    # New-track creation gate
+TRACKER_DUPLICATE_GATE_RATIO = 0.25    # Duplicate suppression gate
+TRACKER_GHOST_MIN_AGE = 100            # Min frames before ghost check applies
+TRACKER_GHOST_MAX_HIT_RATE = 0.05     # Tracks below 5% hit rate → ghost
 
 # Pairwise separation memory — discourages ID swaps between bodies
 # that have historically been far apart (known-separate bodies),
@@ -414,16 +416,39 @@ MOTION_BRIDGE_GATE_GROWTH_PER_MISS = 0.18   # Expand bridge gate as misses grow
 MOTION_BRIDGE_GATE_ESTABLISHED_MULT = 1.35  # Established tracks get a wider blob gate
 MOTION_BRIDGE_SENSITIVITY = 0.55           # 0.0 = conservative bridge,
                                             # 1.0 = very permissive bridge.
-MOTION_BRIDGE_INCLUDE_SHADOWS = False       # Keep shadow-class pixels out of
-                                             # bridge blobs for now.
+MOTION_BRIDGE_INCLUDE_SHADOWS = True        # Include MOG2 shadow-class pixels
+                                             # (127) in bridge blobs — essential
+                                             # for IR setups where dancer body
+                                             # appears darker than background.
 MOTION_BRIDGE_LOCAL_MIN_FG_RATIO = 0.02     # Track-local fallback requires this
                                              # fraction of clean fg inside the
                                              # predicted query box.
 MOTION_BRIDGE_LOCAL_EXPAND_PER_MISS = 0.12  # Grow fallback query box as miss
                                              # streak increases.
 MOTION_BRIDGE_LOCAL_MAX_EXPANSION = 2.0     # Cap fallback query-box scaling.
+MOTION_BRIDGE_LOCAL_MIN_BLOB_AREA = 50      # Min blob area (px²) for local/frame-diff
+                                             # bridge tiers.  Blobs smaller than this
+                                             # are noise — accepting them lets the
+                                             # Kalman velocity drift unchecked.
+MOTION_BRIDGE_MAX_PRESENCE_FRAMES = 15      # Max consecutive presence-only bridge frames
+                                             # (no coherent blob).  After this the track
+                                             # stops being bridged and ages normally.
+MOTION_BRIDGE_VELOCITY_FRICTION = 0.5       # Per-frame velocity damping during bridge.
+                                             # Without this, Kalman velocity runs away
+                                             # because bridge resets time_since_update
+                                             # and the normal miss-friction never fires.
+MOTION_BRIDGE_FRAME_DIFF_THRESHOLD = 6      # Abs pixel-intensity change to count
+                                             # as motion in frame-diff fallback.
+                                             # Low because frames are downscaled
+                                             # and blurred before comparison.
+MOTION_BRIDGE_FRAME_DIFF_MIN_RATIO = 0.02   # Min fraction of changed pixels in
+                                             # the query box for frame-diff bridge.
 # Progressive Kalman noise inflation: (bridge_frame_threshold, R_multiplier)
-MOTION_BRIDGE_NOISE_STAGES = [(10, 2.0), (30, 4.0), (80, 8.0)]
+MOTION_BRIDGE_NOISE_STAGES = [(10, 1.5), (30, 2.5), (80, 4.0)]
+MOTION_BRIDGE_WARMUP_INCREMENT = 0.4    # Warmup score added per bridge-blob match.
+                                         # Lower than YOLO (+1.0) so a motion-only
+                                         # track needs ~40 consistent blob frames
+                                         # (~2s @ 20fps) to reach output threshold.
 
 # =============================================================================
 # TRACKING MODE — YOLO-first vs Motion-first detection priority
@@ -443,10 +468,11 @@ MOTION_FIRST_BLOB_OVERLAP_RATIO = 0.3   # Blob-YOLO overlap gate (× person_heig
 MOTION_FIRST_SYNTHETIC_MIN_FRAMES = 3   # Require brief blob persistence before spawning a synthetic detection
 MOTION_FIRST_SYNTHETIC_CELL_RATIO = 0.35  # Spatial cell size as person_height ratio for blob persistence
 MOTION_FIRST_ASPECT_RANGE = (0.3, 2.0)  # Tighter aspect filter for top-shot views
-MOTION_FIRST_INCLUDE_SHADOWS = False    # Keep shadow-class pixels out of
-                                         # eager blob spawning for now.
+MOTION_FIRST_INCLUDE_SHADOWS = True     # Include MOG2 shadow-class pixels in
+                                         # eager blob spawning — essential for IR
+                                         # setups with dark dancer on bright BG.
 MOTION_FIRST_WARMUP_FRAMES = 60         # Suppress blobs during MOG2 warmup
-MOTION_FIRST_STATIC_BLOB_FRAMES = 30    # Suppress blobs static for this many frames
+MOTION_FIRST_STATIC_BLOB_FRAMES = 90    # Suppress blobs static for this many frames
 
 # =============================================================================
 # CROSS-VALIDATION: YOLO × MOG2 motion confirmation
