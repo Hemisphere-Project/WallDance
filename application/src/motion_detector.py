@@ -213,8 +213,14 @@ class MotionDetector:
         clean = cv2.morphologyEx(clean, cv2.MORPH_OPEN, self._erode_kernel)
         self._clean_mask = clean
 
-    def detect(self, person_height: int,
-               aspect_range: tuple[float, float] | None = None) -> List[MotionBlob]:
+    def detect(
+        self,
+        person_height: int,
+        aspect_range: tuple[float, float] | None = None,
+        allow_during_warmup: bool = False,
+        suppress_static: bool = True,
+        include_shadows: bool = False,
+    ) -> List[MotionBlob]:
         """Extract filtered blobs from the last feed() mask.
 
         Only call this when there are actually unmatched tracks to bridge.
@@ -224,6 +230,19 @@ class MotionDetector:
             person_height: Expected person height in *original* pixels.
             aspect_range: Optional (min, max) aspect ratio override.
                           Defaults to (0.15, 3.0).
+            allow_during_warmup: When True, bypass the motion-first warmup
+                          gate. This is used for track-conditioned
+                          bridging where an existing track already constrains
+                          blob selection.
+            suppress_static: When True, drop blobs that stay in the same
+                          grid cell for too many frames. Synthetic blob
+                          spawning keeps this enabled; motion bridging can
+                          disable it so a slow dancer still remains bridgeable.
+            include_shadows: When True, treat MOG2 shadow pixels (127) as
+                          foreground.  In IR setups where the dancer is
+                          darker than the background, MOG2 classifies
+                          the body as shadow rather than definite
+                          foreground — this flag recovers that signal.
 
         Returns:
             List of MotionBlob with bbox, centroid and area in original coords.
@@ -232,14 +251,19 @@ class MotionDetector:
             return []
 
         # Suppress all blobs during MOG2 warmup
-        if self._frame_count < MOTION_FIRST_WARMUP_FRAMES:
+        if not allow_during_warmup and self._frame_count < MOTION_FIRST_WARMUP_FRAMES:
             return []
 
         # person_height in downscaled space
         scaled_ph = max(1, int(person_height * self._scale))
 
-        # Keep only definite foreground (discard shadows at 127)
-        fg_mask = (self._fg_mask == 255).astype(np.uint8) * 255
+        # Keep definite foreground; optionally include shadow pixels (127)
+        # which represent motion in IR setups where the dancer body appears
+        # darker than the background wall.
+        if include_shadows:
+            fg_mask = (self._fg_mask >= 127).astype(np.uint8) * 255
+        else:
+            fg_mask = (self._fg_mask == 255).astype(np.uint8) * 255
 
         # Morphology: erode to break projection speckle, dilate to fill gaps
         fg_mask = cv2.erode(fg_mask, self._erode_kernel, iterations=1)
@@ -290,10 +314,106 @@ class MotionDetector:
         # Merge overlapping / nearby blobs that likely belong to one person
         blobs = self._merge_nearby_blobs(blobs, person_height)
 
-        # Phase 5.2: Suppress static blobs (same grid cell for many frames)
-        blobs = self._suppress_static_blobs(blobs)
+        # Motion-first synthetic detections need aggressive static suppression,
+        # but bridge mode already has a strong track-position gate.
+        if suppress_static:
+            blobs = self._suppress_static_blobs(blobs)
 
         return blobs
+
+    def extract_local_motion_blob(
+        self,
+        x: float,
+        y: float,
+        w: float,
+        h: float,
+        target_centroid: np.ndarray | None = None,
+        min_motion_ratio: float = 0.02,
+    ) -> tuple[MotionBlob | None, float]:
+        """Extract a track-conditioned blob from the raw MOG2 motion mask.
+
+        This is intended as a fallback for already-established tracks when
+        global contour extraction finds no full-body bridge blobs. The query
+        box is expected in original-frame coordinates.
+
+        Uses shadow+foreground pixels (>= 127) from the raw MOG2 mask so
+        that IR setups where the dancer is darker than the background still
+        produce a usable motion signal.
+        """
+        if self._fg_mask is None:
+            return None, 0.0
+        # Include shadow (127) + definite foreground (255) for maximum
+        # motion sensitivity.  The track-conditioned query region already
+        # constrains spatial scope, so the shadow pixels add signal, not noise.
+        mask = (self._fg_mask >= 127).astype(np.uint8) * 255
+
+        sx = max(0, int(x * self._scale))
+        sy = max(0, int(y * self._scale))
+        sw = max(1, int(w * self._scale))
+        sh = max(1, int(h * self._scale))
+        mh, mw = mask.shape[:2]
+        x1 = min(sx, mw - 1)
+        y1 = min(sy, mh - 1)
+        x2 = min(sx + sw, mw)
+        y2 = min(sy + sh, mh)
+        if x2 <= x1 or y2 <= y1:
+            return None, 0.0
+
+        roi = mask[y1:y2, x1:x2]
+        total = roi.size
+        if total == 0:
+            return None, 0.0
+
+        fg_count = int(np.count_nonzero(roi))
+        if fg_count <= 0:
+            return None, 0.0
+
+        motion_ratio = fg_count / total
+        if motion_ratio < min_motion_ratio:
+            return None, motion_ratio
+
+        n_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+            roi, connectivity=8)
+        if n_labels <= 1:
+            return None, motion_ratio
+
+        target_small = None
+        if target_centroid is not None:
+            target_small = np.array(target_centroid, dtype=np.float64) * self._scale
+
+        best_label = None
+        best_key = None
+        for label in range(1, n_labels):
+            area = int(stats[label, cv2.CC_STAT_AREA])
+            if area <= 0:
+                continue
+            cx = float(centroids[label][0] + x1)
+            cy = float(centroids[label][1] + y1)
+            if target_small is not None:
+                dist = float(np.linalg.norm(np.array([cx, cy]) - target_small))
+                key = (dist, -area)
+            else:
+                key = (-area,)
+            if best_key is None or key < best_key:
+                best_key = key
+                best_label = label
+
+        if best_label is None:
+            return None, motion_ratio
+
+        left = int(stats[best_label, cv2.CC_STAT_LEFT]) + x1
+        top = int(stats[best_label, cv2.CC_STAT_TOP]) + y1
+        width = int(stats[best_label, cv2.CC_STAT_WIDTH])
+        height = int(stats[best_label, cv2.CC_STAT_HEIGHT])
+        cx = float(centroids[best_label][0] + x1)
+        cy = float(centroids[best_label][1] + y1)
+        inv = self._inv_scale
+        blob = MotionBlob(
+            bbox=np.array([left * inv, top * inv, width * inv, height * inv], dtype=np.float64),
+            centroid=np.array([cx * inv, cy * inv], dtype=np.float64),
+            area=float(stats[best_label, cv2.CC_STAT_AREA] * inv * inv),
+        )
+        return blob, motion_ratio
 
     @staticmethod
     def _merge_nearby_blobs(blobs: list, person_height: int) -> list:

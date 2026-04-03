@@ -42,6 +42,9 @@ from config import (
     MOTION_BRIDGE_ENABLED, MOTION_BRIDGE_MAX_FRAMES,
     MOTION_BRIDGE_GATE_RATIO, MOTION_BRIDGE_NOISE_STAGES,
     MOTION_BRIDGE_GATE_GROWTH_PER_MISS, MOTION_BRIDGE_GATE_ESTABLISHED_MULT,
+    MOTION_BRIDGE_LOCAL_MIN_FG_RATIO,
+    MOTION_BRIDGE_LOCAL_EXPAND_PER_MISS,
+    MOTION_BRIDGE_LOCAL_MAX_EXPANSION,
     TrackingMode, TRACKING_MODE,
     MOTION_FIRST_MIN_HITS, MOTION_FIRST_BRIDGE_MAX_FRAMES,
     MOTION_FIRST_BLOB_OVERLAP_RATIO,
@@ -2458,6 +2461,8 @@ class DancerTracker:
         """
         # Quick check: any unmatched track that could be bridged?
         has_candidates = False
+        candidate_indices = []
+        candidate_track_ids = []
         for idx, track in enumerate(self.tracks):
             if idx in matched_trk:
                 continue
@@ -2469,14 +2474,91 @@ class DancerTracker:
             if track.bridge_frames >= max_bridge:
                 continue
             has_candidates = True
-            break
+            candidate_indices.append(idx)
+            candidate_track_ids.append(track.track_id)
 
         if not has_candidates:
             return
 
-        motion_blobs = motion_detector.detect(self._person_height_px)
+        motion_blobs = motion_detector.detect(
+            self._person_height_px,
+            allow_during_warmup=True,
+            suppress_static=False,
+            include_shadows=True,
+        )
         if motion_blobs:
             self._bridge_unmatched_with_motion(motion_blobs, matched_trk)
+            return
+
+        if self._bridge_with_local_motion_support(
+            motion_detector,
+            matched_trk,
+            candidate_indices,
+        ):
+            return
+
+        for idx in candidate_indices:
+            self.tracks[idx].is_bridged = False
+
+        self.logger.log("MOTION_BRIDGE_SKIPPED", {
+            "reason": "no_blobs",
+            "candidate_track_ids": candidate_track_ids,
+        })
+
+    def _bridge_with_local_motion_support(self, motion_detector, matched_trk,
+                                          candidate_indices) -> bool:
+        """Fallback bridge using clean-mask support inside a track-local ROI."""
+        bridged_any = False
+        base_bridge_gate = self._person_height_px * MOTION_BRIDGE_GATE_RATIO
+
+        for idx in candidate_indices:
+            track = self.tracks[idx]
+            if not (track.is_established or track.bridge_frames > 0):
+                track.is_bridged = False
+                continue
+
+            pred_pos = track.get_centroid()
+            query_scale = min(
+                MOTION_BRIDGE_LOCAL_MAX_EXPANSION,
+                1.0 + track.time_since_update * MOTION_BRIDGE_LOCAL_EXPAND_PER_MISS,
+            )
+            query_w = float(track.bbox[2]) * query_scale
+            query_h = float(track.bbox[3]) * query_scale
+            query_x = float(pred_pos[0] - query_w * 0.5)
+            query_y = float(pred_pos[1] - query_h * 0.5)
+
+            blob, motion_ratio = motion_detector.extract_local_motion_blob(
+                query_x,
+                query_y,
+                query_w,
+                query_h,
+                target_centroid=pred_pos,
+                min_motion_ratio=MOTION_BRIDGE_LOCAL_MIN_FG_RATIO,
+            )
+            if blob is None:
+                track.is_bridged = False
+                continue
+
+            track_gate = base_bridge_gate * (
+                1.0 + track.time_since_update * MOTION_BRIDGE_GATE_GROWTH_PER_MISS)
+            if track.is_established:
+                track_gate *= MOTION_BRIDGE_GATE_ESTABLISHED_MULT
+
+            dist = float(np.linalg.norm(pred_pos - blob.centroid))
+            if dist > track_gate:
+                track.is_bridged = False
+                continue
+
+            self._apply_motion_bridge(track, blob, dist)
+            bridged_any = True
+            self.logger.log("MOTION_BRIDGE_LOCAL_SUPPORT", {
+                "track_id": track.track_id,
+                "motion_ratio": round(motion_ratio, 3),
+                "query_scale": round(query_scale, 2),
+                "blob_area": round(blob.area, 0),
+            })
+
+        return bridged_any
 
     def _bridge_unmatched_with_motion(self, motion_blobs, matched_trk):
         """Bridge lost tracks using MOG2 foreground blobs (TIER 2).
@@ -2525,6 +2607,11 @@ class DancerTracker:
         if not valid_blobs:
             for idx in cand_indices:
                 self.tracks[idx].is_bridged = False
+            self.logger.log("MOTION_BRIDGE_SKIPPED", {
+                "reason": "all_blobs_near_yolo_matches",
+                "candidate_track_ids": [self.tracks[idx].track_id for idx in cand_indices],
+                "matched_track_ids": [self.tracks[idx].track_id for idx in matched_trk],
+            })
             return
 
         # Build cost matrix [tracks × blobs]
@@ -2559,6 +2646,13 @@ class DancerTracker:
         for idx in cand_indices:
             if idx not in assigned_trk:
                 self.tracks[idx].is_bridged = False
+
+        if not assigned_trk:
+            self.logger.log("MOTION_BRIDGE_SKIPPED", {
+                "reason": "gated_out",
+                "candidate_track_ids": [self.tracks[idx].track_id for idx in cand_indices],
+                "blob_count": len(valid_blobs),
+            })
 
     def _apply_motion_bridge(self, track, blob, dist: float):
         """Update track bbox+centroid from a motion blob with inflated Kalman noise."""

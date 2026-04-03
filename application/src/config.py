@@ -412,6 +412,12 @@ MOTION_BRIDGE_MIN_AREA = 100        # Min blob area in px² (filter noise)
 MOTION_BRIDGE_MIN_AREA_LOWLIGHT_MULT = 1.8  # Raise min blob area in low light
 MOTION_BRIDGE_GATE_GROWTH_PER_MISS = 0.18   # Expand bridge gate as misses grow
 MOTION_BRIDGE_GATE_ESTABLISHED_MULT = 1.35  # Established tracks get a wider blob gate
+MOTION_BRIDGE_LOCAL_MIN_FG_RATIO = 0.02     # Track-local fallback requires this
+                                             # fraction of clean fg inside the
+                                             # predicted query box.
+MOTION_BRIDGE_LOCAL_EXPAND_PER_MISS = 0.12  # Grow fallback query box as miss
+                                             # streak increases.
+MOTION_BRIDGE_LOCAL_MAX_EXPANSION = 2.0     # Cap fallback query-box scaling.
 # Progressive Kalman noise inflation: (bridge_frame_threshold, R_multiplier)
 MOTION_BRIDGE_NOISE_STAGES = [(10, 2.0), (30, 4.0), (80, 8.0)]
 
@@ -433,6 +439,9 @@ MOTION_FIRST_BLOB_OVERLAP_RATIO = 0.3   # Blob-YOLO overlap gate (× person_heig
 MOTION_FIRST_SYNTHETIC_MIN_FRAMES = 3   # Require brief blob persistence before spawning a synthetic detection
 MOTION_FIRST_SYNTHETIC_CELL_RATIO = 0.35  # Spatial cell size as person_height ratio for blob persistence
 MOTION_FIRST_ASPECT_RANGE = (0.3, 2.0)  # Tighter aspect filter for top-shot views
+MOTION_FIRST_INCLUDE_SHADOWS = True     # Treat MOG2 shadow-class pixels as motion
+                                         # for eager blob spawning. Needed when
+                                         # the dancer is darker than the wall.
 MOTION_FIRST_WARMUP_FRAMES = 60         # Suppress blobs during MOG2 warmup
 MOTION_FIRST_STATIC_BLOB_FRAMES = 30    # Suppress blobs static for this many frames
 

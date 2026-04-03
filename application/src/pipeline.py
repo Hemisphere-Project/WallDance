@@ -32,6 +32,7 @@ from config import (
     TrackingMode,
     MOTION_FIRST_BLOB_OVERLAP_RATIO,
     MOTION_FIRST_ASPECT_RANGE,
+    MOTION_FIRST_INCLUDE_SHADOWS,
     MOTION_CROSSVAL_ENABLED,
     MOTION_CROSSVAL_CORE_SCALE,
     MOTION_CROSSVAL_EMA_ALPHA,
@@ -133,8 +134,19 @@ class _LetterboxMotionProxy:
         self._pad_x = pad_x
         self._pad_y = pad_y
 
-    def detect(self, person_height: int):
-        blobs = self._detector.detect(person_height)
+    def _to_local(self, x, y):
+        """Letterbox → ROI-local coords."""
+        inv = 1.0 / self._lb_scale if self._lb_scale != 0 else 1.0
+        return (x - self._pad_x) * inv, (y - self._pad_y) * inv
+
+    def _to_letterbox(self, x, y):
+        """ROI-local → letterbox coords."""
+        return x * self._lb_scale + self._pad_x, y * self._lb_scale + self._pad_y
+
+    def detect(self, person_height: int, **detect_kwargs):
+        # Convert person_height from letterbox to ROI-local scale
+        original_ph = max(1, int(person_height / self._lb_scale)) if self._lb_scale > 0 else person_height
+        blobs = self._detector.detect(original_ph, **detect_kwargs)
         if blobs and (self._lb_scale != 1.0 or self._pad_x or self._pad_y):
             for blob in blobs:
                 blob.bbox[0] = blob.bbox[0] * self._lb_scale + self._pad_x
@@ -145,6 +157,40 @@ class _LetterboxMotionProxy:
                 blob.centroid[1] = blob.centroid[1] * self._lb_scale + self._pad_y
         return blobs
 
+    def extract_local_motion_blob(self, x: float, y: float, w: float, h: float,
+                                  target_centroid=None, **kwargs):
+        inv_scale = 1.0 / self._lb_scale if self._lb_scale != 0 else 1.0
+        ox = (x - self._pad_x) * inv_scale
+        oy = (y - self._pad_y) * inv_scale
+        ow = w * inv_scale
+        oh = h * inv_scale
+        target = None
+        if target_centroid is not None:
+            target = np.array([
+                (target_centroid[0] - self._pad_x) * inv_scale,
+                (target_centroid[1] - self._pad_y) * inv_scale,
+            ], dtype=np.float64)
+        blob, motion_ratio = self._detector.extract_local_motion_blob(
+            ox, oy, ow, oh, target_centroid=target, **kwargs)
+        if blob is not None and (self._lb_scale != 1.0 or self._pad_x or self._pad_y):
+            blob.bbox[0] = blob.bbox[0] * self._lb_scale + self._pad_x
+            blob.bbox[1] = blob.bbox[1] * self._lb_scale + self._pad_y
+            blob.bbox[2] *= self._lb_scale
+            blob.bbox[3] *= self._lb_scale
+            blob.centroid[0] = blob.centroid[0] * self._lb_scale + self._pad_x
+            blob.centroid[1] = blob.centroid[1] * self._lb_scale + self._pad_y
+        return blob, motion_ratio
+
+    def mask_stats_in_region(self, x: float, y: float, w: float, h: float) -> dict:
+        """Query mask foreground stats for a letterbox-space region."""
+        inv_scale = 1.0 / self._lb_scale if self._lb_scale != 0 else 1.0
+        return self._detector.mask_stats_in_region(
+            (x - self._pad_x) * inv_scale,
+            (y - self._pad_y) * inv_scale,
+            w * inv_scale,
+            h * inv_scale,
+        )
+
 
 class _OffsetMotionProxy:
     """Proxy that offsets blob coords from ROI-local space to full-frame space."""
@@ -154,8 +200,8 @@ class _OffsetMotionProxy:
         self._offset_x = offset_x
         self._offset_y = offset_y
 
-    def detect(self, person_height: int):
-        blobs = self._detector.detect(person_height)
+    def detect(self, person_height: int, **detect_kwargs):
+        blobs = self._detector.detect(person_height, **detect_kwargs)
         if blobs and (self._offset_x or self._offset_y):
             for blob in blobs:
                 blob.bbox[0] += self._offset_x
@@ -163,6 +209,29 @@ class _OffsetMotionProxy:
                 blob.centroid[0] += self._offset_x
                 blob.centroid[1] += self._offset_y
         return blobs
+
+    def extract_local_motion_blob(self, x: float, y: float, w: float, h: float,
+                                  target_centroid=None, **kwargs):
+        target = None
+        if target_centroid is not None:
+            target = np.array([
+                target_centroid[0] - self._offset_x,
+                target_centroid[1] - self._offset_y,
+            ], dtype=np.float64)
+        blob, motion_ratio = self._detector.extract_local_motion_blob(
+            x - self._offset_x,
+            y - self._offset_y,
+            w,
+            h,
+            target_centroid=target,
+            **kwargs,
+        )
+        if blob is not None and (self._offset_x or self._offset_y):
+            blob.bbox[0] += self._offset_x
+            blob.bbox[1] += self._offset_y
+            blob.centroid[0] += self._offset_x
+            blob.centroid[1] += self._offset_y
+        return blob, motion_ratio
 
 
 class FrameProcessor:
@@ -480,7 +549,10 @@ class FrameProcessor:
         eager_blobs = None
         if self._tracking_mode == TrackingMode.MOTION_FIRST and self.bridge_motion_detector is not None:
             eager_blobs = self.bridge_motion_detector.detect(
-                scaled_person_height, aspect_range=MOTION_FIRST_ASPECT_RANGE)
+                scaled_person_height,
+                aspect_range=MOTION_FIRST_ASPECT_RANGE,
+                include_shadows=MOTION_FIRST_INCLUDE_SHADOWS,
+            )
 
         # Tracking
         t0 = time.time()
@@ -737,7 +809,9 @@ class FrameProcessor:
         if self._tracking_mode == TrackingMode.MOTION_FIRST and self.bridge_motion_detector is not None:
             eager_blobs = self.bridge_motion_detector.detect(
                 self.settings.person_height_px,
-                aspect_range=MOTION_FIRST_ASPECT_RANGE)
+                aspect_range=MOTION_FIRST_ASPECT_RANGE,
+                include_shadows=MOTION_FIRST_INCLUDE_SHADOWS,
+            )
             # Apply ROI offset to blobs
             if eager_blobs and (roi_x or roi_y):
                 for blob in eager_blobs:
