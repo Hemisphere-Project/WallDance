@@ -329,23 +329,20 @@ class MotionDetector:
         h: float,
         target_centroid: np.ndarray | None = None,
         min_motion_ratio: float = 0.02,
+        include_shadows: bool = False,
     ) -> tuple[MotionBlob | None, float]:
         """Extract a track-conditioned blob from the raw MOG2 motion mask.
 
         This is intended as a fallback for already-established tracks when
         global contour extraction finds no full-body bridge blobs. The query
         box is expected in original-frame coordinates.
-
-        Uses shadow+foreground pixels (>= 127) from the raw MOG2 mask so
-        that IR setups where the dancer is darker than the background still
-        produce a usable motion signal.
         """
         if self._fg_mask is None:
             return None, 0.0
-        # Include shadow (127) + definite foreground (255) for maximum
-        # motion sensitivity.  The track-conditioned query region already
-        # constrains spatial scope, so the shadow pixels add signal, not noise.
-        mask = (self._fg_mask >= 127).astype(np.uint8) * 255
+        if include_shadows:
+            mask = (self._fg_mask >= 127).astype(np.uint8) * 255
+        else:
+            mask = (self._fg_mask == 255).astype(np.uint8) * 255
 
         sx = max(0, int(x * self._scale))
         sy = max(0, int(y * self._scale))

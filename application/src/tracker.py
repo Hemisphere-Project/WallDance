@@ -42,6 +42,7 @@ from config import (
     MOTION_BRIDGE_ENABLED, MOTION_BRIDGE_MAX_FRAMES,
     MOTION_BRIDGE_GATE_RATIO, MOTION_BRIDGE_NOISE_STAGES,
     MOTION_BRIDGE_GATE_GROWTH_PER_MISS, MOTION_BRIDGE_GATE_ESTABLISHED_MULT,
+    MOTION_BRIDGE_INCLUDE_SHADOWS,
     MOTION_BRIDGE_LOCAL_MIN_FG_RATIO,
     MOTION_BRIDGE_LOCAL_EXPAND_PER_MISS,
     MOTION_BRIDGE_LOCAL_MAX_EXPANSION,
@@ -2484,7 +2485,7 @@ class DancerTracker:
             self._person_height_px,
             allow_during_warmup=True,
             suppress_static=False,
-            include_shadows=True,
+            include_shadows=MOTION_BRIDGE_INCLUDE_SHADOWS,
         )
         if motion_blobs:
             self._bridge_unmatched_with_motion(motion_blobs, matched_trk)
@@ -2534,6 +2535,7 @@ class DancerTracker:
                 query_h,
                 target_centroid=pred_pos,
                 min_motion_ratio=MOTION_BRIDGE_LOCAL_MIN_FG_RATIO,
+                include_shadows=MOTION_BRIDGE_INCLUDE_SHADOWS,
             )
             if blob is None:
                 track.is_bridged = False
