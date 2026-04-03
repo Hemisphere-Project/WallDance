@@ -6,6 +6,8 @@ Usage:
     python analyze_session.py --json              # JSON report for agent consumption
     python analyze_session.py --list              # list available sessions
     python analyze_session.py --json --context N  # frames of context around issues
+    python analyze_session.py --json --output /tmp/report.json  # write to file
+    python analyze_session.py --json --compact    # smaller report (ghost list trimmed)
 
 Produces a compact report:
   - Executive summary (quick health check)
@@ -222,7 +224,7 @@ def build_executive_summary(stats, tracks, issues, session_meta):
     }
 
 
-def analyze(session_dir, context_frames=3, output_json=False):
+def analyze(session_dir, context_frames=3, output_json=False, compact=False, output_path=None):
     session_dir = Path(session_dir)
     events_path = session_dir / "tracking_events.jsonl"
     issues_dir = session_dir / "issues"
@@ -247,13 +249,21 @@ def analyze(session_dir, context_frames=3, output_json=False):
     summary = build_executive_summary(stats, tracks, issues, session_meta)
 
     if output_json:
-        _emit_json_report(session_dir, session_meta, stats, tracks, issues, summary, context_frames)
+        _emit_json_report(session_dir, session_meta, stats, tracks, issues, summary,
+                          context_frames, compact=compact, output_path=output_path)
     else:
         _emit_text_report(session_dir, session_meta, stats, tracks, issues, summary, context_frames)
 
 
-def _emit_json_report(session_dir, session_meta, stats, tracks, issues, summary, context_frames):
-    """Machine-readable JSON report for agent consumption."""
+def _emit_json_report(session_dir, session_meta, stats, tracks, issues, summary,
+                      context_frames, compact=False, output_path=None):
+    """Machine-readable JSON report for agent consumption.
+
+    Args:
+        compact: Strip verbose details (ghost list, marginal list, raw gate
+                 events) to keep the report small and fast to read.
+        output_path: Write JSON to this file instead of stdout.
+    """
     fs = stats["frame_summaries"]
 
     # Build issue detail with surrounding context
@@ -272,14 +282,35 @@ def _emit_json_report(session_dir, session_meta, stats, tracks, issues, summary,
                     "missing": {f"D{s['id']}": s["t_miss"] for s in fdata.get("track_states", []) if s.get("t_miss", 0) > 0},
                 }
         nearby_matches = [(mf, mt, mc, md) for mf, mt, mc, md in stats["matches"] if abs(mf - f) <= context_frames]
-        issue_details.append({
+        detail = {
             **iss,
             "surrounding_frames": ctx_frames,
             "nearby_matches": [{"frame": mf, "track_id": mt, "cost": mc, "raw_dist": md} for mf, mt, mc, md in nearby_matches],
-        })
+        }
+        # In compact mode, drop embedded tracker_events (can be multi-MB)
+        if compact:
+            detail.pop("tracker_events", None)
+            detail.pop("context", None)
+        issue_details.append(detail)
 
     # Gate summary
     gate_per_track = Counter(g["track_id"] for g in stats["gate_events"])
+
+    # In compact mode, trim ghost/marginal lists to counts only
+    if compact:
+        tracks_section = {
+            "real": tracks["real"],
+            "marginal_count": len(tracks["marginal"]),
+            "ghost_count": len(tracks["ghost"]),
+            "total_created": len(tracks["all"]),
+        }
+    else:
+        tracks_section = {
+            "real": tracks["real"],
+            "marginal": tracks["marginal"],
+            "ghost": tracks["ghost"],
+            "total_created": len(tracks["all"]),
+        }
 
     report = {
         "session": session_dir.name,
@@ -288,12 +319,7 @@ def _emit_json_report(session_dir, session_meta, stats, tracks, issues, summary,
         "summary": summary,
         "settings": stats["settings"],
         "event_counts": dict(stats["event_counts"].most_common()),
-        "tracks": {
-            "real": tracks["real"],
-            "marginal": tracks["marginal"],
-            "ghost": tracks["ghost"],
-            "total_created": len(tracks["all"]),
-        },
+        "tracks": tracks_section,
         "issues": issue_details,
         "swaps": stats["swap_events"],
         "gate_summary": {
@@ -303,7 +329,14 @@ def _emit_json_report(session_dir, session_meta, stats, tracks, issues, summary,
         "dormant_count": len(stats["dormant_events"]),
         "resurrect_count": len(stats["resurrect_events"]),
     }
-    print(json.dumps(report, indent=2, default=str))
+
+    indent = None if compact else 2
+    json_str = json.dumps(report, indent=indent, default=str)
+    if output_path:
+        Path(output_path).write_text(json_str)
+        print(f"Report written to {output_path} ({len(json_str)} bytes)")
+    else:
+        print(json_str)
 
 
 def _emit_text_report(session_dir, session_meta, stats, tracks, issues, summary, context_frames):
@@ -478,6 +511,8 @@ def main():
     parser.add_argument("--json", action="store_true", help="Output machine-readable JSON report")
     parser.add_argument("--list", action="store_true", help="List all available sessions")
     parser.add_argument("--context", type=int, default=3, help="Frames of context around issue frames (default: 3)")
+    parser.add_argument("--output", "-o", type=str, default=None, help="Write JSON report to file instead of stdout")
+    parser.add_argument("--compact", action="store_true", help="Compact JSON: trim ghost/marginal details")
     args = parser.parse_args()
 
     if args.list:
@@ -493,7 +528,8 @@ def main():
         if not args.json:
             print(f"Auto-selected: {session_dir}")
 
-    analyze(session_dir, context_frames=args.context, output_json=args.json)
+    analyze(session_dir, context_frames=args.context, output_json=args.json,
+           compact=args.compact, output_path=args.output)
 
 
 if __name__ == "__main__":

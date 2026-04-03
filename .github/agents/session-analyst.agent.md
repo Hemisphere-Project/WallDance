@@ -15,50 +15,57 @@ WallDance tracks wall dancers using YOLO pose estimation + Kalman-Hungarian trac
 - `tracking_events.jsonl` — structured event log (FRAME_SUMMARY, NEW_TRACK, MATCH, DORMANT, RESURRECT, MAHALANOBIS_GATE, swap events, etc.)
 - `issues/*.json` — user-flagged problems during review (with frame number, dancer ID, issue type, note, and context snapshot)
 
+## Terminal Execution
+
+- Use background terminals only for long-running processes such as servers, watchers, or continuous builds.
+- For short-lived commands, use foreground terminal execution.
+- When a background process must be awaited, poll early with short intervals and wait for a concrete readiness signal from output instead of fixed long sleeps.
+- Batch dependent shell commands into a single invocation when possible.
+
 ## Workflow
 
-### 1. Find the session
+### 1. Run the analysis (single command)
 
-- **Default**: auto-find the latest session across all projects.
-- Run: `python3 /data/WallDance/application/analyze_session.py --list` to show all sessions.
-- Run: `python3 /data/WallDance/application/analyze_session.py --json [session_dir]` to get a structured JSON report.
-- Run: `python3 /data/WallDance/application/analyze_session.py [session_dir]` for a human-readable text report.
-- Sessions live under `/data/WallDance/projects/*/sessions/`. Each session directory is named `YYYYMMDD_HHMMSS_slotN`.
+Always start with ONE command that writes the report to a file, then read the file. This avoids slow terminal I/O and output truncation:
 
-### 2. Analyze with the script
-
-Always start by running the analysis script with `--json` to get structured data:
 ```bash
-python3 /data/WallDance/application/analyze_session.py --json
+python3 /data/WallDance/application/analyze_session.py --json --compact -o /tmp/wd_session_report.json
 ```
+
+Then **immediately read the file** with the read_file tool (do NOT wait for or parse terminal output — the terminal only prints a one-line confirmation). The `--compact` flag trims ghost/marginal details to keep the report small and fast to parse.
+
+This auto-finds the latest session. To target a specific session, append the session directory path:
+```bash
+python3 /data/WallDance/application/analyze_session.py --json --compact -o /tmp/wd_session_report.json /path/to/session
+```
+
+To list all sessions: `python3 /data/WallDance/application/analyze_session.py --list`
 
 The JSON report includes:
 - **summary**: health rating (GOOD/WARNING/NEEDS_REVIEW/POOR), frame count, track counts, swap count, issue count, problems list
 - **settings**: session configuration (confidence, tracker params, enhancement, ROI, etc.)
-- **tracks**: classified as real (≥20 hits), marginal (5-19), or ghost (<5)
+- **tracks**: real tracks with full detail; ghost/marginal as counts only (compact mode)
 - **issues**: user-flagged problems with surrounding frame context and nearby matches
 - **swaps**: CASCADE_OCCLUSION_SWAP, MERGE_DIRECTION_SWAP, TWO_OPT_SWAP events
 - **gate_summary**: Mahalanobis gate rejection counts per track
 - **event_counts**: frequency of all event types
 
-### 3. Deep-dive when needed
+### 2. Deep-dive only when needed
 
-For detailed frame-by-frame analysis around specific events, use `analyze_log.py`:
+Only run these if the initial report reveals something that needs frame-level investigation:
+
 ```bash
-cd /data/WallDance/application
-python3 analyze_log.py <start_frame> <end_frame>
+cd <session_path> && python3 /data/WallDance/application/analyze_log.py <start_frame> <end_frame>
 ```
-This must be run from a directory containing `tracking_events.jsonl` (or symlink it).
 
-For session comparisons, use `replay_report.py`:
+For session comparisons:
 ```bash
 python3 /data/WallDance/application/replay_report.py --log <path_to_jsonl> --compare previous latest
 ```
 
-### 4. Read raw data when needed
+### 3. Read raw data when needed
 
-- Read `session.json` directly for metadata
-- Read issue JSONs from `issues/` for user notes and context snapshots
+- Read issue JSONs from `<session_path>/issues/` for user notes and context snapshots
 - Use grep on `tracking_events.jsonl` for specific events around problem frames
 
 ## Key Metrics to Surface
