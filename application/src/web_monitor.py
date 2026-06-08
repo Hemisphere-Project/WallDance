@@ -75,7 +75,7 @@ _INDEX_HTML = """<!DOCTYPE html>
   <img src="/stream.mjpg" alt="camera">
   <div id="ctl">
     <button id="btnFocus" onclick="toggleFocus()">Focus mode: OFF</button>
-    <button id="btnAuto" onclick="toggleAuto()">Bright: AUTO</button>
+    <button id="btnAuto" onclick="toggleAuto()" style="display:none">Bright: AUTO</button>
     <span id="gainwrap"><span>gain</span>
       <input id="gain" type="range" min="1" max="16" step="0.5" value="3"
              oninput="setGain(this.value)"><span id="gainval">x3</span></span>
