@@ -73,7 +73,7 @@ else:
 # kornia_rs in sys.modules *before* importing kornia.  A bare module is used
 # (not one with a raising __getattr__) so torch's import-time introspection,
 # which probes `hasattr(mod, '__file__')` across sys.modules, still works.
-# See docs/ROBUSTNESS_PLAN.md (env / install findings).
+# See docs/ROADMAP.md (env / install findings).
 import sys as _sys
 import types as _types
 if "kornia_rs" not in _sys.modules:

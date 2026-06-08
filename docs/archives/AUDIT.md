@@ -1,3 +1,5 @@
+> ⚠️ **Archived 2026-06-08 — condensed into and superseded by [docs/ROADMAP.md](../ROADMAP.md) §6.** Kept for the full findings detail; do not edit. (Relative links are one level off after the move.)
+
 # WallDance Audit
 
 Date: 2026-03-26
@@ -32,6 +34,18 @@ What is risky:
 - The launcher updater can overwrite local state by force-syncing to remote.
 - Documentation has drifted behind the code in a few user-visible places.
 - The repository currently carries a very large amount of binary model artifacts, which will increasingly hurt cloning, storage, and release hygiene.
+
+## Progress Update (2026-06-08)
+
+Work landed since the audit, with the findings it touches:
+
+- **First automated tests now exist** — `application/tests/test_calibration.py` (15 tests) + `application/tests/conftest.py`. This is the first dent in **Finding #1 (no tests / no CI)**: there is now a `tests/` package and a `pytest` path that runs green. CI is still absent; config/model/tracker/OSC tests (the suggested deliverables) are still to come.
+- **New isolated, testable module** `application/src/calibration.py` (`SceneCalibrator`, `ExclusionMaskBuilder`) — pure logic, no GUI/camera coupling. A deliberate counter-example to **Finding #2 (concentration in large modules)**: new behavior went into a small dedicated module instead of growing `app.py`/`pipeline.py`.
+- **Go-Live scene calibration (ROBUSTNESS_PLAN P2)** — a dedicated **Calibrate** button (bottom bar) measures `PERSON_HEIGHT_PX` + height ratios from YOLO detections, picks the MOG2 `varThreshold` by an **empirical background false-positive sweep** (not a formula — MOG2 self-normalises), and reports exposure stability + FPS. Apply-then-confirm with explicit save. This makes several formerly hand-tuned constants **measured, logged, and per-project** rather than global guesses — partial, concrete progress against **Finding #3 (config governance)** for those keys.
+- **Auto exclusion mask (ROBUSTNESS_PLAN P1.4)** — scenery/ghost grid cells masked at calibration; rejects ghost detections at the source with a track-proximity guard. Validated mechanically (0 cells on clean footage; not yet exercised on ghost-heavy footage).
+- **New persisted project-config keys** — `person_height_min_ratio`, `person_height_max_ratio`, `mog2_var_threshold`, `exclusion_grid`, `exclusion_cells` (in `_get_saveable_config`/`_apply_config_without_model`). These should be folded into the typed config model + validation called for in **Finding #3**.
+
+Net: the reliability backlog (tests, config governance) has started to move, and new features were added without deepening module concentration. The big remaining audit items (CI, typed/validated config, `app.py` decomposition, launcher safety, model-artifact footprint) are unchanged.
 
 ## System Overview
 
@@ -347,6 +361,40 @@ Assessment: useful, but should be treated as a deployment product, not just a co
 6. README update for `projects/` layout and session logging
 7. launcher update guard for dirty working trees
 8. dynamic Linux venv library-path discovery in `run.sh`
+
+## Requested Enhancements (2026-06-08)
+
+Operator-requested work, captured here as backlog. Neither is implemented yet.
+
+### A. Simplify the YOLO-First / Motion-First duality
+
+Today `TrackingMode` (`YOLO_FIRST` / `MOTION_FIRST`, `application/src/config.py` + the GUI tracking-mode combo) is a user-facing toggle that bifurcates the detection/tracking pipeline:
+
+- **YOLO_FIRST** — YOLO is the primary detector; MOG2 motion blobs only *bridge* gaps when YOLO drops.
+- **MOTION_FIRST** — motion blobs are *primary* detections (eager blob detection) alongside YOLO.
+
+The two modes double the reasoning surface, the tuning constants, and the code paths in `pipeline.py`, and force the operator to understand an internal architectural choice. **Goal: collapse to one coherent path** (or auto-select), removing the toggle and the divergent branches.
+
+- This is the same complexity targeted by **ROBUSTNESS_PLAN §P3** (collapse the two per-frame MOG2 models; fold crossval + bridge into source-weighted Kalman measurements) and `docs/P3_FUSION_SIMPLIFICATION.md`, and it directly relieves **Finding #8 (tracking complexity is hard to evolve)**.
+- The just-landed **auto exclusion mask (P1.4)** already replaces "most of what crossval does, at the source," which removes one motivation for the dual-mode machinery — a useful precondition.
+- Sequencing: do this *after* P1.4 has been exercised on real ghost footage, so the simplification is validated against the case the modes were built for.
+
+### B. Startup project picker (no silent auto-load)
+
+Today the app auto-loads the last project on launch (`config_store.read_last_project()` / `last_project.txt`). There is no launch-time way to choose or manage projects, and after a mid-show crash the operator is dropped straight back into auto-load with no quick, deliberate path to the last known-good state.
+
+**Requested behavior** — on start, do **not** auto-load; open a modal project picker:
+
+- **Projects list ordered by last-save date**, most recent first (derive from the newest config mtime per project — `get_latest_config_in_project()` / `project_history()` already expose this).
+- **Last project highlighted** (`read_last_project()`); pressing **Enter** launches it immediately — the fast crash-recovery path back to the last state.
+- Per-project actions: **Launch**, **Rename**, **Delete** (delete behind a confirmation prompt).
+
+Implementation notes:
+
+- `config_store` already has `list_projects`, `project_history`, `latest_for_project`, `read_last_project`, `save`, `sanitize_project_name`. **`rename_project` and `delete_project` must be added** (move/remove the `projects/<name>/` directory, update `last_project.txt` if it pointed at the affected project; reuse `sanitize_project_name` for rename).
+- Reuse the existing GUI modal pattern (`show_*_dialog` / `show_tensorrt_prompt`); launch a selected project through the existing full project-switch path in `app.py`.
+- This is also the natural place to **validate the project config on load** and surface stale/invalid configs (ties to **Finding #3**), and to align with the `projects/` layout doc fix (**Finding #5**).
+- Keep an escape hatch (env var or flag) to auto-launch the last project for unattended/kiosk startup, so the picker does not block a headless boot.
 
 ## Final Assessment
 

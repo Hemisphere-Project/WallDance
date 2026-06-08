@@ -3307,7 +3307,7 @@ class WallDanceApp:
                 )
 
         # Smartphone monitor (focus + IR-lighting assist). Best-effort: a
-        # failure here must never stop the app. See docs/ROBUSTNESS_PLAN.md (P0).
+        # failure here must never stop the app. See docs/ROADMAP.md (P0).
         if WEB_MONITOR_ENABLED:
             try:
                 self._web_monitor = WebMonitor(

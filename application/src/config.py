@@ -378,7 +378,7 @@ SHOW_ID = True                      # Draw track ID
 # =============================================================================
 # Streams the downscaled preview over MJPEG to a phone on the same LAN so the
 # camera can be focused and the IR lighting judged without standing at the
-# laptop.  See docs/ROBUSTNESS_PLAN.md (P0) and src/web_monitor.py.
+# laptop.  See docs/ROADMAP.md (P0) and src/web_monitor.py.
 # Open http://<laptop-ip>:<port>/ on a phone.  Read-only; never touches camera
 # or tracker state.  Frames are only pushed while the preview is enabled.
 WEB_MONITOR_ENABLED = True          # Start the MJPEG monitor server on launch
@@ -394,7 +394,7 @@ WEB_MONITOR_MAX_FPS = 15            # Cap stream frame rate (phone-friendly)
 # forced on, works live OR during recording playback) and sets the biggest
 # manual knobs automatically, then leaves them fixed.  Explicit, logged, and
 # the operator confirms before it is saved to the project — NOT silent
-# auto-tuning.  See docs/ROBUSTNESS_PLAN.md (P2) and src/calibration.py.
+# auto-tuning.  See docs/ROADMAP.md (P2) and src/calibration.py.
 AUTOCAL_WINDOW_FRAMES = 90          # Frames to collect before computing (~3s @30fps)
 AUTOCAL_MIN_HEIGHT_SAMPLES = 20     # Min YOLO detection-height samples to trust height
 AUTOCAL_HEIGHT_PCTL_LO = 5.0        # Low percentile of detection heights → min_ratio
@@ -420,7 +420,7 @@ AUTOCAL_FP_GRID = (8, 5)            # Grid for the robust background-FP estimate
 # confirmed skeleton are scenery / ghost sources (trees, balcony, wall paint,
 # shadows).  They get masked, and detections landing there are rejected at the
 # source — replacing most of what the per-frame crossval motion filter does,
-# safely, because the scene is fixed per show.  See docs/ROBUSTNESS_PLAN.md P1.4.
+# safely, because the scene is fixed per show.  See docs/ROADMAP.md P1.4.
 AUTOCAL_EXCL_GRID = (16, 10)        # Exclusion grid resolution (cols, rows) over the frame
 AUTOCAL_EXCL_MOTION_FRAC = 0.10     # Tile counts as "moving" this frame if ≥10% of it is FG
 AUTOCAL_EXCL_MOTION_FREQ = 0.30     # Cell must move in ≥30% of frames to be a ghost candidate

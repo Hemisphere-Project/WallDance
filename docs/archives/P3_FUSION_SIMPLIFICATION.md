@@ -1,3 +1,5 @@
+> ⚠️ **Archived 2026-06-08 — condensed into [docs/ROADMAP.md](../ROADMAP.md) §5 (P3); the P2 collision hold below is now lifted (P2 landed).** Kept for the full design; do not edit. (Relative links are one level off after the move.)
+
 # P3 — Detection-Fusion Simplification (design / analysis)
 
 **Date:** 2026-06-08

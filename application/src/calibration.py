@@ -1,5 +1,5 @@
 """
-Go-Live scene calibration (P2 of docs/ROBUSTNESS_PLAN.md).
+Go-Live scene calibration (P2 of docs/ROADMAP.md).
 
 A WallDance operator should rig the camera, aim the IR, press **one calibration
 button**, and get a scene-appropriate config — without per-venue knob tuning.

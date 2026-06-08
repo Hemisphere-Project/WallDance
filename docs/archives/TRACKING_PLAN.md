@@ -1,3 +1,5 @@
+> ⚠️ **Archived 2026-06-08 — condensed into [docs/ROADMAP.md](../ROADMAP.md) §8; superseded as north star.** Kept for the full tracker decision log + lessons; do not edit. (Relative links are one level off after the move.)
+
 # Tracking Robustness Plan
 
 **Goal**: Eliminate ID swaps and ghost creation; survive occluded crossovers.  

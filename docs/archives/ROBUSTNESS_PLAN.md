@@ -1,3 +1,5 @@
+> ⚠️ **Archived 2026-06-08 — merged into and superseded by [docs/ROADMAP.md](../ROADMAP.md).** Kept for history; do not edit. (Relative links are one level off after the move.)
+
 # WallDance — Detection Robustness & Set-and-Forget Plan
 
 **Date:** 2026-06-08
@@ -81,6 +83,8 @@ All three field answers point the same way: **better lighting + spatial ghost re
 ### P1 — Attack ghosts + drops at the root
 3. **Add IR coverage** (hardware), then raise `YOLO_CONFIDENCE` and measure the ghost drop on a recorded ghost-heavy session.
 4. **Auto exclusion mask on Go-Live.** Grid cells with persistent MOG2 motion but ~never a confirmed skeleton → masked. Safe because the scene is fixed per show. Replaces most of what `_crossval_motion_filter` does today, at the source. (This is TRACKING_PLAN "Phase 4 ghost suppression," moved upstream.)
+
+> Status: **implemented (2026-06-08), runs in the same Calibrate window as P2.** `ExclusionMaskBuilder` ([calibration.py](../application/src/calibration.py)) accumulates, over a 16×10 normalized grid, MOG2 foreground (tiled clean mask) + the positions of *kept* skeletons each frame; a cell is masked if it moves in ≥`AUTOCAL_EXCL_MOTION_FREQ` (30%) of frames but holds a skeleton in ≤`AUTOCAL_EXCL_SKEL_FREQ` (2%). Collected + applied at **both** crossval call sites via `FrameProcessor._exclusion_step` (GPU: letterbox scale/pad, `roi_local=True`; CPU: original space, `roi_local=False`), reusing the existing tracker→mask transform — no new coordinate code. Rejection is **guarded by proximity to a confirmed track** so a real dancer who wanders into a masked region is kept. Persisted as `exclusion_grid`/`exclusion_cells`. Unit-tested ([tests/test_calibration.py](../application/tests/test_calibration.py)). **Validated on tango playback: built over 90 frames, 0 ghost cells** (correct — clean footage, no scenery ghosts in frame; no false masking). **Still needs exercising on a ghost-heavy recording** to see it actually exclude.
 
 ### P2 — Make setup automatic  *(in progress — separate agent, 2026-06-08: "Go-Live scaffolding")*
 5. **Auto-calibrate** on Go-Live: `PERSON_HEIGHT_PX` = median YOLO detection height (set min/max ratios from the spread); MOG2 `varThreshold` from measured background noise σ; report exposure convergence + achieved FPS. Removes the biggest manual knobs. Keep it explicit and logged.

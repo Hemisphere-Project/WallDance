@@ -1,7 +1,7 @@
 """
 Lightweight smartphone monitor for WallDance camera setup.
 
-P0 of docs/ROBUSTNESS_PLAN.md.  The laptop sits a couple of metres from the
+P0 of docs/ROADMAP.md.  The laptop sits a couple of metres from the
 camera, so there is no live feedback for setting focus or judging IR lighting.
 This module streams the existing downscaled preview to any phone on the same
 LAN (or the laptop's hotspot) over plain MJPEG-over-HTTP, with an overlay that
