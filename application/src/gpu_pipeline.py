@@ -64,6 +64,21 @@ if CUDA_AVAILABLE:
 else:
     DEVICE = torch.device('cpu')
 
+# kornia transitively imports `kornia_rs` (a Rust image-I/O extension) via
+# kornia.io.  Its prebuilt wheel is compiled with AVX2 and crashes the whole
+# process with SIGILL ("Illegal instruction") on CPUs without AVX2 — e.g. the
+# Ivy-Bridge i7-3770K dev box.  That native crash cannot be caught by the
+# try/except below.  WallDance only uses kornia.enhance (CLAHE) and
+# kornia.color (both pure-torch, GPU), never kornia's file I/O, so we stub
+# kornia_rs in sys.modules *before* importing kornia.  A bare module is used
+# (not one with a raising __getattr__) so torch's import-time introspection,
+# which probes `hasattr(mod, '__file__')` across sys.modules, still works.
+# See docs/ROBUSTNESS_PLAN.md (env / install findings).
+import sys as _sys
+import types as _types
+if "kornia_rs" not in _sys.modules:
+    _sys.modules["kornia_rs"] = _types.ModuleType("kornia_rs")
+
 # Import kornia for GPU CLAHE
 try:
     from kornia.enhance import equalize_clahe

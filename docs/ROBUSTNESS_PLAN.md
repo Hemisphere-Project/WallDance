@@ -106,6 +106,11 @@ All three field answers point the same way: **better lighting + spatial ghost re
 
 ---
 
+## 5b. Environment / install findings
+
+- **`kornia_rs` SIGILL on non-AVX2 CPUs (FIXED 2026-06-08).** `kornia` transitively imports `kornia_rs` (Rust image I/O) via `kornia.io`. Its prebuilt wheel (0.1.14) is compiled with AVX2 and crashes the whole process with `Illegal instruction` (SIGILL, exit 132) on CPUs without AVX2 — the **dev box is an Ivy-Bridge i7-3770K (AVX only)**. The crash happens at `gpu_pipeline.py` import, right after the `[Enhancer] … CUDA available` print, and is uncatchable by `try/except ImportError`. WallDance never uses kornia file I/O, so the fix stubs `kornia_rs` in `sys.modules` before importing kornia ([gpu_pipeline.py](../application/src/gpu_pipeline.py#L67)). The GPU pipeline + kornia GPU-CLAHE remain fully functional. Harmless on the production RTX 5080 laptop (which has AVX2). Verified: app boots to runtime with `GPU pipeline active`.
+- **`install.sh` always installs the `cu130` torch index** and only falls back to older CUDA wheels when `torch.cuda.is_available()` is *False*. On the dev box this is fine (driver 580.159 supports CUDA 13.0). Noted as a latent footgun: if a target machine's driver is older than its `cu130` requirement, `is_available()` can still report `True` while CUDA ops crash — the fallback ladder would never trigger. Lower priority than the kornia fix.
+
 ## 6. Open questions still worth answering
 
 - Typical dancer **size range** (px) and **count** across venues — does one config plausibly generalize, or do we need a small per-scale preset set?
