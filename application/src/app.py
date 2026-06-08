@@ -50,6 +50,11 @@ from config import (
     MOTION_BRIDGE_SENSITIVITY,
     PREVIEW_ENABLED,
     PREVIEW_RENDER_SCALE,
+    WEB_MONITOR_ENABLED,
+    WEB_MONITOR_PORT,
+    WEB_MONITOR_HOST,
+    WEB_MONITOR_JPEG_QUALITY,
+    WEB_MONITOR_MAX_FPS,
     SHOW_BBOX,
     SHOW_ID,
     SHOW_KEYPOINTS,
@@ -75,6 +80,7 @@ from enhancer import ImageEnhancer
 from tracker import DancerTracker
 from tracking_logger import _json_default
 from video_recorder import VideoRecorder, RecorderState
+from web_monitor import WebMonitor
 
 
 # IDS Camera support (optional, falls back to OpenCV)
@@ -266,6 +272,7 @@ class WallDanceApp:
         self._last_preview_stalled_state = False
         self.latency_ms = 0.0
         self.running = False
+        self._web_monitor: Optional[WebMonitor] = None  # smartphone focus/lighting monitor
         self.last_tracked: List[ScaledTrack] = []
         self._total_frame_count: int = 0  # Phase 0: cumulative frame counter (live mode)
         self._last_raw_frame: Optional[np.ndarray] = None  # Last raw camera frame for BG capture
@@ -3171,6 +3178,22 @@ class WallDanceApp:
                     color=(255, 120, 120),
                 )
 
+        # Smartphone monitor (focus + IR-lighting assist). Best-effort: a
+        # failure here must never stop the app. See docs/ROBUSTNESS_PLAN.md (P0).
+        if WEB_MONITOR_ENABLED:
+            try:
+                self._web_monitor = WebMonitor(
+                    port=WEB_MONITOR_PORT,
+                    host=WEB_MONITOR_HOST,
+                    jpeg_quality=WEB_MONITOR_JPEG_QUALITY,
+                    max_fps=WEB_MONITOR_MAX_FPS,
+                )
+                if not self._web_monitor.start():
+                    self._web_monitor = None
+            except Exception as e:  # noqa: BLE001 - monitor is non-critical
+                print(f"[WebMonitor] disabled (startup error): {e}")
+                self._web_monitor = None
+
         print("Starting main loop...")
         self.running = True
         rec_ui_update_counter = 0
@@ -3610,7 +3633,13 @@ class WallDanceApp:
                         preview_frame = np.ascontiguousarray(preview_base)
                     else:
                         preview_frame = cv2.resize(preview_base, (render_w, render_h))
-                    
+
+                    # Push the CLEAN preview (pre-overlay) to the smartphone
+                    # monitor so focus/lighting metrics are not polluted by the
+                    # skeleton/bbox overlays. update_frame() copies internally.
+                    if self._web_monitor is not None:
+                        self._web_monitor.update_frame(preview_frame)
+
                     scale_x = render_w / src_w if src_w > 0 else 1.0
                     scale_y = render_h / src_h if src_h > 0 else 1.0
 
@@ -3765,6 +3794,9 @@ class WallDanceApp:
                 if 'camera_read_ms' not in self.timing:
                     self.timing["camera_read"] = camera_read_ms if 'camera_read_ms' in dir() else 0.0
 
+        if self._web_monitor is not None:
+            self._web_monitor.stop()
+            self._web_monitor = None
         self.recorder.close()
         if self.camera.cap is not None:
             self.camera.cap.release()

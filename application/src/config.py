@@ -374,6 +374,20 @@ SHOW_TRAILS = True                  # Draw motion trails
 SHOW_ID = True                      # Draw track ID
 
 # =============================================================================
+# WEB MONITOR (smartphone preview + focus / lighting assist)
+# =============================================================================
+# Streams the downscaled preview over MJPEG to a phone on the same LAN so the
+# camera can be focused and the IR lighting judged without standing at the
+# laptop.  See docs/ROBUSTNESS_PLAN.md (P0) and src/web_monitor.py.
+# Open http://<laptop-ip>:<port>/ on a phone.  Read-only; never touches camera
+# or tracker state.  Frames are only pushed while the preview is enabled.
+WEB_MONITOR_ENABLED = True          # Start the MJPEG monitor server on launch
+WEB_MONITOR_PORT = 8080             # HTTP port
+WEB_MONITOR_HOST = "0.0.0.0"        # Bind address (0.0.0.0 = all interfaces)
+WEB_MONITOR_JPEG_QUALITY = 70       # MJPEG quality (1-100); lower = less bandwidth
+WEB_MONITOR_MAX_FPS = 15            # Cap stream frame rate (phone-friendly)
+
+# =============================================================================
 # VIDEO RECORDING
 # =============================================================================
 # Codec used when recording to a slot.
