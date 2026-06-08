@@ -38,10 +38,11 @@ from config import (
     AUTOCAL_HEIGHT_PCTL_HI,
     AUTOCAL_MIN_RATIO_BOUNDS,
     AUTOCAL_MAX_RATIO_BOUNDS,
-    AUTOCAL_VARTHRESH_NSIGMA,
-    AUTOCAL_VARTHRESH_BOUNDS,
     AUTOCAL_NOISE_SCALE,
     AUTOCAL_EXPOSURE_STABLE_CV,
+    AUTOCAL_VARTHRESH_CANDIDATES,
+    AUTOCAL_FP_TARGET,
+    AUTOCAL_FP_GRID,
 )
 
 # Hard bounds for PERSON_HEIGHT_PX (mirrors the GUI slider range, config.py).
@@ -72,10 +73,14 @@ class CalibrationResult:
     min_ratio: Optional[float] = None
     max_ratio: Optional[float] = None
 
-    # MOG2 background noise → varThreshold
-    noise_ok: bool = False
-    noise_sigma: float = 0.0
+    # MOG2 varThreshold — chosen by empirical background false-positive sweep.
+    var_ok: bool = False
     var_threshold: Optional[float] = None
+    var_fp_rate: float = 0.0          # background FP rate of the chosen threshold
+    var_saturated: bool = False       # True if no candidate met the FP target
+    # Diagnostic only (not used to set varThreshold): temporal noise of the
+    # MOG2-input gray.  High σ on a near-black scene = CLAHE-amplified noise.
+    noise_sigma: float = 0.0
 
     # Report-only
     brightness_mean: float = 0.0
@@ -88,10 +93,14 @@ class CalibrationResult:
         h = f"{self.person_height_px}px" if self.height_ok else "n/a"
         r = (f"[{self.min_ratio:.2f},{self.max_ratio:.2f}]"
              if self.height_ok else "[--]")
-        vt = f"{self.var_threshold:.0f}" if self.noise_ok else "n/a"
+        if self.var_ok:
+            vt = (f"{self.var_threshold:.0f}(fp={self.var_fp_rate*100:.2f}%"
+                  f"{',SAT' if self.var_saturated else ''})")
+        else:
+            vt = "n/a"
         return (f"[Calibrate] frames={self.frames} height={h} ratios={r} "
-                f"(n={self.height_samples}) noise_sigma={self.noise_sigma:.2f} "
-                f"varThreshold={vt} brightness={self.brightness_mean:.0f} "
+                f"(n={self.height_samples}) varThreshold={vt} "
+                f"noise_sigma={self.noise_sigma:.2f} brightness={self.brightness_mean:.0f} "
                 f"cv={self.brightness_cv:.3f} exposure="
                 f"{'stable' if self.exposure_stable else 'drifting'} "
                 f"fps={self.fps_achieved:.1f}")
@@ -101,21 +110,25 @@ class CalibrationResult:
         lines = []
         if self.height_ok:
             lines.append(f"Person height: {self.person_height_px} px  "
-                         f"(was measured from {self.height_samples} detections)")
+                         f"(measured from {self.height_samples} detections)")
             lines.append(f"Height ratios: min {self.min_ratio:.2f}  "
                          f"max {self.max_ratio:.2f}")
         else:
             lines.append(f"Person height: NOT measured "
                          f"(only {self.height_samples} detections; "
                          f"need {AUTOCAL_MIN_HEIGHT_SAMPLES}) - kept current value")
-        if self.noise_ok:
+        if self.var_ok and not self.var_saturated:
             lines.append(f"MOG2 varThreshold: {self.var_threshold:.0f}  "
-                         f"(background noise sigma {self.noise_sigma:.2f})")
+                         f"(background false-positives {self.var_fp_rate*100:.2f}%)")
+        elif self.var_ok and self.var_saturated:
+            lines.append(f"MOG2 varThreshold: {self.var_threshold:.0f} (max)  "
+                         f"- background still {self.var_fp_rate*100:.2f}% noisy: "
+                         f"the scene is too noisy for MOG2 (raise IR / decouple CLAHE)")
         else:
             lines.append("MOG2 varThreshold: NOT measured - kept current value")
         lines.append(f"Brightness: {self.brightness_mean:.0f}  "
                      f"({'stable' if self.exposure_stable else 'still drifting'}, "
-                     f"cv {self.brightness_cv:.3f})")
+                     f"cv {self.brightness_cv:.3f}; noise sigma {self.noise_sigma:.2f})")
         lines.append(f"Achieved inference FPS: {self.fps_achieved:.1f}")
         return "\n".join(lines)
 
@@ -145,10 +158,15 @@ class SceneCalibrator:
         self._heights: list[float] = []
         self._brightness: list[float] = []
         self._fps: list[float] = []
-        # Per-pixel Welford accumulators for temporal noise sigma.
+        # Per-pixel Welford accumulators for the temporal-noise diagnostic.
         self._noise_n = 0
         self._noise_mean: Optional[np.ndarray] = None
         self._noise_m2: Optional[np.ndarray] = None
+        # Empirical varThreshold sweep: one MOG2 model per candidate + its
+        # per-frame background-FP samples (median grid-tile foreground fraction).
+        self._var_candidates: list[float] = [float(v) for v in AUTOCAL_VARTHRESH_CANDIDATES]
+        self._var_models: list = []
+        self._var_fp: list[list[float]] = [[] for _ in self._var_candidates]
 
     # ------------------------------------------------------------------
     # Lifecycle / status
@@ -156,6 +174,14 @@ class SceneCalibrator:
     def start(self) -> None:
         """Begin a fresh collection window."""
         self._reset_accumulators()
+        # One independent MOG2 model per candidate varThreshold.  history =
+        # window so each adapts its background within the collection window.
+        hist = max(2, self.window_frames)
+        self._var_models = [
+            cv2.createBackgroundSubtractorMOG2(
+                history=hist, varThreshold=v, detectShadows=True)
+            for v in self._var_candidates
+        ]
         self._state = CalState.COLLECTING
 
     def cancel(self) -> None:
@@ -183,14 +209,20 @@ class SceneCalibrator:
     # ------------------------------------------------------------------
     # Intake
     # ------------------------------------------------------------------
-    def feed(self, gray: np.ndarray, track_heights: Iterable[float],
-             fps_sample: float, now: float) -> None:
+    def feed(self, noise_gray: np.ndarray, track_heights: Iterable[float],
+             fps_sample: float, now: float,
+             brightness: Optional[float] = None) -> None:
         """Add one processed frame's samples to the window.
 
-        gray:          2D uint8 frame (any resolution; downscaled internally).
+        noise_gray:    2D uint8 frame the background model consumes (any
+                       resolution; downscaled internally) — its temporal sigma
+                       drives varThreshold.  Pass the *MOG2 input* gray, not the
+                       raw frame, so the measured noise matches what MOG2 fights.
         track_heights: bbox heights (px) of the confirmed tracks this frame.
         fps_sample:    achieved inference FPS for this frame (1000/process_wall_ms).
         now:           wall-clock timestamp (unused for gating; reserved).
+        brightness:    raw-scene mean luma for the exposure report.  If None,
+                       falls back to the mean of ``noise_gray`` (test convenience).
         """
         if self._state != CalState.COLLECTING:
             return
@@ -199,10 +231,14 @@ class SceneCalibrator:
             if h and h > 0:
                 self._heights.append(float(h))
 
-        if gray is not None and gray.size:
-            small = self._downscale(gray)
-            self._brightness.append(float(small.mean()))
+        if noise_gray is not None and noise_gray.size:
+            small = self._downscale(noise_gray)
             self._accumulate_noise(small)
+            self._score_var_candidates(small)
+            self._brightness.append(
+                float(brightness) if brightness is not None else float(small.mean()))
+        elif brightness is not None:
+            self._brightness.append(float(brightness))
 
         if fps_sample and fps_sample > 0:
             self._fps.append(float(fps_sample))
@@ -231,6 +267,23 @@ class SceneCalibrator:
         self._noise_mean += delta / self._noise_n
         self._noise_m2 += delta * (x - self._noise_mean)
 
+    def _score_var_candidates(self, small: np.ndarray) -> None:
+        """Run each candidate MOG2 model on this frame and record its background
+        false-positive level: the median grid-tile foreground fraction.
+
+        The median over a grid is robust to the dancer minority — tiles with a
+        dancer are outliers, so the median tile reflects the *background*.  A
+        too-low varThreshold lights up every tile (noise) → high median; a
+        good one leaves the background quiet → median ~0.
+        """
+        gx, gy = AUTOCAL_FP_GRID
+        for model, fp_list in zip(self._var_models, self._var_fp):
+            mask = model.apply(small)              # learningRate auto (1/history)
+            fg = (mask == 255).astype(np.float32)  # hard foreground only
+            # INTER_AREA resize of a 0/1 mask to the grid = mean (fraction) per tile.
+            tiles = cv2.resize(fg, (gx, gy), interpolation=cv2.INTER_AREA)
+            fp_list.append(float(np.median(tiles)))
+
     # ------------------------------------------------------------------
     # Compute
     # ------------------------------------------------------------------
@@ -253,17 +306,28 @@ class SceneCalibrator:
                 res.min_ratio = round(_clamp(lo / median_h, *AUTOCAL_MIN_RATIO_BOUNDS), 3)
                 res.max_ratio = round(_clamp(hi / median_h, *AUTOCAL_MAX_RATIO_BOUNDS), 3)
 
-        # --- background noise sigma → varThreshold ---
+        # --- background noise sigma (diagnostic only) ---
         if self._noise_m2 is not None and self._noise_n >= 2:
             var = self._noise_m2 / (self._noise_n - 1)
             std = np.sqrt(np.maximum(var, 0.0))
             # Median across pixels: moving dancers are a minority, so the median
             # std is the static-background sensor/scene noise floor.
-            sigma = float(np.median(std))
-            res.noise_ok = True
-            res.noise_sigma = sigma
-            res.var_threshold = round(_clamp(
-                (AUTOCAL_VARTHRESH_NSIGMA * sigma) ** 2, *AUTOCAL_VARTHRESH_BOUNDS), 1)
+            res.noise_sigma = float(np.median(std))
+
+        # --- varThreshold by empirical background false-positive sweep ---
+        if self._var_candidates and any(len(l) for l in self._var_fp):
+            fp_rates = [float(np.median(l)) if l else 1.0 for l in self._var_fp]
+            chosen = None
+            for i, fp in enumerate(fp_rates):       # candidates ascending → lowest first
+                if fp <= AUTOCAL_FP_TARGET:
+                    chosen = i
+                    break
+            if chosen is None:                       # none clean enough → most conservative
+                chosen = len(self._var_candidates) - 1
+                res.var_saturated = True
+            res.var_ok = True
+            res.var_threshold = float(self._var_candidates[chosen])
+            res.var_fp_rate = fp_rates[chosen]
 
         # --- report: exposure stability + FPS ---
         if self._brightness:

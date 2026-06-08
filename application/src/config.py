@@ -401,10 +401,19 @@ AUTOCAL_HEIGHT_PCTL_LO = 5.0        # Low percentile of detection heights → mi
 AUTOCAL_HEIGHT_PCTL_HI = 95.0       # High percentile of detection heights → max_ratio
 AUTOCAL_MIN_RATIO_BOUNDS = (0.2, 0.8)   # Clamp for the derived person_height_min_ratio
 AUTOCAL_MAX_RATIO_BOUNDS = (1.5, 4.0)   # Clamp for the derived person_height_max_ratio
-AUTOCAL_VARTHRESH_NSIGMA = 4.0      # varThreshold = (N·σ)² so noise up to N·σ stays background
-AUTOCAL_VARTHRESH_BOUNDS = (16.0, 120.0)  # Clamp for the derived MOG2 base varThreshold
-AUTOCAL_NOISE_SCALE = 0.5           # Downscale for the per-pixel temporal-σ noise estimate
+AUTOCAL_NOISE_SCALE = 0.5           # Downscale for the noise/FP estimate (matches MOG2 scale)
 AUTOCAL_EXPOSURE_STABLE_CV = 0.03   # Brightness σ/μ below this → exposure considered converged
+# varThreshold is chosen *empirically*, not from a pixel-σ formula (MOG2 already
+# self-normalises to input noise, so a σ→varThreshold map is dimensionless and
+# saturates).  Each candidate runs as its own MOG2 model over the window and is
+# scored by the background false-positive rate — the median grid-tile foreground
+# fraction, which is robust to the dancer minority (no bbox transform needed).
+# The lowest (most sensitive) candidate whose FP rate stays under the target
+# wins; if even the highest cannot, the highest is used and flagged "saturated"
+# (the scene is too noisy for MOG2 — fix IR / decouple CLAHE per audit #1).
+AUTOCAL_VARTHRESH_CANDIDATES = (16.0, 24.0, 32.0, 40.0, 56.0, 80.0, 120.0)  # ascending
+AUTOCAL_FP_TARGET = 0.005           # Max background median-tile foreground fraction (0.5%)
+AUTOCAL_FP_GRID = (8, 5)            # Grid for the robust background-FP estimate
 
 # =============================================================================
 # VIDEO RECORDING

@@ -1756,7 +1756,15 @@ class WallDanceApp:
             if b is not None and len(b) >= 4 and b[3] > 0:
                 heights.append(float(b[3]))
         fps_sample = (1000.0 / process_wall_ms) if process_wall_ms > 0 else 0.0
-        cal.feed(self._last_raw_frame, heights, fps_sample, time.time())
+        # Noise from the actual MOG2 input (post-CLAHE), so varThreshold matches
+        # what the background model fights; brightness from the raw frame so the
+        # exposure report reflects true IR scene luma (near-black on dark rigs).
+        noise_gray = self.processor.get_last_motion_gray()
+        raw = self._last_raw_frame
+        if noise_gray is None:
+            noise_gray = raw  # motion detection disabled → fall back to raw
+        brightness = float(raw.mean()) if raw is not None else None
+        cal.feed(noise_gray, heights, fps_sample, time.time(), brightness=brightness)
         if self.gui:
             self.gui.set_calibrate_status(f"Calibrating {int(cal.progress() * 100)}%")
         if cal.ready:
@@ -1773,7 +1781,7 @@ class WallDanceApp:
             self.tracker.set_person_height(ph)
             if self.gui:
                 self.gui.sync_slider('person_height', ph)
-        if result.noise_ok and result.var_threshold:
+        if result.var_ok and result.var_threshold:
             self.processor.set_motion_var_threshold(result.var_threshold)
         print(result.log_line())
         self._request_reprocess()

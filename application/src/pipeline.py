@@ -371,6 +371,7 @@ class FrameProcessor:
         self._motion_clahe_clip: float = 0.0
         self._motion_gamma_lut: Optional[np.ndarray] = None
         self._motion_gamma_val: float = 0.0
+        self._last_motion_gray: Optional[np.ndarray] = None  # enhanced gray fed to MOG2
 
         # GPU pipeline (zero-copy path)
         self._gpu_pipeline: Optional[GpuPipeline] = None
@@ -1028,6 +1029,10 @@ class FrameProcessor:
         # Apply the same CLAHE + gamma used for YOLO / preview so the
         # motion detector sees the contrast-enhanced image.
         gray = self._enhance_gray_for_motion(gray)
+        # Keep a handle on the exact signal MOG2 consumes, so Go-Live
+        # calibration measures the noise MOG2 actually contends with (incl.
+        # per-frame CLAHE jitter), not the raw near-black frame.
+        self._last_motion_gray = gray
 
         detectors = []
         if self.bridge_motion_detector is not None:
@@ -1084,6 +1089,15 @@ class FrameProcessor:
         value = max(0.0, min(1.0, float(sensitivity)))
         self.settings.motion_sensitivity = value
         self.tracker.set_motion_bridge_sensitivity(value)
+
+    def get_last_motion_gray(self) -> Optional[np.ndarray]:
+        """The most recent enhanced gray fed to MOG2 (Go-Live noise calibration).
+
+        This is the post-CLAHE/gamma signal the background model actually sees,
+        so its temporal noise is the right thing to set varThreshold from.
+        Returns None if no frame has been processed through motion detection.
+        """
+        return self._last_motion_gray
 
     def get_motion_var_threshold(self) -> float:
         """Return the current MOG2 base varThreshold (Go-Live calibration)."""
