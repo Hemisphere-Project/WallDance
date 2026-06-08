@@ -62,6 +62,7 @@ from config import (
 from background import BackgroundSubtractor
 from enhancer import ImageEnhancer, TORCH_CUDA_AVAILABLE
 from motion_detector import MotionDetector
+from calibration import ExclusionMaskBuilder
 from osc_output import OSCSender
 from tracker import DancerTrack, DancerTracker
 
@@ -372,6 +373,7 @@ class FrameProcessor:
         self._motion_gamma_lut: Optional[np.ndarray] = None
         self._motion_gamma_val: float = 0.0
         self._last_motion_gray: Optional[np.ndarray] = None  # enhanced gray fed to MOG2
+        self._exclusion = ExclusionMaskBuilder()  # auto exclusion mask (P1.4)
 
         # GPU pipeline (zero-copy path)
         self._gpu_pipeline: Optional[GpuPipeline] = None
@@ -647,6 +649,13 @@ class FrameProcessor:
         timing.update(crossval_stats)
         timing["crossval_rejected"] = n_before_xval - len(detections)
 
+        # Auto exclusion mask (P1.4): collect during calibration, else reject
+        # detections that land in known scenery / ghost cells.
+        detections = self._exclusion_step(
+            detections, self.crossval_motion_detector,
+            (lb_scale, pad_x, pad_y, roi_x, roi_y, True),
+            scaled_person_height, timing)
+
         # In MOTION_FIRST mode, eagerly detect blobs for synthetic detections
         eager_blobs = None
         if self._tracking_mode == TrackingMode.MOTION_FIRST and self.bridge_motion_detector is not None:
@@ -908,6 +917,13 @@ class FrameProcessor:
         timing.update(crossval_stats)
         timing["crossval_rejected"] = n_before_xval - len(detections)
 
+        # Auto exclusion mask (P1.4): CPU path — original-space coords (scale 1,
+        # no letterbox pad), ROI subtracted (roi_local=False).
+        detections = self._exclusion_step(
+            detections, self.crossval_motion_detector,
+            (1.0, 0.0, 0.0, roi_x, roi_y, False),
+            self.settings.person_height_px, timing)
+
         # In MOTION_FIRST mode, eagerly detect blobs for synthetic detections
         eager_blobs = None
         if self._tracking_mode == TrackingMode.MOTION_FIRST and self.bridge_motion_detector is not None:
@@ -1114,6 +1130,96 @@ class FrameProcessor:
                 continue
             detector.set_var_threshold(base)
             seen.add(id(detector))
+
+    # ------------------------------------------------------------------
+    # Auto exclusion mask (P1.4)
+    # ------------------------------------------------------------------
+    def _exclusion_norm_xy(self, cx, cy, motion_det, scale, pad_x, pad_y,
+                           roi_x, roi_y, roi_local):
+        """Map a tracker-space centroid to normalized [0,1] coords over the MOG2
+        mask, mirroring the crossval tracker→original→ROI-local→mask transform."""
+        mask = motion_det._clean_mask if motion_det is not None else None
+        if mask is None:
+            return None
+        ox = (cx - pad_x) / scale if scale != 1.0 else cx
+        oy = (cy - pad_y) / scale if scale != 1.0 else cy
+        if not roi_local:
+            ox -= roi_x
+            oy -= roi_y
+        s = motion_det._scale
+        mh, mw = mask.shape[:2]
+        if mw <= 0 or mh <= 0:
+            return None
+        return (ox * s) / mw, (oy * s) / mh
+
+    def _observe_exclusion(self, detections, motion_det, params):
+        """Feed one frame to the exclusion builder during calibration."""
+        if motion_det is None or motion_det._clean_mask is None:
+            return
+        pts = []
+        for _kpts, _conf, bbox in detections:
+            nxy = self._exclusion_norm_xy(
+                bbox[0] + bbox[2] * 0.5, bbox[1] + bbox[3] * 0.5,
+                motion_det, *params)
+            if nxy is not None:
+                pts.append(nxy)
+        self._exclusion.observe(motion_det._clean_mask, pts)
+
+    def _apply_exclusion(self, detections, motion_det, params, person_height):
+        """Drop detections in excluded (ghost) cells, unless near a confirmed
+        track (a real dancer who wandered into a masked region is protected)."""
+        if motion_det is None or motion_det._clean_mask is None or not detections:
+            return detections, 0
+        guard = person_height * 0.6
+        track_centroids = [
+            t.get_centroid() for t in self.tracker.tracks
+            if t.time_since_update <= MOTION_CROSSVAL_BYPASS_MAX_AGE
+        ]
+        kept, rejected = [], 0
+        for det in detections:
+            kpts, conf, bbox = det
+            cx = bbox[0] + bbox[2] * 0.5
+            cy = bbox[1] + bbox[3] * 0.5
+            nxy = self._exclusion_norm_xy(cx, cy, motion_det, *params)
+            if nxy is not None and self._exclusion.excluded(*nxy):
+                near = any(float(np.hypot(cx - tc[0], cy - tc[1])) <= guard
+                           for tc in track_centroids)
+                if not near:
+                    rejected += 1
+                    continue
+            kept.append(det)
+        return kept, rejected
+
+    def _exclusion_step(self, detections, motion_det, params, person_height, timing):
+        """Collect (during calibration) or apply (when a mask is active)."""
+        if self._exclusion.collecting:
+            self._observe_exclusion(detections, motion_det, params)
+            return detections
+        if self._exclusion.active:
+            detections, n = self._apply_exclusion(
+                detections, motion_det, params, person_height)
+            timing["exclusion_rejected"] = n
+        return detections
+
+    # -- exclusion public API (driven by the app's Calibrate flow) ------
+    def start_exclusion_calibration(self) -> None:
+        self._exclusion.start()
+
+    def cancel_exclusion_calibration(self) -> None:
+        self._exclusion.cancel()
+
+    def finish_exclusion_calibration(self):
+        """Build the mask from the collected window and return an ExclusionResult."""
+        return self._exclusion.build()
+
+    def set_exclusion(self, grid, cells) -> None:
+        self._exclusion.set_cells(grid, cells)
+
+    def get_exclusion(self) -> tuple:
+        return self._exclusion.get_cells()
+
+    def clear_exclusion(self) -> None:
+        self._exclusion.clear()
 
     def reset_motion_detectors(self) -> None:
         """Reset all active motion detectors and clear cross-validation state."""

@@ -415,6 +415,18 @@ AUTOCAL_VARTHRESH_CANDIDATES = (16.0, 24.0, 32.0, 40.0, 56.0, 80.0, 120.0)  # as
 AUTOCAL_FP_TARGET = 0.005           # Max background median-tile foreground fraction (0.5%)
 AUTOCAL_FP_GRID = (8, 5)            # Grid for the robust background-FP estimate
 
+# --- Auto exclusion mask (P1.4) -------------------------------------------
+# During calibration, grid cells that show persistent MOG2 motion but ~never a
+# confirmed skeleton are scenery / ghost sources (trees, balcony, wall paint,
+# shadows).  They get masked, and detections landing there are rejected at the
+# source — replacing most of what the per-frame crossval motion filter does,
+# safely, because the scene is fixed per show.  See docs/ROBUSTNESS_PLAN.md P1.4.
+AUTOCAL_EXCL_GRID = (16, 10)        # Exclusion grid resolution (cols, rows) over the frame
+AUTOCAL_EXCL_MOTION_FRAC = 0.10     # Tile counts as "moving" this frame if ≥10% of it is FG
+AUTOCAL_EXCL_MOTION_FREQ = 0.30     # Cell must move in ≥30% of frames to be a ghost candidate
+AUTOCAL_EXCL_SKEL_FREQ = 0.02       # ...and hold a skeleton in ≤2% of frames
+AUTOCAL_EXCL_MIN_FRAMES = 30        # Need at least this many observed frames to build a mask
+
 # =============================================================================
 # VIDEO RECORDING
 # =============================================================================

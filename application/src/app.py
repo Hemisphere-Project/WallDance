@@ -47,6 +47,7 @@ from config import (
     PERSON_HEIGHT_MAX_RATIO,
     PERSON_HEIGHT_MIN_RATIO,
     PERSON_HEIGHT_PX,
+    AUTOCAL_EXCL_GRID,
     MOTION_BRIDGE_SENSITIVITY,
     PREVIEW_ENABLED,
     PREVIEW_RENDER_SCALE,
@@ -913,6 +914,7 @@ class WallDanceApp:
     # Config persistence
     # ------------------------------------------------------------------
     def _get_saveable_config(self) -> Dict:
+        excl_grid, excl_cells = self.processor.get_exclusion()
         return {
             "camera_source": self.camera.state.source,
             "model": self.current_model_name,
@@ -924,6 +926,8 @@ class WallDanceApp:
             "person_height_min_ratio": self.settings.person_height_min_ratio,
             "person_height_max_ratio": self.settings.person_height_max_ratio,
             "mog2_var_threshold": self.processor.get_motion_var_threshold(),
+            "exclusion_grid": list(excl_grid),
+            "exclusion_cells": [list(c) for c in excl_cells],
             "enhance_enabled": self.settings.enhance_enabled,
             "enhance_lite": self.settings.enhance_lite,
             "enhance_force": self.settings.enhance_force,
@@ -1155,6 +1159,9 @@ class WallDanceApp:
             self.settings.person_height_max_ratio = float(config["person_height_max_ratio"])
         if "mog2_var_threshold" in config:
             self.processor.set_motion_var_threshold(float(config["mog2_var_threshold"]))
+        if "exclusion_cells" in config:
+            grid = tuple(config.get("exclusion_grid") or AUTOCAL_EXCL_GRID)
+            self.processor.set_exclusion(grid, config["exclusion_cells"])
         if "yolo_imgsz" in config:
             # Just sync UI, don't trigger callback (imgsz already set)
             self.gui and self.gui.sync_combo("imgsz", str(config["yolo_imgsz"]))
@@ -1714,6 +1721,7 @@ class WallDanceApp:
             # playback was paused before the window filled).
             self._calibrating = False
             self._calibrator.cancel()
+            self.processor.cancel_exclusion_calibration()
             if self.gui:
                 self.gui.set_calibrate_status(None)
                 self.gui.show_toast("Calibration cancelled",
@@ -1736,6 +1744,7 @@ class WallDanceApp:
                                     duration=3.0, color=(255, 180, 80))
             return
         self._calibrator.start()
+        self.processor.start_exclusion_calibration()
         self._calibrating = True
         if self.gui:
             self.gui.set_calibrate_status("Calibrating 0%")
@@ -1783,12 +1792,16 @@ class WallDanceApp:
                 self.gui.sync_slider('person_height', ph)
         if result.var_ok and result.var_threshold:
             self.processor.set_motion_var_threshold(result.var_threshold)
+        # P1.4: build + activate the auto exclusion mask from the same window.
+        excl = self.processor.finish_exclusion_calibration()
         print(result.log_line())
+        print(f"[Calibrate] {excl.summary_line()} cells={excl.cells}")
         self._request_reprocess()
         if self.gui:
             self.gui.set_calibrate_status(None)
             self.gui.show_calibration_result_dialog(
-                result.summary(), on_save=self._cb_save_safe_defaults)
+                result.summary() + "\n" + excl.summary_line(),
+                on_save=self._cb_save_safe_defaults)
 
     def _cb_visualization_toggle(self, name: str, enabled: bool):
         if name == "skeleton":

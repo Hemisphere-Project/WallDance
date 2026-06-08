@@ -9,12 +9,19 @@ import numpy as np
 import pytest
 
 import calibration
-from calibration import SceneCalibrator
+from calibration import SceneCalibrator, ExclusionMaskBuilder
 from config import (
     AUTOCAL_MIN_HEIGHT_SAMPLES,
     AUTOCAL_VARTHRESH_CANDIDATES,
     AUTOCAL_FP_TARGET,
 )
+
+
+def _moving_mask(shape=(40, 40), region=(slice(0, 10), slice(0, 10))):
+    """A clean MOG2 mask with one fixed foreground region (255), rest background."""
+    m = np.zeros(shape, dtype=np.uint8)
+    m[region] = 255
+    return m
 
 
 def _run(cal, *, gray, heights_per_frame, frames, fps=30.0):
@@ -150,6 +157,88 @@ def test_drifting_exposure_flagged():
 
     assert not res.exposure_stable
     assert res.brightness_cv > 0.05
+
+
+# --------------------------------------------------------------------------
+# Auto exclusion mask (P1.4)
+# --------------------------------------------------------------------------
+def _excl(**kw):
+    return ExclusionMaskBuilder(grid=(4, 4), motion_freq=0.3, skel_freq=0.02,
+                                min_frames=5, **kw)
+
+
+def test_exclusion_masks_persistent_motion_without_skeleton():
+    # Top-left cell moves every frame, never holds a skeleton → excluded.
+    b = _excl()
+    b.start()
+    mask = _moving_mask()  # foreground in pixels [0:10, 0:10] → cell (0,0)
+    for _ in range(10):
+        b.observe(mask, skel_points=[])
+    res = b.build()
+
+    assert (0, 0) in res.cells
+    assert res.count == 1
+    assert b.excluded(0.1, 0.1)        # inside the masked cell
+    assert not b.excluded(0.6, 0.6)    # elsewhere
+
+
+def test_exclusion_spares_cell_with_skeletons():
+    # Same moving cell, but a skeleton sits there every frame → NOT a ghost.
+    b = _excl()
+    b.start()
+    mask = _moving_mask()
+    for _ in range(10):
+        b.observe(mask, skel_points=[(0.1, 0.1)])
+    res = b.build()
+
+    assert (0, 0) not in res.cells
+    assert not b.excluded(0.1, 0.1)
+
+
+def test_exclusion_ignores_rare_motion():
+    # Cell moves in only 2/10 frames (< motion_freq 0.3) → not excluded.
+    b = _excl()
+    b.start()
+    moving, still = _moving_mask(), np.zeros((40, 40), np.uint8)
+    for i in range(10):
+        b.observe(moving if i < 2 else still, skel_points=[])
+    res = b.build()
+
+    assert (0, 0) not in res.cells
+    assert res.count == 0
+
+
+def test_exclusion_needs_minimum_frames():
+    b = _excl()
+    b.start()
+    for _ in range(3):                 # < min_frames (5)
+        b.observe(_moving_mask(), skel_points=[])
+    res = b.build()
+
+    assert res.frames == 3
+    assert res.count == 0
+    assert not b.active
+
+
+def test_exclusion_persist_roundtrip():
+    b = ExclusionMaskBuilder(grid=(16, 10))
+    b.set_cells((16, 10), [[2, 3], [7, 1]])
+    grid, cells = b.get_cells()
+
+    assert grid == (16, 10)
+    assert cells == [(2, 3), (7, 1)]
+    assert b.active
+    assert b.excluded((2 + 0.5) / 16, (3 + 0.5) / 10)
+    assert not b.excluded((5 + 0.5) / 16, (5 + 0.5) / 10)
+    b.clear()
+    assert not b.active and not b.excluded(0.1, 0.1)
+
+
+def test_exclusion_out_of_range_safe():
+    b = _excl()
+    b.set_cells((4, 4), [(0, 0)])
+    assert not b.excluded(-0.1, 0.5)
+    assert not b.excluded(0.5, 1.5)
 
 
 # --------------------------------------------------------------------------

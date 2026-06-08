@@ -43,6 +43,11 @@ from config import (
     AUTOCAL_VARTHRESH_CANDIDATES,
     AUTOCAL_FP_TARGET,
     AUTOCAL_FP_GRID,
+    AUTOCAL_EXCL_GRID,
+    AUTOCAL_EXCL_MOTION_FRAC,
+    AUTOCAL_EXCL_MOTION_FREQ,
+    AUTOCAL_EXCL_SKEL_FREQ,
+    AUTOCAL_EXCL_MIN_FRAMES,
 )
 
 # Hard bounds for PERSON_HEIGHT_PX (mirrors the GUI slider range, config.py).
@@ -131,6 +136,124 @@ class CalibrationResult:
                      f"cv {self.brightness_cv:.3f}; noise sigma {self.noise_sigma:.2f})")
         lines.append(f"Achieved inference FPS: {self.fps_achieved:.1f}")
         return "\n".join(lines)
+
+
+@dataclass
+class ExclusionResult:
+    """Outcome of building the auto exclusion mask."""
+    grid: tuple = (0, 0)
+    cells: list = field(default_factory=list)   # excluded (col, row) pairs
+    frames: int = 0
+
+    @property
+    def count(self) -> int:
+        return len(self.cells)
+
+    def summary_line(self) -> str:
+        gx, gy = self.grid
+        if self.frames < AUTOCAL_EXCL_MIN_FRAMES:
+            return "Exclusion mask: not built (too few frames)"
+        if not self.cells:
+            return f"Exclusion mask: none (no persistent ghost cells in {gx}x{gy} grid)"
+        return f"Exclusion mask: {self.count} ghost cell(s) masked ({gx}x{gy} grid)"
+
+
+class ExclusionMaskBuilder:
+    """Builds and holds the auto exclusion mask (P1.4).
+
+    A normalized ``grid`` over the frame.  During calibration, ``observe`` is
+    called once per processed frame with the MOG2 foreground mask and the
+    normalized positions of the *kept* skeletons.  ``build`` then marks cells
+    that move often but ~never hold a skeleton as excluded.  ``excluded`` is the
+    runtime query used to reject ghost detections.
+
+    Pure grid logic (numpy + a cv2.resize) — no camera / tracker / transform
+    knowledge; the caller supplies already-normalized [0,1] coordinates.
+    """
+
+    def __init__(self, grid=AUTOCAL_EXCL_GRID,
+                 motion_frac: float = AUTOCAL_EXCL_MOTION_FRAC,
+                 motion_freq: float = AUTOCAL_EXCL_MOTION_FREQ,
+                 skel_freq: float = AUTOCAL_EXCL_SKEL_FREQ,
+                 min_frames: int = AUTOCAL_EXCL_MIN_FRAMES):
+        self.gx, self.gy = int(grid[0]), int(grid[1])
+        self.motion_frac = float(motion_frac)
+        self.motion_freq = float(motion_freq)
+        self.skel_freq = float(skel_freq)
+        self.min_frames = int(min_frames)
+        self._motion = np.zeros((self.gy, self.gx), dtype=np.float64)
+        self._skel = np.zeros((self.gy, self.gx), dtype=np.float64)
+        self._frames = 0
+        self._collecting = False
+        self._cells: set = set()   # active excluded (col, row)
+
+    @property
+    def collecting(self) -> bool:
+        return self._collecting
+
+    @property
+    def active(self) -> bool:
+        return bool(self._cells)
+
+    def start(self) -> None:
+        self._motion[:] = 0.0
+        self._skel[:] = 0.0
+        self._frames = 0
+        self._collecting = True
+
+    def cancel(self) -> None:
+        """Stop collecting without rebuilding (keeps any existing mask)."""
+        self._collecting = False
+
+    def observe(self, clean_mask: Optional[np.ndarray], skel_points) -> None:
+        """Accumulate one frame: motion tiles + cells holding a kept skeleton."""
+        if not self._collecting:
+            return
+        if clean_mask is not None and clean_mask.size:
+            fg = (clean_mask == 255).astype(np.float32)
+            tiles = cv2.resize(fg, (self.gx, self.gy), interpolation=cv2.INTER_AREA)
+            self._motion += (tiles >= self.motion_frac)
+        seen = set()
+        for nx, ny in skel_points:
+            if 0.0 <= nx < 1.0 and 0.0 <= ny < 1.0:
+                cell = (int(ny * self.gy), int(nx * self.gx))
+                if cell not in seen:
+                    self._skel[cell] += 1.0
+                    seen.add(cell)
+        self._frames += 1
+
+    def build(self) -> ExclusionResult:
+        """Finalise: cells with frequent motion but ~no skeleton → excluded."""
+        self._collecting = False
+        cells: set = set()
+        if self._frames >= self.min_frames:
+            mfreq = self._motion / max(1, self._frames)
+            sfreq = self._skel / max(1, self._frames)
+            rows, cols = np.where((mfreq >= self.motion_freq) & (sfreq <= self.skel_freq))
+            cells = {(int(c), int(r)) for c, r in zip(cols, rows)}
+        self._cells = cells
+        return ExclusionResult(grid=(self.gx, self.gy),
+                               cells=sorted(cells), frames=self._frames)
+
+    def excluded(self, nx: float, ny: float) -> bool:
+        """True if the normalized position lands in an excluded cell."""
+        if not self._cells or not (0.0 <= nx < 1.0 and 0.0 <= ny < 1.0):
+            return False
+        return (int(nx * self.gx), int(ny * self.gy)) in self._cells
+
+    def set_cells(self, grid, cells) -> None:
+        """Restore a persisted mask (e.g. on project load)."""
+        self.gx, self.gy = int(grid[0]), int(grid[1])
+        self._cells = {(int(c[0]), int(c[1])) for c in cells}
+        self._collecting = False
+
+    def get_cells(self) -> tuple:
+        """(grid, sorted cells) for persistence."""
+        return ((self.gx, self.gy), sorted(self._cells))
+
+    def clear(self) -> None:
+        self._cells = set()
+        self._collecting = False
 
 
 class SceneCalibrator:

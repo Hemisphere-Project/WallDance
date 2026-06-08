@@ -528,7 +528,7 @@ class WallDanceGUI:
                 dpg.configure_item("calibrate_status", show=False)
         if dpg.does_item_exist("calibrate_btn"):
             dpg.configure_item("calibrate_btn",
-                               label="Cancel calibration" if text else "Calibrate scene")
+                               label="CANCEL" if text else "CALIBRATE")
 
     def _on_vis_toggle(self, name, value):
         if 'on_visualization_toggle' in self.callbacks:
