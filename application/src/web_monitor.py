@@ -63,17 +63,48 @@ _INDEX_HTML = """<!DOCTYPE html>
   img{width:100vw;max-width:100%;height:auto;display:block;background:#000;}
   #stats{font-size:14px;padding:6px 10px;white-space:pre;font-variant-numeric:tabular-nums;}
   .hint{font-size:12px;color:#888;padding:0 10px 10px;}
+  #ctl{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:8px 10px;}
+  button{font-size:15px;padding:8px 12px;border-radius:8px;border:1px solid #444;
+         background:#1c1c1c;color:#ddd;}
+  button.on{background:#1d7a1d;border-color:#2fae2f;color:#fff;}
+  button.focus{background:#9a8400;border-color:#d4b800;color:#fff;}
+  #gainwrap{display:none;align-items:center;gap:6px;}
+  input[type=range]{width:140px;}
 </style></head>
 <body><div id="wrap">
   <img src="/stream.mjpg" alt="camera">
+  <div id="ctl">
+    <button id="btnFocus" onclick="toggleFocus()">Focus mode: OFF</button>
+    <button id="btnAuto" onclick="toggleAuto()">Bright: AUTO</button>
+    <span id="gainwrap"><span>gain</span>
+      <input id="gain" type="range" min="1" max="16" step="0.5" value="3"
+             oninput="setGain(this.value)"><span id="gainval">x3</span></span>
+  </div>
   <div id="stats">connecting...</div>
-  <div class="hint">Focus: turn the lens until FOCUS peaks. Lighting: raise UNIFORM% toward 100, watch CLIP.</div>
+  <div class="hint">Focus mode: brightens the view + highlights sharp edges (yellow). Turn the lens until FOCUS peaks.</div>
 </div>
 <script>
+async function ctl(q){ try{ await fetch('/control?'+q,{cache:'no-store'}); }catch(e){} }
+let focusOn=false, autoOn=true;
+function toggleFocus(){ focusOn=!focusOn; ctl('focus='+(focusOn?'on':'off')); }
+function toggleAuto(){ autoOn=!autoOn; ctl('mode='+(autoOn?'auto':'manual')); }
+function setGain(v){ document.getElementById('gainval').textContent='x'+v; ctl('mode=manual&gain='+v); }
+function applyState(s){
+  focusOn=!!s.focus_mode; autoOn=!!s.focus_auto;
+  const bf=document.getElementById('btnFocus'), ba=document.getElementById('btnAuto');
+  bf.textContent='Focus mode: '+(focusOn?'ON':'OFF'); bf.className=focusOn?'focus':'';
+  ba.textContent='Bright: '+(autoOn?'AUTO':'MANUAL'); ba.className=autoOn?'on':'';
+  document.getElementById('gainwrap').style.display=(focusOn&&!autoOn)?'flex':'none';
+  if(typeof s.focus_gain==='number'){
+    document.getElementById('gain').value=s.focus_gain;
+    document.getElementById('gainval').textContent='x'+s.focus_gain;
+  }
+}
 async function poll(){
   try{
     const r = await fetch('/stats.json',{cache:'no-store'});
     const s = await r.json();
+    applyState(s);
     document.getElementById('stats').textContent =
       'FOCUS '+s.focus.toFixed(0)+'  (peak '+s.focus_peak.toFixed(0)+')\\n'+
       'BRIGHT '+s.brightness.toFixed(0)+'   UNIFORM '+(s.uniformity*100).toFixed(0)+'%'+
@@ -110,14 +141,22 @@ class WebMonitor:
         self._frame: Optional[np.ndarray] = None   # latest clean BGR frame (owned copy)
         self._frame_id = 0
 
-        # Encode cache so N clients don't re-encode the same frame.
+        # Encode cache so N clients don't re-encode the same frame.  Keyed by
+        # (frame_id, render_ver) so a control change re-renders even if the
+        # frame itself hasn't advanced (e.g. paused preview).
         self._enc_lock = threading.Lock()
-        self._enc_id = -1
+        self._enc_key: Optional[tuple] = None
         self._enc_jpeg: Optional[bytes] = None
 
         self._stats: dict = {}        # full stats (incl center_box) for the cached frame
         self._stats_id = -1            # frame id the cached stats belong to
-        self._focus_peak = 1.0
+        self._focus_peak = 1.0         # overview-mode focus peak-hold
+
+        # Focus mode (manual-lens focusing aid): brightened display + peaking.
+        self._focus_mode = False
+        self._focus_auto = True        # True = auto histogram stretch; False = manual gain
+        self._focus_gain = 3.0         # display gain when manual (1..16)
+        self._render_ver = 0           # bumps on control change to bust the encode cache
 
         self._server: Optional[ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
@@ -182,9 +221,10 @@ class WebMonitor:
             fid = self._frame_id
         if frame is None:
             return None
-        # Reuse the cached encode if this frame was already rendered.
+        # Reuse the cached encode if this frame+render was already produced.
+        key = (fid, self._render_ver)
         with self._enc_lock:
-            if fid == self._enc_id and self._enc_jpeg is not None:
+            if key == self._enc_key and self._enc_jpeg is not None:
                 return self._enc_jpeg
         overlaid = self._render_overlay(frame)
         ok, buf = cv2.imencode(
@@ -193,14 +233,33 @@ class WebMonitor:
             return None
         jpeg = buf.tobytes()
         with self._enc_lock:
-            self._enc_id = fid
+            self._enc_key = key
             self._enc_jpeg = jpeg
         return jpeg
 
     def get_stats(self) -> dict:
         """Public stats for /stats.json — computed on demand from the latest frame."""
         s = self._stats_for_current_frame()
-        return {k: v for k, v in s.items() if k != "center_box"}
+        out = {k: v for k, v in s.items() if k != "center_box"}
+        out["focus_mode"] = self._focus_mode
+        out["focus_auto"] = self._focus_auto
+        out["focus_gain"] = round(self._focus_gain, 1)
+        return out
+
+    # ------------------------------------------------------------------
+    # Focus-mode controls (driven by the /control endpoint)
+    # ------------------------------------------------------------------
+    def set_focus_mode(self, on: bool) -> None:
+        self._focus_mode = bool(on)
+        self._render_ver += 1
+
+    def set_focus_bright(self, auto: Optional[bool] = None,
+                         gain: Optional[float] = None) -> None:
+        if auto is not None:
+            self._focus_auto = bool(auto)
+        if gain is not None:
+            self._focus_gain = float(max(1.0, min(16.0, gain)))
+        self._render_ver += 1
 
     def _stats_for_current_frame(self) -> dict:
         """Compute (once per frame, cached) the focus/lighting stats.
@@ -268,25 +327,21 @@ class WebMonitor:
     def _render_overlay(self, frame: np.ndarray) -> np.ndarray:
         out = frame if frame.ndim == 3 else cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
         out = out.copy()
-        h, w = out.shape[:2]
         s = self._stats_for_current_frame()
         if not s:
             return out
+        if self._focus_mode:
+            return self._render_focus_overlay(out, frame, s)
+        return self._render_normal_overlay(out, frame, s)
 
+    def _render_normal_overlay(self, out, frame, s):
+        """Overview: focus/lighting metrics, histogram, darkest-tile marker."""
+        h, w = out.shape[:2]
         green, red, white, dark = (0, 255, 0), (60, 60, 255), (240, 240, 240), (0, 0, 0)
 
         # --- centre focus box ---
         x0, y0, x1, y1 = s["center_box"]
         cv2.rectangle(out, (x0, y0), (x1, y1), green, 1)
-
-        # --- darkest-tile marker (where to add IR light) ---
-        gx, gy = self.grid
-        dc, dr = s["dark_tile"]
-        dxa, dxb = w * dc // gx, w * (dc + 1) // gx
-        dya, dyb = h * dr // gy, h * (dr + 1) // gy
-        cv2.rectangle(out, (dxa, dya), (dxb, dyb), red, 2)
-        cv2.putText(out, "dark", (dxa + 3, dya + 16),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, red, 1, cv2.LINE_AA)
 
         # --- text panel (top-left, on a dark plate) ---
         lines = [
@@ -308,13 +363,102 @@ class WebMonitor:
         cv2.rectangle(out, (6, bar_y), (6 + bw, bar_y + 6), (70, 70, 70), -1)
         cv2.rectangle(out, (6, bar_y), (6 + int(bw * frac), bar_y + 6), green, -1)
 
-        # --- luma histogram strip (bottom) ---
-        gray = cv2.cvtColor(out, cv2.COLOR_BGR2GRAY)
-        self._draw_histogram(out, gray)
+        # --- luma histogram (bottom-left) from the CLEAN frame so the overlay's
+        #     own black plates / white text don't pollute the bins ---
+        clean_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+        self._draw_histogram(out, clean_gray)
 
-        # --- zoomed centre inset (bottom-right) to judge focus directly ---
+        # --- zoomed centre inset (top-right) to judge focus directly ---
         self._draw_center_inset(out, frame, s["center_box"])
 
+        # --- darkest-tile marker LAST so it is never hidden (where to add IR) --
+        gx, gy = self.grid
+        dc, dr = s["dark_tile"]
+        dxa, dxb = w * dc // gx, w * (dc + 1) // gx
+        dya, dyb = h * dr // gy, h * (dr + 1) // gy
+        cv2.rectangle(out, (dxa, dya), (dxb, dyb), red, 2)
+        label_y = dya + 16 if dya < h - 20 else dya - 6
+        cv2.putText(out, "dark", (dxa + 3, label_y),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, red, 1, cv2.LINE_AA)
+        return out
+
+    # ------------------------------------------------------------------
+    # Focus mode: brightened display + peaking + prominent focusness gauge
+    # ------------------------------------------------------------------
+    def _enhance_for_focus(self, frame: np.ndarray) -> np.ndarray:
+        """Return a brightened mono BGR view so a dark IR image is focusable.
+
+        auto   → percentile stretch + gamma lift (smartphone-'flash' style)
+        manual → linear gain on the raw pixels
+        """
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+        if self._focus_auto:
+            lo, hi = np.percentile(gray, (2.0, 98.0))
+            if hi <= lo:
+                lo, hi = float(gray.min()), float(max(gray.max(), gray.min() + 1))
+            stretched = np.clip((gray.astype(np.float32) - lo) * (255.0 / (hi - lo)), 0, 255)
+            disp = (((stretched / 255.0) ** 0.6) * 255.0).astype(np.uint8)  # gamma lift
+        else:
+            disp = cv2.convertScaleAbs(gray, alpha=self._focus_gain, beta=0.0)
+        return cv2.cvtColor(disp, cv2.COLOR_GRAY2BGR)
+
+    @staticmethod
+    def _draw_peaking(out: np.ndarray, gray: np.ndarray) -> None:
+        """Paint the sharpest edges yellow (manual-focus peaking).
+
+        Computed on the CLEAN gray with a light denoise blur so amplified
+        sensor noise in dark areas is not mistaken for edges.  The gradient is
+        thresholded above the local noise floor, so as the lens nears focus
+        more / stronger edges light up.
+        """
+        g = cv2.GaussianBlur(gray, (3, 3), 0)
+        mag = np.abs(cv2.Laplacian(g, cv2.CV_32F, ksize=3))
+        thr = max(24.0, float(mag.mean() + 4.0 * mag.std()))
+        out[mag >= thr] = (0, 255, 255)  # yellow (BGR)
+
+    def _render_focus_overlay(self, out, frame, s):
+        """Focus-setting view: bright display + peaking + big focusness gauge."""
+        h, w = out.shape[:2]
+        green, white, dark, yellow = (0, 255, 0), (240, 240, 240), (0, 0, 0), (0, 255, 255)
+        clean_gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+
+        # 1. Brighten the whole display so the dark IR image becomes visible.
+        out = self._enhance_for_focus(frame)
+
+        # 2. Focus peaking measured on the CLEAN gray (display brightness does
+        #    not pollute it), drawn over the brightened view.
+        self._draw_peaking(out, clean_gray)
+        inset_src = out.copy()  # enhanced + peaked, before boxes — for the zoom
+
+        # 3. Focusness gauge uses the same clean-frame metric as overview mode.
+        focus = s["focus"]
+        peak = s["focus_peak"] or 1.0
+        pct = max(0.0, min(1.0, focus / peak))
+
+        # 4. Centre focus box.
+        x0, y0, x1, y1 = s["center_box"]
+        cv2.rectangle(out, (x0, y0), (x1, y1), green, 1)
+
+        # 5. Prominent focusness gauge (top-left).
+        mode = "AUTO" if self._focus_auto else f"GAIN x{self._focus_gain:.1f}"
+        cv2.rectangle(out, (0, 0), (304, 122), dark, -1)
+        cv2.putText(out, "FOCUS MODE", (8, 22),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, yellow, 2, cv2.LINE_AA)
+        cv2.putText(out, f"{focus:.0f}", (8, 70),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.4, white, 3, cv2.LINE_AA)
+        cv2.putText(out, f"{pct * 100:.0f}% of peak   [{mode}]", (8, 92),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, white, 1, cv2.LINE_AA)
+        bx0, by0, bw = 8, 100, 288
+        cv2.rectangle(out, (bx0, by0), (bx0 + bw, by0 + 14), (70, 70, 70), -1)
+        bar_col = green if pct > 0.85 else (0, 200, 255)  # green near peak, amber below
+        cv2.rectangle(out, (bx0, by0), (bx0 + int(bw * pct), by0 + 14), bar_col, -1)
+
+        # 6. Zoomed centre inset (top-right) — enhanced + peaked detail.
+        self._draw_center_inset(out, inset_src, s["center_box"])
+
+        # 7. Hint.
+        cv2.putText(out, "Turn the lens until FOCUS peaks (bar full / green)",
+                    (8, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.5, yellow, 1, cv2.LINE_AA)
         return out
 
     @staticmethod
@@ -353,7 +497,10 @@ class WebMonitor:
         ih, iw = inset.shape[:2]
         if iw >= w or ih >= h:
             return
-        ox, oy = w - iw - 4, h - ih - 4
+        # Top-right corner: panel is top-left, histogram bottom-left, and the
+        # darkest-tile marker usually lands along the bottom (IR edge falloff),
+        # so the top-right is the one collision-free spot for the zoom inset.
+        ox, oy = w - iw - 4, 4
         out[oy:oy + ih, ox:ox + iw] = inset
         cv2.rectangle(out, (ox, oy), (ox + iw, oy + ih), (0, 255, 0), 1)
 
@@ -380,6 +527,8 @@ class _MonitorHandler(BaseHTTPRequestHandler):
             self._serve_snapshot()
         elif self.path.startswith("/stats.json"):
             self._serve_stats()
+        elif self.path.startswith("/control"):
+            self._serve_control()
         else:
             self.send_error(404)
 
@@ -395,6 +544,26 @@ class _MonitorHandler(BaseHTTPRequestHandler):
     def _serve_stats(self):
         import json
         body = json.dumps(self.monitor.get_stats()).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _serve_control(self):
+        from urllib.parse import urlparse, parse_qs
+        q = parse_qs(urlparse(self.path).query)
+        if "focus" in q:
+            self.monitor.set_focus_mode(q["focus"][0].lower() in ("1", "on", "true"))
+        if "mode" in q:
+            self.monitor.set_focus_bright(auto=(q["mode"][0].lower() == "auto"))
+        if "gain" in q:
+            try:
+                self.monitor.set_focus_bright(gain=float(q["gain"][0]))
+            except ValueError:
+                pass
+        body = b'{"ok":true}'
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Cache-Control", "no-store")
