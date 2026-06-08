@@ -28,7 +28,18 @@ export YOLO_AUTOINSTALL=0
 # ── Offer to download missing pose models ──────────────────────────
 ALL_MODELS=(
     yolo11n-pose yolo11s-pose yolo11m-pose yolo11l-pose yolo11x-pose
+    yolo26n-pose yolo26s-pose yolo26m-pose yolo26l-pose yolo26x-pose
 )
+
+# Harvest any weights already present in application/ (e.g. yolo26*-pose.pt
+# downloaded earlier) into models/ so they are not re-downloaded and so the
+# model manager — which reads from models/ — can find them.
+for m in "${ALL_MODELS[@]}"; do
+    if [ ! -f "$MODELS_DIR/${m}.pt" ] && [ -f "${m}.pt" ]; then
+        echo "=== Found ${m}.pt in application/, moving to models/ ==="
+        mv "${m}.pt" "$MODELS_DIR/${m}.pt"
+    fi
+done
 
 MISSING=()
 for m in "${ALL_MODELS[@]}"; do
