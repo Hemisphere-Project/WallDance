@@ -691,9 +691,23 @@ def build_detection_section(gui: Any):
             _add_slider_row("person_height_slider", 5, 20, 800, gui._on_person_height_change)
         with dpg.tooltip(height_slider):
             dpg.add_text("Expected dancer height in pixels at current\ncamera distance. All tracking thresholds\nscale from this value. Measure on the\npreview and adjust per venue.")
-        
+
+        # Go-Live scene calibration (P2): measure person height, height ratios
+        # and MOG2 varThreshold from what YOLO actually sees, then offer to save.
+        dpg.add_spacer(height=scaled(4))
+        with dpg.group(horizontal=True):
+            calib_btn = dpg.add_button(
+                label="Calibrate scene",
+                tag="calibrate_btn",
+                width=scaled(110),
+                callback=gui._on_calibrate,
+            )
+            dpg.add_text("", tag="calibrate_status", color=(160, 200, 255), show=False)
+        with dpg.tooltip(calib_btn):
+            dpg.add_text("Measure the scene once and auto-set person height,\nheight ratios and MOG2 varThreshold from what YOLO\nactually sees. Works live or during recording playback.\nReview the result, then choose to save it to the project.")
+
         dpg.add_spacer(height=scaled(6))
-        
+
         # Confidence threshold
         dpg.add_text("Detection Confidence", color=(180, 180, 180))
         with dpg.group(horizontal=True):

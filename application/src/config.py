@@ -388,6 +388,25 @@ WEB_MONITOR_JPEG_QUALITY = 70       # MJPEG quality (1-100); lower = less bandwi
 WEB_MONITOR_MAX_FPS = 15            # Cap stream frame rate (phone-friendly)
 
 # =============================================================================
+# GO-LIVE SCENE CALIBRATION (one explicit, logged calibration — P2)
+# =============================================================================
+# A dedicated "Calibrate" button measures the scene over a short window (YOLO
+# forced on, works live OR during recording playback) and sets the biggest
+# manual knobs automatically, then leaves them fixed.  Explicit, logged, and
+# the operator confirms before it is saved to the project — NOT silent
+# auto-tuning.  See docs/ROBUSTNESS_PLAN.md (P2) and src/calibration.py.
+AUTOCAL_WINDOW_FRAMES = 90          # Frames to collect before computing (~3s @30fps)
+AUTOCAL_MIN_HEIGHT_SAMPLES = 20     # Min YOLO detection-height samples to trust height
+AUTOCAL_HEIGHT_PCTL_LO = 5.0        # Low percentile of detection heights → min_ratio
+AUTOCAL_HEIGHT_PCTL_HI = 95.0       # High percentile of detection heights → max_ratio
+AUTOCAL_MIN_RATIO_BOUNDS = (0.2, 0.8)   # Clamp for the derived person_height_min_ratio
+AUTOCAL_MAX_RATIO_BOUNDS = (1.5, 4.0)   # Clamp for the derived person_height_max_ratio
+AUTOCAL_VARTHRESH_NSIGMA = 4.0      # varThreshold = (N·σ)² so noise up to N·σ stays background
+AUTOCAL_VARTHRESH_BOUNDS = (16.0, 120.0)  # Clamp for the derived MOG2 base varThreshold
+AUTOCAL_NOISE_SCALE = 0.5           # Downscale for the per-pixel temporal-σ noise estimate
+AUTOCAL_EXPOSURE_STABLE_CV = 0.03   # Brightness σ/μ below this → exposure considered converged
+
+# =============================================================================
 # VIDEO RECORDING
 # =============================================================================
 # Codec used when recording to a slot.

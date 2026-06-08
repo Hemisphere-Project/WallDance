@@ -29,6 +29,7 @@ from config import (
     SHADOW_PROXIMITY_RATIO,
     MOTION_BRIDGE_ENABLED,
     MOTION_BRIDGE_MOG2_LEARN_RATE,
+    MOTION_BRIDGE_MOG2_VAR_THRESHOLD,
     MOTION_BRIDGE_SENSITIVITY,
     TrackingMode,
     MOTION_FIRST_BLOB_OVERLAP_RATIO,
@@ -1083,6 +1084,22 @@ class FrameProcessor:
         value = max(0.0, min(1.0, float(sensitivity)))
         self.settings.motion_sensitivity = value
         self.tracker.set_motion_bridge_sensitivity(value)
+
+    def get_motion_var_threshold(self) -> float:
+        """Return the current MOG2 base varThreshold (Go-Live calibration)."""
+        detector = self.motion_detector
+        if detector is not None:
+            return float(detector._var_threshold)
+        return float(MOTION_BRIDGE_MOG2_VAR_THRESHOLD)
+
+    def set_motion_var_threshold(self, base: float) -> None:
+        """Apply the same MOG2 base varThreshold to all active motion detectors."""
+        seen = set()
+        for detector in (self.bridge_motion_detector, self.crossval_motion_detector):
+            if detector is None or id(detector) in seen:
+                continue
+            detector.set_var_threshold(base)
+            seen.add(id(detector))
 
     def reset_motion_detectors(self) -> None:
         """Reset all active motion detectors and clear cross-validation state."""

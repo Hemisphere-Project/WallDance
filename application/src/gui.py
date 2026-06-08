@@ -508,7 +508,28 @@ class WallDanceGUI:
     def _on_person_height_change(self, sender, value):
         if 'on_person_height_change' in self.callbacks:
             self.callbacks['on_person_height_change'](int(value))
-    
+
+    def _on_calibrate(self):
+        """Calibrate button → ask the app to run a Go-Live scene calibration."""
+        if 'on_calibrate' in self.callbacks:
+            self.callbacks['on_calibrate']()
+
+    def set_calibrate_status(self, text: Optional[str]):
+        """Show inline progress next to the Calibrate button (None = idle).
+
+        The button stays enabled while collecting so a second press can cancel a
+        run that stalls (e.g. playback paused before the window fills).
+        """
+        if dpg.does_item_exist("calibrate_status"):
+            if text:
+                dpg.set_value("calibrate_status", text)
+                dpg.configure_item("calibrate_status", show=True)
+            else:
+                dpg.configure_item("calibrate_status", show=False)
+        if dpg.does_item_exist("calibrate_btn"):
+            dpg.configure_item("calibrate_btn",
+                               label="Cancel calibration" if text else "Calibrate scene")
+
     def _on_vis_toggle(self, name, value):
         if 'on_visualization_toggle' in self.callbacks:
             self.callbacks['on_visualization_toggle'](name, value)
@@ -2035,6 +2056,62 @@ class WallDanceGUI:
         """Hide the TensorRT prompt dialog."""
         if dpg.does_item_exist("tensorrt_prompt_modal"):
             dpg.delete_item("tensorrt_prompt_modal")
+
+    def show_calibration_result_dialog(self, summary: str, on_save):
+        """Show the measured Go-Live calibration and offer to save it.
+
+        The values are already applied to the running session; this dialog lets
+        the operator persist them to the project (``on_save``) or keep them only
+        for this session.  Explicit, never silent.
+        """
+        if dpg.does_item_exist("calibration_result_modal"):
+            dpg.delete_item("calibration_result_modal")
+
+        vp_width = dpg.get_viewport_width()
+        vp_height = dpg.get_viewport_height()
+        modal_width = scaled(460)
+        modal_height = scaled(250)
+
+        def on_save_project():
+            if dpg.does_item_exist("calibration_result_modal"):
+                dpg.delete_item("calibration_result_modal")
+            if callable(on_save):
+                on_save()
+
+        def on_keep_session():
+            if dpg.does_item_exist("calibration_result_modal"):
+                dpg.delete_item("calibration_result_modal")
+
+        with dpg.window(
+            label="Scene Calibration",
+            modal=True,
+            tag="calibration_result_modal",
+            width=modal_width,
+            height=modal_height,
+            pos=[vp_width // 2 - modal_width // 2, vp_height // 2 - modal_height // 2],
+            no_resize=True,
+            no_move=True,
+            no_close=True,
+            no_collapse=True,
+        ):
+            dpg.add_spacer(height=scaled(8))
+            dpg.add_text("Measured and applied to this session:",
+                         color=(180, 180, 180))
+            dpg.add_spacer(height=scaled(6))
+            dpg.add_text(summary, wrap=scaled(430))
+            dpg.add_spacer(height=scaled(14))
+            with dpg.group(horizontal=True):
+                dpg.add_button(
+                    label="Save to project",
+                    callback=on_save_project,
+                    width=scaled(150),
+                )
+                dpg.add_spacer(width=scaled(16))
+                dpg.add_button(
+                    label="Keep this session only",
+                    callback=on_keep_session,
+                    width=scaled(180),
+                )
 
     def _on_show_qr(self):
         """Top-bar QR button → ask the app to show the phone-monitor QR."""

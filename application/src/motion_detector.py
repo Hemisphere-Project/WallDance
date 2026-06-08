@@ -49,9 +49,13 @@ class MotionDetector:
     """
 
     def __init__(self):
+        # Base varThreshold — overridable at runtime (Go-Live calibration sets it
+        # from the measured background-noise sigma).  The adaptive low-light path
+        # multiplies this base; see feed().
+        self._var_threshold = float(MOTION_BRIDGE_MOG2_VAR_THRESHOLD)
         self._mog2 = cv2.createBackgroundSubtractorMOG2(
             history=MOTION_BRIDGE_MOG2_HISTORY,
-            varThreshold=MOTION_BRIDGE_MOG2_VAR_THRESHOLD,
+            varThreshold=self._var_threshold,
             detectShadows=True,
         )
         self._learn_rate = MOTION_BRIDGE_MOG2_LEARN_RATE
@@ -92,6 +96,15 @@ class MotionDetector:
     def set_learn_rate(self, rate: float) -> None:
         """Change the MOG2 learning rate (e.g. faster for lighting adaptation)."""
         self._learn_rate = max(0.0, min(1.0, rate))
+
+    def set_var_threshold(self, base: float) -> None:
+        """Set the base MOG2 varThreshold (Go-Live calibration → measured noise).
+
+        Stored as the base that the adaptive low-light path in feed() multiplies,
+        and pushed to the live model so it takes effect without a reset.
+        """
+        self._var_threshold = max(1.0, float(base))
+        self._mog2.setVarThreshold(self._var_threshold)
 
     @property
     def has_mask(self) -> bool:
@@ -242,11 +255,12 @@ class MotionDetector:
             else:
                 self._prev_raw = None
                 self._curr_raw = raw_small
-        # Adaptive varThreshold: raise in low light to reject noise at the model level
+        # Adaptive varThreshold: raise in low light to reject noise at the model level.
+        # Scales the (possibly calibrated) base, not the module constant.
         if brightness < MOTION_LOWLIGHT_LUMA_THRESHOLD:
-            target_var = MOTION_BRIDGE_MOG2_VAR_THRESHOLD * MOTION_LOWLIGHT_VAR_THRESHOLD_MULT
+            target_var = self._var_threshold * MOTION_LOWLIGHT_VAR_THRESHOLD_MULT
         else:
-            target_var = MOTION_BRIDGE_MOG2_VAR_THRESHOLD
+            target_var = self._var_threshold
         self._mog2.setVarThreshold(target_var)
         # MOG2 apply — returns 0=bg, 127=shadow, 255=fg
         self._fg_mask = self._mog2.apply(small, learningRate=self._learn_rate)
@@ -693,10 +707,13 @@ class MotionDetector:
         return result
 
     def reset(self):
-        """Re-create the MOG2 model (e.g. after scene change)."""
+        """Re-create the MOG2 model (e.g. after scene change).
+
+        Preserves any calibrated base varThreshold across the reset.
+        """
         self._mog2 = cv2.createBackgroundSubtractorMOG2(
             history=MOTION_BRIDGE_MOG2_HISTORY,
-            varThreshold=MOTION_BRIDGE_MOG2_VAR_THRESHOLD,
+            varThreshold=self._var_threshold,
             detectShadows=True,
         )
         self._fg_mask = None

@@ -81,6 +81,7 @@ from tracker import DancerTracker
 from tracking_logger import _json_default
 from video_recorder import VideoRecorder, RecorderState
 from web_monitor import WebMonitor
+from calibration import SceneCalibrator
 
 
 # IDS Camera support (optional, falls back to OpenCV)
@@ -273,6 +274,8 @@ class WallDanceApp:
         self.latency_ms = 0.0
         self.running = False
         self._web_monitor: Optional[WebMonitor] = None  # smartphone focus/lighting monitor
+        self._calibrator = SceneCalibrator()    # Go-Live scene calibration (P2)
+        self._calibrating = False               # True while a calibration window is collecting
         self.last_tracked: List[ScaledTrack] = []
         self._total_frame_count: int = 0  # Phase 0: cumulative frame counter (live mode)
         self._last_raw_frame: Optional[np.ndarray] = None  # Last raw camera frame for BG capture
@@ -414,6 +417,7 @@ class WallDanceApp:
             "on_camera_refresh": self._cb_camera_refresh,
             "on_imgsz_change": self._cb_imgsz_change,
             "on_person_height_change": self._cb_person_height_change,
+            "on_calibrate": self._cb_calibrate,
             "on_visualization_toggle": self._cb_visualization_toggle,
             "on_tracker_age_change": self._cb_tracker_age_change,
             "on_mog2_scale_change": self._cb_mog2_scale_change,
@@ -917,6 +921,9 @@ class WallDanceApp:
             "yolo_imgsz": self.settings.imgsz,
             "fp16": self.settings.use_fp16,
             "person_height_px": self.settings.person_height_px,
+            "person_height_min_ratio": self.settings.person_height_min_ratio,
+            "person_height_max_ratio": self.settings.person_height_max_ratio,
+            "mog2_var_threshold": self.processor.get_motion_var_threshold(),
             "enhance_enabled": self.settings.enhance_enabled,
             "enhance_lite": self.settings.enhance_lite,
             "enhance_force": self.settings.enhance_force,
@@ -1141,6 +1148,13 @@ class WallDanceApp:
             self.settings.person_height_px = config["person_height_px"]
             self.tracker.set_person_height(config["person_height_px"])
             self.gui and self.gui.sync_slider("person_height", config["person_height_px"])
+        # Calibrated height ratios + MOG2 varThreshold (set by Go-Live calibration).
+        if "person_height_min_ratio" in config:
+            self.settings.person_height_min_ratio = float(config["person_height_min_ratio"])
+        if "person_height_max_ratio" in config:
+            self.settings.person_height_max_ratio = float(config["person_height_max_ratio"])
+        if "mog2_var_threshold" in config:
+            self.processor.set_motion_var_threshold(float(config["mog2_var_threshold"]))
         if "yolo_imgsz" in config:
             # Just sync UI, don't trigger callback (imgsz already set)
             self.gui and self.gui.sync_combo("imgsz", str(config["yolo_imgsz"]))
@@ -1687,6 +1701,86 @@ class WallDanceApp:
         self.settings.person_height_px = int(value)
         self.tracker.set_person_height(int(value))
         self._request_reprocess()
+
+    def _cb_calibrate(self):
+        """Calibrate button → start a Go-Live scene calibration window.
+
+        Forces YOLO on for the window (so it works in Standby and during
+        recording playback) and measures person size, MOG2 noise and FPS.  The
+        run loop feeds frames to ``self._calibrator`` and applies the result.
+        """
+        if self._calibrating:
+            # Second press cancels a run that is still collecting (e.g. if
+            # playback was paused before the window filled).
+            self._calibrating = False
+            self._calibrator.cancel()
+            if self.gui:
+                self.gui.set_calibrate_status(None)
+                self.gui.show_toast("Calibration cancelled",
+                                    duration=2.0, color=(255, 180, 80))
+            print("[Calibrate] cancelled")
+            return
+        if not self._model_loaded or self.model is None:
+            if self.gui:
+                self.gui.show_toast("Load a model before calibrating",
+                                    duration=3.0, color=(255, 180, 80))
+            return
+        # Need frames flowing: a live camera (IDS/unified or OpenCV) or playback.
+        cam_open = (
+            (self.unified_camera is not None and self.unified_camera.is_open)
+            or (self.camera is not None and self.camera.state.is_open)
+        )
+        if not cam_open and not self.recorder.is_playing:
+            if self.gui:
+                self.gui.show_toast("Start the camera or play a recording first",
+                                    duration=3.0, color=(255, 180, 80))
+            return
+        self._calibrator.start()
+        self._calibrating = True
+        if self.gui:
+            self.gui.set_calibrate_status("Calibrating 0%")
+            self.gui.show_toast("Calibrating scene - keep dancers in frame",
+                                duration=2.5, color=(160, 200, 255))
+        print("[Calibrate] started "
+              f"({'playback' if self.recorder.is_playing else 'live'})")
+
+    def _step_calibration(self, tracked, process_wall_ms):
+        """Feed one processed frame to the active calibrator; finalize when ready."""
+        cal = self._calibrator
+        if not cal.is_collecting:
+            self._calibrating = False
+            return
+        heights = []
+        for t in (tracked or []):
+            b = getattr(t, 'bbox', None)
+            if b is not None and len(b) >= 4 and b[3] > 0:
+                heights.append(float(b[3]))
+        fps_sample = (1000.0 / process_wall_ms) if process_wall_ms > 0 else 0.0
+        cal.feed(self._last_raw_frame, heights, fps_sample, time.time())
+        if self.gui:
+            self.gui.set_calibrate_status(f"Calibrating {int(cal.progress() * 100)}%")
+        if cal.ready:
+            self._calibrating = False
+            self._apply_calibration(cal.compute())
+
+    def _apply_calibration(self, result):
+        """Apply a finished CalibrationResult to the running session + log it."""
+        if result.height_ok and result.person_height_px:
+            ph = int(result.person_height_px)
+            self.settings.person_height_px = ph
+            self.settings.person_height_min_ratio = float(result.min_ratio)
+            self.settings.person_height_max_ratio = float(result.max_ratio)
+            self.tracker.set_person_height(ph)
+            if self.gui:
+                self.gui.sync_slider('person_height', ph)
+        if result.noise_ok and result.var_threshold:
+            self.processor.set_motion_var_threshold(result.var_threshold)
+        print(result.log_line())
+        self._request_reprocess()
+        if self.gui:
+            self.gui.set_calibrate_status(None)
+            self.gui.show_calibration_result_dialog(
+                result.summary(), on_save=self._cb_save_safe_defaults)
 
     def _cb_visualization_toggle(self, name: str, enabled: bool):
         if name == "skeleton":
@@ -3490,8 +3584,11 @@ class WallDanceApp:
             if not self._model_loaded or self.model is None:
                 should_process = False
             
-            # Skip YOLO inference if not in RUN state (Phase 3 gating)
-            if self.gui and self.gui.get_system_state() != SystemState.RUN:
+            # Skip YOLO inference if not in RUN state (Phase 3 gating).
+            # Exception: a scene calibration forces YOLO on (even in Standby /
+            # during playback) so it can measure detection heights.
+            if (self.gui and self.gui.get_system_state() != SystemState.RUN
+                    and not self._calibrating):
                 should_process = False
 
             # Phase 0: compute display frame number for tracker logging
@@ -3556,6 +3653,8 @@ class WallDanceApp:
                 self.timing["camera_read"] = camera_read_ms
                 self.timing["process_wall"] = process_wall_ms
                 self.latency_ms = latency_ms
+                if self._calibrating:
+                    self._step_calibration(tracked, process_wall_ms)
             else:
                 process_wall_ms = 0.0
                 # No processing (STANDBY mode) - show preview without YOLO.
