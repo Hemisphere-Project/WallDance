@@ -76,21 +76,30 @@ All three field answers point the same way: **better lighting + spatial ghost re
 1. **Smartphone monitor + focus score.** Lightweight MJPEG server (stdlib, no new deps) streaming the existing downscaled preview to a phone on the LAN/laptop-hotspot, with a variance-of-Laplacian focus number + peak-hold bar + zoomed center inset. Solves "set focus from 2 m away." → `application/src/web_monitor.py`.
 2. **Lighting readout on the same view.** Brightness, clip hi/lo %, luma histogram, and a **uniformity** metric with the darkest-tile marked — so illuminators are aimed for *even* coverage, not just brightness (MOG2 hates gradients more than dark). Same module.
 
-> Status: implemented as a prototype in this pass. Toggle via `WEB_MONITOR_ENABLED` in config.py; opens on `http://<laptop-ip>:8080/`.
+> **Status: DONE (2026-06-08).** Shipped in `application/src/web_monitor.py`, plus a top-bar **QR button** to open it from a phone. Beyond the prototype it gained a **Focus mode**: auto histogram-stretch / manual-gain brightening for the dark IR image, yellow **focus peaking**, and a responsive **focusness gauge** with peak-hold (sharp→peak, defocus→~0). Toggle via `WEB_MONITOR_ENABLED` in config.py; opens on `http://<laptop-ip>:8080/`. Open the port on the host firewall: `sudo ufw allow 8080/tcp`.
 
 ### P1 — Attack ghosts + drops at the root
 3. **Add IR coverage** (hardware), then raise `YOLO_CONFIDENCE` and measure the ghost drop on a recorded ghost-heavy session.
 4. **Auto exclusion mask on Go-Live.** Grid cells with persistent MOG2 motion but ~never a confirmed skeleton → masked. Safe because the scene is fixed per show. Replaces most of what `_crossval_motion_filter` does today, at the source. (This is TRACKING_PLAN "Phase 4 ghost suppression," moved upstream.)
 
-### P2 — Make setup automatic
+### P2 — Make setup automatic  *(in progress — separate agent, 2026-06-08: "Go-Live scaffolding")*
 5. **Auto-calibrate** on Go-Live: `PERSON_HEIGHT_PX` = median YOLO detection height (set min/max ratios from the spread); MOG2 `varThreshold` from measured background noise σ; report exposure convergence + achieved FPS. Removes the biggest manual knobs. Keep it explicit and logged.
 
-### P3 — Simplify (now that root causes are handled)
+### P3 — Simplify (now that root causes are handled)  *(design: [P3_FUSION_SIMPLIFICATION.md](P3_FUSION_SIMPLIFICATION.md))*
 6. **Collapse the two per-frame MOG2 models** ([bridge @0.001 + crossval @0.005](../application/src/pipeline.py#L353)) into one signal; fold crossval + bridge into **source-weighted Kalman measurements** (one association step, not a 7-step + 3-tier decision tree).
 7. **Decommission/relax** the swap correctors and slot-7-derived gates (per §3a); replace with a few generalizable rules.
 
 ### P4 — Lock it in
 8. **Regression fixtures** from 2–3 recorded sessions (the JSONL logging + [analyze_session.py](../application/analyze_session.py) already exist — this is half-built). Add tests for the ROI→letterbox→unscale coordinate transforms and config validation (per AUDIT.md).
+
+### Progress log
+- **2026-06-08**
+  - **P0 DONE** — smartphone web monitor + Focus mode + top-bar QR button.
+  - **Startup crash fixed** — `kornia_rs` AVX2 SIGILL on the dev box (see §5b).
+  - **All TensorRT engines rebuilt** for **yolo11 and yolo26** (n/s/m/l/x × {640,800,960,1280,1536,1920}) on TRT 11.0.0.114; the stale-engine breakage is resolved. `build_engines.{sh,bat}` now fetch/harvest yolo26; yolo26 weights moved into `models/`.
+  - **P2 started** by a separate agent (Go-Live scaffolding).
+  - **P3 design** captured in [P3_FUSION_SIMPLIFICATION.md](P3_FUSION_SIMPLIFICATION.md) (analysis only — implementation deferred to avoid colliding with the P2 agent; see that doc's collision map).
+  - Still open: yolo26↔yolo11 A/B on a recorded session; P1 (IR + auto exclusion mask); P3/P4 implementation.
 
 ---
 
