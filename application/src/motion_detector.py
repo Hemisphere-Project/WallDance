@@ -609,7 +609,7 @@ class MotionDetector:
         if len(blobs) <= 1:
             return blobs
 
-        merge_gap = person_height * 0.25
+        merge_gap = person_height * 0.5
         merged_flags = [False] * len(blobs)
         result: list = []
 

@@ -200,6 +200,13 @@ SHADOW_TRACK_VELOCITY_CORR = 0.80       # Velocity cosine similarity threshold
 SHADOW_TRACK_FRAMES = 12                # Consecutive shadow-correlated frames
                                          # before a track is killed
 
+# Duplicate-track merge — when two *established* tracks consistently
+# occupy the same position they are almost certainly the same dancer
+# tracked twice (e.g. D1/D7 in session 20260403).  The younger/lower-
+# hit track is absorbed into the older one.
+TRACKER_DUPLICATE_MERGE_PROXIMITY = 0.3  # Centroids within person_height × this
+TRACKER_DUPLICATE_MERGE_FRAMES = 8       # Consecutive close frames to trigger merge
+
 # Production refinements — identity lock, close-dancing resilience
 # Once a track is established (hits >= TRACKER_ESTABLISHED_FRAMES), it
 # gets special treatment to preserve identity during close dancing.

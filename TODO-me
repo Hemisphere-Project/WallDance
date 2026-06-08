@@ -1,13 +1,12 @@
 
 TODO =
 + mirror horizontal camera (+ rotate 90°)
-++ mask sides / ROI         
 ++ Motion detect fallback avant Yolo (pour petits guguss sur fond fixe)
-- Desactiver mise à jour auto Windows
-++ password and accounts !
++++ issues on merging tracks (yolo AND motion)
 
 
 DONE =
+++ mask sides / ROI         
 +++ launcher update broken !! -> git stash shit
 +++ camera selection weird avec IDS (plante ou necessite refresh+start)
 + clamp IDS exposure time to allow 15fps   

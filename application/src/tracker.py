@@ -24,6 +24,7 @@ from config import (
     TRACKER_DORMANT_VELOCITY_DECAY,
     SHADOW_TRACK_VELOCITY_CORR, SHADOW_TRACK_FRAMES,
     SHADOW_PROXIMITY_RATIO,
+    TRACKER_DUPLICATE_MERGE_PROXIMITY, TRACKER_DUPLICATE_MERGE_FRAMES,
     TRACKER_ESTABLISHED_MAX_AGE_MULT, TRACKER_CLOSE_PROXIMITY_RATIO,
     TRACKER_CLOSE_POS_WEIGHT, TRACKER_CLOSE_KPT_WEIGHT,
     TRACKER_CLOSE_SIZE_WEIGHT, TRACKER_ESTABLISHED_SEP_BOOST,
@@ -80,7 +81,7 @@ class DormantSnapshot:
     """
     __slots__ = ('track_id', 'last_position', 'velocity', 'keypoints',
                  'confidence', 'bbox_height', 'age', 'was_occluded',
-                 'exited_from_edge', 'hits', 'track_age', 'vx_history',
+                 'exited_from_edge', 'was_ghost', 'hits', 'track_age', 'vx_history',
                  'pose_history', 'position_history', 'confidence_history',
                  'bbox_area_history', 'smoothed_centroid',
                  'last_match_frame', 'last_occluded_frame',
@@ -88,7 +89,8 @@ class DormantSnapshot:
                  'last_merge_frame', 'merge_episode_start_frame',
                  'merge_episode_id')
 
-    def __init__(self, track: 'DancerTrack', exited_from_edge: bool = True):
+    def __init__(self, track: 'DancerTrack', exited_from_edge: bool = True,
+                 was_ghost: bool = False):
         self.track_id: int = track.track_id
         self.last_position: np.ndarray = track.get_last_known_position().copy()
         self.velocity: np.ndarray = track.get_velocity().copy()
@@ -98,6 +100,7 @@ class DormantSnapshot:
         self.age: int = 0  # frames since entering dormant pool
         self.was_occluded: bool = getattr(track, '_occluded', False)
         self.exited_from_edge: bool = exited_from_edge
+        self.was_ghost: bool = was_ghost
         self.hits: int = int(track.hits)
         self.track_age: int = int(track.age)
         self.vx_history = [float(v) for v in track._vx_history]
@@ -161,6 +164,7 @@ class DancerTrack:
         self.time_since_update = 0
         self._occluded = False           # True when hidden behind another track
         self._shadow_streak = 0          # Consecutive frames detected as shadow
+        self._duplicate_merge_streak: dict[int, int] = {}  # track_id → consecutive close frames
         self._fractional_age = 0.0       # Sub-frame occlusion aging accumulator
         self.smoothing_depth = smoothing_depth
 
@@ -282,6 +286,11 @@ class DancerTrack:
             # the track walks across the entire image.
             self.kf.x[2:4] *= MOTION_BRIDGE_VELOCITY_FRICTION
             self.kf.x[4:6] *= 0.3
+            # Aggressively inflate position covariance so the Mahalanobis
+            # gate stays wide open for YOLO re-acquisition.  After 10
+            # bridge frames: 1.5^10 ≈ 57×, enough for ~400px divergence.
+            self.kf.P[:2, :2] *= 1.5
+            self.kf.P[2:4, 2:4] *= 1.3  # velocity uncertainty too
 
         self.kf.predict()
         self.age += 1
@@ -305,6 +314,20 @@ class DancerTrack:
         # Final safety: kill any remaining NaN/inf in state
         if not np.all(np.isfinite(self.kf.x)):
             self.kf.x = np.nan_to_num(self.kf.x, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        # Clamp position to within frame bounds — prevents tracks from
+        # predicting off-screen and becoming un-matchable.
+        pos = self.kf.x[:2].flatten()
+        own_h = max(10.0, float(self.bbox[3]))
+        margin = own_h * 0.5
+        # Use bbox as proxy for frame size (tracks know their bbox)
+        # Actual clamping happens via the content bounds set by pipeline
+        if pos[0] < -margin:
+            self.kf.x[0, 0] = -margin
+            self.kf.x[2, 0] = 0.0  # kill velocity pointing further out
+        if pos[1] < -margin:
+            self.kf.x[1, 0] = -margin
+            self.kf.x[3, 0] = 0.0
         
         return self.kf.x[:2].flatten()
     
@@ -862,14 +885,20 @@ class DancerTracker:
         except np.linalg.LinAlgError:
             maha_sq = 0.0
 
-        if maha_sq <= TRACKER_MAHALANOBIS_GATE:
+        # Widen gate for bridged tracks — their Kalman state is
+        # approximate and we want YOLO to recapture them easily.
+        effective_gate = TRACKER_MAHALANOBIS_GATE
+        if track.bridge_frames > 0:
+            effective_gate *= 3.0
+
+        if maha_sq <= effective_gate:
             return True
 
         self.logger.log("MAHALANOBIS_GATE", {
             "det": det_idx,
             "track_id": track.track_id,
             "chi2": round(maha_sq, 1),
-            "gate": TRACKER_MAHALANOBIS_GATE,
+            "gate": effective_gate,
             "dist_px": round(float(np.linalg.norm(innov)), 1),
         })
         return False
@@ -1881,6 +1910,15 @@ class DancerTracker:
         best_score = float('inf')
 
         for i, snap in enumerate(self._dormant):
+            # Never resurrect ghost-expired tracks — they were noise.
+            if snap.was_ghost:
+                continue
+
+            # Don't resurrect tracks that barely existed — they were
+            # likely spurious detections, not real dancers.
+            if snap.hits < 3:
+                continue
+
             # --- Position gate (velocity-projected) ---
             projected = snap.projected_position()
             dist = np.linalg.norm(det_centroid - projected)
@@ -2983,6 +3021,11 @@ class DancerTracker:
         # consecutive shadow-correlated frames.
         self._detect_shadow_tracks()
 
+        # ---- Duplicate established-track merge ----
+        # Two established tracks at the same position for several
+        # frames are the same dancer — absorb the younger one.
+        self._merge_duplicate_tracks()
+
     def _effective_max_age_for_track(self, track: DancerTrack) -> tuple[int, bool]:
         """Return effective expiry age and edge-exit classification for a track."""
         last_x = float(track.get_last_known_position()[0])
@@ -2994,9 +3037,11 @@ class DancerTracker:
             effective_max_age = int(self.max_age * TRACKER_ESTABLISHED_MAX_AGE_MULT)
         return effective_max_age, at_edge
 
-    def _retire_track_to_dormant(self, track: DancerTrack, at_edge: bool):
+    def _retire_track_to_dormant(self, track: DancerTrack, at_edge: bool,
+                                  was_ghost: bool = False):
         """Move an expired active track into the dormant pool with logging."""
-        self._dormant.append(DormantSnapshot(track, exited_from_edge=at_edge))
+        self._dormant.append(DormantSnapshot(track, exited_from_edge=at_edge,
+                                            was_ghost=was_ghost))
         self.logger.log("DORMANT", {
             "track_id": track.track_id,
             "was_occluded": track._occluded,
@@ -3030,7 +3075,7 @@ class DancerTracker:
                     "hits": track.hits,
                     "hit_rate": round(track.hits / max(1, track.age), 3),
                 })
-                self._retire_track_to_dormant(track, at_edge)
+                self._retire_track_to_dormant(track, at_edge, was_ghost=True)
                 continue
 
             still_alive.append(track)
@@ -3218,3 +3263,77 @@ class DancerTracker:
         if to_kill:
             self.tracks = [t for t in self.tracks
                            if t.track_id not in to_kill]
+
+    def _merge_duplicate_tracks(self):
+        """Merge established tracks that consistently occupy the same position.
+
+        When two established tracks have centroids within
+        TRACKER_DUPLICATE_MERGE_PROXIMITY × person_height for
+        TRACKER_DUPLICATE_MERGE_FRAMES consecutive frames, the younger
+        (fewer hits) track is absorbed into the older one.  This solves
+        the D1/D7-style problem where motion-first spawns a duplicate
+        that YOLO later promotes to established.
+        """
+        merge_dist = self.distance_threshold * TRACKER_DUPLICATE_MERGE_PROXIMITY
+        absorbed = set()
+        # Track which pairs were close this frame so we can reset streaks
+        close_this_frame: dict[int, set[int]] = {}
+
+        established = [t for t in self.tracks
+                       if t.is_established and t.time_since_update <= 1]
+
+        for i, ta in enumerate(established):
+            if ta.track_id in absorbed:
+                continue
+            ca = ta.get_centroid()
+            for j in range(i + 1, len(established)):
+                tb = established[j]
+                if tb.track_id in absorbed:
+                    continue
+                cb = tb.get_centroid()
+                dist = float(np.linalg.norm(ca - cb))
+                if dist > merge_dist:
+                    continue
+
+                # Both established and close — bump streak on the
+                # lower-quality / younger track.
+                if ta.hits >= tb.hits:
+                    keeper, victim = ta, tb
+                else:
+                    keeper, victim = tb, ta
+
+                # Update streak
+                streak = victim._duplicate_merge_streak.get(keeper.track_id, 0) + 1
+                victim._duplicate_merge_streak[keeper.track_id] = streak
+                close_this_frame.setdefault(victim.track_id, set()).add(keeper.track_id)
+
+                if streak >= TRACKER_DUPLICATE_MERGE_FRAMES:
+                    absorbed.add(victim.track_id)
+                    self.logger.log("TRACK_MERGED", {
+                        "victim_id": victim.track_id,
+                        "keeper_id": keeper.track_id,
+                        "victim_hits": victim.hits,
+                        "keeper_hits": keeper.hits,
+                        "distance": round(dist, 1),
+                        "streak": streak,
+                    })
+                    if TRACKER_DEBUG:
+                        print(f"[TRACKER] Duplicate merge: #{victim.track_id} "
+                              f"(hits={victim.hits}) absorbed into "
+                              f"#{keeper.track_id} (hits={keeper.hits}), "
+                              f"dist={dist:.0f}, streak={streak}")
+
+        # Reset streaks for pairs that were NOT close this frame
+        for track in self.tracks:
+            if track.track_id in absorbed:
+                continue
+            close_partners = close_this_frame.get(track.track_id, set())
+            stale_keys = [k for k in track._duplicate_merge_streak
+                          if k not in close_partners]
+            for k in stale_keys:
+                del track._duplicate_merge_streak[k]
+
+        # Remove absorbed tracks
+        if absorbed:
+            self.tracks = [t for t in self.tracks
+                           if t.track_id not in absorbed]
