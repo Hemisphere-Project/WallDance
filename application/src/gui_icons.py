@@ -17,3 +17,4 @@ class Icons:
     STEP_BACKWARD = "\uf048"
     CIRCLE = "\uf111"
     SHIELD = "\uf3ed"  # Shield-alt for safe defaults
+    QRCODE = "\uf029"  # QR code \u2014 opens the phone monitor link

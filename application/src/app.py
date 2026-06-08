@@ -375,8 +375,21 @@ class WallDanceApp:
             "camera_reconnecting": self._camera_reconnecting,
         }
 
+    def _show_qr(self):
+        """Show a QR code so a phone can open the web monitor URL."""
+        mon = self._web_monitor
+        if mon is None or not mon.running:
+            if self.gui:
+                self.gui.show_toast(
+                    "Web monitor is off (set WEB_MONITOR_ENABLED=True)",
+                    color=(255, 180, 80))
+            return
+        if self.gui:
+            self.gui.show_qr_dialog(mon.url(), mon.qr_matrix())
+
     def _get_gui_callbacks(self) -> Dict:
         return {
+            "show_qr": self._show_qr,
             "on_enhance_toggle": self._cb_enhance_toggle,
             "on_enhance_lite_toggle": self._cb_enhance_lite_toggle,
             "on_enhance_force_toggle": self._cb_enhance_force_toggle,

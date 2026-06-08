@@ -376,7 +376,19 @@ def build_top_bar(gui: Any):
                     dpg.bind_item_font(safe_btn, gui._icon_font)
                 with dpg.tooltip(safe_btn):
                     dpg.add_text("Click: Load safe defaults\nCtrl+click: Save as safe defaults")
-                
+
+                qr_btn = dpg.add_button(
+                    label=Icons.QRCODE,
+                    tag="topbar_qr_btn",
+                    width=scaled(20),
+                    height=scaled(20),
+                    callback=gui._on_show_qr,
+                )
+                if gui._icon_font:
+                    dpg.bind_item_font(qr_btn, gui._icon_font)
+                with dpg.tooltip(qr_btn):
+                    dpg.add_text("Phone monitor: show a QR code to open the web UI")
+
                 save_ind = dpg.add_text(Icons.CHECK, tag="save_indicator", color=(100, 255, 100), show=False)
                 if gui._icon_font:
                     dpg.bind_item_font(save_ind, gui._icon_font)

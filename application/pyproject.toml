@@ -15,6 +15,7 @@ dependencies = [
     "filterpy>=1.4.5",
     "python-osc>=1.8.0",
     "dearpygui>=2.0.0",
+    "segno>=1.5",
 ]
 
 [project.optional-dependencies]

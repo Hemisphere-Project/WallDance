@@ -2035,7 +2035,79 @@ class WallDanceGUI:
         """Hide the TensorRT prompt dialog."""
         if dpg.does_item_exist("tensorrt_prompt_modal"):
             dpg.delete_item("tensorrt_prompt_modal")
-    
+
+    def _on_show_qr(self):
+        """Top-bar QR button → ask the app to show the phone-monitor QR."""
+        cb = self.callbacks.get('show_qr')
+        if cb:
+            cb()
+
+    def show_qr_dialog(self, url: str, matrix=None):
+        """Modal showing a QR code (and the URL) for the phone web monitor.
+
+        ``matrix`` is a list of rows of bools (QR modules) or None — when None
+        the URL is still shown as text so it can be typed manually.
+        """
+        if dpg.does_item_exist("qr_modal"):
+            dpg.delete_item("qr_modal")
+
+        border = 3
+        if matrix:
+            n = len(matrix)
+            ps = max(4, scaled(300) // (n + 2 * border))
+            canvas = (n + 2 * border) * ps
+        else:
+            canvas = scaled(240)
+
+        vp_w = dpg.get_viewport_width()
+        vp_h = dpg.get_viewport_height()
+        modal_w = canvas + scaled(40)
+        modal_h = canvas + scaled(150)
+
+        def on_close():
+            if dpg.does_item_exist("qr_modal"):
+                dpg.delete_item("qr_modal")
+
+        with dpg.window(
+            label="Phone Monitor",
+            modal=True,
+            tag="qr_modal",
+            width=modal_w,
+            height=modal_h,
+            pos=[vp_w // 2 - modal_w // 2, vp_h // 2 - modal_h // 2],
+            no_resize=True,
+            no_collapse=True,
+        ):
+            dpg.add_spacer(height=scaled(6))
+            dpg.add_text("Scan with a phone on the same Wi-Fi / hotspot:")
+            dpg.add_spacer(height=scaled(6))
+            if matrix:
+                with dpg.drawlist(width=canvas, height=canvas):
+                    dpg.draw_rectangle((0, 0), (canvas, canvas),
+                                       fill=(255, 255, 255, 255), color=(255, 255, 255, 255))
+                    for r, row in enumerate(matrix):
+                        y = (border + r) * ps
+                        ncols = len(row)
+                        c = 0
+                        while c < ncols:  # merge runs of dark modules into one rect
+                            if row[c]:
+                                c0 = c
+                                while c < ncols and row[c]:
+                                    c += 1
+                                dpg.draw_rectangle(((border + c0) * ps, y),
+                                                   ((border + c) * ps, y + ps),
+                                                   fill=(0, 0, 0, 255), color=(0, 0, 0, 255))
+                            else:
+                                c += 1
+            else:
+                dpg.add_text("(install 'segno' in the venv to show a QR code)",
+                             color=(220, 170, 90))
+            dpg.add_spacer(height=scaled(8))
+            dpg.add_input_text(default_value=url, readonly=True, width=canvas)
+            dpg.add_spacer(height=scaled(8))
+            dpg.add_button(label="Close", callback=on_close, width=scaled(100))
+
+
     def show_toast(self, message: str, duration: float = 3.0, color: tuple = (255, 200, 100)):
         """Show a temporary toast notification at top-left of preview area.
         

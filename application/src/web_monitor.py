@@ -94,6 +94,7 @@ function applyState(s){
   const bf=document.getElementById('btnFocus'), ba=document.getElementById('btnAuto');
   bf.textContent='Focus mode: '+(focusOn?'ON':'OFF'); bf.className=focusOn?'focus':'';
   ba.textContent='Bright: '+(autoOn?'AUTO':'MANUAL'); ba.className=autoOn?'on':'';
+  ba.style.display=focusOn?'':'none';   // Bright toggle only relevant in Focus mode
   document.getElementById('gainwrap').style.display=(focusOn&&!autoOn)?'flex':'none';
   if(typeof s.focus_gain==='number'){
     document.getElementById('gain').value=s.focus_gain;
@@ -198,6 +199,29 @@ class WebMonitor:
     @property
     def running(self) -> bool:
         return self._running
+
+    def url(self) -> str:
+        """The address a phone on the same network should open."""
+        host = self.host
+        if host in ("0.0.0.0", "", "::"):
+            host = get_lan_ip()
+        return f"http://{host}:{self.port}/"
+
+    def qr_matrix(self) -> Optional[list]:
+        """QR modules (list of rows of bool) for the webui URL, or None.
+
+        Uses the optional ``segno`` package (pure-Python).  Returns None if it
+        is not installed so the caller can fall back to showing the URL text.
+        """
+        try:
+            import segno
+        except Exception:
+            return None
+        try:
+            qr = segno.make(self.url(), error="m")
+            return [[bool(c) for c in row] for row in qr.matrix]
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------
     # Frame intake (called from the app render loop)
