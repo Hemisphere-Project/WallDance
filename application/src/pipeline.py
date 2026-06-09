@@ -664,16 +664,18 @@ class FrameProcessor:
             (lb_scale, pad_x, pad_y, roi_x, roi_y, True),
             scaled_person_height, timing)
 
-        # In MOTION_FIRST mode, eagerly detect blobs for synthetic detections
+        # Cold-detection blobs (P3 Stage 3b — always on, no mode toggle):
+        # promote moving blobs YOLO missed to synthetic detections, gated so
+        # only real frame-diff motion outside exclusion zones becomes a
+        # candidate (static textured background never does).
         eager_blobs = None
-        if self._tracking_mode == TrackingMode.MOTION_FIRST and self.bridge_motion_detector is not None:
-            # detect() operates in original-frame coords (not letterboxed),
-            # so pass the un-scaled person_height.
+        if self.bridge_motion_detector is not None:
             eager_blobs = self.bridge_motion_detector.detect(
                 self.settings.person_height_px,
                 aspect_range=MOTION_FIRST_ASPECT_RANGE,
                 include_shadows=MOTION_FIRST_INCLUDE_SHADOWS,
             )
+            eager_blobs = self._gate_cold_blobs(eager_blobs)
 
         # Tracking
         t0 = time.time()
@@ -932,14 +934,15 @@ class FrameProcessor:
             (1.0, 0.0, 0.0, roi_x, roi_y, False),
             self.settings.person_height_px, timing)
 
-        # In MOTION_FIRST mode, eagerly detect blobs for synthetic detections
+        # Cold-detection blobs (P3 Stage 3b — always on, gated; see GPU path).
         eager_blobs = None
-        if self._tracking_mode == TrackingMode.MOTION_FIRST and self.bridge_motion_detector is not None:
+        if self.bridge_motion_detector is not None:
             eager_blobs = self.bridge_motion_detector.detect(
                 self.settings.person_height_px,
                 aspect_range=MOTION_FIRST_ASPECT_RANGE,
                 include_shadows=MOTION_FIRST_INCLUDE_SHADOWS,
             )
+            eager_blobs = self._gate_cold_blobs(eager_blobs)
             # Apply ROI offset to blobs
             if eager_blobs and (roi_x or roi_y):
                 for blob in eager_blobs:
@@ -1062,6 +1065,36 @@ class FrameProcessor:
         gray = self._fixed_gamma_for_motion(gray)
         self._last_motion_gray = gray
         self.motion_model.feed(gray)
+
+    def _gate_cold_blobs(self, blobs):
+        """Keep only cold-detection blobs that show real frame-diff motion and
+        are outside exclusion zones (P3 Stage 3b).
+
+        Cold detection should spawn a track from a *moving* dancer YOLO missed,
+        not from static textured background — which produces MOG2 silhouettes
+        (so ``detect()`` returns it) but no frame-to-frame change.  Blobs are in
+        the motion model's native (ROI-local) coords here, before any letterbox/
+        ROI-offset scaling, so the frame-diff + exclusion checks line up with
+        the mask.
+        """
+        md = self.bridge_motion_detector
+        if not blobs or md is None:
+            return blobs
+        theta_m = self.settings.crossval_motion_min_ratio
+        kept = []
+        for b in blobs:
+            bx, by, bw, bh = b.bbox
+            _blob, ratio = md.frame_diff_blob_in_bbox(
+                float(bx), float(by), float(bw), float(bh), min_ratio=theta_m)
+            if ratio < theta_m:
+                continue
+            nxy = self._exclusion_norm_xy(
+                float(b.centroid[0]), float(b.centroid[1]), md,
+                1.0, 0, 0, 0, 0, True)
+            if nxy is not None and self._exclusion.excluded(*nxy):
+                continue
+            kept.append(b)
+        return kept
 
     def _fixed_gamma_for_motion(self, gray: np.ndarray) -> np.ndarray:
         """Apply ONLY the fixed display gamma to the motion gray — no adaptive

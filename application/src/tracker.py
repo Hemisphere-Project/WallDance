@@ -2041,10 +2041,12 @@ class DancerTracker:
         """
         frame_ctx = self._begin_frame_update(frame_number)
 
-        # In MOTION_FIRST mode, fuse motion blobs as synthetic detections
+        # Fuse cold-detection motion blobs as synthetic detections (P3 Stage 3b:
+        # always on, no mode toggle).  Blobs are pre-gated by the pipeline
+        # (frame-diff motion + exclusion), so only real moving dancers YOLO
+        # missed become candidates.
         n_yolo = len(detections)
-        if (self.tracking_mode == TrackingMode.MOTION_FIRST
-                and motion_blobs):
+        if motion_blobs:
             detections = self._fuse_motion_blobs(detections, motion_blobs)
         frame_ctx.n_yolo_detections = n_yolo
         frame_ctx.n_total_detections = len(detections)
