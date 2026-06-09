@@ -552,25 +552,20 @@ MOTION_FIRST_WARMUP_FRAMES = 60         # Suppress blobs during MOG2 warmup
 MOTION_FIRST_STATIC_BLOB_FRAMES = 90    # Suppress blobs static for this many frames
 
 # =============================================================================
-# CROSS-VALIDATION: YOLO × MOG2 motion confirmation
+# CROSS-VALIDATION: scored detection gate (P3 Stage 3a)
 # =============================================================================
-# Reject YOLO detections whose bbox region shows insufficient MOG2
-# foreground activity.  A real dancer moves; painted background patterns
-# do not.  This lets you keep YOLO confidence LOW (catching awkward poses)
-# while still rejecting background false positives.
+# Reject background false positives so YOLO confidence can stay LOW (catching
+# awkward poses).  A detection is kept if it has a strong skeleton OR shows
+# recent FRAME-DIFF motion (θ_m) OR overlaps a live track; else rejected.
+# Frame-diff — not MOG2 foreground — is the motion signal: static textured
+# background + slow lighting drift read as MOG2 foreground but produce no
+# frame-to-frame change, so frame-diff is the ghost killer MOG2 cannot be.
+# (The former 7-step tree's warmup/sticky/reacquire/min-fg constants were
+# retired in Stage 3d.)
 MOTION_CROSSVAL_ENABLED = True           # Master toggle for cross-validation
-MOTION_CROSSVAL_MIN_FG_RATIO = 0.05      # Min fraction of foreground pixels
-                                          # inside the bbox to confirm it.
-                                          # 0.05 = 5% of pixels must be moving.
-MOTION_CROSSVAL_CORE_SCALE = 0.6         # Use the center 60% of the bbox for
-                                          # motion validation to avoid dilution
-                                          # from loose top-shot boxes.
 MOTION_CROSSVAL_EMA_ALPHA = 0.65         # Temporal smoothing for per-region
                                           # motion score. Higher = trust current
                                           # frame more, lower = more hysteresis.
-MOTION_CROSSVAL_STICKY_RATIO = 0.75      # Accept if smoothed score stays above
-                                          # min_fg_ratio × this, even when the
-                                          # current frame dips briefly.
 MOTION_CROSSVAL_CELL_RATIO = 0.5         # Spatial memory cell size as a fraction
                                           # of person_height for hysteresis.
 MOTION_CROSSVAL_EXISTING_TRACK_BYPASS = True  # If a detection overlaps an
@@ -585,25 +580,12 @@ MOTION_CROSSVAL_BYPASS_MIN_WARMUP = 2.0  # Min warmup score for bypass eligibili
                                           # from bypassing crossval. A track needs
                                           # at least 1 successful re-match (score 2.0)
                                           # before it can shield nearby detections.
-MOTION_CROSSVAL_WARMUP_FRAMES = 90       # Disable cross-val during first N
-                                          # frames while MOG2 settles.
-MOTION_CROSSVAL_WARMUP_MIN_KPTS = 8      # During warmup (cross-val off),
-                                          # still require this many valid
-                                          # keypoints to prevent ghost floods.
-MOTION_CROSSVAL_WARMUP_MIN_CONF = 0.40   # During warmup, require mean conf
-                                          # above this for detections to pass.
-
-# MOG2 adaptive learning rate — faster than bridge mode so lighting
-# drift gets absorbed quickly while dancers (who move) stay foreground.
-MOTION_CROSSVAL_MOG2_LEARN_RATE = 0.005  # 5× faster than bridge default
 MOTION_LOWLIGHT_LUMA_THRESHOLD = 55      # Below this, assume sensor noise dominates
 MOTION_LOWLIGHT_MEDIAN_KERNEL = 5        # Extra median filter for noisy low-light frames
 MOTION_CROSSVAL_LOWLIGHT_RATIO_MULT = 1.2  # Require more motion in low light
                                           # (reduced from 1.6 — cleaned mask +
                                           # coherence + adaptive varThreshold
                                           # already handle noise at source)
-MOTION_CROSSVAL_LOWLIGHT_MIN_VALID_KPTS = 5  # Weak skeletons below this are suspect
-MOTION_CROSSVAL_LOWLIGHT_MIN_MEAN_CONF = 0.42  # Mean visible-kpt conf floor for new tracks
 MOTION_LOWLIGHT_VAR_THRESHOLD_MULT = 2.0 # Multiply MOG2 varThreshold in low light
                                          # Higher = fewer noise pixels classified as
                                          # foreground.  2.0 → varThreshold 80 when dim.
@@ -612,13 +594,6 @@ MOTION_CROSSVAL_MIN_COHERENCE = 0.35     # Min fraction of foreground pixels tha
                                          # inside a query bbox.  Below this, the fg is
                                          # scattered noise, not a coherent motion blob.
                                          # 0.0 = disable coherence check.
-MOTION_CROSSVAL_REACQUIRE_FRAMES = 15    # After this many consecutive frames with
-                                         # zero confirmed tracks, temporarily relax
-                                         # cross-validation so strong skeletons can
-                                         # create new tracks (fast recovery).
-MOTION_CROSSVAL_REACQUIRE_MIN_KPTS = 7   # Skeleton quality floor for re-acquisition
-                                         # pass (higher than normal to avoid ghosts).
-MOTION_CROSSVAL_REACQUIRE_MIN_CONF = 0.35  # Confidence floor for re-acquisition.
 
 # "Very confident" skeleton pass — detections with a strong, well-resolved
 # skeleton are accepted without MOG2 confirmation.  This handles the case

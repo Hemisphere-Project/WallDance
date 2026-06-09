@@ -251,10 +251,14 @@ def main():
     ap.add_argument("--imgsz", type=int, default=None)
     ap.add_argument("--start", type=int, default=0)
     ap.add_argument("--frames", type=int, default=None)
+    ap.add_argument("--var", type=float, default=None,
+                    help="override mog2_var_threshold (Stage 3c measurement)")
     ap.add_argument("--out", default=None, help="write JSON summary to this path")
     args = ap.parse_args()
 
     config = _latest_config(args.project) or {}
+    if args.var is not None:
+        config["mog2_var_threshold"] = args.var
     video = args.video or _find_recording(args.project, args.slot)
     if not video:
         sys.exit(f"no recording found for {args.project} slot {args.slot}")

@@ -790,12 +790,6 @@ class DancerTracker:
     def _bridge_gate_sensitivity_mult(self) -> float:
         return 1.0 + 0.85 * self._motion_bridge_sensitivity
 
-    def _bridge_min_area_scale(self) -> float:
-        return max(0.22, 1.0 - 0.70 * self._motion_bridge_sensitivity)
-
-    def _bridge_min_height_ratio(self) -> float:
-        return max(0.16, 0.30 - 0.12 * self._motion_bridge_sensitivity)
-
     def _bridge_local_min_motion_ratio(self) -> float:
         return max(0.003, MOTION_BRIDGE_LOCAL_MIN_FG_RATIO * (1.0 - 0.75 * self._motion_bridge_sensitivity))
 
