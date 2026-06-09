@@ -57,6 +57,7 @@ from config import (
     MOTION_CROSSVAL_REACQUIRE_MIN_CONF,
     MOTION_CROSSVAL_BYPASS_MIN_WARMUP,
     MOTION_CROSSVAL_CONFIDENT_MIN_KPTS,
+    MOTION_CROSSVAL_FRAMEDIFF_MIN_RATIO,
     MOTION_CROSSVAL_CONFIDENT_MIN_CONF,
 )
 from background import BackgroundSubtractor
@@ -99,6 +100,11 @@ class ProcessingSettings:
     motion_sensitivity: float = MOTION_BRIDGE_SENSITIVITY
     person_height_min_ratio: float = PERSON_HEIGHT_MIN_RATIO
     person_height_max_ratio: float = PERSON_HEIGHT_MAX_RATIO
+    # P3 Stage 3a scored-gate thresholds (θ_s = strong-skeleton, θ_m = frame-diff
+    # motion).  Exposed here so the Stage-4 known-N calibration can tune them.
+    crossval_skel_min_kpts: int = MOTION_CROSSVAL_CONFIDENT_MIN_KPTS
+    crossval_skel_min_conf: float = MOTION_CROSSVAL_CONFIDENT_MIN_CONF
+    crossval_motion_min_ratio: float = MOTION_CROSSVAL_FRAMEDIFF_MIN_RATIO
     brightness_threshold: int = 60  # Auto-bypass threshold (0-255)
     denoise_strength: float = 0.0   # Temporal denoising (0.0-1.0)
     greyscale: bool = False         # Convert to greyscale (mono camera simulation)
@@ -1041,19 +1047,40 @@ class FrameProcessor:
         return out
 
     def _feed_motion_detectors(self, gray: np.ndarray) -> None:
-        """Feed the single motion model from one grayscale frame."""
+        """Feed the single motion model from one grayscale frame.
+
+        Bug #1 fix (P3 Stage 3): feed a FIXED gray, NOT the per-frame adaptive
+        CLAHE+gamma display signal.  Adaptive CLAHE amplifies noise differently
+        each frame, so the textured background registers fake frame-to-frame
+        "motion" — which the Stage-3a scored gate reads as a moving dancer and
+        admits as a ghost.  A fixed gray keeps the frame-diff signal temporally
+        clean (its whole point).  MotionModel applies an optional FIXED gamma
+        (frame-independent, no jitter) to lift dark IR for MOG2 silhouettes.
+        """
         if self.motion_model is None:
             return
-        # Apply the same CLAHE + gamma used for YOLO / preview so the motion
-        # model sees the contrast-enhanced image.
-        # NOTE: Bug #1 (per-frame adaptive CLAHE before MOG2) is fixed in
-        # Stage 3, where it is coupled with the varThreshold retune + frame-diff
-        # crossval.  Keeping the historical enhanced-gray feed here lets Stage 2
-        # isolate a single behavior change (one slow MOG2 for crossval).
-        gray = self._enhance_gray_for_motion(gray)
-        # Handle on the exact signal MOG2 consumes (Go-Live noise calibration).
+        gray = self._fixed_gamma_for_motion(gray)
         self._last_motion_gray = gray
         self.motion_model.feed(gray)
+
+    def _fixed_gamma_for_motion(self, gray: np.ndarray) -> np.ndarray:
+        """Apply ONLY the fixed display gamma to the motion gray — no adaptive
+        CLAHE (Bug #1 fix).
+
+        Gamma is a frame-independent monotonic LUT, so it lifts dark IR for both
+        MOG2 silhouettes and frame-diff WITHOUT introducing the per-frame noise
+        amplification that adaptive CLAHE does.  This is what keeps the
+        frame-diff ghost signal temporally clean while the dancer stays visible.
+        """
+        gamma = self.enhancer.gamma
+        if gamma == 1.0:
+            return gray
+        if self._motion_gamma_lut is None or self._motion_gamma_val != gamma:
+            inv = 1.0 / gamma
+            self._motion_gamma_lut = np.array(
+                [((i / 255.0) ** inv) * 255 for i in range(256)], dtype=np.uint8)
+            self._motion_gamma_val = gamma
+        return cv2.LUT(gray, self._motion_gamma_lut)
 
     @property
     def bridge_motion_detector(self):
@@ -1381,61 +1408,52 @@ class FrameProcessor:
         roi_y: float = 0.0,
         roi_local_after_unscale: bool = False,
     ):
-        """Reject YOLO detections that do not show enough recent motion.
+        """Ghost-reject YOLO detections with a single scored gate (P3 Stage 3a).
 
-        Decision tree (first match wins):
-          1. BYPASS    — detection overlaps a recently-matched track
-          2. MOTION    — MOG2 foreground ratio exceeds threshold
-          3. HYSTERESIS — smoothed EMA score above sticky threshold
-          4. CONFIDENT — strong skeleton (≥8 kpts, ≥0.45 conf)
-          5. REACQUIRE — no tracks for N frames, decent skeleton
-          6. REJECT
+        Keeps a detection if ANY of:
+          • SKELETON — strong, well-resolved skeleton (θ_s: kpts + mean conf)
+          • MOTION   — recent FRAME-DIFF motion in the box (θ_m).  Frame-diff,
+                       not MOG2 foreground: static textured background + slow
+                       lighting drift read as MOG2 foreground but show NO
+                       frame-to-frame change, so this rejects exactly those
+                       ghosts while catching a moving (new) dancer.
+          • TRACK    — overlaps a live, motion-confirmed track (continuity).
+        Else REJECT.  (Detections in masked dead zones are dropped upstream by
+        the P1.4 exclusion step.)  This replaces the former 7-step tree.
 
         Returns:
             Tuple of (kept_detections, stats_dict)
         """
         stats = {
+            "crossval_kept_skeleton": 0,
             "crossval_kept_motion": 0,
-            "crossval_kept_hysteresis": 0,
-            "crossval_kept_bypass": 0,
-            "crossval_kept_confident": 0,
-            "crossval_kept_reacquire": 0,
-            "crossval_rejected_low_motion": 0,
-            "crossval_rejected_weak_skeleton": 0,
-            "crossval_rejected_warmup_quality": 0,
+            "crossval_kept_track": 0,
+            "crossval_rejected": 0,
             "crossval_skip_disabled": 0,
-            "crossval_skip_no_mask": 0,
-            "crossval_skip_warmup": 0,
+            "crossval_skip_no_motion": 0,
         }
         if not MOTION_CROSSVAL_ENABLED:
             stats["crossval_skip_disabled"] = 1
             return detections, stats
-        if motion_det is None or not motion_det.has_mask:
-            stats["crossval_skip_no_mask"] = 1
+        if motion_det is None:
+            stats["crossval_skip_no_motion"] = 1
             return detections, stats
-
-        # During MOG2 warmup, cross-validation is off but apply skeleton
-        # quality filter to prevent ghost floods at low YOLO confidence.
-        if motion_det.frame_count < MOTION_CROSSVAL_WARMUP_FRAMES:
-            stats["crossval_skip_warmup"] = 1
-            if not detections:
-                return detections, stats
-            kept_warmup = []
-            for kpts, conf, bbox in detections:
-                visible = conf > KEYPOINT_CONFIDENCE
-                n_valid = int(np.sum(visible))
-                mean_conf = (float(np.mean(conf[visible]))
-                             if n_valid > 0 else 0.0)
-                if (n_valid >= MOTION_CROSSVAL_WARMUP_MIN_KPTS
-                        and mean_conf >= MOTION_CROSSVAL_WARMUP_MIN_CONF):
-                    kept_warmup.append((kpts, conf, bbox))
-                else:
-                    stats["crossval_rejected_warmup_quality"] += 1
-            return kept_warmup, stats
         if not detections:
             self._crossval_motion_memory = {}
             return detections, stats
 
+        # θ_s / θ_m (calibration-settable; see ProcessingSettings).
+        skel_min_kpts = self.settings.crossval_skel_min_kpts
+        skel_min_conf = self.settings.crossval_skel_min_conf
+        motion_threshold = self.settings.crossval_motion_min_ratio
+        is_lowlight = motion_det.last_brightness < MOTION_LOWLIGHT_LUMA_THRESHOLD
+        if is_lowlight:
+            # Raise the motion bar in low light so sensor noise isn't read as motion.
+            motion_threshold *= MOTION_CROSSVAL_LOWLIGHT_RATIO_MULT
+
+        # TRACK candidates: live tracks near a recently motion-confirmed cell.
+        # The motion-cell guard prevents a static ghost track from granting
+        # continuity to its own re-detection.
         bypass_candidates = []
         bypass_gate = person_height * 0.6
         current_frame = getattr(self.tracker, 'frame_count', 0)
@@ -1445,13 +1463,9 @@ class FrameProcessor:
                     continue
                 if getattr(track, '_warmup_score', 0.0) < MOTION_CROSSVAL_BYPASS_MIN_WARMUP:
                     continue
-                # Only bypass if track centroid is near a recently motion-
-                # confirmed cell.  Wall-painting ghosts sit at static
-                # positions that never produce real MOG2 motion.
                 track_cell = self._crossval_cell_key(track.bbox, person_height)
                 motion_age = current_frame - self._crossval_motion_cells.get(track_cell, -9999)
                 if motion_age > MOTION_CROSSVAL_BYPASS_MAX_AGE * 3:
-                    # Also check adjacent cells (dancer may drift slightly)
                     tx, ty = track_cell
                     any_near = any(
                         (current_frame - self._crossval_motion_cells.get((tx+dx, ty+dy), -9999))
@@ -1463,16 +1477,8 @@ class FrameProcessor:
                         continue
                 bypass_candidates.append(track)
 
-        # Re-acquisition mode: if we have had zero confirmed tracks for too
-        # long, let strong skeletons through to break the death spiral.
-        reacquire_mode = (
-            self._crossval_no_track_frames >= MOTION_CROSSVAL_REACQUIRE_FRAMES
-        )
-
         kept = []
         next_memory: Dict[tuple[int, int], float] = {}
-        sticky_threshold = MOTION_CROSSVAL_MIN_FG_RATIO * MOTION_CROSSVAL_STICKY_RATIO
-        is_lowlight = motion_det.last_brightness < MOTION_LOWLIGHT_LUMA_THRESHOLD
 
         for kpts, conf, bbox in detections:
             cell = self._crossval_cell_key(bbox, person_height)
@@ -1483,102 +1489,51 @@ class FrameProcessor:
             ow = bbox[2] / scale if scale != 1.0 else bbox[2]
             oh = bbox[3] / scale if scale != 1.0 else bbox[3]
             if roi_local_after_unscale:
-                mask_x = ox
-                mask_y = oy
+                mask_x, mask_y = ox, oy
             else:
-                mask_x = ox - roi_x
-                mask_y = oy - roi_y
+                mask_x, mask_y = ox - roi_x, oy - roi_y
 
-            ratio = motion_det.motion_ratio_in_bbox(
-                mask_x, mask_y, ow, oh,
-                core_scale=MOTION_CROSSVAL_CORE_SCALE)
+            # MOTION evidence: frame-diff fraction in the box, EMA-smoothed per
+            # cell so a dancer mid-stride (momentary low motion) doesn't flicker.
+            _blob, raw_motion = motion_det.frame_diff_blob_in_bbox(
+                mask_x, mask_y, ow, oh, min_ratio=motion_threshold)
             prev_score = self._crossval_motion_memory.get(cell, 0.0)
-            smoothed = (MOTION_CROSSVAL_EMA_ALPHA * ratio
-                        + (1.0 - MOTION_CROSSVAL_EMA_ALPHA) * prev_score)
-            next_memory[cell] = smoothed
+            motion = (MOTION_CROSSVAL_EMA_ALPHA * raw_motion
+                      + (1.0 - MOTION_CROSSVAL_EMA_ALPHA) * prev_score)
+            next_memory[cell] = motion
 
+            # SKELETON evidence.
             visible = conf > KEYPOINT_CONFIDENCE
             n_valid = int(np.sum(visible))
-            mean_conf = (float(np.mean(conf[visible]))
-                         if n_valid > 0 else 0.0)
-            motion_threshold = MOTION_CROSSVAL_MIN_FG_RATIO
-            if is_lowlight:
-                motion_threshold *= MOTION_CROSSVAL_LOWLIGHT_RATIO_MULT
+            mean_conf = float(np.mean(conf[visible])) if n_valid > 0 else 0.0
+            skel_ok = n_valid >= skel_min_kpts and mean_conf >= skel_min_conf
 
-            # ── Step 1: BYPASS — near an existing tracked dancer ────────
-            # First priority: if a detection overlaps a recently-matched
-            # track, keep it unconditionally.  This makes tracked dancers
-            # hard to lose during brief low-motion moments.
-            det_centroid = np.array([
-                bbox[0] + bbox[2] * 0.5,
-                bbox[1] + bbox[3] * 0.5,
-            ])
-            bypassed = False
+            # TRACK evidence: overlaps a live, motion-confirmed track.
+            det_centroid = np.array([bbox[0] + bbox[2] * 0.5,
+                                     bbox[1] + bbox[3] * 0.5])
+            near_track = False
             for track in bypass_candidates:
-                track_centroid = track.get_centroid()
-                if float(np.linalg.norm(det_centroid - track_centroid)) > bypass_gate:
-                    if self._bbox_iou_xywh(bbox, track.bbox) <= 0.1:
-                        continue
+                if float(np.linalg.norm(det_centroid - track.get_centroid())) <= bypass_gate:
+                    near_track = True
+                    break
+                if self._bbox_iou_xywh(bbox, track.bbox) > 0.1:
+                    near_track = True
+                    break
+
+            # ── Scored gate ────────────────────────────────────────────
+            if near_track:
                 kept.append((kpts, conf, bbox))
-                stats["crossval_kept_bypass"] += 1
-                bypassed = True
-                break
-            if bypassed:
-                continue
-
-            # ── Step 2: Weak skeleton early rejection (low light) ───────
-            # In low light, ghost detections with few keypoints and poor
-            # confidence are rejected before they can benefit from motion
-            # noise or hysteresis.
-            is_weak_skeleton = (
-                is_lowlight
-                and n_valid < MOTION_CROSSVAL_LOWLIGHT_MIN_VALID_KPTS
-                and mean_conf < MOTION_CROSSVAL_LOWLIGHT_MIN_MEAN_CONF
-            )
-            if is_weak_skeleton and ratio < motion_threshold:
-                stats["crossval_rejected_weak_skeleton"] += 1
-                continue
-
-            # ── Step 3: MOTION — MOG2 confirms real movement ───────────
-            if ratio >= motion_threshold:
-                # Even with motion, reject truly garbage skeletons in low
-                # light that have almost no visible keypoints.
-                if is_lowlight and n_valid <= 2:
-                    stats["crossval_rejected_weak_skeleton"] += 1
-                    continue
+                stats["crossval_kept_track"] += 1
+                self._crossval_motion_cells[cell] = current_frame
+            elif motion >= motion_threshold:
                 kept.append((kpts, conf, bbox))
                 stats["crossval_kept_motion"] += 1
-                # Mark this cell as motion-confirmed for bypass eligibility
                 self._crossval_motion_cells[cell] = current_frame
-                continue
-
-            # ── Step 4: HYSTERESIS — temporal persistence ──────────────
-            if smoothed >= sticky_threshold * (MOTION_CROSSVAL_LOWLIGHT_RATIO_MULT if is_lowlight else 1.0):
+            elif skel_ok:
                 kept.append((kpts, conf, bbox))
-                stats["crossval_kept_hysteresis"] += 1
-                self._crossval_motion_cells[cell] = current_frame
-                continue
-
-            # ── Step 5: CONFIDENT — strong skeleton, no motion needed ──
-            # A very confident detection (many keypoints at high conf) is
-            # accepted without motion proof.  This lets clearly-visible
-            # stationary dancers through while still blocking ghosts.
-            if (n_valid >= MOTION_CROSSVAL_CONFIDENT_MIN_KPTS
-                    and mean_conf >= MOTION_CROSSVAL_CONFIDENT_MIN_CONF):
-                kept.append((kpts, conf, bbox))
-                stats["crossval_kept_confident"] += 1
-                continue
-
-            # ── Step 6: REACQUIRE — death-spiral escape ────────────────
-            if (reacquire_mode
-                    and n_valid >= MOTION_CROSSVAL_REACQUIRE_MIN_KPTS
-                    and mean_conf >= MOTION_CROSSVAL_REACQUIRE_MIN_CONF):
-                kept.append((kpts, conf, bbox))
-                stats["crossval_kept_reacquire"] += 1
-                continue
-
-            # ── Step 7: REJECT ─────────────────────────────────────────
-            stats["crossval_rejected_low_motion"] += 1
+                stats["crossval_kept_skeleton"] += 1
+            else:
+                stats["crossval_rejected"] += 1
 
         self._crossval_motion_memory = next_memory
         return kept, stats

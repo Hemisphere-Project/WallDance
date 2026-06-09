@@ -621,6 +621,14 @@ MOTION_CROSSVAL_REACQUIRE_MIN_CONF = 0.35  # Confidence floor for re-acquisition
 MOTION_CROSSVAL_CONFIDENT_MIN_KPTS = 8   # Min valid keypoints for auto-pass.
 MOTION_CROSSVAL_CONFIDENT_MIN_CONF = 0.45  # Min mean conf for auto-pass.
 
+# P3 Stage 3a — scored detection gate.  A detection is kept if it has a strong
+# skeleton (the CONFIDENT thresholds above) OR shows recent FRAME-DIFF motion
+# OR overlaps a live track.  Frame-diff (not MOG2 foreground) is the motion
+# signal because static textured background + slow lighting drift register as
+# MOG2 foreground but produce NO frame-to-frame change — so this is the ghost
+# killer.  θ_m below is the minimum frame-diff foreground fraction in the box.
+MOTION_CROSSVAL_FRAMEDIFF_MIN_RATIO = 0.02  # θ_m — tuned on residence1-solo
+
 # =============================================================================
 # TRACK WARMUP SCORING — delay output, not tracking
 # =============================================================================

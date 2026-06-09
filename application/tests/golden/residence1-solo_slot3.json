@@ -4,14 +4,14 @@
   "imgsz": 1280,
   "start_frame": 1500,
   "frames_processed": 300,
-  "real_tracks": 4,
-  "marginal_tracks": 2,
-  "ghost_tracks": 4,
-  "total_tracks": 10,
-  "swap_count": 18,
-  "gate_rejections": 155,
-  "dormant_count": 4,
+  "real_tracks": 2,
+  "marginal_tracks": 1,
+  "ghost_tracks": 2,
+  "total_tracks": 5,
+  "swap_count": 0,
+  "gate_rejections": 92,
+  "dormant_count": 3,
   "resurrect_count": 0,
   "zero_detection_frames": 0,
-  "avg_detections": 1.617
+  "avg_detections": 1.13
 }
