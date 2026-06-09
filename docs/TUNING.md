@@ -1,7 +1,8 @@
 # WallDance — Autonomous Detection-Tuning Capability (plan)
 
 **Date:** 2026-06-09
-**Status:** Plan / handoff doc. Written so a *fresh* Claude session can execute it
+**Status:** Phases **A + B DONE** (2026-06-09; see "## Progress" below). C–F still
+to do. Plan / handoff doc — written so a *fresh* Claude session can execute it
 without the originating conversation's context.
 **Branch:** this builds on `p3-motion-simplification` (the P3 motion-subsystem
 rewrite). Check that branch out first — `motion_model.py`, the scored gate, the
@@ -18,6 +19,55 @@ user-facing knob set, (c) algorithm robustness fixes** — autonomously, then
 report. The user will point it at various recorded situations.
 
 ---
+
+## Progress (as built — 2026-06-09)
+
+**Phase A (trustworthy objective) — DONE.**
+- `tests/scenarios/{residence1-solo_slot3,_slot4}.json` + `scenarios/README.md`
+  (schema). Ground truth **visually verified** against the footage (montage +
+  strong gamma/CLAHE brightening of the near-black IR), not inferred from the
+  detector. Both **N=1 constant**. Slot4 has three genuine drop regions (dancer
+  present, unreported): abs **1515-1524, 1643-1654, 1764-1786**; slot3 clean.
+- `tests/scoring.py` (pure stdlib, 14 unit tests in `tests/test_scoring.py`).
+  Scores the **OSC-faithful reported-count** timeline (`len(process() tracks)`)
+  vs N. Field-priority weights: drop+ghost dominate, fragmentation lower, ID
+  instability lowest and **bounded** (swaps acceptable). `warmup` excludes the
+  mid-recording cold-start confirmation lag (≈`TRACK_WARMUP_THRESHOLD`=15).
+  `score_multi()` aggregates across scenarios (mean+worst) for C3.
+- `tests/replay.py` gains `--scenario/--timeline/--score` (timeline split out of
+  the lean golden summary → P3 goldens unchanged).
+- **Measured:** slot3 score **0.0** (clean); slot4 **0.211**, drop_rate 0.158
+  (45 missed dancer-frames / 2.28s, longest drop 1.17s), ghost_rate 0. On this
+  footage **drops are the residual pain, ghosts are already controlled** in the
+  OSC output — matches §2's prediction.
+
+**Phase B (YOLO detect-pass cache) — DONE.**
+- `pipeline._track_detections()` extracted (post-YOLO path) so live + cache share
+  it; `_cache_capture` hook records pre-gate detections + raw motion gray.
+- `tests/detect_cache.py`: `build` (one full pass) + `replay` (skip YOLO).
+  `replay.py --cache` builds-on-first-use then replays. Cache key = YOLO
+  front-end params; gate/motion/tracker stay tunable. Caches live in
+  `tests/cache/` (gitignored). Opt-in equivalence test
+  `tests/test_detect_cache.py` (cache replay **== full replay**, frame- and
+  metric-identical incl. IDs).
+- **Determinism fix:** `DancerTrack._id_counter` (global) is now `reset()` at
+  every replay entry point — required for any in-process multi-replay (C's
+  search) to get stable IDs.
+- **Bonus, bit-identical, helps the LIVE show:** vectorised
+  `MotionDetector.frame_diff_blob_in_bbox` (textured-wall frame-diff fragments
+  into ~1e3 components/bbox → it called `np.linalg.norm` ~1e6×/replay, every
+  frame in production). Golden runtime 102s→67s from this alone.
+- **Speed finding that revises the plan's premise:** YOLO does *not* dominate
+  this footage — the **motion MOG2/frame-diff feed does**. Cache replay is
+  ~53 ms/frame vs ~125 ms/frame live → **~2-3×, not 10-100×**. For a faster
+  search the next lever is the motion feed (tiered motion cache when sweeping
+  only tracker params, or further `motion_detector`/`motion_model` vectorisation)
+  — not YOLO. Profile lives in the Phase B commit message.
+
+**Next:** C (search harness — `tune.py` over `_track_detections`-tunable params,
+scoring via A on B's cache, multi-scenario). The objective + cache are ready.
+The corpus gap (§2: dropout/multi-dancer/`yolo_first`/small-far) is the main
+thing limiting how far C/E/F generalise.
 
 ## 1. What already exists (the P3 foundation — reuse, don't rebuild)
 
