@@ -150,6 +150,11 @@ TRACKER_DORMANT_MAX_AGE = 150       # Max frames to remember a lost track for re
 TRACKER_VELOCITY_WEIGHT = 0.6       # Trust in velocity prediction (0-1)
 TRACKER_PROCESS_NOISE = 2.5         # Kalman Q - velocity adaptation
 TRACKER_MEASUREMENT_NOISE = 2.0     # Kalman R - smoothing
+# P3 Stage 3b — source-weighted measurement.  A motion-blob measurement (a
+# synthetic detection, or a bridge) localises the dancer less precisely than a
+# YOLO skeleton, so its Kalman update uses inflated R (less trust): YOLO anchors,
+# motion relays/reinforces without yanking the track.
+MOTION_MEASUREMENT_NOISE_MULT = 4.0
 
 # --- Robust tracking (Phases 2-4) ---
 # Match gate ratios (scale factors applied to PERSON_HEIGHT_PX)

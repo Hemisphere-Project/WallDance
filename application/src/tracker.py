@@ -14,6 +14,7 @@ from config import (
     TRACKER_MAX_AGE, TRACKER_MIN_HITS, TRACKER_DISTANCE_THRESHOLD,
     TRACKER_DORMANT_MAX_AGE,
     TRACKER_VELOCITY_WEIGHT, TRACKER_PROCESS_NOISE, TRACKER_MEASUREMENT_NOISE,
+    MOTION_MEASUREMENT_NOISE_MULT,
     KEYPOINT_CONFIDENCE,
     TRACKER_MATCH_GATE_RATIO, TRACKER_NEW_TRACK_GATE_RATIO,
     TRACKER_DUPLICATE_GATE_RATIO, TRACKER_SEPARATION_MEMORY_FRAMES,
@@ -331,14 +332,19 @@ class DancerTrack:
         
         return self.kf.x[:2].flatten()
     
-    def update(self, keypoints, confidence, bbox, merge_frame=False):
+    def update(self, keypoints, confidence, bbox, merge_frame=False,
+               measurement_noise_mult=1.0):
         """Update track with new detection.
-        
+
         Args:
             merge_frame: True when n_detections < n_tracks (detection
                 merger).  Pose history is NOT recorded on merge frames
                 because the matched skeleton is a blend of multiple
                 dancers and would contaminate trajectory matching.
+            measurement_noise_mult: Kalman R multiplier for this update
+                (P3 Stage 3b).  >1 for a motion-blob measurement, which
+                localises less precisely than a YOLO skeleton, so it relays
+                the track without yanking it toward a coarse blob centroid.
         """
         self.keypoints = keypoints.copy()
         self.confidence = confidence.copy()
@@ -360,7 +366,13 @@ class DancerTrack:
         self.confidence_history.append(confidence.copy())
         
         centroid = self._compute_centroid(keypoints, confidence)
-        self.kf.update(centroid.reshape(2, 1))
+        if measurement_noise_mult != 1.0:
+            orig_R = self.kf.R.copy()
+            self.kf.R = orig_R * measurement_noise_mult
+            self.kf.update(centroid.reshape(2, 1))
+            self.kf.R = orig_R
+        else:
+            self.kf.update(centroid.reshape(2, 1))
         self.history.append(centroid)
 
         # Record x-velocity for merge-exit direction swap
@@ -1829,7 +1841,13 @@ class DancerTracker:
             and frame_ctx.merge_frame
             and trk_idx in frame_ctx.merge_zone_trk_indices
         )
-        track.update(kpts, conf, bbox, merge_frame=in_merge_zone)
+        # Source-weighted measurement (P3 Stage 3b): a motion-blob synthetic
+        # detection (all-zero keypoint confidence) localises less precisely than
+        # a YOLO skeleton, so trust it less (inflated Kalman R).
+        is_motion_source = not np.any(conf)
+        noise_mult = MOTION_MEASUREMENT_NOISE_MULT if is_motion_source else 1.0
+        track.update(kpts, conf, bbox, merge_frame=in_merge_zone,
+                     measurement_noise_mult=noise_mult)
         track.note_match_event(self.frame_count, merge_frame=in_merge_zone)
 
     def _tracks_share_recent_merge_context(self, track_a: DancerTrack,
