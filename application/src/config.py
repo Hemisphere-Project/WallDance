@@ -428,6 +428,17 @@ AUTOCAL_EXCL_SKEL_FREQ = 0.02       # ...and hold a skeleton in ≤2% of frames
 AUTOCAL_EXCL_MIN_FRAMES = 30        # Need at least this many observed frames to build a mask
 
 # =============================================================================
+# STARTUP
+# =============================================================================
+# On launch, show a project picker (ordered by last-save, last project
+# highlighted, Enter to launch) instead of silently auto-loading the last
+# project — gives a deliberate, fast crash-recovery path.  See docs/ROADMAP.md §7B.
+# Escape hatches that skip the picker and auto-load the last project: set this
+# False, or set the env var WALLDANCE_AUTOLAUNCH_LAST=1 (for unattended/kiosk
+# boot), or pass --project / a config path on the CLI.
+PROJECT_PICKER_ON_START = True
+
+# =============================================================================
 # VIDEO RECORDING
 # =============================================================================
 # Codec used when recording to a slot.

@@ -1747,6 +1747,167 @@ class WallDanceGUI:
                     self.callbacks['on_do_save_config'](name)
         dpg.delete_item("save_config_dialog")
     
+    # ------------------------------------------------------------------
+    # Startup project picker (ROADMAP §7B)
+    # ------------------------------------------------------------------
+    # Rename/Delete render INLINE inside this one modal and the list refreshes
+    # in place — DearPyGui does not reliably show a modal that is created in the
+    # same frame another modal was deleted, so we never stack or recreate modals.
+    def show_project_picker(self, projects, last_project: str = ""):
+        """Show (or refresh in place) the launch-time project picker.
+
+        projects: list of (name, last_saved_display, save_count), ordered
+                  most-recent-first.  last_project is pre-highlighted.
+        """
+        names = [p[0] for p in projects]
+        if last_project in names:
+            self._picker_selected = last_project
+        elif names:
+            self._picker_selected = names[0]
+        else:
+            self._picker_selected = ""
+
+        # Refresh in place if the window already exists (e.g. after rename/delete).
+        if dpg.does_item_exist("project_picker_modal"):
+            self._picker_rebuild_list(projects)
+            if dpg.does_item_exist("picker_action_area"):
+                dpg.delete_item("picker_action_area", children_only=True)
+            return
+
+        vw, vh = dpg.get_viewport_width(), dpg.get_viewport_height()
+        w, h = scaled(520), scaled(560)
+        with dpg.window(
+            label="WallDance - Select Project", modal=True, tag="project_picker_modal",
+            width=w, height=h, pos=[vw // 2 - w // 2, vh // 2 - h // 2],
+            no_resize=True, no_move=True, no_close=True, no_collapse=True,
+        ):
+            dpg.add_spacer(height=scaled(6))
+            dpg.add_text("Select a project to launch  (Enter = launch highlighted)",
+                         color=(120, 200, 140))
+            dpg.add_text("Ordered by last save, most recent first.", color=(140, 140, 140))
+            dpg.add_spacer(height=scaled(8))
+            dpg.add_child_window(height=scaled(270), border=True, tag="picker_list_area")
+            dpg.add_spacer(height=scaled(10))
+            with dpg.group(horizontal=True):
+                dpg.add_button(label="Launch", width=scaled(110), height=scaled(30),
+                               callback=lambda: self._picker_action("launch"))
+                dpg.add_button(label="Rename", width=scaled(90), height=scaled(30),
+                               callback=lambda: self._picker_action("rename"))
+                dpg.add_button(label="Delete", width=scaled(90), height=scaled(30),
+                               callback=lambda: self._picker_action("delete"))
+                dpg.add_spacer(width=scaled(24))
+                dpg.add_button(label="Start blank", width=scaled(110), height=scaled(30),
+                               callback=lambda: self._picker_action("blank"))
+            dpg.add_spacer(height=scaled(6))
+            dpg.add_group(tag="picker_action_area")   # inline rename / delete UI
+        self._picker_rebuild_list(projects)
+
+    def _picker_rebuild_list(self, projects):
+        """(Re)populate the project list rows in place."""
+        area = "picker_list_area"
+        if not dpg.does_item_exist(area):
+            return
+        dpg.delete_item(area, children_only=True)
+        self._picker_rows = []
+        if not projects:
+            dpg.add_text("No saved projects yet.", parent=area, color=(255, 200, 100))
+            dpg.add_text("Start blank below, then save to create one.",
+                         parent=area, color=(150, 150, 150))
+            return
+        for name, saved, count in projects:
+            tag = f"picker_row_{name}"
+            if dpg.does_item_exist(tag):
+                dpg.delete_item(tag)
+            dpg.add_selectable(
+                label=f"{name}    -  saved {saved}  -  {count} save{'s' if count != 1 else ''}",
+                default_value=(name == self._picker_selected), tag=tag, parent=area,
+                callback=self._picker_on_select, user_data=name)
+            self._picker_rows.append((tag, name))
+
+    def _picker_on_select(self, sender, value, user_data):
+        """Single-select: highlight the clicked row, clear the others."""
+        self._picker_selected = user_data
+        for tag, name in getattr(self, "_picker_rows", []):
+            if dpg.does_item_exist(tag):
+                dpg.set_value(tag, name == user_data)
+
+    def _picker_action(self, action: str):
+        sel = getattr(self, "_picker_selected", "")
+        if action == "blank":
+            self.hide_project_picker()
+            cb = self.callbacks.get("on_project_blank")
+            if cb:
+                cb()
+            return
+        if not sel:
+            return
+        if action == "launch":
+            self.hide_project_picker()
+            cb = self.callbacks.get("on_project_launch")
+            if cb:
+                cb(sel)
+        elif action == "rename":
+            self._picker_inline_rename(sel)
+        elif action == "delete":
+            self._picker_inline_delete(sel)
+
+    def _picker_inline_rename(self, name: str):
+        area = "picker_action_area"
+        if not dpg.does_item_exist(area):
+            return
+        dpg.delete_item(area, children_only=True)
+
+        def do_rename(*_):
+            new = (dpg.get_value("picker_rename_input") or "").strip()
+            dpg.delete_item(area, children_only=True)
+            if new and new != name:
+                cb = self.callbacks.get("on_project_rename")
+                if cb:
+                    cb(name, new)   # app renames + refreshes the list in place
+
+        dpg.add_text(f"Rename '{name}' to:", parent=area)
+        with dpg.group(horizontal=True, parent=area):
+            dpg.add_input_text(tag="picker_rename_input", default_value=name,
+                               width=scaled(240), on_enter=True, callback=do_rename)
+            dpg.add_button(label="OK", width=scaled(60), callback=do_rename)
+            dpg.add_button(label="Cancel", width=scaled(70),
+                           callback=lambda: dpg.delete_item(area, children_only=True))
+
+    def _picker_inline_delete(self, name: str):
+        area = "picker_action_area"
+        if not dpg.does_item_exist(area):
+            return
+        dpg.delete_item(area, children_only=True)
+
+        def do_delete(*_):
+            dpg.delete_item(area, children_only=True)
+            cb = self.callbacks.get("on_project_delete")
+            if cb:
+                cb(name)            # app deletes + refreshes the list in place
+
+        dpg.add_text(f"Delete '{name}'?  Removes all its configs + recordings.",
+                     parent=area, color=(255, 180, 80))
+        with dpg.group(horizontal=True, parent=area):
+            dpg.add_button(label="Delete", width=scaled(90), callback=do_delete)
+            dpg.add_button(label="Cancel", width=scaled(80),
+                           callback=lambda: dpg.delete_item(area, children_only=True))
+
+    def hide_project_picker(self):
+        if dpg.does_item_exist("project_picker_modal"):
+            dpg.delete_item("project_picker_modal")
+
+    def project_picker_visible(self) -> bool:
+        return dpg.does_item_exist("project_picker_modal")
+
+    def project_picker_selection(self) -> str:
+        return getattr(self, "_picker_selected", "")
+
+    def project_picker_inline_active(self) -> bool:
+        """True while an inline rename/delete prompt is showing (suppresses Enter-launch)."""
+        if not dpg.does_item_exist("picker_action_area"):
+            return False
+        return bool(dpg.get_item_children("picker_action_area", 1))
+
     def show_load_config_dialog(self, config_dir: str, current_project: str = ""):
         """Show modal dialog for loading config - first shows projects, then history."""
         import os

@@ -48,6 +48,7 @@ from config import (
     PERSON_HEIGHT_MIN_RATIO,
     PERSON_HEIGHT_PX,
     AUTOCAL_EXCL_GRID,
+    PROJECT_PICKER_ON_START,
     MOTION_BRIDGE_SENSITIVITY,
     PREVIEW_ENABLED,
     PREVIEW_RENDER_SCALE,
@@ -445,6 +446,10 @@ class WallDanceApp:
             "on_do_load_config": self._cb_do_load_config,
             "on_project_select": self._cb_project_select,
             "on_config_select": self._cb_config_select,
+            "on_project_launch": self._cb_project_launch,
+            "on_project_rename": self._cb_project_rename,
+            "on_project_delete": self._cb_project_delete,
+            "on_project_blank": self._cb_project_blank,
             "on_rec_live": self._cb_rec_live,
             "on_rec_toggle": self._cb_rec_toggle,
             "on_rec_slot_click": self._cb_rec_slot_click,
@@ -2075,6 +2080,73 @@ class WallDanceApp:
                 return
         print(f"Config not found: {config_display}")
 
+    # ------------------------------------------------------------------
+    # Startup project picker (ROADMAP §7B)
+    # ------------------------------------------------------------------
+    def _show_startup_project_picker(self):
+        """Populate and show the launch-time project picker."""
+        if not self.gui:
+            return
+        infos = self.config_store.list_projects_by_date()
+        rows = [(i.name, i.last_saved_display, i.save_count) for i in infos]
+        last = self.config_store.read_last_project() or ""
+        self.gui.show_project_picker(rows, last_project=last)
+
+    def _cb_project_launch(self, name: str):
+        """Picker 'Launch' / Enter → queue a switch to the project's latest config."""
+        print(f"[Picker] Launching project: {name}")
+        self._cb_project_select(name)
+
+    def _cb_project_rename(self, old: str, new: str):
+        result = self.config_store.rename_project(old, new)
+        if result is None:
+            if self.gui:
+                self.gui.show_toast("Rename failed - name already in use?",
+                                    duration=3.0, color=(255, 180, 80))
+        else:
+            print(f"[Picker] Renamed '{old}' -> '{result}'")
+            if self._current_project == old:
+                self._current_project = result
+        self._show_startup_project_picker()  # refresh the list
+
+    def _cb_project_delete(self, name: str):
+        if self.config_store.delete_project(name):
+            print(f"[Picker] Deleted project: {name}")
+        elif self.gui:
+            self.gui.show_toast(f"Could not delete '{name}'",
+                                duration=3.0, color=(255, 180, 80))
+        self._show_startup_project_picker()  # refresh (may now be empty)
+
+    def _cb_project_blank(self):
+        """Picker 'Start blank' → load the default model, no project."""
+        print("[Picker] Starting blank (default model)")
+        self._load_default_model_startup()
+
+    def _load_default_model_startup(self) -> bool:
+        """Load the default model at startup (no project). Returns success."""
+        print("No project, loading default model...")
+        force_pt_default = not USE_TENSORRT
+        if USE_TENSORRT:
+            from model_manager import is_tensorrt_available
+            base_default = YOLO_MODEL.replace('.pt', '').replace('.engine', '')
+            if is_tensorrt_available() and not self.model_manager.engine_exists(base_default):
+                if self._prompt_trt_build_sync(base_default):
+                    print("User accepted TRT build at startup")
+                    force_pt_default = False
+                else:
+                    print("User declined TRT build at startup, using PyTorch")
+                    force_pt_default = True
+            elif not is_tensorrt_available():
+                force_pt_default = True
+        if not self._load_model_with_progress(YOLO_MODEL, force_pt=force_pt_default):
+            return False
+        self.current_model_name = YOLO_MODEL.replace('.pt', '').replace('.engine', '')
+        if self.gui:
+            self.gui.sync_combo("model", self.current_model_name)
+            self.gui.set_trt_checkbox(self.model_manager.is_using_tensorrt())
+        self._update_topbar_state()
+        return True
+
     def _cb_save_safe_defaults(self):
         """Save current settings as safe defaults for this project."""
         filepath = self.config_store.save_safe_defaults(self._current_project, self._get_saveable_config())
@@ -2908,6 +2980,18 @@ class WallDanceApp:
             return
 
         key = app_data
+        # Project picker: suppress all shortcuts while it is open (so typing a
+        # project name into the inline rename field doesn't trigger them). Enter
+        # launches the highlighted project, except while an inline rename/delete
+        # prompt is active.
+        if self.gui and self.gui.project_picker_visible():
+            if (key == dpg.mvKey_Return
+                    and not self.gui.project_picker_inline_active()):
+                sel = self.gui.project_picker_selection()
+                if sel:
+                    self.gui.hide_project_picker()
+                    self._cb_project_launch(sel)
+            return
         if key == dpg.mvKey_E:
             self.settings.enhance_enabled = not self.settings.enhance_enabled
             self.gui and self.gui.sync_checkbox("enhance", self.settings.enhance_enabled)
@@ -3247,8 +3331,9 @@ class WallDanceApp:
         dpg.show_viewport()
         self._sync_roi_ui()
         
-        # Load last project using the unified project switch path
-        # This ensures startup and runtime project switching use the same code
+        # Project startup (unified switch path). A deliberate picker (ROADMAP §7B)
+        # unless a CLI override (--project / config path), the kiosk env var, or
+        # the config flag says to auto-load the last project.
         last_project = self.config_store.read_last_project()
         startup_config = None
         if self._startup_review.config_path:
@@ -3257,40 +3342,28 @@ class WallDanceApp:
             startup_config = self.config_store.latest_for_project(
                 sanitize_project_name(self._startup_review.project)
             )
-        elif last_project:
-            startup_config = self.config_store.latest_for_project(last_project)
-        
-        if startup_config:
-            print(f"Loading last project: {last_project}")
-            if not self._execute_project_switch(startup_config):
-                print("ERROR: Failed to load last project. Exiting.")
-                return
+        cli_override = startup_config is not None
+        autolaunch_env = os.environ.get(
+            "WALLDANCE_AUTOLAUNCH_LAST", "").lower() in ("1", "true", "yes")
+        show_picker = PROJECT_PICKER_ON_START and not cli_override and not autolaunch_env
+
+        if show_picker and self.config_store.list_projects():
+            # Nothing loads until the operator picks (or "Start blank"); the
+            # picker queues a project switch handled by the main loop.
+            print("Showing startup project picker")
+            self._show_startup_project_picker()
         else:
-            # No saved project - load default model
-            print("No saved project, loading default model...")
-            force_pt_default = not USE_TENSORRT
-            if USE_TENSORRT:
-                from model_manager import is_tensorrt_available
-                base_default = YOLO_MODEL.replace('.pt', '').replace('.engine', '')
-                if is_tensorrt_available() and not self.model_manager.engine_exists(base_default):
-                    # Prompt user before starting long TRT build
-                    if self._prompt_trt_build_sync(base_default):
-                        print("User accepted TRT build at startup")
-                        force_pt_default = False
-                    else:
-                        print("User declined TRT build at startup, using PyTorch")
-                        force_pt_default = True
-                elif not is_tensorrt_available():
-                    force_pt_default = True
-            if not self._load_model_with_progress(YOLO_MODEL, force_pt=force_pt_default):
+            if startup_config is None and last_project:
+                startup_config = self.config_store.latest_for_project(last_project)
+            if startup_config:
+                print(f"Loading project: {last_project or os.path.basename(startup_config)}")
+                if not self._execute_project_switch(startup_config):
+                    print("ERROR: Failed to load project. Exiting.")
+                    return
+            elif not self._load_default_model_startup():
                 print("ERROR: Failed to load model. Exiting.")
                 return
-            self.current_model_name = YOLO_MODEL.replace('.pt', '').replace('.engine', '')
-            if self.gui:
-                self.gui.sync_combo("model", self.current_model_name)
-                self.gui.set_trt_checkbox(self.model_manager.is_using_tensorrt())
-            self._update_topbar_state()
-        
+
         # Initialize recording UI
         self.recorder.set_project(self._current_project)
         self._update_recording_ui()

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
@@ -56,6 +57,21 @@ def get_latest_config_in_project(project_dir: str) -> Optional[str]:
 class ProjectHistory:
     project: str
     configs: List[Tuple[str, str]]  # (display_name, filepath)
+
+
+@dataclass
+class ProjectInfo:
+    """Summary of a project for the startup picker."""
+    name: str
+    latest_config: Optional[str]    # path to the most recent config
+    last_saved: float               # epoch mtime of the newest config (0.0 if none)
+    save_count: int                 # number of saved configs
+
+    @property
+    def last_saved_display(self) -> str:
+        if not self.last_saved:
+            return "never"
+        return datetime.fromtimestamp(self.last_saved).strftime("%Y-%m-%d %H:%M")
 
 
 class ConfigStore:
@@ -128,6 +144,84 @@ class ConfigStore:
     def latest_for_project(self, project: str) -> Optional[str]:
         project_dir = os.path.join(self.config_dir, project)
         return get_latest_config_in_project(project_dir)
+
+    def list_projects_by_date(self) -> List[ProjectInfo]:
+        """Projects ordered by last-save date, most recent first (for the picker)."""
+        infos: List[ProjectInfo] = []
+        for name in self.list_projects():
+            project_dir = os.path.join(self.config_dir, name)
+            jsons = [f for f in os.listdir(project_dir) if f.endswith(".json")]
+            mtime = 0.0
+            for f in jsons:
+                try:
+                    mtime = max(mtime, os.path.getmtime(os.path.join(project_dir, f)))
+                except OSError:
+                    pass
+            infos.append(ProjectInfo(
+                name=name,
+                latest_config=get_latest_config_in_project(project_dir),
+                last_saved=mtime,
+                save_count=len(jsons),
+            ))
+        infos.sort(key=lambda i: i.last_saved, reverse=True)
+        return infos
+
+    # ------------------------------------------------------------------
+    # Project management (rename / delete) — used by the startup picker
+    # ------------------------------------------------------------------
+    def rename_project(self, old_name: str, new_name: str) -> Optional[str]:
+        """Rename a project directory and return the new safe name, or None on failure.
+
+        Also rewrites each config's ``_meta.project`` so that re-loading a config
+        infers the new name (see ``infer_project_from_config``). Updates the
+        last-project pointer if it referenced the renamed project.
+        """
+        new_safe = sanitize_project_name(new_name)
+        old_dir = os.path.join(self.config_dir, old_name)
+        new_dir = os.path.join(self.config_dir, new_safe)
+        if not os.path.isdir(old_dir):
+            return None
+        if new_safe == old_name:
+            return old_name
+        if os.path.exists(new_dir):
+            return None  # collision — caller surfaces the error
+        os.rename(old_dir, new_dir)
+        # Rewrite _meta.project inside every config so loads infer the new name.
+        for f in os.listdir(new_dir):
+            if not f.endswith(".json"):
+                continue
+            path = os.path.join(new_dir, f)
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+                meta = data.get("_meta")
+                if isinstance(meta, dict):
+                    meta["project"] = new_safe
+                    with open(path, "w", encoding="utf-8") as fh:
+                        json.dump(data, fh, indent=2)
+            except (OSError, ValueError):
+                pass  # leave a malformed config untouched
+        if self.read_last_project() == old_name:
+            self.remember_last_project(new_safe)
+        return new_safe
+
+    def delete_project(self, name: str) -> bool:
+        """Delete a project directory and all its contents. Clears the last-project
+        pointer if it referenced this project. Returns success."""
+        project_dir = os.path.join(self.config_dir, name)
+        if not os.path.isdir(project_dir):
+            return False
+        try:
+            shutil.rmtree(project_dir)
+        except OSError:
+            return False
+        if self.read_last_project() == name:
+            try:
+                if os.path.exists(self.last_project_file):
+                    os.remove(self.last_project_file)
+            except OSError:
+                pass
+        return True
 
     # ------------------------------------------------------------------
     # Last project tracking
