@@ -1,0 +1,17 @@
+{
+  "name": "residence1-solo_slot3",
+  "project": "residence1-solo",
+  "slot": 3,
+  "start": 1500,
+  "frames": 300,
+  "warmup": 15,
+  "fps": 19.819,
+  "expected_count": 1,
+  "tags": ["single", "motion_first", "low_light", "textured_bg", "floor", "slow_motion"],
+  "ground_truth": {
+    "verified": "2026-06-09",
+    "method": "visual montage sampling (every 20 frames over the full window + every frame across the warmup region), strong gamma+CLAHE brightening for the dark IR footage",
+    "drop_regions_abs": [],
+    "notes": "Single floor dancer, present and standing/walking in every frame of [1500,1800). N=1 constant. The only reported=0 frames are abs 1500-1513 (structural track-confirmation lag: YOLO detects every frame, golden zero_detection_frames=0, but a track needs TRACK_WARMUP_THRESHOLD=15 consecutive matches before it is confirmed/emitted). Excluded by warmup=15. No genuine mid-recording drops; no over-counts (reported never exceeded 1)."
+  }
+}

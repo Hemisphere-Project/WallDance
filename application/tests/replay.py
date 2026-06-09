@@ -203,6 +203,10 @@ def replay_recording(
     if start_frame:
         cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
+    # Per-frame reported-track timeline, captured from the OSC-faithful return of
+    # process() (len(tracks) == what OSCSender.send_frame emits).  This is the
+    # signal scoring.py compares against the scenario's ground-truth N.
+    per_frame = []
     processed = 0
     try:
         while True:
@@ -211,7 +215,14 @@ def replay_recording(
             ok, frame = cap.read()
             if not ok:
                 break
-            proc.process(frame, need_preview=False, frame_number=processed)
+            tracks, _enh, _timing, _lat = proc.process(
+                frame, need_preview=False, frame_number=processed)
+            per_frame.append({
+                "frame": processed,                       # window-relative
+                "abs_frame": start_frame + processed,     # into the recording
+                "reported": len(tracks),
+                "ids": sorted(int(t.track_id) for t in tracks),
+            })
             processed += 1
     finally:
         cap.release()
@@ -239,13 +250,21 @@ def replay_recording(
         "resurrect_count": len(stats["resurrect_events"]),
         "zero_detection_frames": dets.count(0),
         "avg_detections": round(sum(dets) / len(dets), 3) if dets else 0.0,
+        # Per-frame reported-track timeline (for scoring.py). main() splits this
+        # out of the lean golden summary written by --out.
+        "per_frame": per_frame,
     }
 
 
 def main():
     ap = argparse.ArgumentParser(description="Replay a recording -> metric summary")
-    ap.add_argument("--project", required=True)
-    ap.add_argument("--slot", type=int, required=True)
+    ap.add_argument("--project", default=None,
+                    help="project name (or supply --scenario)")
+    ap.add_argument("--slot", type=int, default=None,
+                    help="recording slot (or supply --scenario)")
+    ap.add_argument("--scenario", default=None,
+                    help="scenario manifest JSON; fills project/slot/start/frames "
+                         "and enables ground-truth scoring")
     ap.add_argument("--video", help="explicit video path (overrides --slot lookup)")
     ap.add_argument("--model", default=None, help="model name (default: project config)")
     ap.add_argument("--imgsz", type=int, default=None)
@@ -253,8 +272,26 @@ def main():
     ap.add_argument("--frames", type=int, default=None)
     ap.add_argument("--var", type=float, default=None,
                     help="override mog2_var_threshold (Stage 3c measurement)")
-    ap.add_argument("--out", default=None, help="write JSON summary to this path")
+    ap.add_argument("--out", default=None, help="write lean JSON summary to this path")
+    ap.add_argument("--timeline", default=None,
+                    help="write the per-frame reported-count timeline to this path")
+    ap.add_argument("--score", action="store_true",
+                    help="score against --scenario's ground truth (prints breakdown)")
     args = ap.parse_args()
+
+    scenario = None
+    if args.scenario:
+        import scoring
+        scenario = scoring.load_scenario(args.scenario)
+        args.project = args.project or scenario["project"]
+        if args.slot is None:
+            args.slot = scenario["slot"]
+        if not args.start:
+            args.start = scenario["start"]
+        if args.frames is None:
+            args.frames = scenario["frames"]
+    if not args.project or args.slot is None:
+        sys.exit("need --project and --slot (or --scenario)")
 
     config = _latest_config(args.project) or {}
     if args.var is not None:
@@ -269,12 +306,26 @@ def main():
         imgsz=args.imgsz or int(config.get("yolo_imgsz", 1280)),
         start_frame=args.start, max_frames=args.frames,
     )
-    out = json.dumps(summary, indent=2)
-    print(out)
+
+    # Split the per-frame timeline out of the lean (golden-comparable) summary.
+    per_frame = summary.pop("per_frame", [])
+    print(json.dumps(summary, indent=2))
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.out).write_text(out)
+        Path(args.out).write_text(json.dumps(summary, indent=2))
         print(f"\nwrote {args.out}")
+    if args.timeline:
+        Path(args.timeline).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.timeline).write_text(json.dumps(per_frame))
+        print(f"wrote {args.timeline}")
+
+    if args.score:
+        if scenario is None:
+            sys.exit("--score requires --scenario")
+        import scoring
+        result = scoring.score_timeline(per_frame, scenario)
+        print("\n=== SCORE ===")
+        print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":
