@@ -1,6 +1,6 @@
 # WallDance Roadmap
 
-**Date:** 2026-06-08
+**Date:** 2026-06-09 (P3 motion-subsystem simplification landed on branch `p3-motion-simplification`)
 **Status:** Single source of truth. Merges and supersedes `ROBUSTNESS_PLAN.md` (detection/setup north star), `AUDIT.md` (maintainability), `P3_FUSION_SIMPLIFICATION.md` (P3 design), and the tracker history in `TRACKING_PLAN.md` — all now under [archives/](archives/).
 **Companion:** [TODO.md](TODO.md) — the granular build / hardware checklist (a different altitude; not duplicated here).
 
@@ -70,9 +70,9 @@ All field answers point the same way: **better lighting + spatial ghost rejectio
 | **P1.3** Add IR, raise confidence | Detection | ⛔ Hardware-blocked | Needs illuminators rigged, then measure ghost drop on a recording |
 | **P1.4** Auto exclusion mask | Detection | ✅ Done | Built in the Calibrate window; validated (0 ghost cells on clean footage); **untested on real ghosts** |
 | **P2** Go-Live auto-calibration | Detection | ✅ Done | Height/ratios + empirical FP-sweep varThreshold + exposure/FPS report; apply-then-save |
-| **P3** Motion-subsystem simplification | Detection | 📐 Designed, now unblocked | Was held behind P2; see §5 P3. Includes YOLO/Motion-First merge + slot-7 corrector relaxation |
-| **P4** Regression fixtures + transform tests | Both | 🟡 Started | First tests exist ([test_calibration.py](../application/tests/test_calibration.py)); golden drop/ghost/swap fixtures TBD |
-| Tests + CI | Maint. | 🟡 Started | First `tests/` package green; **no CI yet** |
+| **P3** Motion-subsystem simplification | Detection | ✅ Done (branch `p3-motion-simplification`) | One `MotionModel` (1 MOG2 + frame-diff), scored detection gate, merged YOLO/Motion-First, source-weighted measurement, simplified bridge; see §5 P3. **Slot-7 corrector relaxation deferred** (separate step). |
+| **P4** Regression fixtures + transform tests | Both | ✅ Core done | Replay harness ([replay.py](../application/tests/replay.py)) + golden drop/ghost/swap fixtures (residence1-solo slots 3&4, opt-in `WD_RUN_REPLAY=1`) + transform tests ([test_transforms.py](../application/tests/test_transforms.py)). Broaden the footage set next. |
+| Tests + CI | Maint. | ✅ CI live | GitHub Actions runs `tests/` on push/PR (import-light); replay regression is opt-in/GPU. |
 | Typed config validation + versioning | Maint. | ⬜ Not started | New calibration keys need a schema (§6) |
 | `app.py` decomposition | Maint. | ⬜ Not started | Grew to ~3990 ln (was ~3031 at audit) |
 | Launcher update safety | Maint. | ⬜ Not started | Force-sync can clobber local field tweaks |
@@ -103,24 +103,24 @@ A dedicated **CALIBRATE** button (bottom bar, by STANDBY/RUN) runs a short windo
 
 **Lesson — varThreshold is chosen empirically, not by formula.** A first `(N·σ)²`-from-noise map was tried and discarded: it saturated at a clamp either way (raw σ0.69→16, post-CLAHE σ4.23→120) because **MOG2 self-normalises** — `varThreshold` thresholds the Mahalanobis distance `(I−μ)²/σ²_model`, and MOG2 *learns* σ²_model, so a pixel-σ→varThreshold map is dimensionless. Replaced with a sweep: each candidate runs as its own MOG2 over the window, scored by the **median grid-tile foreground fraction** (robust to the dancer minority — no bbox/letterbox transform), picking the lowest candidate under `AUTOCAL_FP_TARGET` else the highest + a `saturated` flag. On dark tango footage it picked **varThreshold=16 @ 0.01% FP** — *more* sensitive than the old default 40, with evidence ghosts stay low. Noise/FP are measured on the **actual MOG2-input gray** (`FrameProcessor.get_last_motion_gray`); brightness on the raw frame. (Caveat: calibration MOG2 models use history=window(90) vs production 500 — watch early-show behaviour.)
 
-### P3 — Simplify the motion subsystem — 📐 Designed, now unblocked
-*(P2 has landed, so the prior "do not edit motion_detector/pipeline/config until P2 commits" hold is lifted.)*
+### P3 — Simplify the motion subsystem — ✅ Done (branch `p3-motion-simplification`)
 
-**Today's tangle:** three different jobs across three files and ~90 constants — ghost rejection (`pipeline._crossval_motion_filter`, a 7-step tree: BYPASS→weak-skeleton→MOTION→HYSTERESIS→CONFIDENT→REACQUIRE→REJECT), gap bridging (tracker `_lazy_bridge_with_motion`, a 3-tier blob/presence/frame-diff cascade with progressive Kalman-R inflation), and cold motion-first detection (`_fuse_motion_blobs`). Feeding them: **two full MOG2 models every frame** (`bridge` @0.001 slow + `crossval` @0.005 fast), differing only in learn rate — the genuine tension is bridging-wants-slow vs crossval-wants-fast.
+**Was:** three jobs across three files and ~90 constants — ghost rejection (`_crossval_motion_filter`, a 7-step tree), gap bridging (tracker `_lazy_bridge_with_motion`, a 3-tier cascade), cold motion-first detection (`_fuse_motion_blobs`) — fed by **two full MOG2 models per frame** (`bridge` @0.001 + `crossval` @0.005, differing only in learn rate).
 
-**Target:** **one** `MotionModel` + **source-weighted measurements** into the existing Kalman/Hungarian tracker. Keep one slow MOG2 (silhouette for bridging) and answer "moving now?" with **frame differencing** (already implemented, no learning rate) — removing the second MOG2. Ghost rejection collapses to one rule: *keep a detection if strong skeleton OR recent motion in its box OR it overlaps a live track, else reject.* Bridging collapses to feeding the blob/frame-diff as a **position-only measurement with a higher Kalman R**, not three bespoke tiers.
+**Now:** **one** `MotionModel` (one slow MOG2 silhouette + frame-diff "moving now?", surface `feed/reset/noise_sigma/foreground_blob(s)/foreground_ratio/recent_motion(_blob)`) feeding **source-weighted measurements** into the existing Kalman/Hungarian tracker. Key result: **frame-diff — not MOG2 foreground — is the ghost killer** (static textured background + lighting drift read as MOG2 foreground but show no frame-to-frame change). Each result below was measured on residence1-solo slots 3 & 4 via the replay harness.
 
-Proposed stable surface: `feed(gray_fixed)`, `reset()`, `noise_sigma()`, `foreground_blob(roi)`, `recent_motion(roi)`. Feed MOG2 a **fixed** (non-CLAHE) gray — see Bug #1.
+| Stage | Done | Result |
+|-------|------|--------|
+| 0 | Replay harness + golden fixtures + transform tests (P4) | measurable refactor |
+| 1 | `motion_model.py` over one MOG2 + frame-diff (unwired) | unit-tested |
+| 2 | One `MotionModel` replaces both MOG2 (compat view shim) | **bit-identical** (2nd MOG2 was redundant) |
+| 3a | Scored gate (skeleton OR frame-diff motion OR live-track) + **Bug #1 fix** (gamma-only feed, no adaptive CLAHE) — coupled | **swaps 18→0 / 5→0, ghosts↓, dancer retained** |
+| 3b | Merge YOLO/Motion-First (§7A), gated cold detection, source-weighted R, removed redundant global-blob Hungarian bridge | no regression |
+| 3c/3d | varThreshold self-adapts via calibration (no retune); retired the orphaned `MOTION_CROSSVAL_*`/bridge-helper constants | bit-identical |
 
-| Stage | Work | Touches | Notes |
-|-------|------|---------|-------|
-| 0 | P4 regression fixtures (golden drop/ghost/swap counts) so any refactor is measurable | new files | Do first |
-| 1 | New `motion_model.py` over a single MOG2 + frame-diff (no wiring) | new file | Collision-free |
-| 2 | Route crossval + bridge through `MotionModel`; delete the 2nd MOG2 | pipeline, motion_detector | |
-| 3 | Replace the 7-step tree + 3-tier bridge with the scored gate; retire ~30 `MOTION_CROSSVAL_*`/`MOTION_BRIDGE_*` constants → ~3 user-facing values | pipeline, tracker, config | |
-| 4 | **Merge YOLO-First / Motion-First** (§7A) + relax the slot-7 swap correctors & gates (§3a) | tracker, config | |
+**Deliberate deviation (evidence-driven):** the "collapse the bridge to one position-only measurement" target was **not** fully taken — the harness showed the presence + frame-diff bridge tiers actively prevent drops (the #1 field pain), so they were kept; only the genuinely-redundant global-blob Hungarian was removed.
 
-P1.4 already does most of the ghost work *by location*, which is the main precondition: once it's exercised on real ghosts, the crossval tree shrinks to "is this detection in a masked dead zone?"
+**Deferred (not in P3):** removing the `MotionModel.detector` compat shim (a consumer-migration refactor); relaxing the slot-7 swap correctors (§3a); broadening the golden footage set (currently single-dancer motion_first only — needs a YOLO-dropout / multi-dancer / yolo_first clip to exercise the relay + cold-detection paths the current corpus leaves bit-identical).
 
 ### P4 — Lock it in
 Regression fixtures from 2–3 recorded sessions (the JSONL logging + `analyze_session.py` already exist — this is half-built): golden drop/ghost/swap counts so refactors are measurable. Add tests for the ROI→letterbox→unscale coordinate transforms (a classic off-by-a-transform hazard, currently untested) and config validation. First tests landed ([test_calibration.py](../application/tests/test_calibration.py)).
@@ -153,7 +153,7 @@ Condensed from the full audit (now [archives/AUDIT.md](archives/AUDIT.md)). The 
 ## 7. Requested enhancements (backlog, 2026-06-08)
 
 ### A. Simplify the YOLO-First / Motion-First duality
-`TrackingMode` (`YOLO_FIRST` / `MOTION_FIRST`) is a user-facing toggle that bifurcates the pipeline (YOLO primary + motion bridges gaps **vs** motion blobs as primary detections). It doubles the reasoning surface and forces the operator to understand an internal choice. **Goal: collapse to one coherent path** (or auto-select). This is the same complexity as **P3** — fold it into P3 Stage 4, after P1.4 is exercised on real ghosts.
+`TrackingMode` (`YOLO_FIRST` / `MOTION_FIRST`) was a user-facing toggle that bifurcated the pipeline. **✅ Merged in P3 Stage 3b:** motion blobs are now always candidates (gated by frame-diff + exclusion) fed through one scored path — no bifurcation. The `TrackingMode` enum still exists for config/learn-rate compatibility but no longer changes the detection logic; fully removing it is a follow-up cleanup.
 
 ### B. Startup project picker (no silent auto-load)
 Today the app auto-loads the last project (`config_store.read_last_project()` / `last_project.txt`); there is no launch-time way to choose or manage projects, and after a mid-show crash the operator is dropped straight back into auto-load.
@@ -185,11 +185,11 @@ Key gates (slot-7-derived — candidates for relaxation per §3a): `TRACKER_MAHA
 
 | # | Severity | Location | Issue |
 |---|----------|----------|-------|
-| 1 | Medium (design) | `pipeline._enhance_gray_for_motion` | Per-frame adaptive CLAHE+gamma is applied to the gray **before** MOG2 — amplifies noise differently each frame, fighting MOG2's stationary-background assumption, and an *enhancement* slider silently changes *tracking*. P2's noise diagnostic measured this directly (σ jumps 0.69→4.23 raw→post-CLAHE). **Feed MOG2 a fixed (linear/fixed-gamma) gray, decoupled from display** — and the P3 `MotionModel` should own that. |
-| 2 | Medium | pipeline two-MOG2 feed | Two full MOG2 models per frame for one signal (differ only in learn rate). Redundant CPU + tuning surface. Collapsed by **P3**. |
+| 1 | ✅ Fixed (P3 3a) | `pipeline._feed_motion_detectors` | Adaptive CLAHE before MOG2 amplified noise per-frame → frame-diff read it as fake motion (admitted a ghost on slot 4). Now feeds **gamma-only** (fixed, frame-independent) gray. The harness proved this fix is inseparable from the scored gate. (`_enhance_gray_for_motion` is now dead — sweep with the compat-shim cleanup.) |
+| 2 | ✅ Fixed (P3 2) | one `MotionModel` | Collapsed the two MOG2 into one slow model + frame-diff; bit-identical → the 2nd MOG2 was redundant. |
 | 3 | Low | `_extract_transfer_timing` | Assigned inside the per-detection loop; stale on zero-detection frames. Cosmetic. |
-| 4 | Verify | `motion_detector` frame-diff buffer | `_curr_raw`/`_prev_raw` only advance when `peak_diff > 8`; confirm it doesn't mis-bridge during static stretches. |
-| 5 | Verify (untested) | ROI→letterbox→unscale transform chain | Correct as traced, but zero tests — cover in **P4**. (P1.4 + crossval both depend on it.) |
+| 4 | Verify | `motion_detector` frame-diff buffer | `_curr_raw`/`_prev_raw` only advance when `peak_diff > 8`; confirm it doesn't mis-bridge during static stretches. (Now the primary ghost/relay signal — re-check on the broader footage set.) |
+| 5 | ✅ Covered (P3 0) | ROI→letterbox→unscale transform chain | Now under [test_transforms.py](../application/tests/test_transforms.py) (round-trip + crossval/exclusion transform). |
 
 ---
 
