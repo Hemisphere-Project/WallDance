@@ -201,6 +201,17 @@ class MotionModel:
         return self._det.has_mask
 
     @property
+    def detector(self) -> MotionDetector:
+        """The underlying MotionDetector.
+
+        Stage-2 compatibility accessor: the pipeline crossval tree and the
+        tracker bridge still consume a MotionDetector directly.  They migrate
+        to the clean MotionModel surface (and this accessor is removed) in
+        Stage 3.
+        """
+        return self._det
+
+    @property
     def scale(self) -> float:
         return self._scale
 

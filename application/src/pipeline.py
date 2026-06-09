@@ -62,6 +62,7 @@ from config import (
 from background import BackgroundSubtractor
 from enhancer import ImageEnhancer, TORCH_CUDA_AVAILABLE
 from motion_detector import MotionDetector
+from motion_model import MotionModel
 from calibration import ExclusionMaskBuilder
 from osc_output import OSCSender
 from tracker import DancerTrack, DancerTracker
@@ -349,14 +350,15 @@ class FrameProcessor:
         # Background subtraction
         self.bg_subtractor = BackgroundSubtractor()
 
-        # Motion models:
-        # - bridge_motion_detector keeps slower memory for continuity bridging
-        # - crossval_motion_detector adapts faster to lighting drift
-        self.bridge_motion_detector = MotionDetector() if MOTION_BRIDGE_ENABLED else None
-        self.crossval_motion_detector = MotionDetector() if MOTION_CROSSVAL_ENABLED else None
-        if self.crossval_motion_detector is not None:
-            self.crossval_motion_detector.set_learn_rate(
-                MOTION_CROSSVAL_MOG2_LEARN_RATE)
+        # Unified motion model (P3 Stage 2): ONE slow MOG2 (silhouette for
+        # bridging) + frame-diff, replacing the former two MOG2 models that
+        # differed only in learn rate (ROADMAP Bug #2).  bridge_motion_detector
+        # / crossval_motion_detector are now read-only views onto this single
+        # model (see the properties below); consumers migrate to the clean
+        # MotionModel surface in Stage 3.
+        self.motion_model: Optional[MotionModel] = (
+            MotionModel() if (MOTION_BRIDGE_ENABLED or MOTION_CROSSVAL_ENABLED)
+            else None)
         self._tracking_mode = TrackingMode.YOLO_FIRST
         self._motion_lb_scale = 1.0
         self._motion_pad_x = 0
@@ -991,17 +993,19 @@ class FrameProcessor:
         return scaled_tracks, enhanced, timing, latency_ms
 
     def _configure_motion_detectors(self):
-        """Apply mode-specific learning rates to the motion detectors."""
-        if self.bridge_motion_detector is not None:
-            if self._tracking_mode == TrackingMode.MOTION_FIRST:
-                self.bridge_motion_detector.set_learn_rate(
-                    MOTION_FIRST_MOG2_LEARN_RATE)
-            else:
-                self.bridge_motion_detector.set_learn_rate(
-                    MOTION_BRIDGE_MOG2_LEARN_RATE)
-        if self.crossval_motion_detector is not None:
-            self.crossval_motion_detector.set_learn_rate(
-                MOTION_CROSSVAL_MOG2_LEARN_RATE)
+        """Apply the mode-specific learning rate to the single motion model.
+
+        One MOG2 cannot serve both consumers' former rates (bridge 0.001 /
+        crossval 0.005), so it runs at the SLOW rate bridging requires (a
+        paused dancer must stay foreground for seconds).  Crossval's drift
+        rejection moves to frame-differencing in Stage 3.
+        """
+        if self.motion_model is None:
+            return
+        rate = (MOTION_FIRST_MOG2_LEARN_RATE
+                if self._tracking_mode == TrackingMode.MOTION_FIRST
+                else MOTION_BRIDGE_MOG2_LEARN_RATE)
+        self.motion_model.set_learn_rate(rate)
 
     def _enhance_gray_for_motion(self, gray: np.ndarray) -> np.ndarray:
         """Apply CLAHE + gamma to a single-channel gray frame.
@@ -1037,39 +1041,40 @@ class FrameProcessor:
         return out
 
     def _feed_motion_detectors(self, gray: np.ndarray) -> None:
-        """Feed all active motion detectors from one grayscale frame.
-
-        Preprocessing (blur + resize) runs once and is shared across
-        detectors that use the same scale.
-        """
-        # Apply the same CLAHE + gamma used for YOLO / preview so the
-        # motion detector sees the contrast-enhanced image.
+        """Feed the single motion model from one grayscale frame."""
+        if self.motion_model is None:
+            return
+        # Apply the same CLAHE + gamma used for YOLO / preview so the motion
+        # model sees the contrast-enhanced image.
+        # NOTE: Bug #1 (per-frame adaptive CLAHE before MOG2) is fixed in
+        # Stage 3, where it is coupled with the varThreshold retune + frame-diff
+        # crossval.  Keeping the historical enhanced-gray feed here lets Stage 2
+        # isolate a single behavior change (one slow MOG2 for crossval).
         gray = self._enhance_gray_for_motion(gray)
-        # Keep a handle on the exact signal MOG2 consumes, so Go-Live
-        # calibration measures the noise MOG2 actually contends with (incl.
-        # per-frame CLAHE jitter), not the raw near-black frame.
+        # Handle on the exact signal MOG2 consumes (Go-Live noise calibration).
         self._last_motion_gray = gray
+        self.motion_model.feed(gray)
 
-        detectors = []
-        if self.bridge_motion_detector is not None:
-            detectors.append(self.bridge_motion_detector)
-        if self.crossval_motion_detector is not None:
-            detectors.append(self.crossval_motion_detector)
+    @property
+    def bridge_motion_detector(self):
+        """Read-only view of the single MotionModel's detector, for bridging.
 
-        seen = set()
-        # Cache preprocessed frames keyed by scale to avoid redundant work
-        preprocess_cache: dict[float, tuple] = {}
-        for detector in detectors:
-            detector_id = id(detector)
-            if detector_id in seen:
-                continue
-            scale = detector._scale
-            if scale not in preprocess_cache:
-                from motion_detector import MotionDetector as MD
-                preprocess_cache[scale] = MD.preprocess(gray, scale)
-            small, brightness = preprocess_cache[scale]
-            detector.feed_preprocessed(small, brightness, raw_gray=gray)
-            seen.add(detector_id)
+        Active when bridging is enabled or in motion-first mode.  (Stage-2
+        compatibility shim; the tracker bridge migrates to the MotionModel
+        surface in Stage 3.)
+        """
+        if self.motion_model is None:
+            return None
+        if MOTION_BRIDGE_ENABLED or self._tracking_mode == TrackingMode.MOTION_FIRST:
+            return self.motion_model.detector
+        return None
+
+    @property
+    def crossval_motion_detector(self):
+        """Read-only view of the single MotionModel's detector, for cross-validation."""
+        if self.motion_model is None or not MOTION_CROSSVAL_ENABLED:
+            return None
+        return self.motion_model.detector
 
     @property
     def motion_detector(self):
@@ -1077,28 +1082,18 @@ class FrameProcessor:
         return self.bridge_motion_detector or self.crossval_motion_detector
 
     def get_motion_scale(self) -> float:
-        """Return the current MOG2 scale from any active detector."""
-        detector = self.motion_detector
-        return detector._scale if detector is not None else 0.75
+        """Return the current MOG2 scale."""
+        return self.motion_model.scale if self.motion_model is not None else 0.75
 
     def get_motion_sensitivity(self) -> float:
         """Return the current motion-bridge sensitivity."""
         return float(self.settings.motion_sensitivity)
 
     def set_motion_scale(self, scale: float) -> None:
-        """Apply the same MOG2 scale to all active motion detectors."""
-        detectors = []
-        if self.bridge_motion_detector is not None:
-            detectors.append(self.bridge_motion_detector)
-        if self.crossval_motion_detector is not None:
-            detectors.append(self.crossval_motion_detector)
-        seen = set()
-        for detector in detectors:
-            detector_id = id(detector)
-            if detector_id in seen:
-                continue
-            detector.set_scale(scale)
-            seen.add(detector_id)
+        """Apply the MOG2 scale to the motion model (keeps model + detector
+        scale in sync so coordinate transforms stay correct)."""
+        if self.motion_model is not None:
+            self.motion_model.set_scale(scale)
 
     def set_motion_sensitivity(self, sensitivity: float) -> None:
         """Update bridge sensitivity for runtime recovery behavior."""
@@ -1117,19 +1112,14 @@ class FrameProcessor:
 
     def get_motion_var_threshold(self) -> float:
         """Return the current MOG2 base varThreshold (Go-Live calibration)."""
-        detector = self.motion_detector
-        if detector is not None:
-            return float(detector._var_threshold)
+        if self.motion_model is not None:
+            return self.motion_model.get_var_threshold()
         return float(MOTION_BRIDGE_MOG2_VAR_THRESHOLD)
 
     def set_motion_var_threshold(self, base: float) -> None:
-        """Apply the same MOG2 base varThreshold to all active motion detectors."""
-        seen = set()
-        for detector in (self.bridge_motion_detector, self.crossval_motion_detector):
-            if detector is None or id(detector) in seen:
-                continue
-            detector.set_var_threshold(base)
-            seen.add(id(detector))
+        """Apply the MOG2 base varThreshold to the motion model."""
+        if self.motion_model is not None:
+            self.motion_model.set_var_threshold(base)
 
     # ------------------------------------------------------------------
     # Auto exclusion mask (P1.4)
@@ -1222,19 +1212,9 @@ class FrameProcessor:
         self._exclusion.clear()
 
     def reset_motion_detectors(self) -> None:
-        """Reset all active motion detectors and clear cross-validation state."""
-        detectors = []
-        if self.bridge_motion_detector is not None:
-            detectors.append(self.bridge_motion_detector)
-        if self.crossval_motion_detector is not None:
-            detectors.append(self.crossval_motion_detector)
-        seen = set()
-        for detector in detectors:
-            detector_id = id(detector)
-            if detector_id in seen:
-                continue
-            detector.reset()
-            seen.add(detector_id)
+        """Reset the motion model and clear cross-validation state."""
+        if self.motion_model is not None:
+            self.motion_model.reset()
         self._crossval_motion_memory.clear()
         self._crossval_no_track_frames = 0
         self._crossval_motion_cells.clear()
@@ -1251,12 +1231,12 @@ class FrameProcessor:
         )
 
     def set_tracking_mode(self, mode: TrackingMode):
-        """Switch tracking mode and keep bridge/cross-validation models aligned."""
+        """Switch tracking mode and keep the motion model aligned."""
         self._tracking_mode = mode
-        if mode == TrackingMode.MOTION_FIRST and self.bridge_motion_detector is None:
-            current_scale = self.get_motion_scale()
-            self.bridge_motion_detector = MotionDetector()
-            self.bridge_motion_detector.set_scale(current_scale)
+        if self.motion_model is None and (
+                MOTION_BRIDGE_ENABLED or MOTION_CROSSVAL_ENABLED
+                or mode == TrackingMode.MOTION_FIRST):
+            self.motion_model = MotionModel()
         self._configure_motion_detectors()
 
     def _unscale_letterbox(
