@@ -2565,48 +2565,33 @@ class DancerTracker:
     # Phase 3: Motion bridge — MOG2 blob fallback for YOLO gaps
     # ------------------------------------------------------------------
     def _lazy_bridge_with_motion(self, motion_detector, matched_trk):
-        """Check for bridge candidates, then lazily call detect().
+        """Relay unmatched tracks via track-local motion evidence (P3 Stage 3b-3).
 
-        Avoids the expensive contour extraction when all tracks are
-        YOLO-matched (the common case).
+        Global motion blobs YOLO missed are already promoted to synthetic
+        detections (always-on gated cold detection) and matched in the main
+        assignment, so the former global-blob Hungarian bridge is gone.  What
+        remains is the track-local relay: a paused/occluded dancer whose blob
+        wasn't promoted is still held via a local MOG2 / frame-diff measurement,
+        else a faint-motion presence hold.
         """
-        # Quick check: any unmatched track that could be bridged?
-        has_candidates = False
         candidate_indices = []
         candidate_track_ids = []
         for idx, track in enumerate(self.tracks):
-            if idx in matched_trk:
-                continue
-            if track.time_since_update == 0:
+            if idx in matched_trk or track.time_since_update == 0:
                 continue
             max_bridge = (MOTION_FIRST_BRIDGE_MAX_FRAMES
                           if self.tracking_mode == TrackingMode.MOTION_FIRST
                           else MOTION_BRIDGE_MAX_FRAMES)
             if track.bridge_frames >= max_bridge:
                 continue
-            has_candidates = True
             candidate_indices.append(idx)
             candidate_track_ids.append(track.track_id)
 
-        if not has_candidates:
-            return
-
-        motion_blobs = motion_detector.detect(
-            self._person_height_px,
-            allow_during_warmup=True,
-            suppress_static=False,
-            include_shadows=MOTION_BRIDGE_INCLUDE_SHADOWS,
-            min_area_scale=self._bridge_min_area_scale(),
-            min_height_ratio=self._bridge_min_height_ratio(),
-        )
-        if motion_blobs:
-            self._bridge_unmatched_with_motion(motion_blobs, matched_trk)
+        if not candidate_indices:
             return
 
         if self._bridge_with_local_motion_support(
-            motion_detector,
-            matched_trk,
-            candidate_indices,
+            motion_detector, matched_trk, candidate_indices,
         ):
             return
 
@@ -2615,7 +2600,7 @@ class DancerTracker:
 
         # Diagnostic: sample one candidate track's region for debug info
         diag = {}
-        if candidate_indices and hasattr(motion_detector, 'bridge_diagnostics'):
+        if hasattr(motion_detector, 'bridge_diagnostics'):
             sample_track = self.tracks[candidate_indices[0]]
             pred = sample_track.get_centroid()
             qw = float(sample_track.bbox[2]) * 1.5
@@ -2625,7 +2610,7 @@ class DancerTracker:
             diag = motion_detector.bridge_diagnostics(qx, qy, qw, qh)
 
         self.logger.log("MOTION_BRIDGE_SKIPPED", {
-            "reason": "no_blobs",
+            "reason": "no_local_motion",
             "candidate_track_ids": candidate_track_ids,
             **diag,
         })
@@ -2755,101 +2740,6 @@ class DancerTracker:
             })
 
         return bridged_any
-
-    def _bridge_unmatched_with_motion(self, motion_blobs, matched_trk):
-        """Bridge lost tracks using MOG2 foreground blobs (TIER 2).
-
-        Uses Hungarian assignment (instead of greedy nearest-blob) for
-        optimal track-to-blob matching.  For each unmatched active track
-        (recently YOLO-confirmed, within bridge frame limit), blobs are
-        scored by distance to the track's predicted position.
-        """
-        if not motion_blobs:
-            return
-
-        matched_centroids = [self.tracks[i].get_centroid() for i in matched_trk]
-        raw_base_bridge_gate = self._person_height_px * MOTION_BRIDGE_GATE_RATIO
-        base_bridge_gate = raw_base_bridge_gate * self._bridge_gate_sensitivity_mult()
-
-        # Collect candidate tracks (unmatched, within bridge budget)
-        cand_indices = []
-        for idx, track in enumerate(self.tracks):
-            if idx in matched_trk:
-                continue
-            if track.time_since_update == 0:
-                continue
-            max_bridge = (MOTION_FIRST_BRIDGE_MAX_FRAMES
-                          if self.tracking_mode == TrackingMode.MOTION_FIRST
-                          else MOTION_BRIDGE_MAX_FRAMES)
-            if track.bridge_frames >= max_bridge:
-                continue
-            cand_indices.append(idx)
-
-        if not cand_indices:
-            return
-
-        # Filter out blobs too close to YOLO-matched tracks
-        valid_blobs = []
-        valid_blob_indices = []
-        for bi, blob in enumerate(motion_blobs):
-            near_matched = False
-            for mpos in matched_centroids:
-                if float(np.linalg.norm(blob.centroid - mpos)) < raw_base_bridge_gate * 0.5:
-                    near_matched = True
-                    break
-            if not near_matched:
-                valid_blobs.append(blob)
-                valid_blob_indices.append(bi)
-
-        if not valid_blobs:
-            for idx in cand_indices:
-                self.tracks[idx].is_bridged = False
-            self.logger.log("MOTION_BRIDGE_SKIPPED", {
-                "reason": "all_blobs_near_yolo_matches",
-                "candidate_track_ids": [self.tracks[idx].track_id for idx in cand_indices],
-                "matched_track_ids": [self.tracks[idx].track_id for idx in matched_trk],
-            })
-            return
-
-        # Build cost matrix [tracks × blobs]
-        n_trk = len(cand_indices)
-        n_blob = len(valid_blobs)
-        cost = np.full((n_trk, n_blob), 1e6, dtype=np.float64)
-
-        for ti, trk_idx in enumerate(cand_indices):
-            track = self.tracks[trk_idx]
-            pred_pos = track.get_centroid()
-            track_gate = base_bridge_gate * (1.0 + track.time_since_update * MOTION_BRIDGE_GATE_GROWTH_PER_MISS)
-            if track.is_established:
-                track_gate *= MOTION_BRIDGE_GATE_ESTABLISHED_MULT
-            for bi, blob in enumerate(valid_blobs):
-                d = float(np.linalg.norm(pred_pos - blob.centroid))
-                if d <= track_gate:
-                    cost[ti, bi] = d
-
-        row_ind, col_ind = linear_sum_assignment(cost)
-
-        assigned_trk = set()
-        for ri, ci in zip(row_ind, col_ind):
-            if cost[ri, ci] >= 1e6:
-                continue
-            trk_idx = cand_indices[ri]
-            blob = valid_blobs[ci]
-            self._apply_motion_bridge(
-                self.tracks[trk_idx], blob, cost[ri, ci])
-            assigned_trk.add(trk_idx)
-
-        # Mark unassigned candidates as not bridged
-        for idx in cand_indices:
-            if idx not in assigned_trk:
-                self.tracks[idx].is_bridged = False
-
-        if not assigned_trk:
-            self.logger.log("MOTION_BRIDGE_SKIPPED", {
-                "reason": "gated_out",
-                "candidate_track_ids": [self.tracks[idx].track_id for idx in cand_indices],
-                "blob_count": len(valid_blobs),
-            })
 
     def _apply_motion_presence_bridge(self, track, pred_pos, query_w: float,
                                       query_h: float, motion_ratio: float):
