@@ -340,7 +340,11 @@ class FrameProcessor:
         self.osc = osc_sender
         self._timing: Dict[str, float] = {}
         self._extract_transfer_timing: Dict[str, float] = {}
-        
+        # Optional callback(detections, gray_for_motion, roi_x, roi_y,
+        # original_w, original_h) used by the detect-pass cache builder (TUNING
+        # Phase B).  None on the live path.
+        self._cache_capture = None
+
         # Background subtraction
         self.bg_subtractor = BackgroundSubtractor()
 
@@ -802,107 +806,26 @@ class FrameProcessor:
         if self._gpu_pipeline is not None:
             self._gpu_pipeline._cached_preview = None
     
-    def _process_cpu(self, frame: np.ndarray, frame_number: int | None = None) -> Tuple[List[ScaledTrack], np.ndarray, Dict[str, float], float]:
-        """CPU pipeline: traditional enhancement + YOLO."""
-        frame_start = time.time()
-        original_h, original_w = frame.shape[:2]
-        timing: Dict[str, float] = {}
+    def _track_detections(
+        self,
+        detections,
+        roi_x: int,
+        roi_y: int,
+        original_w: int,
+        original_h: int,
+        frame_number: int | None,
+        timing: Dict[str, float],
+    ) -> List[ScaledTrack]:
+        """Post-YOLO CPU path: scored gate → exclusion → cold blobs → tracker →
+        ScaledTrack → OSC.
 
-        # 0. Background subtraction (before enhancement)
-        if self.settings.bg_subtract_enabled and self.bg_subtractor.has_reference:
-            t0 = time.time()
-            frame = self.bg_subtractor.apply_cpu(frame, self.settings.bg_subtract_sensitivity)
-            timing["bg_subtract"] = (time.time() - t0) * 1000
-            timing["bg_fg_ratio"] = self.bg_subtractor.foreground_ratio
-            timing["bg_mismatched"] = self.bg_subtractor.is_mismatched
-        else:
-            timing["bg_subtract"] = 0.0
-
-        roi = self._resolve_roi(original_w, original_h)
-        if roi is not None:
-            roi_x, roi_y, roi_x2, roi_y2 = roi
-            frame = frame[roi_y:roi_y2, roi_x:roi_x2]
-            timing["roi"] = {
-                "enabled": True,
-                "x": roi_x,
-                "y": roi_y,
-                "w": roi_x2 - roi_x,
-                "h": roi_y2 - roi_y,
-            }
-        else:
-            roi_x = 0
-            roi_y = 0
-            timing["roi"] = {
-                "enabled": False,
-                "x": 0,
-                "y": 0,
-                "w": original_w,
-                "h": original_h,
-            }
-
-        # 1. Enhancement
-        t0 = time.time()
-        
-        brightness = 0.0
-        should_enhance = self.settings.enhance_enabled
-        if should_enhance and not self.settings.enhance_lite and not self.settings.enhance_force:
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            brightness = float(np.mean(gray))
-            if brightness >= self.settings.brightness_threshold:
-                should_enhance = False
-        
-        if should_enhance:
-            if self.settings.enhance_lite:
-                enhanced = self.enhancer.enhance_simple(frame)
-            else:
-                enhanced, _ = self.enhancer.enhance(frame)
-            enhance_on_gpu = getattr(self.enhancer, 'last_used_gpu', False)
-        else:
-            enhanced = frame
-            enhance_on_gpu = False
-            
-        timing["enhance"] = (time.time() - t0) * 1000
-        timing["path_enhance"] = "gpu" if enhance_on_gpu else "cpu"
-        timing["brightness"] = brightness
-
-        # Start MOG2 feed in background thread — runs on CPU while YOLO uses GPU
-        mog2_thread = None
-        t_mog_start = None
-        if self.bridge_motion_detector is not None or self.crossval_motion_detector is not None:
-            t_mog_start = time.time()
-            gray_for_motion = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            timing["mog2_cvt"] = (time.time() - t_mog_start) * 1000
-            mog2_thread = threading.Thread(
-                target=self._feed_motion_detectors, args=(gray_for_motion,),
-                daemon=True)
-            mog2_thread.start()
-
-        # 2. YOLO inference (GPU) — runs in parallel with MOG2 feed (CPU)
-        t0 = time.time()
-        results = self.model(
-            enhanced,
-            imgsz=self.settings.imgsz,
-            conf=self.settings.confidence,
-            iou=YOLO_IOU_THRESHOLD,
-            half=self.settings.use_fp16,
-            verbose=False,
-        )
-        timing["yolo"] = (time.time() - t0) * 1000
-        timing["path_yolo"] = "gpu"
-
-        # 3. Extract detections
-        t0 = time.time()
-        detections = self._extract_detections(results)
-        detections = self._filter_duplicate_detections(detections)
-        detections = self._offset_detections(detections, roi_x, roi_y)
-        timing["extract"] = (time.time() - t0) * 1000
-        timing.update(self._extract_transfer_timing)
-
-        # Join MOG2 thread before tracker needs blobs
-        if mog2_thread is not None:
-            mog2_thread.join()
-            timing["mog2_feed"] = (time.time() - t_mog_start) * 1000 - timing.get("mog2_cvt", 0)
-
+        Split out of ``_process_cpu`` so the detect-pass cache replay (TUNING
+        Phase B) drives the *exact same* gate/motion/tracker logic without
+        re-running YOLO — guaranteeing cache replay is bit-identical to the live
+        path.  The motion detectors must already have been fed this frame's gray
+        (``_feed_motion_detectors``); ``detections`` are post-offset, pre-gate
+        (original-frame coords).  ``timing`` is mutated in place.
+        """
         # Cross-validate YOLO detections against MOG2 motion mask
         n_before_xval = len(detections)
         detections, crossval_stats = self._crossval_motion_filter(
@@ -983,6 +906,125 @@ class FrameProcessor:
         # 6. OSC output
         if self.osc and self.settings.osc_enabled:
             self.osc.send_frame(scaled_tracks, original_w, original_h)
+
+        return scaled_tracks
+
+    def _process_cpu(self, frame: np.ndarray, frame_number: int | None = None) -> Tuple[List[ScaledTrack], np.ndarray, Dict[str, float], float]:
+        """CPU pipeline: traditional enhancement + YOLO."""
+        frame_start = time.time()
+        original_h, original_w = frame.shape[:2]
+        timing: Dict[str, float] = {}
+
+        # 0. Background subtraction (before enhancement)
+        if self.settings.bg_subtract_enabled and self.bg_subtractor.has_reference:
+            t0 = time.time()
+            frame = self.bg_subtractor.apply_cpu(frame, self.settings.bg_subtract_sensitivity)
+            timing["bg_subtract"] = (time.time() - t0) * 1000
+            timing["bg_fg_ratio"] = self.bg_subtractor.foreground_ratio
+            timing["bg_mismatched"] = self.bg_subtractor.is_mismatched
+        else:
+            timing["bg_subtract"] = 0.0
+
+        roi = self._resolve_roi(original_w, original_h)
+        if roi is not None:
+            roi_x, roi_y, roi_x2, roi_y2 = roi
+            frame = frame[roi_y:roi_y2, roi_x:roi_x2]
+            timing["roi"] = {
+                "enabled": True,
+                "x": roi_x,
+                "y": roi_y,
+                "w": roi_x2 - roi_x,
+                "h": roi_y2 - roi_y,
+            }
+        else:
+            roi_x = 0
+            roi_y = 0
+            timing["roi"] = {
+                "enabled": False,
+                "x": 0,
+                "y": 0,
+                "w": original_w,
+                "h": original_h,
+            }
+
+        # 1. Enhancement
+        t0 = time.time()
+        
+        brightness = 0.0
+        should_enhance = self.settings.enhance_enabled
+        if should_enhance and not self.settings.enhance_lite and not self.settings.enhance_force:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            brightness = float(np.mean(gray))
+            if brightness >= self.settings.brightness_threshold:
+                should_enhance = False
+        
+        if should_enhance:
+            if self.settings.enhance_lite:
+                enhanced = self.enhancer.enhance_simple(frame)
+            else:
+                enhanced, _ = self.enhancer.enhance(frame)
+            enhance_on_gpu = getattr(self.enhancer, 'last_used_gpu', False)
+        else:
+            enhanced = frame
+            enhance_on_gpu = False
+            
+        timing["enhance"] = (time.time() - t0) * 1000
+        timing["path_enhance"] = "gpu" if enhance_on_gpu else "cpu"
+        timing["brightness"] = brightness
+
+        # Start MOG2 feed in background thread — runs on CPU while YOLO uses GPU
+        mog2_thread = None
+        t_mog_start = None
+        gray_for_motion = None
+        if self.bridge_motion_detector is not None or self.crossval_motion_detector is not None:
+            t_mog_start = time.time()
+            gray_for_motion = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            timing["mog2_cvt"] = (time.time() - t_mog_start) * 1000
+            mog2_thread = threading.Thread(
+                target=self._feed_motion_detectors, args=(gray_for_motion,),
+                daemon=True)
+            mog2_thread.start()
+
+        # 2. YOLO inference (GPU) — runs in parallel with MOG2 feed (CPU)
+        t0 = time.time()
+        results = self.model(
+            enhanced,
+            imgsz=self.settings.imgsz,
+            conf=self.settings.confidence,
+            iou=YOLO_IOU_THRESHOLD,
+            half=self.settings.use_fp16,
+            verbose=False,
+        )
+        timing["yolo"] = (time.time() - t0) * 1000
+        timing["path_yolo"] = "gpu"
+
+        # 3. Extract detections
+        t0 = time.time()
+        detections = self._extract_detections(results)
+        detections = self._filter_duplicate_detections(detections)
+        detections = self._offset_detections(detections, roi_x, roi_y)
+        timing["extract"] = (time.time() - t0) * 1000
+        timing.update(self._extract_transfer_timing)
+
+        # Join MOG2 thread before tracker needs blobs
+        if mog2_thread is not None:
+            mog2_thread.join()
+            timing["mog2_feed"] = (time.time() - t_mog_start) * 1000 - timing.get("mog2_cvt", 0)
+
+        # Capture hook for the detect-pass cache (TUNING Phase B): record the
+        # post-offset, pre-gate detections + the raw motion gray so a search can
+        # re-run the gate/motion/tracker without re-running YOLO.  No cost on the
+        # live path (attribute is None).
+        if self._cache_capture is not None:
+            self._cache_capture(
+                detections, gray_for_motion, roi_x, roi_y,
+                original_w, original_h)
+
+        # Post-YOLO: scored gate -> exclusion -> cold blobs -> tracker -> OSC.
+        # Shared with the detect-cache replay so the two paths stay identical.
+        scaled_tracks = self._track_detections(
+            detections, roi_x, roi_y, original_w, original_h,
+            frame_number, timing)
 
         latency_ms = (time.time() - frame_start) * 1000
         timing["total"] = latency_ms

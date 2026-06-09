@@ -40,3 +40,6 @@ projects/
 .DS_Store
 Thumbs.db
 application/tracking_events.jsonl
+
+# TUNING Phase B: YOLO detect-pass caches (large, regenerable)
+application/tests/cache/

@@ -93,10 +93,15 @@ def _find_recording(project: str, slot: int) -> Optional[Path]:
     return recs[0] if recs else None
 
 
-def _build_processor(config: dict, model_name: str, imgsz: int):
+def _build_processor(config: dict, model_name: str, imgsz: int,
+                     load_model: bool = True):
     """Construct a FrameProcessor and apply the detection-relevant config
-    subset exactly as app._apply_config_without_model does."""
-    from ultralytics import YOLO
+    subset exactly as app._apply_config_without_model does.
+
+    ``load_model=False`` skips loading the YOLO weights (model=None) — used by
+    the detect-cache replay (TUNING Phase B), which drives only the post-YOLO
+    ``_track_detections`` path and never calls the model.
+    """
     from enhancer import ImageEnhancer
     from tracker import DancerTracker
     from pipeline import FrameProcessor, ProcessingSettings
@@ -106,10 +111,14 @@ def _build_processor(config: dict, model_name: str, imgsz: int):
         MOTION_BRIDGE_SENSITIVITY, TrackingMode, AUTOCAL_EXCL_GRID,
     )
 
-    model_path = MODELS_DIR / f"{model_name}.pt"
-    if not model_path.exists():
-        raise FileNotFoundError(f"model weights not found: {model_path}")
-    model = YOLO(str(model_path))
+    if load_model:
+        from ultralytics import YOLO
+        model_path = MODELS_DIR / f"{model_name}.pt"
+        if not model_path.exists():
+            raise FileNotFoundError(f"model weights not found: {model_path}")
+        model = YOLO(str(model_path))
+    else:
+        model = None
 
     settings = ProcessingSettings(
         confidence=config.get("confidence", YOLO_CONFIDENCE),
@@ -190,9 +199,10 @@ def replay_recording(
     interpretable: real/marginal/ghost track counts (by hit count),
     swap count, zero-detection frames, average detections.
     """
-    from analyze_session import collect_stats, classify_tracks
-
     proc = _build_processor(config, model_name, imgsz)
+    # Reset the global track-ID counter so IDs are deterministic when several
+    # replays run in one process (a search, or --cache build+replay).
+    proc.tracker.reset()
 
     tmp = log_dir or tempfile.mkdtemp(prefix="wd_replay_")
     proc.tracker.logger.start_session(tmp)
@@ -228,14 +238,35 @@ def replay_recording(
         cap.release()
         proc.tracker.logger.close()
 
-    events_path = Path(tmp) / "tracking_events.jsonl"
+    return _summary_from_log(
+        tmp, Path(video_path).name, model_name, imgsz, start_frame,
+        processed, per_frame)
+
+
+def _summary_from_log(
+    log_dir: str,
+    video_name: str,
+    model_name: str,
+    imgsz: int,
+    start_frame: int,
+    processed: int,
+    per_frame: list,
+) -> Dict:
+    """Build the (golden-comparable) metric summary from a tracker session log.
+
+    Shared by ``replay_recording`` (live path) and the detect-cache replay
+    (TUNING Phase B) so both report identical metrics.
+    """
+    from analyze_session import collect_stats, classify_tracks
+
+    events_path = Path(log_dir) / "tracking_events.jsonl"
     stats = collect_stats(events_path)
     tracks = classify_tracks(stats)
     fs = stats["frame_summaries"]
     dets = [d.get("n_detections", 0) for d in fs.values()]
 
     return {
-        "video": Path(video_path).name,
+        "video": video_name,
         "model": model_name,
         "imgsz": imgsz,
         "start_frame": start_frame,
@@ -277,6 +308,11 @@ def main():
                     help="write the per-frame reported-count timeline to this path")
     ap.add_argument("--score", action="store_true",
                     help="score against --scenario's ground truth (prints breakdown)")
+    ap.add_argument("--cache", action="store_true",
+                    help="use the YOLO detect-pass cache (TUNING Phase B): build "
+                         "it on first use, then replay from it skipping YOLO")
+    ap.add_argument("--rebuild-cache", action="store_true",
+                    help="force-rebuild the detect-pass cache before replaying")
     args = ap.parse_args()
 
     scenario = None
@@ -300,12 +336,27 @@ def main():
     if not video:
         sys.exit(f"no recording found for {args.project} slot {args.slot}")
 
-    summary = replay_recording(
-        str(video), config,
-        model_name=args.model or config.get("model", "yolo11x-pose"),
-        imgsz=args.imgsz or int(config.get("yolo_imgsz", 1280)),
-        start_frame=args.start, max_frames=args.frames,
-    )
+    model_name = args.model or config.get("model", "yolo11x-pose")
+    imgsz = args.imgsz or int(config.get("yolo_imgsz", 1280))
+
+    if args.cache or args.rebuild_cache:
+        # Detect-pass cache path (TUNING Phase B): skip YOLO, replay the tunable
+        # gate/motion/tracker back-end from cached detections + motion grays.
+        import detect_cache
+        key = detect_cache.cache_key(
+            config, Path(video).name, args.start, args.frames or 0,
+            model_name, imgsz)
+        cpath = detect_cache.cache_path_for(key)
+        if args.rebuild_cache or not cpath.exists():
+            detect_cache.build_cache(
+                str(video), config, model_name=model_name, imgsz=imgsz,
+                start_frame=args.start, max_frames=args.frames, out_path=cpath)
+        summary = detect_cache.replay_from_cache(detect_cache.load_cache(cpath), config)
+    else:
+        summary = replay_recording(
+            str(video), config, model_name=model_name, imgsz=imgsz,
+            start_frame=args.start, max_frames=args.frames,
+        )
 
     # Split the per-frame timeline out of the lean (golden-comparable) summary.
     per_frame = summary.pop("per_frame", [])

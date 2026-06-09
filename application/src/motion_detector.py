@@ -536,29 +536,32 @@ class MotionDetector:
         if n_labels <= 1:
             return None, motion_ratio
 
-        target_small = None
-        if target_centroid is not None:
-            target_small = np.array(target_centroid, dtype=np.float64) * s
-
-        best_label = None
-        best_key = None
-        for label in range(1, n_labels):
-            area = int(stats[label, cv2.CC_STAT_AREA])
-            if area <= 0:
-                continue
-            cx = float(centroids[label][0] + x1)
-            cy = float(centroids[label][1] + y1)
-            if target_small is not None:
-                dist = float(np.linalg.norm(np.array([cx, cy]) - target_small))
-                key = (dist, -area)
-            else:
-                key = (-area,)
-            if best_key is None or key < best_key:
-                best_key = key
-                best_label = label
-
-        if best_label is None:
+        # Pick the component minimising (distance-to-target, -area), earliest
+        # label winning ties -- exactly the former Python loop, but vectorised:
+        # the frame-diff mask of a textured background fragments into ~1e3
+        # components per bbox, so this ran np.linalg.norm a million times a
+        # replay (and every frame in the live show).  Squared distance gives the
+        # identical ordering (dist >= 0), and np.lexsort reproduces the tuple
+        # comparison's tie-break (stable, smallest label first).
+        labels_idx = np.arange(1, n_labels)
+        areas = stats[1:n_labels, cv2.CC_STAT_AREA].astype(np.int64)
+        valid = areas > 0
+        if not np.any(valid):
             return None, motion_ratio
+
+        if target_centroid is not None:
+            tx, ty = np.asarray(target_centroid, dtype=np.float64) * s
+            cxs = centroids[1:n_labels, 0] + x1
+            cys = centroids[1:n_labels, 1] + y1
+            d2 = (cxs - tx) ** 2 + (cys - ty) ** 2
+            d2 = np.where(valid, d2, np.inf)            # invalid sort last
+            # lexsort: last key is primary -> d2 asc, then -area asc (area desc),
+            # then label asc (earliest wins exact ties).
+            order = np.lexsort((labels_idx, -areas, d2))
+        else:
+            a = np.where(valid, areas, -1)
+            order = np.lexsort((labels_idx, -a))
+        best_label = int(labels_idx[order[0]])
 
         left = int(stats[best_label, cv2.CC_STAT_LEFT]) + x1
         top = int(stats[best_label, cv2.CC_STAT_TOP]) + y1
