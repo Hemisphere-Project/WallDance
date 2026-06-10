@@ -16,9 +16,12 @@ Workflow across P3:
   the diff *is* the measured effect.  Re-baseline with ``replay.py --out``
   and commit the new goldens alongside the change, noting the delta.
 
-The fixtures are ``residence1-solo`` slots 3 & 4: single dancer, poor light,
-mildly textured background (real ghost signal), motion varying fast/slow/
-static -- the conditions the rest of the corpus (clean tango) lacks.
+The fixtures are the corpus-re-founding golden trio (2026-06-10, see
+docs/CORPUS_ANALYSIS.md §5): ``hangar-floor`` / ``hangar-aerial`` (the former
+``residence1-solo`` slots 3 & 4, same files) + ``texture-aerial`` (aerial on
+the heavily textured wall).  Each scenario manifest pins its exact config
+snapshot and a recording fingerprint, so the golden is reproducible from the
+repo alone -- project renames or config re-saves can no longer drift it.
 """
 import json
 import os
@@ -31,17 +34,20 @@ import pytest
 
 HERE = Path(__file__).resolve().parent
 GOLDEN_DIR = HERE / "golden"
+SCEN_DIR = HERE / "scenarios"
 REPLAY = HERE / "replay.py"
 REPO = HERE.parent.parent
 MODELS_DIR = REPO / "models"
 PROJECTS_DIR = REPO / "projects"
 
-FIXTURES = [
-    {"project": "residence1-solo", "slot": 3, "start": 1500, "frames": 300,
-     "golden": "residence1-solo_slot3.json"},
-    {"project": "residence1-solo", "slot": 4, "start": 1500, "frames": 300,
-     "golden": "residence1-solo_slot4.json"},
-]
+GOLDEN_SCENARIOS = ["hangar-floor", "hangar-aerial", "texture-aerial"]
+
+FIXTURES = []
+for _name in GOLDEN_SCENARIOS:
+    _m = json.loads((SCEN_DIR / f"{_name}.json").read_text())
+    FIXTURES.append({"name": _name, "scenario": SCEN_DIR / f"{_name}.json",
+                     "project": _m["project"], "slot": _m["slot"],
+                     "golden": f"{_name}.json"})
 
 # Per-metric absolute tolerance.  Tight because replay is deterministic; the
 # small bands only absorb driver/cuDNN jitter across machines.
@@ -78,7 +84,7 @@ def _skip_reasons(fix):
     return reasons
 
 
-@pytest.mark.parametrize("fix", FIXTURES, ids=lambda f: f"{f['project']}_slot{f['slot']}")
+@pytest.mark.parametrize("fix", FIXTURES, ids=lambda f: f["name"])
 def test_replay_matches_golden(fix):
     reasons = _skip_reasons(fix)
     if reasons:
@@ -90,8 +96,7 @@ def test_replay_matches_golden(fix):
         out = Path(td) / "summary.json"
         proc = subprocess.run(
             [sys.executable, str(REPLAY),
-             "--project", fix["project"], "--slot", str(fix["slot"]),
-             "--start", str(fix["start"]), "--frames", str(fix["frames"]),
+             "--scenario", str(fix["scenario"]),
              "--out", str(out)],
             capture_output=True, text=True, timeout=900,
         )

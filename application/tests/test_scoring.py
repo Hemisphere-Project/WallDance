@@ -169,11 +169,49 @@ def test_score_multi_mean_and_worst():
 
 
 # --------------------------------------------------------------------------- #
-# the committed seed manifests load & validate
+# pass-line evaluation (CORPUS_ANALYSIS §8)
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("name", ["residence1-solo_slot3", "residence1-solo_slot4"])
-def test_seed_manifests_valid(name):
-    m = scoring.load_scenario(HERE / "scenarios" / f"{name}.json")
-    assert m["expected_count"] == 1
-    assert m["warmup"] == 15
-    assert m["frames"] == 300
+def test_evaluate_pass_all_within_limits():
+    m = _const(n=1, frames=10, warmup=0)
+    m["pass"] = {"class": "A", "drop_rate": 0.05, "ghost_rate": 0.05,
+                 "longest_drop_s": 1.0}
+    r = scoring.score_timeline(_tl([1] * 10), m)
+    v = scoring.evaluate_pass(r, m)
+    assert v["passed"] is True
+    assert v["class"] == "A"
+    assert set(v["checks"]) == {"drop_rate", "ghost_rate", "longest_drop_s"}
+
+
+def test_evaluate_pass_fails_on_drops():
+    m = _const(n=1, frames=10, warmup=0, fps=10.0)
+    m["pass"] = {"class": "A", "drop_rate": 0.05, "longest_drop_s": 0.2}
+    r = scoring.score_timeline(_tl([1, 1, 0, 0, 0, 1, 1, 1, 1, 1]), m)
+    v = scoring.evaluate_pass(r, m)
+    assert v["passed"] is False
+    assert not v["checks"]["drop_rate"]["ok"]
+    assert not v["checks"]["longest_drop_s"]["ok"]
+
+
+def test_evaluate_pass_no_block_always_passes():
+    m = _const(n=1, frames=5, warmup=0)
+    r = scoring.score_timeline(_tl([0] * 5), m)  # terrible score
+    v = scoring.evaluate_pass(r, m)              # ...but class S / no line
+    assert v["passed"] is True
+    assert v["checks"] == {}
+
+
+# --------------------------------------------------------------------------- #
+# every committed manifest loads & validates (drafts excluded)
+# --------------------------------------------------------------------------- #
+def test_committed_manifests_valid():
+    paths = sorted((HERE / "scenarios").glob("*.json"))
+    assert paths, "no scenario manifests committed"
+    for p in paths:
+        m = scoring.load_scenario(p)
+        assert m["frames"] > 0, p.name
+        assert "warmup" in m, p.name
+        # pinned-config + fingerprint discipline (post corpus re-founding)
+        assert isinstance(m.get("config"), dict) and m["config"], (
+            f"{p.name}: manifest must pin a config snapshot")
+        fp = m.get("recording_fingerprint") or {}
+        assert fp.get("bytes"), f"{p.name}: manifest must pin a fingerprint"

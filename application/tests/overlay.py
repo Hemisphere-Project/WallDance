@@ -117,7 +117,7 @@ def render(scenario_path: str, overrides: dict, out_dir: str, *,
            tag: str = "", max_sheet: int = 30, cols: int = 5) -> dict:
     import replay
     manifest = scoring.load_scenario(scenario_path)
-    base = replay._latest_config(manifest["project"]) or {}
+    base = replay.scenario_config(manifest)
     config = {**base, **overrides}
     video = replay._find_recording(manifest["project"], manifest["slot"])
     if not video:

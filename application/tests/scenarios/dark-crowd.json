@@ -1,0 +1,86 @@
+{
+ "name": "dark-crowd",
+ "project": "0-TEST-verydark",
+ "slot": 5,
+ "start": 0,
+ "frames": 400,
+ "warmup": 15,
+ "fps": 30.0,
+ "expected_count": [
+  {
+   "from": 0,
+   "to": 119,
+   "n": 1
+  },
+  {
+   "from": 120,
+   "to": 339,
+   "n": 2
+  },
+  {
+   "from": 340,
+   "to": 399,
+   "n": 1
+  },
+  {
+   "default": 1
+  }
+ ],
+ "tags": [
+  "multi",
+  "extreme_dark",
+  "enter_leave"
+ ],
+ "pass": {
+  "class": "B",
+  "drop_rate": 0.1,
+  "ghost_rate": 0.15,
+  "longest_drop_s": 2.0
+ },
+ "recording_fingerprint": {
+  "file": "slot_5_20260226_161814.avi",
+  "bytes": 20147722,
+  "frames": null
+ },
+ "ground_truth": {
+  "verified": true,
+  "method": "operator tile-count pass 2026-06-10 on the brightened GT sheets (tmp_analysis/gen_gt_sheets.py, 20-frame stride; range boundaries accurate to +/-20 frames)",
+  "notes": "Operator verified 2026-06-10 (per-range): [0,119]=1, [120,339]=2, [340,399]=1. DRAFT -- N varies 1-4 (people enter/leave); expected_count=2 is a placeholder. Needs per-range labels from the GT sheet before promotion to scenarios/."
+ },
+ "config": {
+  "camera_source": "ids:4110042130",
+  "model": "yolo11x-pose",
+  "use_tensorrt": true,
+  "yolo_imgsz": 960,
+  "fp16": false,
+  "person_height_px": 155,
+  "enhance_enabled": true,
+  "enhance_lite": false,
+  "enhance_force": false,
+  "greyscale": false,
+  "brightness_threshold": 125,
+  "denoise_strength": 0.0,
+  "show_skeleton": true,
+  "show_keypoints": true,
+  "show_bbox": true,
+  "show_trails": false,
+  "show_ids": true,
+  "tracker_max_age": 5,
+  "tracker_smoothing": 1,
+  "osc_enabled": true,
+  "osc_ip": "127.0.0.1",
+  "osc_port": 9000,
+  "preview_enabled": true,
+  "preview_fps_cap": false,
+  "input_fps_cap": true,
+  "preview_scale": 0.9805555555555555,
+  "ids_ratio": 1.600000023841858,
+  "bg_subtract_enabled": false,
+  "bg_subtract_sensitivity": 20,
+  "confidence": 0.2800000011920929,
+  "gamma": 1.3700000047683716,
+  "ids_gain_db": 27.799999237060547,
+  "ids_exposure_us": 51611.0,
+  "clahe_clip": 4.900000095367432
+ }
+}

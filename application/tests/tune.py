@@ -56,7 +56,7 @@ class ScenarioEnv:
     def __init__(self, manifest_path: str):
         import replay
         self.manifest = scoring.load_scenario(manifest_path)
-        self.base_config = replay._latest_config(self.manifest["project"]) or {}
+        self.base_config = replay.scenario_config(self.manifest)
         video = replay._find_recording(self.manifest["project"], self.manifest["slot"])
         if not video:
             raise SystemExit(

@@ -98,6 +98,58 @@ def _find_recording(project: str, slot: int) -> Optional[Path]:
     return recs[0] if recs else None
 
 
+def scenario_config(manifest: dict) -> dict:
+    """Resolve a scenario's base config.
+
+    Prefers the **pinned snapshot** in the manifest (``"config": {...}``) --
+    the reproducible path: goldens regenerated from a pinned config cannot
+    drift when project configs are re-saved, renamed, or deleted (the
+    2026-06-10 reorganisation orphaned the original goldens exactly this way).
+    Falls back to the project's latest saved config; fails loudly rather than
+    silently running defaults.
+    """
+    pinned = manifest.get("config")
+    if pinned is not None:
+        return json.loads(json.dumps(pinned))  # deep copy; manifests are JSON
+    cfg = _latest_config(manifest["project"])
+    if cfg is None:
+        raise SystemExit(
+            f"scenario {manifest.get('name')!r}: no pinned config in the "
+            f"manifest and no saved config for project "
+            f"{manifest['project']!r} -- pin one (\"config\": {{...}}) "
+            "instead of silently replaying defaults")
+    return cfg
+
+
+def check_fingerprint(manifest: dict, video: Path) -> None:
+    """Verify the recording matches the manifest's pinned fingerprint.
+
+    Catches re-organised / re-encoded / renumbered footage before it silently
+    invalidates the scenario's ground truth (size in bytes + frame count from
+    the ``.avi.meta`` sidecar when present).
+    """
+    fp = manifest.get("recording_fingerprint")
+    if not fp:
+        return
+    size = video.stat().st_size
+    if fp.get("bytes") is not None and fp["bytes"] != size:
+        raise SystemExit(
+            f"recording fingerprint mismatch for {video.name}: size {size} B "
+            f"!= pinned {fp['bytes']} B -- footage changed since the ground "
+            "truth was verified; re-verify GT or update the manifest")
+    meta = video.with_name(video.name + ".meta")
+    if fp.get("frames") is not None and meta.exists():
+        try:
+            frames = json.loads(meta.read_text()).get("frames")
+        except (ValueError, OSError):
+            frames = None
+        if frames is not None and frames != fp["frames"]:
+            raise SystemExit(
+                f"recording fingerprint mismatch for {video.name}: "
+                f"{frames} frames != pinned {fp['frames']} -- re-verify GT "
+                "or update the manifest")
+
+
 def _build_processor(config: dict, model_name: str, imgsz: int,
                      load_model: bool = True, use_gpu_path: bool = False):
     """Construct a FrameProcessor and apply the detection-relevant config
@@ -412,13 +464,23 @@ def main():
     if not args.project or args.slot is None:
         sys.exit("need --project and --slot (or --scenario)")
 
-    config = _latest_config(args.project) or {}
+    if scenario is not None:
+        config = scenario_config(scenario)
+    else:
+        config = _latest_config(args.project)
+        if config is None:
+            sys.exit(
+                f"no saved config for project {args.project!r} -- refusing "
+                "to silently replay defaults; use --scenario with a pinned "
+                "config, or fix the project name")
     if args.var is not None:
         config["mog2_var_threshold"] = args.var
     apply_overrides(config, args.sets)
     video = args.video or _find_recording(args.project, args.slot)
     if not video:
         sys.exit(f"no recording found for {args.project} slot {args.slot}")
+    if scenario is not None:
+        check_fingerprint(scenario, Path(video))
 
     model_name = args.model or config.get("model", "yolo11x-pose")
     imgsz = args.imgsz or int(config.get("yolo_imgsz", 1280))
@@ -462,6 +524,10 @@ def main():
         result = scoring.score_timeline(per_frame, scenario)
         print("\n=== SCORE ===")
         print(json.dumps(result, indent=2))
+        if scenario.get("pass"):
+            verdict = scoring.evaluate_pass(result, scenario)
+            print("\n=== PASS LINE ===")
+            print(json.dumps(verdict, indent=2))
 
 
 if __name__ == "__main__":

@@ -254,7 +254,10 @@ def _resolve(args):
             args.start = scenario["start"]
         if args.frames is None:
             args.frames = scenario["frames"]
-    config = replay._latest_config(args.project) or {}
+    if scenario is not None:
+        config = replay.scenario_config(scenario)
+    else:
+        config = replay._latest_config(args.project) or {}
     video = args.video or replay._find_recording(args.project, args.slot)
     if not video:
         sys.exit(f"no recording found for {args.project} slot {args.slot}")

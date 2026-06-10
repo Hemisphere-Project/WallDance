@@ -1,0 +1,4 @@
+# analysis outputs are heavy and regenerable -- commit only the scripts
+*
+!*.py
+!.gitignore

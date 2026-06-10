@@ -248,6 +248,43 @@ def score_timeline(
     }
 
 
+def evaluate_pass(score_result: dict, manifest: dict) -> dict:
+    """Evaluate a score result against the manifest's pass lines.
+
+    Scene-class pass lines (CORPUS_ANALYSIS §8, operator-agreed 2026-06-10):
+    class A (indoor rigged) drop<=0.05 / longest<=1.0s / ghost<=0.05;
+    class B (outdoor/uncontrolled) 0.10 / 2.0s / 0.15; class S (stress) has
+    no line.  The manifest carries the numbers so they can be refined
+    per-scene:
+
+        "pass": {"class": "A", "drop_rate": 0.05, "ghost_rate": 0.05,
+                 "longest_drop_s": 1.0}
+
+    Any threshold may be omitted.  Returns ``{"passed", "class", "checks"}``;
+    an empty/missing pass block always passes (class S).
+    """
+    p = manifest.get("pass") or {}
+    comp = score_result.get("components", {})
+    raw = score_result.get("raw", {})
+    checks = {}
+
+    def _check(name, value, limit):
+        checks[name] = {"value": value, "limit": limit, "ok": value <= limit}
+
+    if "drop_rate" in p:
+        _check("drop_rate", comp.get("drop_rate", 0.0), p["drop_rate"])
+    if "ghost_rate" in p:
+        _check("ghost_rate", comp.get("ghost_rate", 0.0), p["ghost_rate"])
+    if "longest_drop_s" in p:
+        _check("longest_drop_s", raw.get("longest_drop_seconds", 0.0),
+               p["longest_drop_s"])
+    return {
+        "passed": all(c["ok"] for c in checks.values()),
+        "class": p.get("class"),
+        "checks": checks,
+    }
+
+
 def score_multi(
     scenario_timelines: List[tuple],
     weights: Optional[Dict[str, float]] = None,
