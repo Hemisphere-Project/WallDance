@@ -322,6 +322,51 @@ class _OffsetMotionProxy:
         )
 
 
+@dataclass
+class _TrackerSpace:
+    """How the tracker's coordinate space relates to the motion model's
+    ROI-local original-resolution space (bug #10 unification).
+
+    ``tracker = roi_local_px * scale + (pad_x, pad_y) + roi_offset`` — the GPU
+    path tracks in ROI-local letterboxed imgsz space (scale = letterbox scale,
+    pad = letterbox pad, no roi offset → ``roi_local=True``); the CPU path
+    tracks in full-frame original space (scale 1, pad 0, roi offset added →
+    ``roi_local=False``).
+    """
+    person_height: int        # person height in tracker space
+    scale: float = 1.0        # letterbox scale (tracker px per roi-local px)
+    pad_x: float = 0.0        # letterbox pad, tracker space
+    pad_y: float = 0.0
+    roi_x: int = 0            # ROI origin in original-frame space
+    roi_y: int = 0
+    roi_local: bool = False   # True: tracker space is ROI-local (GPU path)
+    frame_width: int = 0      # content width for tracker edge-exit detection
+
+    @property
+    def mask_params(self) -> tuple:
+        """The tracker→mask transform tuple consumed by the scored gate and
+        the exclusion step: (scale, pad_x, pad_y, roi_x, roi_y, roi_local)."""
+        return (self.scale, self.pad_x, self.pad_y,
+                self.roi_x, self.roi_y, self.roi_local)
+
+    def blobs_to_tracker(self, blobs):
+        """Map motion blobs from ROI-local original space into tracker space
+        (in place). Identity for the no-ROI CPU case."""
+        off_x = 0 if self.roi_local else self.roi_x
+        off_y = 0 if self.roi_local else self.roi_y
+        if not blobs or (self.scale == 1.0 and not self.pad_x
+                         and not self.pad_y and not off_x and not off_y):
+            return blobs
+        for blob in blobs:
+            blob.bbox[0] = blob.bbox[0] * self.scale + self.pad_x + off_x
+            blob.bbox[1] = blob.bbox[1] * self.scale + self.pad_y + off_y
+            blob.bbox[2] *= self.scale
+            blob.bbox[3] *= self.scale
+            blob.centroid[0] = blob.centroid[0] * self.scale + self.pad_x + off_x
+            blob.centroid[1] = blob.centroid[1] * self.scale + self.pad_y + off_y
+        return blobs
+
+
 class FrameProcessor:
     """Encapsulates the main video processing steps."""
 
@@ -633,95 +678,34 @@ class FrameProcessor:
             mog2_thread.join()
             timing["mog2_feed"] = (time.time() - t_mog_start) * 1000 - timing.get("mog2_cvt", 0)
 
-        # Cross-validate YOLO detections against MOG2 motion mask
-        n_before_xval = len(detections)
-        detections, crossval_stats = self._crossval_motion_filter(
-            detections,
-            self.crossval_motion_detector,
-            scaled_person_height,
+        # GPU tracker space: ROI-local letterboxed imgsz coords — content sits
+        # between pad_x and imgsz - pad_x for edge-exit detection.
+        space = _TrackerSpace(
+            person_height=scaled_person_height,
             scale=lb_scale,
-            letterbox_pad_x=pad_x,
-            letterbox_pad_y=pad_y,
+            pad_x=pad_x,
+            pad_y=pad_y,
             roi_x=roi_x,
             roi_y=roi_y,
-            roi_local_after_unscale=True,
+            roi_local=True,
+            frame_width=self.settings.imgsz,
         )
-        timing.update(crossval_stats)
-        timing["crossval_rejected"] = n_before_xval - len(detections)
-
-        # Auto exclusion mask (P1.4): collect during calibration, else reject
-        # detections that land in known scenery / ghost cells.
-        detections = self._exclusion_step(
-            detections, self.crossval_motion_detector,
-            (lb_scale, pad_x, pad_y, roi_x, roi_y, True),
-            scaled_person_height, timing)
-
-        # Cold-detection blobs (P3 Stage 3b — always on, no mode toggle):
-        # promote moving blobs YOLO missed to synthetic detections, gated so
-        # only real frame-diff motion outside exclusion zones becomes a
-        # candidate (static textured background never does).
-        eager_blobs = None
-        if self.bridge_motion_detector is not None:
-            eager_blobs = self.bridge_motion_detector.detect(
-                self.settings.person_height_px,
-                aspect_range=MOTION_FIRST_ASPECT_RANGE,
-                include_shadows=MOTION_FIRST_INCLUDE_SHADOWS,
-            )
-            eager_blobs = self._gate_cold_blobs(eager_blobs)
-
-        # Tracking
-        t0 = time.time()
-        # Set content-area bounds for edge-exit detection.
-        # In the GPU path, tracker coords are in letterboxed imgsz-space;
-        # the actual content sits between pad_x and imgsz - pad_x.
-        self.tracker.set_frame_dimensions(self.settings.imgsz, pad_x=pad_x)
-        self.tracker.set_person_height(scaled_person_height)
 
         if self.bridge_motion_detector is not None and raw_frame is not None:
-            # Wrap detector to scale blob coords to letterboxed YOLO space
+            # Configure the letterbox proxy for tracker-space motion queries
             self._motion_lb_scale = lb_scale
             self._motion_pad_x = pad_x
             self._motion_pad_y = pad_y
-
-        # Scale eager blobs to letterboxed space if needed
         lb_motion = self._get_letterbox_motion_detector()
-        if eager_blobs is not None and lb_motion is not None:
-            # Blobs are in original coords; apply letterbox transform
-            for blob in eager_blobs:
-                blob.bbox[0] = blob.bbox[0] * lb_scale + pad_x
-                blob.bbox[1] = blob.bbox[1] * lb_scale + pad_y
-                blob.bbox[2] *= lb_scale
-                blob.bbox[3] *= lb_scale
-                blob.centroid[0] = blob.centroid[0] * lb_scale + pad_x
-                blob.centroid[1] = blob.centroid[1] * lb_scale + pad_y
 
-        t_trk = time.time()
-        tracked = self.tracker.update(
-            detections, frame_number=frame_number,
-            motion_detector=lb_motion,
-            motion_blobs=eager_blobs)
-        timing["tracker_update"] = (time.time() - t_trk) * 1000
-        timing["track"] = (time.time() - t0) * 1000
-        timing["path_track"] = "cpu"
+        def finalize(track):
+            # Unscale from letterboxed YOLO space to original camera space
+            return self._unscale_letterbox(
+                track, lb_scale, pad_x, pad_y, roi_x=roi_x, roi_y=roi_y)
 
-        # Update re-acquisition counter for crossval death-spiral prevention
-        if tracked:
-            self._crossval_no_track_frames = 0
-        else:
-            self._crossval_no_track_frames += 1
-        timing["crossval_no_track_frames"] = self._crossval_no_track_frames
-
-        # Unscale from letterboxed YOLO space to original camera space
-        scaled_tracks = [
-            self._unscale_letterbox(track, lb_scale, pad_x, pad_y, roi_x=roi_x, roi_y=roi_y)
-            for track in tracked
-        ]
-
-        # OSC output
-        if self.osc and self.settings.osc_enabled:
-            self.osc.send_frame(scaled_tracks, original_w, original_h)
-
-        return scaled_tracks
+        return self._post_yolo_chain(
+            detections, space, lb_motion, finalize,
+            original_w, original_h, frame_number, timing)
 
     def _sync_gpu_settings(self):
         """Sync ProcessingSettings to GpuPipelineSettings."""
@@ -806,46 +790,51 @@ class FrameProcessor:
         if self._gpu_pipeline is not None:
             self._gpu_pipeline._cached_preview = None
     
-    def _track_detections(
+    def _post_yolo_chain(
         self,
         detections,
-        roi_x: int,
-        roi_y: int,
+        space: _TrackerSpace,
+        motion_proxy,
+        finalize,
         original_w: int,
         original_h: int,
         frame_number: int | None,
         timing: Dict[str, float],
     ) -> List[ScaledTrack]:
-        """Post-YOLO CPU path: scored gate → exclusion → cold blobs → tracker →
-        ScaledTrack → OSC.
+        """The post-YOLO chain, shared by both paths (bug #10): scored gate →
+        exclusion → cold blobs → tracker → finalize → OSC.
 
-        Split out of ``_process_cpu`` so the detect-pass cache replay (TUNING
-        Phase B) drives the *exact same* gate/motion/tracker logic without
-        re-running YOLO — guaranteeing cache replay is bit-identical to the live
-        path.  The motion detectors must already have been fed this frame's gray
-        (``_feed_motion_detectors``); ``detections`` are post-offset, pre-gate
-        (original-frame coords).  ``timing`` is mutated in place.
+        ``space`` parameterizes the tracker↔motion-mask transforms,
+        ``motion_proxy`` is the tracker-space view of the motion detector (the
+        letterbox/offset proxies stay — only the orchestration is unified) and
+        ``finalize`` maps a tracker-space DancerTrack to an original-space
+        ScaledTrack.  ``timing`` is mutated in place.
         """
-        # Cross-validate YOLO detections against MOG2 motion mask
+        # Cross-validate YOLO detections against the motion evidence
         n_before_xval = len(detections)
         detections, crossval_stats = self._crossval_motion_filter(
             detections,
             self.crossval_motion_detector,
-            self.settings.person_height_px,
-            roi_x=roi_x,
-            roi_y=roi_y,
+            space.person_height,
+            scale=space.scale,
+            letterbox_pad_x=space.pad_x,
+            letterbox_pad_y=space.pad_y,
+            roi_x=space.roi_x,
+            roi_y=space.roi_y,
+            roi_local_after_unscale=space.roi_local,
         )
         timing.update(crossval_stats)
         timing["crossval_rejected"] = n_before_xval - len(detections)
 
-        # Auto exclusion mask (P1.4): CPU path — original-space coords (scale 1,
-        # no letterbox pad), ROI subtracted (roi_local=False).
+        # Auto exclusion mask (P1.4): collect during calibration, else reject
+        # detections that land in known scenery / ghost cells.
         detections = self._exclusion_step(
-            detections, self.crossval_motion_detector,
-            (1.0, 0.0, 0.0, roi_x, roi_y, False),
-            self.settings.person_height_px, timing)
+            detections, self.crossval_motion_detector, space.mask_params,
+            space.person_height, timing)
 
-        # Cold-detection blobs (P3 Stage 3b — always on, gated; see GPU path).
+        # Cold-detection blobs (P3 Stage 3b — always on, gated): promote moving
+        # blobs YOLO missed to synthetic detections; gated in ROI-local space,
+        # then mapped into tracker space.
         eager_blobs = None
         if self.bridge_motion_detector is not None:
             eager_blobs = self.bridge_motion_detector.detect(
@@ -854,27 +843,18 @@ class FrameProcessor:
                 include_shadows=MOTION_FIRST_INCLUDE_SHADOWS,
             )
             eager_blobs = self._gate_cold_blobs(eager_blobs)
-            # Apply ROI offset to blobs
-            if eager_blobs and (roi_x or roi_y):
-                for blob in eager_blobs:
-                    blob.bbox[0] += roi_x
-                    blob.bbox[1] += roi_y
-                    blob.centroid[0] += roi_x
-                    blob.centroid[1] += roi_y
+            eager_blobs = space.blobs_to_tracker(eager_blobs)
 
-        # 4. Tracking
+        # Tracking
         t0 = time.time()
-        # CPU path: YOLO outputs in original frame coords — no scaling needed
-        self.tracker.set_frame_dimensions(original_w)
-        self.tracker.set_person_height(self.settings.person_height_px)
-        motion_detector = self.bridge_motion_detector
-        if motion_detector is not None and (roi_x or roi_y):
-            motion_detector = _OffsetMotionProxy(motion_detector, roi_x, roi_y)
+        self.tracker.set_frame_dimensions(space.frame_width,
+                                          pad_x=int(space.pad_x))
+        self.tracker.set_person_height(space.person_height)
 
         t_trk = time.time()
         tracked = self.tracker.update(
             detections, frame_number=frame_number,
-            motion_detector=motion_detector,
+            motion_detector=motion_proxy,
             motion_blobs=eager_blobs)
         timing["tracker_update"] = (time.time() - t_trk) * 1000
         timing["track"] = (time.time() - t0) * 1000
@@ -889,25 +869,59 @@ class FrameProcessor:
             self._crossval_no_track_frames += 1
         timing["crossval_no_track_frames"] = self._crossval_no_track_frames
 
-        # 5. Convert tracks to ScaledTrack (identity scale)
-        scaled_tracks = [
-            ScaledTrack(
-                track_id=t.track_id,
-                keypoints=t.keypoints.copy(),
-                confidence=t.confidence.copy(),
-                bbox=t.bbox.copy(),
-                history=[pt.copy() for pt in t.history],
-                velocity=t.get_velocity().copy(),
-                smoothed_centroid=t.get_smoothed_centroid().copy(),
-                is_bridged=getattr(t, 'is_bridged', False),
-            ) for t in tracked
-        ]
+        scaled_tracks = [finalize(t) for t in tracked]
 
-        # 6. OSC output
+        # OSC output
         if self.osc and self.settings.osc_enabled:
             self.osc.send_frame(scaled_tracks, original_w, original_h)
 
         return scaled_tracks
+
+    @staticmethod
+    def _identity_scaled_track(t: DancerTrack) -> ScaledTrack:
+        """CPU-path finalize: tracker space == original space, copy verbatim."""
+        return ScaledTrack(
+            track_id=t.track_id,
+            keypoints=t.keypoints.copy(),
+            confidence=t.confidence.copy(),
+            bbox=t.bbox.copy(),
+            history=[pt.copy() for pt in t.history],
+            velocity=t.get_velocity().copy(),
+            smoothed_centroid=t.get_smoothed_centroid().copy(),
+            is_bridged=getattr(t, 'is_bridged', False),
+        )
+
+    def _track_detections(
+        self,
+        detections,
+        roi_x: int,
+        roi_y: int,
+        original_w: int,
+        original_h: int,
+        frame_number: int | None,
+        timing: Dict[str, float],
+    ) -> List[ScaledTrack]:
+        """Post-YOLO CPU path: the shared chain in full-frame original coords.
+
+        Split out of ``_process_cpu`` so the detect-pass cache replay (TUNING
+        Phase B) drives the *exact same* gate/motion/tracker logic without
+        re-running YOLO — guaranteeing cache replay is bit-identical to the live
+        path.  The motion detectors must already have been fed this frame's gray
+        (``_feed_motion_detectors``); ``detections`` are post-offset, pre-gate
+        (original-frame coords).  ``timing`` is mutated in place.
+        """
+        space = _TrackerSpace(
+            person_height=self.settings.person_height_px,
+            roi_x=roi_x,
+            roi_y=roi_y,
+            frame_width=original_w,
+        )
+        motion_detector = self.bridge_motion_detector
+        if motion_detector is not None and (roi_x or roi_y):
+            motion_detector = _OffsetMotionProxy(motion_detector, roi_x, roi_y)
+        return self._post_yolo_chain(
+            detections, space, motion_detector, self._identity_scaled_track,
+            original_w, original_h, frame_number, timing)
 
     def _process_cpu(self, frame: np.ndarray, frame_number: int | None = None) -> Tuple[List[ScaledTrack], np.ndarray, Dict[str, float], float]:
         """CPU pipeline: traditional enhancement + YOLO."""

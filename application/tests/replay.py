@@ -99,13 +99,17 @@ def _find_recording(project: str, slot: int) -> Optional[Path]:
 
 
 def _build_processor(config: dict, model_name: str, imgsz: int,
-                     load_model: bool = True):
+                     load_model: bool = True, use_gpu_path: bool = False):
     """Construct a FrameProcessor and apply the detection-relevant config
     subset exactly as app._apply_config_without_model does.
 
     ``load_model=False`` skips loading the YOLO weights (model=None) — used by
     the detect-cache replay (TUNING Phase B), which drives only the post-YOLO
     ``_track_detections`` path and never calls the model.
+
+    ``use_gpu_path=True`` routes frames through the GPU pipeline
+    (``_process_gpu`` → ``_run_yolo_and_track``) instead of ``_process_cpu`` —
+    the show path. Used by the CPU↔GPU parity test (ROADMAP bug #10).
     """
     from enhancer import ImageEnhancer
     from tracker import DancerTracker
@@ -147,7 +151,7 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
         denoise_strength=config.get("denoise_strength", 0.0),
         greyscale=config.get("greyscale", False),
         osc_enabled=False,
-        use_gpu_path=False,        # force the CPU _process_cpu path
+        use_gpu_path=use_gpu_path,  # default False: the CPU _process_cpu path
     )
     settings.roi_enabled = bool(config.get("roi_enabled", False))
     settings.roi_x = int(config.get("roi_x", 0))
@@ -237,6 +241,7 @@ def replay_recording(
     max_frames: Optional[int] = None,
     log_dir: Optional[str] = None,
     track_details: bool = False,
+    use_gpu_path: bool = False,
 ) -> Dict:
     """Replay a recording and return a compact metric summary.
 
@@ -244,7 +249,11 @@ def replay_recording(
     interpretable: real/marginal/ghost track counts (by hit count),
     swap count, zero-detection frames, average detections.
     """
-    proc = _build_processor(config, model_name, imgsz)
+    proc = _build_processor(config, model_name, imgsz,
+                            use_gpu_path=use_gpu_path)
+    if use_gpu_path and not proc.gpu_path_active:
+        raise RuntimeError("GPU path requested but unavailable "
+                           "(kornia/CUDA missing?)")
     # Reset the global track-ID counter so IDs are deterministic when several
     # replays run in one process (a search, or --cache build+replay).
     proc.tracker.reset()
@@ -279,9 +288,11 @@ def replay_recording(
         cap.release()
         proc.tracker.logger.close()
 
-    return _summary_from_log(
+    summary = _summary_from_log(
         tmp, Path(video_path).name, model_name, imgsz, start_frame,
         processed, per_frame)
+    summary["path"] = "gpu" if use_gpu_path else "cpu"
+    return summary
 
 
 def _summary_from_log(
@@ -373,6 +384,11 @@ def main():
     ap.add_argument("--out", default=None, help="write lean JSON summary to this path")
     ap.add_argument("--timeline", default=None,
                     help="write the per-frame reported-count timeline to this path")
+    ap.add_argument("--gpu-path", action="store_true",
+                    help="route frames through the GPU pipeline (_process_gpu), "
+                         "the show path -- for the CPU/GPU parity test (bug #10)")
+    ap.add_argument("--details", action="store_true",
+                    help="include per-track bbox/centroid in the --timeline rows")
     ap.add_argument("--score", action="store_true",
                     help="score against --scenario's ground truth (prints breakdown)")
     ap.add_argument("--cache", action="store_true",
@@ -424,6 +440,7 @@ def main():
         summary = replay_recording(
             str(video), config, model_name=model_name, imgsz=imgsz,
             start_frame=args.start, max_frames=args.frames,
+            track_details=args.details, use_gpu_path=args.gpu_path,
         )
 
     # Split the per-frame timeline out of the lean (golden-comparable) summary.
