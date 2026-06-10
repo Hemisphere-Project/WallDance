@@ -77,7 +77,8 @@ All field answers point the same way: **better lighting + spatial ghost rejectio
 | `app.py` decomposition | Maint. | ⬜ Not started | Grew to ~3990 ln (was ~3031 at audit) |
 | Launcher update safety | Maint. | ⬜ Not started | Force-sync can clobber local field tweaks |
 | Model-artifact footprint | Maint. | ⬜ Not started | ~2.4 GB of binaries in-repo |
-| Startup project picker | Enhancement | ⬜ Backlog | §7B |
+| Startup project picker | Enhancement | ✅ Done | §7B; shipped (`config_store.rename_project`/`delete_project`, modal picker, Enter-launch) |
+| **Production UX track (U0–U5)** | UX | 🟡 U0 done (branch `ux-track`) | See [UX_PLAN.md](UX_PLAN.md): expert mode, calib1/calib2 split, lighting profiles, sensitivity macro |
 
 ---
 
@@ -214,6 +215,7 @@ Key gates (slot-7-derived — candidates for relaxation per §3a): `TRACKER_MAHA
 | Doc | Role |
 |-----|------|
 | **ROADMAP.md** (this) | Single source of truth — strategy, status, plan |
+| [UX_PLAN.md](UX_PLAN.md) | Production operator UX — two-calibration design, profiles, build phases U0–U5 |
 | [TODO.md](TODO.md) | Granular build / hardware checklist (live) |
 | [archives/ROBUSTNESS_PLAN.md](archives/ROBUSTNESS_PLAN.md) | Original detection north star (merged here) |
 | [archives/AUDIT.md](archives/AUDIT.md) | Full maintainability audit (condensed in §6) |
