@@ -477,6 +477,15 @@ class WallDanceGUI:
         if 'on_trt_rebuild' in self.callbacks:
             self.callbacks['on_trt_rebuild']()
 
+    def _on_profile_switch(self, sender, value):
+        if 'on_profile_switch' in self.callbacks:
+            self.callbacks['on_profile_switch'](str(value).lower())
+
+    def set_active_profile(self, name: str):
+        """Sync the top-bar lighting-profile radio (no callback fired)."""
+        if dpg.does_item_exist("profile_switch_radio"):
+            dpg.set_value("profile_switch_radio", str(name).capitalize())
+
     def update_trt_banner(self, message: Optional[str], exporting: bool = False):
         """Red alert band over the preview when TensorRT was requested but is not in use.
 

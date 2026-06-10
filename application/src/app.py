@@ -71,6 +71,7 @@ from config import (
     YOLO_MODEL,
     TrackingMode,
 )
+import config_schema
 from config_store import ConfigStore, format_config_display, sanitize_project_name
 from model_manager import ModelManager, ModelProgress, ModelStatus
 from osc_output import OSCSender
@@ -225,6 +226,10 @@ class WallDanceApp:
         self.gui: Optional[WallDanceGUI] = None
         self.config_store = ConfigStore()
         self._current_project = "default"
+        # Lighting profiles (UX_PLAN U2): bundles of lighting-coupled values.
+        # Empty bundles are seeded from live values on first switch.
+        self._profiles: Dict[str, Dict] = {name: {} for name in config_schema.PROFILE_NAMES}
+        self._active_profile: str = config_schema.DEFAULT_PROFILE
 
         # Video recording
         self.recorder = VideoRecorder()
@@ -383,6 +388,7 @@ class WallDanceApp:
             "texture_height": self.preview.height,
             "camera_running": self.camera.state.is_open,
             "camera_reconnecting": self._camera_reconnecting,
+            "active_profile": self._active_profile,
         }
 
     def _show_qr(self):
@@ -444,6 +450,7 @@ class WallDanceApp:
             "on_load_config": self._cb_load_config,
             "on_do_save_config": self._cb_do_save_config,
             "on_do_load_config": self._cb_do_load_config,
+            "on_profile_switch": self._cb_profile_switch,
             "on_project_select": self._cb_project_select,
             "on_config_select": self._cb_config_select,
             "on_project_launch": self._cb_project_launch,
@@ -1030,7 +1037,8 @@ class WallDanceApp:
             self.camera.close()
             self.camera.state.is_open = False
         
-        # 4. Load the config
+        # 4. Load the config (migrate to schema v2, keep both profile bundles,
+        # then work on the flat view of the active profile)
         try:
             config = self.config_store.load(config_filepath)
         except Exception as e:
@@ -1039,7 +1047,14 @@ class WallDanceApp:
             if camera_was_open:
                 self._open_camera(self.camera.state.source)
             return False
-        
+        structured = config_schema.migrate(config)
+        self._profiles = {n: dict(b) for n, b in structured["profiles"].items()}
+        self._active_profile = structured.get("active_profile", config_schema.DEFAULT_PROFILE)
+        flat, cfg_warnings = config_schema.validate_flat(config_schema.flatten(structured))
+        for w in cfg_warnings:
+            print(f"[Config] {w}")
+        config = flat
+
         # 5. Extract model info before applying config
         model_name = config.get("model", self.current_model_name)
         use_trt = config.get("use_tensorrt", False)
@@ -1130,6 +1145,7 @@ class WallDanceApp:
             self.gui.sync_combo("model", base_name)
             self.gui.set_trt_checkbox(self.model_manager.is_using_tensorrt())
             self._update_trt_banner()
+            self.gui.set_active_profile(self._active_profile)
             self.gui.update_camera_sources(self._camera_ui_sources(), self.camera.state.source, self.camera.state.unavailable)
             
             cam_type_str = ""
@@ -2037,8 +2053,40 @@ class WallDanceApp:
         if self.gui:
             self.gui.show_load_config_dialog(self.config_store.config_dir, self._current_project)
 
+    def _snapshot_active_profile(self) -> Dict:
+        """Capture live lighting-coupled values into the active profile bundle."""
+        _, profile = config_schema.split_profile(self._get_saveable_config())
+        self._profiles[self._active_profile] = dict(profile)
+        return profile
+
+    def _get_structured_config(self) -> Dict:
+        """v2 payload for persistence: current values + the inactive profile bundle."""
+        self._snapshot_active_profile()
+        return config_schema.structure(
+            self._get_saveable_config(), self._profiles, self._active_profile)
+
+    def _cb_profile_switch(self, profile_name: str):
+        """Top-bar switch: apply the other lighting profile atomically
+        (pipeline values + IDS hardware via the existing apply path)."""
+        name = str(profile_name).lower()
+        if name not in config_schema.PROFILE_NAMES or name == self._active_profile:
+            return
+        current = self._snapshot_active_profile()
+        self._active_profile = name
+        # First switch to a never-calibrated profile: seed it from the current
+        # one so the operator starts from a working state, then calibrates.
+        bundle = self._profiles.get(name) or dict(current)
+        self._profiles[name] = dict(bundle)
+        print(f"[Profile] Switching lighting profile -> {name}")
+        self._apply_config_without_model(bundle)
+        self._request_reprocess()
+        if self.gui:
+            self.gui.set_active_profile(name)
+            self.gui.show_toast(f"Lighting profile: {name.upper()}",
+                                duration=2.5, color=(150, 200, 255))
+
     def _cb_do_save_config(self, project_name: str):
-        filepath = self.config_store.save(project_name, self._get_saveable_config())
+        filepath = self.config_store.save(project_name, self._get_structured_config())
         new_project = sanitize_project_name(project_name)
         # Only switch recorder project if the name actually changed
         # (avoids stopping playback when saving to the same project)
@@ -2151,29 +2199,36 @@ class WallDanceApp:
 
     def _cb_save_safe_defaults(self):
         """Save current settings as safe defaults for this project."""
-        filepath = self.config_store.save_safe_defaults(self._current_project, self._get_saveable_config())
+        filepath = self.config_store.save_safe_defaults(self._current_project, self._get_structured_config())
         if self.gui:
             self.gui.show_save_indicator("Safe defaults saved!")
         print(f"Safe defaults saved: {filepath}")
 
     def _cb_load_safe_defaults(self):
         """Load safe defaults for this project."""
-        config = self.config_store.load_safe_defaults(self._current_project)
-        if config:
+        raw = self.config_store.load_safe_defaults(self._current_project)
+        if raw:
+            structured = config_schema.migrate(raw)
+            config, cfg_warnings = config_schema.validate_flat(config_schema.flatten(structured))
+            for w in cfg_warnings:
+                print(f"[Config] {w}")
             # Check if model or imgsz would change
             model_changes = config.get("model", self.current_model_name) != self.current_model_name
             imgsz_changes = config.get("yolo_imgsz", self.settings.imgsz) != self.settings.imgsz
             trt_changes = config.get("use_tensorrt", self.model_manager.is_using_tensorrt()) != self.model_manager.is_using_tensorrt()
-            
+
             if model_changes or imgsz_changes or trt_changes:
                 # Need full project switch for model/imgsz/trt changes
                 # Save the config temporarily and trigger a project switch
-                temp_path = self.config_store.save(self._current_project, config)
+                temp_path = self.config_store.save(self._current_project, structured)
                 self._pending_project_switch = temp_path
                 self._model_loading = True
             else:
                 # No model changes, just apply config directly
+                self._profiles = {n: dict(b) for n, b in structured["profiles"].items()}
+                self._active_profile = structured.get("active_profile", config_schema.DEFAULT_PROFILE)
                 self._apply_config_without_model(config)
+                self.gui and self.gui.set_active_profile(self._active_profile)
             if self.gui:
                 self.gui.show_save_indicator("Safe defaults loaded!")
             print(f"Safe defaults loaded for project: {self._current_project}")

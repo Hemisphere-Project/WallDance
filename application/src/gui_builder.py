@@ -389,6 +389,17 @@ def build_top_bar(gui: Any):
                 with dpg.tooltip(qr_btn):
                     dpg.add_text("Phone monitor: show a QR code to open the web UI")
 
+                dpg.add_spacer(width=scaled(12))
+                profile_radio = dpg.add_radio_button(
+                    items=["Show", "Rehearsal"],
+                    tag="profile_switch_radio",
+                    default_value=str(gui.config.get("active_profile", "show")).capitalize(),
+                    horizontal=True,
+                    callback=gui._on_profile_switch,
+                )
+                with dpg.tooltip(profile_radio):
+                    dpg.add_text("Lighting profile: separate calibrated settings\n(exposure/gain, gamma/CLAHE, MOG2, exclusion\nmask, sensitivity) per lighting condition.\nCalibrate once per profile, then switch freely.")
+
                 save_ind = dpg.add_text(Icons.CHECK, tag="save_indicator", color=(100, 255, 100), show=False)
                 if gui._icon_font:
                     dpg.bind_item_font(save_ind, gui._icon_font)

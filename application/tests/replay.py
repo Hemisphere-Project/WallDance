@@ -83,7 +83,12 @@ def _latest_config(project: str) -> Optional[dict]:
     if not cfgs:
         cfgs = sorted(pdir.glob("*.json"), key=lambda f: f.stat().st_mtime,
                       reverse=True)
-    return json.loads(cfgs[0].read_text()) if cfgs else None
+    if not cfgs:
+        return None
+    # Flatten schema-v2 (lighting profiles) configs to the active profile's
+    # flat view; v1 flat configs pass through unchanged.
+    import config_schema
+    return config_schema.flatten(json.loads(cfgs[0].read_text()))
 
 
 def _find_recording(project: str, slot: int) -> Optional[Path]:
