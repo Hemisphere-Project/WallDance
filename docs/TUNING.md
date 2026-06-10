@@ -1,7 +1,7 @@
 # WallDance — Autonomous Detection-Tuning Capability (plan)
 
 **Date:** 2026-06-09
-**Status:** Phases **A + B + C + D DONE** (see "## Progress" below). E–F still to
+**Status:** Phases **A + B + C + D + E DONE** (see "## Progress" below). F still to
 do. Plan / handoff doc — written so a *fresh* Claude session can execute it
 without the originating conversation's context.
 **Branch:** this builds on `p3-motion-simplification` (the P3 motion-subsystem
@@ -102,12 +102,28 @@ report. The user will point it at various recorded situations.
   swings right (690→811→913 px). Root cause now visible → **Phase F target:
   stale-track / duplicate suppression after aggressive cold-blob seeding.**
 
-**Next:** E (knob-sensitivity sweep + minimal user knob set — `tune.py`'s
-per-param deltas already hint at it: on this footage `mog2_scale`/`var` move the
-score a lot, `crossval_motion_min_ratio`/`person_height` barely) → F (robustness:
-fix the duplicate-track ghost D exposed, re-measure). The corpus gap (§2:
-dropout/multi-dancer/`yolo_first`/small-far) is still the main thing limiting how
-far C/E/F generalise — broader labelled footage is the highest-leverage input.
+**Phase E (knob-simplification) — DONE.**
+- E1: `tests/sensitivity.py` — OAT sweep over the objective on B's cache, ranks
+  knobs by score impact (reuses tune's Tuner; unit-tested). Measured (seed
+  scenarios; **slot3=0.0 for every knob → slot4 drives all**): `confidence` 0.077
+  (master drops↔ghosts dial, best @0.25) ≫ `crossval_skel_min_kpts` 0.028 >
+  `mog2_var_threshold` 0.013 > `person_height` 0.011 ≫ everything else ≤0.0004
+  (`mog2_scale`, `motion_sensitivity`, θ_m, `tracker_max_age/smoothing` = 0.000).
+- **Methodology finding:** OAT is first-order and MISSED `mog2_scale` (0.000 alone,
+  but the biggest win in C's *joint* search — only helps once `var=8` wakes MOG2).
+  → OAT decides which knobs earn a *user surface*; `tune.py` joint search sets
+  values; never delete a "0.000" knob from code on OAT alone.
+- E2: `docs/KNOBS.md` — proposes the ~3-control surface: **USER** = CALIBRATE
+  button + one "detection sensitivity" macro (confidence-led) + ROI/exclusion;
+  **CALIBRATE-derived** = height/ratios + var (done) + recommend var↔scale
+  co-tuning; **FIXED** = the inert knobs (hide from user, keep as constants).
+
+**Next:** F (robustness payoff): fix the **duplicate/stale-track ghost** D exposed
+(cold-blob seeding spawns a 2nd track that freezes on empty wall instead of
+dying), then re-measure that the C-found `var=8/scale=0.7` win stops trading
+drops for ghosts. The corpus gap (§2: dropout/multi-dancer/`yolo_first`/small-far)
+is still the main thing limiting how far C/E/F generalise — broader labelled
+footage is the highest-leverage input.
 
 ## 1. What already exists (the P3 foundation — reuse, don't rebuild)
 
