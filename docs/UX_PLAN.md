@@ -1,8 +1,13 @@
 # WallDance — Production UX plan (operator track)
 
-**Date:** 2026-06-10 · **Status:** U0–U5 built on branch `ux-track` (U0 0d7382c,
-U2 c034956, U3 2234d67, U4 9ab4f09, U5 below; U1 picker pre-existed at f2e5e8c).
-Numeric rules ship provisional — re-fit on annotated footage (§6).
+**Date:** 2026-06-10 · **Status:** U0–U5 **merged to `main`** (built on branch
+`ux-track`: U0 0d7382c, U2 c034956, U3 2234d67, U4 9ab4f09, U5 e1d4831; U1 picker
+pre-existed at f2e5e8c). Numeric rules ship provisional — re-fit on annotated
+footage (§6). **Review decisions 2026-06-10 (ROADMAP §4.1):** Calib1 is
+**camera + lighting only** — its leftover person-height measurement moves to
+Calib2 (which owns all subject knobs), and the contradictory calib1 toasts get
+fixed with it; calibration "Save to project" must write a normal timestamped
+project save (safe-defaults stays a separate explicit action — ROADMAP bug #6).
 **Serves:** ROADMAP §0 north star — *rig, aim IR, press one calibration button, monitor*.
 **Decisions locked (operator, 2026-06-10):** two lighting profiles per project ·
 full knob panels kept behind a hidden Expert mode · calibration may drive IDS
@@ -164,4 +169,9 @@ provisional constants and get re-fit when the annotated recordings arrive
 - Expert-mode chord choice (single keys E/T/S/K/B/I/P are taken).
 - Whether calib2's gamma/CLAHE sweep needs GPU batching to stay snappy
   (~12 frames × ~9 combos).
-- Merge timing of `p3-motion-simplification` into `main` (UX track stacks on it).
+- ~~Merge timing of `p3-motion-simplification` into `main`~~ — done (2026-06-10).
+- `calib2.select_imgsz` lacks the FPS-budget cap §2 specifies — it can pick 1920
+  on a wide ROI and tank show FPS (ROADMAP bug #12e / §10 P-6).
+- Calib2's confidence-seed pooling averages all 17 keypoint confs incl.
+  invisible ones → pinned at the 0.15 clamp; switch to visible-only mean
+  (ROADMAP bug #11).

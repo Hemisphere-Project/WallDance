@@ -2,7 +2,7 @@
 
 > Granular build / hardware checklist. For strategy, status, and the detection/maintainability roadmap, see **[ROADMAP.md](ROADMAP.md)** (the source of truth).
 
-Last reviewed 2026-06-10. Phases 1–6 are shipped (inventory below); active work is **Phases 7–9 + hardware**.
+Last reviewed 2026-06-10 (full code review). Phases 1–6 are shipped (inventory below); active work is **Phases 7–9 + hardware**, sequenced by **[ROADMAP.md §4.1](ROADMAP.md)**: ① labeled-footage **corpus** on the IDS rig ② calibration-persistence bug fixes (✅ done 2026-06-10) ③ signal fixes ④ GPU/CPU path unification ⑤ **Phase 7 ops cluster (elevated)** ⑥ performance backlog.
 
 > **Operator UX track (U0–U5) shipped** — expert mode, lighting profiles (Show/Rehearsal), the CALIBRATE (scene) + DANCERS (subject) two-pass calibration, and the one-dial sensitivity macro. Full design in **[UX_PLAN.md](UX_PLAN.md)**; numeric calibration rules are provisional pending an annotated-footage re-fit.
 
@@ -23,7 +23,9 @@ Core application is built and in production use — inventory, not active work (
 
 ## Phase 7 — Robustness & Watchdog
 
-**Goal:** Reliable long-run unattended operation. *The main open operational cluster — not covered by [ROADMAP.md](ROADMAP.md); reliability work lives here.*
+**Goal:** Reliable long-run unattended operation. *The main open operational cluster — **elevated to step ⑤ of the ROADMAP §4.1 sequence** (2026-06-10 review: a USB3 stall at minute 40 is worse than any ghost). Detail lives here.*
+
+- ⬜ Pre-Go-Live **"show readiness" check** — camera FPS, TRT active vs fallback, OSC target reachable, calibration age + active profile, recording disk space (also closes part of Phase 8)
 
 - 🟡 Stall detection + diagnostics logging (detection only, no auto-recovery)
 - 🟡 Runtime diagnostics: budget breakdowns every 5s, spike logging, IDS counters

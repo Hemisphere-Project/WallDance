@@ -8,9 +8,10 @@ residence1-solo. The main thing left is **broader labelled footage** (§2 corpus
 gap), which gates how far the conclusions generalise. Plan / handoff doc —
 written so a *fresh* Claude session can execute it without the originating
 conversation's context.
-**Branch:** this builds on `p3-motion-simplification` (the P3 motion-subsystem
-rewrite). Check that branch out first — `motion_model.py`, the scored gate, the
-replay harness, and the goldens all live there, not on `main`.
+**Branch:** everything is now on **`main`** (the `p3-motion-simplification` and
+`ux-track` branches were merged 2026-06-10) — `motion_model.py`, the scored gate,
+the replay harness and the goldens are all in the main tree. The broader-footage
+corpus is sequenced as the **top priority** in ROADMAP §4.1 (operator-arbitrated).
 
 ---
 
