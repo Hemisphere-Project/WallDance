@@ -159,10 +159,12 @@ UI), and consider duplicate-track merging for the moving-duplicate residual.
 | [analyze_session.py](../application/analyze_session.py) | JSONL session log → stats/report (`collect_stats`, `classify_tracks`: real ≥20 hits / marginal 5–19 / ghost <5). | `python analyze_session.py <session_dir> --json` |
 | `tests/golden/*.json` | Golden metric snapshots (the current "intended behavior" baseline). | — |
 
-**Environment:** venv at `application/.venv` (python3.10, torch 2.12+cu130, RTX
-3090). Always `cd application && source .venv/bin/activate`. The cuDNN
-`LD_LIBRARY_PATH` fix is automatic inside `replay.py`; if you invoke torch
-directly, prepend `application/.venv/lib/python*/site-packages/nvidia/*/lib`.
+**Environment:** venv at `application/.venv`. Two verified hosts (2026-06-10):
+the Linux dev box (python3.10, torch 2.12+cu130, RTX 3090; `source
+.venv/bin/activate`, cuDNN `LD_LIBRARY_PATH` fix automatic inside `replay.py`)
+and the **Windows show laptop** (python3.12, torch 2.12+cu130, RTX 5080;
+`.venv/Scripts/python.exe`, the LD bootstrap is a no-op) — the full harness
+(survey, replay, scoring, calib sweeps, goldens) runs on both.
 
 ---
 
@@ -176,13 +178,17 @@ directly, prepend `application/.venv/lib/python*/site-packages/nvidia/*/lib`.
   dancer-absent frames *or* real drops. We disambiguated by hand. **This is
   exactly why Phase A (ground truth) is the keystone** — don't tune against
   proxies.
-- **Footage caveat (critical):** the only labeled footage is `residence1-solo`
-  slots 3 & 4 — **single dancer, `motion_first`, poor light, mildly textured**.
-  On it, the P3 Stage 3b changes (merged modes, source-weighted R, bridge
-  simplification) came back **bit-identical** → the **relay, cold-detection, and
-  `yolo_first` paths are essentially unexercised**. Broader footage is needed:
-  **YOLO-dropout** (dancer present, YOLO blinks), **multi-dancer**, **`yolo_first`**,
-  **small/far dancers**. Safe to re-run slots 3 & 4 autonomously.
+- **Footage status (updated 2026-06-10):** the corpus was annotated (38 slots,
+  `projects/CORPUS_NOTES.md`), fully analyzed ([CORPUS_ANALYSIS.md](CORPUS_ANALYSIS.md)),
+  and the scenario set **re-founded**: golden trio `hangar-floor`/`hangar-aerial`
+  (ex `residence1-solo` slots 3/4 — same files, configs were lost in the project
+  reorganisation) + `texture-aerial`, plus 7 tuning manifests + 2 drafts covering
+  the multi-dancer / aerial / ghost / small-far / static-person gaps. Manifests now
+  **pin a frozen config snapshot + recording fingerprint** (`replay.scenario_config`)
+  — never tune against a project-folder config that can be re-saved or renamed.
+  Operator GT montage pass still pending on the non-golden manifests; the A–F
+  conclusions below (and KNOBS.md FIXED verdicts) re-validate against the broader
+  set once it's verified.
 - **Current detection architecture (post-P3):**
   - One `MotionModel` ([motion_model.py](../application/src/motion_model.py)) = one
     slow MOG2 (silhouette, bridging-only now) + frame-diff ("moving now?").

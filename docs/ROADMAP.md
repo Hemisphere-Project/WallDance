@@ -71,7 +71,7 @@ All field answers point the same way: **better lighting + spatial ghost rejectio
 | **P1.4** Auto exclusion mask | Detection | ✅ Done | Built in the Calibrate window; validated (0 ghost cells on clean footage); **untested on real ghosts** |
 | **P2** Go-Live auto-calibration | Detection | ✅ Done | Height/ratios + empirical FP-sweep varThreshold + exposure/FPS report; apply-then-save |
 | **P3** Motion-subsystem simplification | Detection | ✅ Done (merged to `main`) | One `MotionModel` (1 MOG2 + frame-diff), scored detection gate, merged YOLO/Motion-First, source-weighted measurement, simplified bridge; see §5 P3. **Slot-7 corrector relaxation deferred** (separate step). |
-| **P4** Regression fixtures + transform tests | Both | ✅ Core done | Replay harness ([replay.py](../application/tests/replay.py)) + golden drop/ghost/swap fixtures (residence1-solo slots 3&4, opt-in `WD_RUN_REPLAY=1`) + transform tests ([test_transforms.py](../application/tests/test_transforms.py)). Broaden the footage set next. |
+| **P4** Regression fixtures + transform tests | Both | ✅ Re-founded 2026-06-10 | Replay harness ([replay.py](../application/tests/replay.py)) + transform tests ([test_transforms.py](../application/tests/test_transforms.py)). Goldens **re-founded on the annotated corpus** (trio: `hangar-floor`/`hangar-aerial` = ex residence1-solo slots 3&4 + `texture-aerial`; opt-in `WD_RUN_REPLAY=1`) with **configs pinned in the scenario manifests** + recording fingerprints — see [CORPUS_ANALYSIS.md](CORPUS_ANALYSIS.md) §5. 10 manifests + 2 drafts cover the multi-dancer/aerial/ghost/small-far/static-person gaps; operator GT pass pending. |
 | Tests + CI | Maint. | ✅ CI live | GitHub Actions runs `tests/` on push/PR (import-light); replay regression is opt-in/GPU. |
 | Typed config validation + versioning | Maint. | 🟡 Largely done (U2) | [config_schema.py](../application/src/config_schema.py): v2 profiles, migration, range clamps on load. Remaining: cross-field checks; surface warnings in the GUI (today console-only) |
 | `app.py` decomposition | Maint. | ⬜ Not started | Grew to ~4456 ln (was ~3031 at audit) |
@@ -102,12 +102,26 @@ All field answers point the same way: **better lighting + spatial ghost rejectio
 
 | # | Step | Why this order |
 |---|------|----------------|
-| 1 | **Corpus**: on the real IDS rig, record ghost-heavy / multi-dancer / YOLO-dropout / `yolo_first` / small-far sessions into slots; label known-N scenarios (cheap: count per frame range, TUNING Phase A schema) | Keystone — everything numeric downstream re-fits against it |
+| 1 | **Corpus**: on the real IDS rig, record ghost-heavy / multi-dancer / YOLO-dropout / `yolo_first` / small-far sessions into slots; label known-N scenarios (cheap: count per frame range, TUNING Phase A schema) — **✅ done 2026-06-10** (except the rig session): operator annotated 38 slots (CORPUS_NOTES), full survey + replay analysis ran ([CORPUS_ANALYSIS.md](CORPUS_ANALYSIS.md)), goldens re-founded (trio, pinned configs), **12 GT-verified manifests** committed (incl. per-range labels). Remaining: a session on the real IDS+Starvis2+even-IR rig | Keystone — everything numeric downstream re-fits against it |
 | 2 | **Persistence fixes**: bugs #6 (save semantics), #7 (`_safe_defaults` hijacks "latest"), #8 (sensitivity var-anchor ratchet) — **✅ done 2026-06-10** (see §9) | Small diffs, high operator value — the "last mile" of the P2/U3/U4 investment |
 | 3 | **Signal fixes**: bug #9 (letterbox pad @ scale=1) + bug #4 (frame-diff stale pair cap), each validated on replay + new transform test cases — **✅ done 2026-06-10** (see §9) | Correctness of the primary ghost/relay signal on the quiet Starvis2 scenes we are building toward |
 | 4 | **Unify the post-YOLO path** (bug #10): extract one transform-parameterized chain (gate → exclusion → cold blobs → tracker → OSC) consumed by both `_process_cpu` and the GPU path. Risk plan: (a) land a CPU↔GPU parity replay test *first* (same frames through both paths, compare timelines) so the refactor is measurable; (b) goldens must stay bit-identical on the CPU path; (c) the letterbox proxies stay — only the orchestration unifies — **✅ done 2026-06-10** (see §9 bug #10) | Removes the "tuned path ≠ show path" blind spot; bug #9 lives in exactly this duplication |
 | 5 | **Ops cluster** (TODO Phase 7, elevated): camera auto-recovery, watchdog, FPS/no-detection alerts, **4 h soak test**; plus a pre-Go-Live "show readiness" line (camera FPS, TRT active vs fallback, OSC reachable, calibration age + profile, disk space) | A USB3 stall at minute 40 is worse than any ghost; detection got the recent budget, ops did not |
 | 6 | **Performance backlog** (§10) — opportunistic, replay-gated | None of it blocks a show today; do alongside 3–5 where touching the same code |
+
+### 4.2 Corpus-analysis follow-up plan (operator-agreed 2026-06-10)
+
+Full plan + evidence in [CORPUS_ANALYSIS.md](CORPUS_ANALYSIS.md) (§9 + the agreed chat plan). Phases:
+
+| Phase | Scope | Status |
+|-------|-------|--------|
+| **0 — Corpus re-founding** | Pinned-config scenario schema + loud-fail replay + fingerprints + pass lines (`scoring.evaluate_pass`); golden trio regenerated (`hangar-floor`, `hangar-aerial`, `texture-aerial`); 12 manifests | ✅ **Done 2026-06-10** incl. the operator GT pass (all 12 verified; per-range labels for blur-runner / dark-crowd / white-walkers) |
+| **1 — Project config repair** | Agent-run headless Calib1+Calib2 per IDS-rig project → timestamped saves + before/after replay report; operator does a ~10 min in-app pass per project. (Fixes the bulk-copied `person_height_px=56` configs live on 4 projects) | ⬜ |
+| **2 — Logic & constants** (each a small replay-gated diff, in order) | ① warmup → windowed hit-ratio (the <45 %-detection-rate never-confirms bug) ② duplicate-track merge ③ MAX_PERSONS enforcement (bug 12c) ④ exclusion mask default-on + manual editor + report line ⑤ calib2 amendments: box-conf seed (supersedes bug #11), gamma-sweep noise guard, imgsz FPS cap (P-6/bug 12e), height-staleness alarm ⑥ static-person gate OR-term *only if* `outdoor-sitter` still fails after ①–⑤ ⑦ sensitivity-macro span re-fit (τ 0.15–0.65) ⑧ slot-7 corrector relaxation (§3a) gated on the duo scenarios | ⬜ |
+| **3 — Known-N calibration productization** | tune.py joint search behind an operator flow (CLI ritual first, GUI later) — YOLO-level threshold picks measurably backfire on ghost-heavy scenes | ⬜ |
+| **4 — "New show" procedure** | `docs/NEW_SHOW.md` operator playbook + dry-run on 2 existing projects via playback | ⬜ |
+
+**Scene-class pass lines (agreed, refinable per manifest):** A (indoor rigged) drop ≤ 0.05, longest ≤ 1.0 s, ghost ≤ 0.05 · B (outdoor/uncontrolled) 0.10 / 2.0 s / 0.15 · S (stress) no line. `0-TEST-phones` stays corpus-only (one project ≠ one rig setup).
 
 ---
 
@@ -227,6 +241,8 @@ Key gates (slot-7-derived — candidates for relaxation per §3a): `TRACKER_MAHA
 | 9 | ✅ Fixed (2026-06-10) | `pipeline._crossval_motion_filter` + `_exclusion_norm_xy` | `(x − pad)/scale if scale != 1.0 else x` **dropped the letterbox pad when `lb_scale == 1.0`** — whenever the ROI long side equals imgsz with nonzero pad on the short axis (e.g. 1280×720 ROI @ imgsz 1280 → pad_y 280); gate + exclusion sampled the motion mask off by the pad (GPU path only). Both sites now subtract pad unconditionally (matching `_unscale_letterbox`; the `MotionConsumerShim` was already correct). CPU path bit-identical (scale 1, pad 0 → identity); goldens pass. test_transforms gained the scale=1+pad cases + a ground-truth pad-subtraction test (closes the bug #5 gap). |
 | 10 | ✅ Fixed (2026-06-10) | `pipeline._run_yolo_and_track` (GPU) vs `_track_detections` (CPU) | The GPU path hand-duplicated the post-YOLO chain — all replay/golden/tuning evidence validated the CPU copy while the show ran the GPU copy (bug #9 lived in exactly this duplication). Now **one `_post_yolo_chain`** (gate → exclusion → cold blobs → tracker → finalize → OSC) parameterized by `_TrackerSpace` (person height, scale/pad/roi/roi_local tracker↔mask transform, frame width) serves both wrappers; the letterbox/offset proxies stay, only orchestration unified. Risk plan executed in order: (a) CPU↔GPU **parity replay test landed first** ([test_gpu_cpu_parity.py](../application/tests/test_gpu_cpu_parity.py), `WD_RUN_REPLAY=1`; measured baseline slot 3 = 100% count agreement / 7 px p95, slot 4 = 87% / 53 px — the bridge-regime gap is now pinned and re-measurable); (b) CPU path verified **metric-exact** against the pre-refactor baseline on both slots; (c) goldens + parity green post-refactor. `replay.py` gained `--gpu-path` / `--details` for ad-hoc GPU-path replays. |
 | 11 | Low | `app.py _step_calib2` → `calib2.aggregate` | The pooled confidence seed averages **all 17** keypoint confs incl. invisible ≈0 ones → biased low, usually pinned at the 0.15 clamp (seed near-constant, the p05−margin rule never bites). Use the visible-only mean (`conf > KEYPOINT_CONFIDENCE`), consistent with the scored gate. (Also note: it seeds a *box*-confidence threshold from *keypoint* confidences — acceptable as the documented provisional stand-in, but the visible-only fix is what makes it meaningful.) |
+| 13 | ✅ Fixed (2026-06-10) | `tests/replay.py` config resolution | A missing/renamed project silently fell back to `config={}` (defaults) — the 06-10 reorganisation orphaned the goldens exactly this way, and the failure was invisible. Now: scenario manifests **pin a frozen config snapshot** (`"config"`) + a **recording fingerprint** (bytes + frames, hard-fail on mismatch); `replay.py`/`tune.py`/`overlay.py`/`detect_cache.py` prefer the pinned config via `replay.scenario_config()`, and a bare `--project` lookup that finds nothing **errors loudly**. |
+| 14 | Confirmed (corpus) | `tracker.py` warmup scoring | Confirmation needs +1/hit vs −0.8/miss to reach 15 → a track **can never confirm below ~45 % sustained detection rate**: on `hangar-aerial`-class scenes the dancer is detected ~25 % of frames yet *permanently unreported* (replay-measured: 0 reported frames / 300 with avg 0.25 det/frame). Fix = windowed hit-ratio (§4.2 Phase 2 ①). |
 | 12 | Low (cluster) | misc | (a) `_execute_project_switch` step 7 compares `new_imgsz != settings.imgsz` *after* step 6 already assigned it — always False, masked by the TRT special-case; (b) contradictory Calib1 toasts: servo path says "keep the stage clear", non-IDS path says "keep dancers in frame" (resolve per §4.1 decision 2); (c) `MAX_PERSONS` documented "max dancers to track" but enforced nowhere; (d) config.py OSC comment documents `/walldance/dancer/<id>/centroid [x,y]` but the code sends `/walldance/dancer/centroid [id,x,y]` — consumer-facing drift, fix the comment (or the schema); (e) `calib2.select_imgsz` ignores the FPS budget UX_PLAN specifies — it can pick 1920 and tank FPS (see §10 P-6); (f) profile-switch reuses `_apply_config_without_model` with a partial profile bundle — works, but the unconditional ROI block shows the contract is fragile (document or split). |
 
 ---
@@ -264,12 +280,14 @@ Non-items (checked, fine as-is): tracker O(n²) loops (n ≤ ~6), preview path (
 
 ---
 
-## 12. Open questions
+## 12. Open questions — ✅ all answered by the corpus analysis (2026-06-10)
 
-- Typical dancer **size range** (px) and **count** across venues — does one config generalize, or do we need a small per-scale preset set? (P2 now *measures* this per show.)
-- How bad are ghost floods quantitatively (ghosts/minute) on a representative bad scene? Sets the bar for P1.3/P1.4 — **needs a ghost-heavy recording**.
-- Current setup ritual end-to-end (who, how long, which knobs) — confirms which manual steps remain after P2.
-- What does "good enough for a show" mean numerically (acceptable missed-dancer seconds, acceptable ghost rate)? Gives the P4 fixtures a pass/fail line.
+Measured answers in [CORPUS_ANALYSIS.md](CORPUS_ANALYSIS.md) §8:
+
+- **Size range / one config?** Median heights 100–1000 px across venues, in-scene spread 0.4–1.8× — one config cannot generalize; per-scene Calib2 is structurally required (imgsz 640→1536+ per scene).
+- **Ghost flood magnitude:** 0.7–3 ghost-dets/frame on textured/outdoor scenes (8+/frame on the facade stress case), **60–95 % at fixed scene spots** → maskable (P1.4 validated on real ghosts).
+- **Setup ritual cost:** replays with stale/bulk-copied configs drop 36–100 % of dancers on 6/7 hard scenes — the calibration flow closes most of it; residual manual steps = ROI/stage definition + sensitivity nudge.
+- **"Good enough" numerically:** the §4.2 scene-class pass lines, embedded per-manifest (`"pass"`, evaluated by `scoring.evaluate_pass`).
 
 ---
 
@@ -278,6 +296,7 @@ Non-items (checked, fine as-is): tracker O(n²) loops (n ≤ ~6), preview path (
 | Doc | Role |
 |-----|------|
 | **ROADMAP.md** (this) | Single source of truth — strategy, status, plan |
+| [CORPUS_ANALYSIS.md](CORPUS_ANALYSIS.md) | 2026-06-10 corpus analysis — measured scene physics, settings/strategy evidence, re-founded regression corpus, §4.2 plan |
 | [UX_PLAN.md](UX_PLAN.md) | Production operator UX — two-calibration design, profiles, build phases U0–U5 |
 | [TODO.md](TODO.md) | Granular build / hardware checklist (live) |
 | [archives/ROBUSTNESS_PLAN.md](archives/ROBUSTNESS_PLAN.md) | Original detection north star (merged here) |
