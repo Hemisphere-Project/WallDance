@@ -56,13 +56,17 @@ from config import (
     MOTION_BRIDGE_LOCAL_MIN_BLOB_AREA,
     MOTION_BRIDGE_VELOCITY_FRICTION,
     MOTION_BRIDGE_MAX_PRESENCE_FRAMES,
-    MOTION_BRIDGE_WARMUP_INCREMENT,
     TrackingMode, TRACKING_MODE,
     MOTION_FIRST_MIN_HITS, MOTION_FIRST_BRIDGE_MAX_FRAMES,
     MOTION_FIRST_BLOB_OVERLAP_RATIO,
     MOTION_FIRST_SYNTHETIC_MIN_FRAMES,
     MOTION_FIRST_SYNTHETIC_CELL_RATIO,
     TRACK_WARMUP_THRESHOLD, TRACK_WARMUP_DECAY,
+    TRACK_WARMUP_SLOW_WINDOW, TRACK_WARMUP_SLOW_CREDITS,
+    TRACK_WARMUP_SLOW_MIN_TRAVEL_RATIO,
+    TRACK_WARMUP_SLOW_MIN_SEPARATION_RATIO,
+    TRACK_WARMUP_INTERMITTENT_ENABLED,
+    MOTION_BRIDGE_WARMUP_INCREMENT,
     TRACKER_REPORT_REQUIRES_SKELETON, TRACKER_GHOST_SKELETON_AGE,
     TRACKER_GHOST_FROZEN_SPEED_RATIO,
 )
@@ -177,10 +181,17 @@ class DancerTrack:
         self._bridge_prev_centroid: np.ndarray | None = None  # Last blob centroid for velocity
         self._bridge_blobless_streak: int = 0  # Consecutive presence-only frames (no real blob)
 
-        # Track warmup scoring — grows with consecutive matches,
-        # decays on misses.  Track only output once score reaches
-        # TRACK_WARMUP_THRESHOLD.
+        # Track warmup scoring — grows with consecutive matches, decays on
+        # misses; output only once the score reaches TRACK_WARMUP_THRESHOLD.
+        # Its hysteresis is load-bearing (bug #14, four replay-measured
+        # variants) — do not replace it with a hard window.
         self._warmup_score: float = 1.0  # First detection = 1.0
+        # Companion per-frame YOLO-credit history (1.0 match / 0.0 bridge or
+        # miss) feeding the SECOND, live initial-confirmation path for
+        # intermittent moving subjects the integral can never confirm
+        # (<~45% sustained detection rate; see warmup_confirmed).
+        self._warmup_history: deque = deque([1.0],
+                                            maxlen=TRACK_WARMUP_SLOW_WINDOW)
 
         # Frames since the last *real skeleton* update (≥1 keypoint over
         # KEYPOINT_CONFIDENCE).  Cold-blob synthetic detections are all
@@ -282,6 +293,35 @@ class DancerTrack:
         points = keypoints[mask]
         return np.average(points, axis=0, weights=weights)
     
+    @property
+    def warmup_confirmed(self) -> bool:
+        """Old integral confirmation OR the live intermittent path (bug #14).
+
+        The score integral (+1 match / −0.8 miss / +0.4 bridge, threshold 15)
+        is the primary mechanism — its hysteresis rides through short
+        detection dips and self-revokes after false-positive bursts (four
+        replay-measured variants proved both behaviors are load-bearing).
+        The second path confirms what the integral structurally cannot:
+        an intermittently-detected MOVING subject (<~45% duty — aerial poses,
+        marginal IR).  It is evaluated live, so it self-revokes when the
+        credit window drains, and requires real travel because duty alone
+        cannot separate a 1-in-3-frames dancer from a flickering fixed
+        texture spot.
+        """
+        if self._warmup_score >= TRACK_WARMUP_THRESHOLD:
+            return True
+        return (sum(self._warmup_history) >= TRACK_WARMUP_SLOW_CREDITS
+                and self._warmup_travel_ok())
+
+    def _warmup_travel_ok(self) -> bool:
+        """Has this track moved like a subject (vs a fixed flicker spot)?"""
+        if len(self.history) < 2:
+            return False
+        pts = np.asarray(self.history)
+        span = float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0)))
+        own_h = max(10.0, float(self.bbox[3]))
+        return span >= TRACK_WARMUP_SLOW_MIN_TRAVEL_RATIO * own_h
+
     def predict(self):
         """Predict next state."""
         # Frames since the last real skeleton (reset in update() on a real pose).
@@ -293,9 +333,11 @@ class DancerTrack:
         if self.time_since_update > 0:
             self.kf.x[2:4] *= 0.9  # coast through occlusion (10% dampening)
             self.kf.x[4:6] *= 0.5  # drop acceleration completely
-            # Decay warmup score on miss (but don't let it drop below 0)
+            # Decay warmup score on miss (but don't let it drop below 0);
+            # a missed frame contributes zero windowed credit
             self._warmup_score = max(0.0,
                                      self._warmup_score - TRACK_WARMUP_DECAY)
+            self._warmup_history.append(0.0)
         elif self.bridge_frames > 0:
             # Bridge resets time_since_update → normal friction never fires.
             # Without explicit dampening the Kalman velocity runs away and
@@ -372,6 +414,7 @@ class DancerTrack:
         self._fractional_age = 0.0
         self._warmup_score = min(self._warmup_score + 1.0,
                                  TRACK_WARMUP_THRESHOLD + 5.0)
+        self._warmup_history.append(1.0)
 
         # Clear motion bridge state on YOLO match
         self.bridge_frames = 0
@@ -710,6 +753,11 @@ class DancerTracker:
         self.max_age = TRACKER_MAX_AGE
         self.min_hits = TRACKER_MIN_HITS
         self.velocity_weight = TRACKER_VELOCITY_WEIGHT
+        # Per-scene switch for the intermittent confirmation path (bug #14):
+        # default off = bit-identical shipped warmup behavior.  Calibration /
+        # config key `tracker_intermittent_confirm` enables it on scenes
+        # where intermittent detection dominates (aerial, very dark).
+        self.intermittent_confirm = TRACK_WARMUP_INTERMITTENT_ENABLED
         self._smoothing_depth = 1  # Temporal confidence smoothing depth
         self._person_height_px = 150  # updated via set_person_height()
 
@@ -2839,9 +2887,16 @@ class DancerTracker:
 
         # Warm up the track from blob matches so motion-first tracks
         # can eventually reach output threshold without YOLO.
+        # Bridge-blob matches feed the integral (sustains confirmed tracks
+        # through YOLO gaps) but earn NO windowed credit (replay-measured:
+        # window credit from bridges incubates ghosts — texture flicker plus
+        # bridge noise cleared the intermittent path, and bridge Kalman drift
+        # even defeats its travel check).  The 0.0 still occupies the frame
+        # slot so window sums stay per-frame.
         track._warmup_score = min(
             track._warmup_score + MOTION_BRIDGE_WARMUP_INCREMENT,
             TRACK_WARMUP_THRESHOLD + 5.0)
+        track._warmup_history.append(0.0)
 
         # Record match event so merge-episode bookkeeping stays coherent
         track.note_match_event(self.frame_count, merge_frame=False)
@@ -3018,10 +3073,13 @@ class DancerTracker:
 
     def _collect_confirmed_tracks(self):
         """Return tracks that are confirmed enough to expose externally."""
-        confirmed = []
+        eligible = []
         for track in self.tracks:
             if track.hits >= self.min_hits or self.frame_count <= self.min_hits:
-                if track._warmup_score >= TRACK_WARMUP_THRESHOLD:
+                integral_ok = track._warmup_score >= TRACK_WARMUP_THRESHOLD
+                slow_ok = (self.intermittent_confirm and not integral_ok
+                           and track.warmup_confirmed)
+                if integral_ok or slow_ok:
                     # Frozen-ghost gate (TUNING Phase F): drop a track that is
                     # both skeleton-stale AND effectively stationary — an
                     # abandoned track kept alive by recurring cold blobs at a
@@ -3037,7 +3095,34 @@ class DancerTracker:
                                 "speed": round(speed, 2),
                             })
                             continue
-                    confirmed.append(track)
+                    eligible.append(track)
+
+        # Integral-confirmed tracks report unconditionally (the shipped
+        # behavior).  A track confirmed ONLY via the intermittent slow path
+        # (bug #14) must additionally be separated from every already-kept
+        # track: replay-measured, the dominant slow-path false positives are
+        # duplicate tracks riding a dancer (moving, 30%+ duty), not fixed
+        # spots.  A real second dancer beyond the separation ratio reports.
+        confirmed = [t for t in eligible
+                     if t._warmup_score >= TRACK_WARMUP_THRESHOLD]
+        slow_only = [t for t in eligible
+                     if t._warmup_score < TRACK_WARMUP_THRESHOLD]
+        for track in sorted(slow_only, key=lambda t: -t.hits):
+            pos = track.get_last_known_position()
+            own_h = max(10.0, float(track.bbox[3]))
+            near = None
+            for kept in confirmed:
+                kept_h = max(10.0, float(kept.bbox[3]))
+                lim = TRACK_WARMUP_SLOW_MIN_SEPARATION_RATIO * max(own_h, kept_h)
+                if float(np.linalg.norm(
+                        pos - kept.get_last_known_position())) < lim:
+                    near = kept.track_id
+                    break
+            if near is None:
+                confirmed.append(track)
+            else:
+                self.logger.log("WARMUP_SLOW_DUP_SUPPRESSED", {
+                    "track_id": track.track_id, "near": near})
         return confirmed
 
     def _log_frame_summary(self, detections, matched_pairs_log):

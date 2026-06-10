@@ -225,6 +225,8 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
         tracker.max_age = config["tracker_max_age"]
     if "tracker_smoothing" in config:
         tracker.smoothing_depth = config["tracker_smoothing"]
+    if "tracker_intermittent_confirm" in config:
+        tracker.intermittent_confirm = bool(config["tracker_intermittent_confirm"])
 
     proc = FrameProcessor(model=model, settings=settings,
                           enhancer=enhancer, tracker=tracker)

@@ -23,8 +23,13 @@ class FakeTrack:
     def __init__(self, tid, since_skel, vel, *, hits=50, warmup=None):
         self.track_id = tid
         self.hits = hits
+        # warmup=None -> confirmed; a low number -> not yet confirmed
+        # (mirrors DancerTrack.warmup_confirmed / the integral path)
         self._warmup_score = (config.TRACK_WARMUP_THRESHOLD if warmup is None
                               else warmup)
+        self.warmup_confirmed = (self._warmup_score
+                                 >= config.TRACK_WARMUP_THRESHOLD)
+        self.bbox = np.array([0.0, 0.0, 60.0, 180.0])
         self._frames_since_skeleton = since_skel
         self._vel = np.asarray(vel, dtype=float)
 

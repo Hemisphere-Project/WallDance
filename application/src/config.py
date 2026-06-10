@@ -679,14 +679,45 @@ MOTION_DIFF_PAIR_MAX_AGE_FRAMES = 30      # ~1.2 s at 25 fps; replay-validated
 # threshold.  This suppresses flickering background ghosts without
 # slowing down the tracker's internal matching.
 TRACK_WARMUP_THRESHOLD = 15               # Consecutive-match score to confirm.
-                                          # At +1.0/match and -0.8/miss, a
-                                          # reliably-detected dancer confirms in
-                                          # ~20 frames (1s at 20fps).  A ghost
-                                          # that matches intermittently never
-                                          # reaches this threshold.
 TRACK_WARMUP_DECAY = 0.8                 # Score decay per missed frame.
-                                          # Higher = misses hurt more, ghosts
-                                          # drained faster.  Must be < 1.0.
+#
+# The integral above is the PRIMARY confirmation/retention mechanism — four
+# replay-measured variants (2026-06-10, bug #14) proved its hysteresis is
+# load-bearing: pure windowed replacements either confirmed fixed-spot
+# false-positive bursts as permanent ghosts (latched) or flickered real
+# dancers out during short detection dips (un-latched).  Its one real gap:
+# below ~45% sustained detection rate it can NEVER confirm (corpus-measured:
+# an aerial dancer detected 1 frame in 3, permanently unreported).  Hence a
+# second, LIVE initial-confirmation path for intermittent moving subjects:
+TRACK_WARMUP_SLOW_WINDOW = 40    # frames (~2 s @ 20 fps) of YOLO-credit
+                                  # history (1.0 match, 0.0 bridge/miss —
+                                  # bridge credit here incubates ghosts)
+TRACK_WARMUP_SLOW_CREDITS = 12.0  # 30% duty floor: 1-in-3 confirms in ~2 s
+TRACK_WARMUP_SLOW_MIN_TRAVEL_RATIO = 0.5  # ...only if the track TRAVELLED
+                                  # (history span >= ratio x own bbox height):
+                                  # duty alone cannot separate an intermittent
+                                  # dancer from a flickering fixed texture
+                                  # spot — dancers move, wall spots don't.
+TRACK_WARMUP_SLOW_MIN_SEPARATION_RATIO = 0.7  # A slow-path-only track is NOT
+                                  # reported while its centroid sits within
+                                  # ratio x max(pair heights) of an already-
+                                  # confirmed track (replay-measured: the
+                                  # dominant slow-path ghosts are duplicate
+                                  # tracks riding a dancer — moving, 30%+
+                                  # duty — not fixed spots).  A real second
+                                  # dancer farther than this confirms fine.
+TRACK_WARMUP_INTERMITTENT_ENABLED = False  # The intermittent path is a
+                                  # PER-SCENE calibrated switch (config key
+                                  # `tracker_intermittent_confirm`), default
+                                  # OFF = bit-identical shipped behavior.
+                                  # Replay-measured across the 12-scenario
+                                  # corpus: it wins on aerial/dark scenes
+                                  # (hangar-aerial drop 0.126->0.074,
+                                  # dark-crowd longest drop 9.6->5.8 s) and
+                                  # loses on texture/facade scenes (duplicate
+                                  # +flicker ghosts) -- no global default can
+                                  # arbitrate a scene-dependent trade
+                                  # (ROADMAP 3b, same lesson as confidence).
 
 # Report-gate against "frozen-on-the-wall" ghost tracks (TUNING Phase F).
 # A track abandoned by its dancer can linger if recurring cold-blob detections
