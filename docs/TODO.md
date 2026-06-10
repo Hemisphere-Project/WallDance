@@ -2,7 +2,9 @@
 
 > Granular build / hardware checklist. For strategy, status, and the detection/maintainability roadmap, see **[ROADMAP.md](ROADMAP.md)** (the source of truth).
 
-Last reviewed 2026-06-08. Phases 1–6 are shipped (inventory below); active work is **Phases 7–9 + hardware**.
+Last reviewed 2026-06-10. Phases 1–6 are shipped (inventory below); active work is **Phases 7–9 + hardware**.
+
+> **Operator UX track (U0–U5) shipped** — expert mode, lighting profiles (Show/Rehearsal), the CALIBRATE (scene) + DANCERS (subject) two-pass calibration, and the one-dial sensitivity macro. Full design in **[UX_PLAN.md](UX_PLAN.md)**; numeric calibration rules are provisional pending an annotated-footage re-fit.
 
 ---
 
@@ -47,7 +49,6 @@ Core application is built and in production use — inventory, not active work (
 ## Phase 9 — Future Enhancements
 
 **UI / UX:**
-- ⬜ **Startup project picker** — no silent auto-load; last project highlighted, Enter to launch; rename/delete. **Full spec in [ROADMAP.md](ROADMAP.md) §7B.**
 - ⬜ IDS crop ratio increment/decrement buttons
 - ⬜ Fix preview / window sizing issues
 - ⬜ Check standard webcam path (OpenCV source auto-detection)
@@ -72,8 +73,10 @@ Core application is built and in production use — inventory, not active work (
 
 ## Recently completed (were open here, verified done in code)
 
-- ✅ **Static background subtraction** — `BackgroundSubtractor` + `BG_SUBTRACT_ENABLED` (off by default). Was Phase 9 "Remove static background."
-- ✅ **Interactive ROI editing** — `roi_edit_mode` / `_cb_roi_edit_toggle`. The ROI half of Phase 9 "ROI / scene mask editing"; the *scene-mask* half is now automatic via [ROADMAP.md](ROADMAP.md) P1.4 (a manual editor remains, listed under Processing above).
+- ✅ **Startup project picker** — no silent auto-load; last project highlighted, Enter to launch; rename/delete (`config_store.rename_project`/`delete_project`). Was Phase 9 / ROADMAP §7B.
+- ✅ **Operator UX (U0–U5)** — expert mode, lighting profiles, CALIBRATE/DANCERS two-pass calibration, sensitivity macro. See [UX_PLAN.md](UX_PLAN.md).
+- ✅ **Static background subtraction** — `BackgroundSubtractor` + `BG_SUBTRACT_ENABLED` (off by default; now expert-only). Was Phase 9 "Remove static background."
+- ✅ **Interactive ROI editing** — now via double-click on the preview + corner drag. The ROI half of Phase 9 "ROI / scene mask editing"; the *scene-mask* half is now automatic via [ROADMAP.md](ROADMAP.md) P1.4 (a manual editor remains, listed under Processing above).
 
 ---
 
