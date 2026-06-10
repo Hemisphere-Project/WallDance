@@ -180,14 +180,14 @@ Condensed from the full audit (now [archives/AUDIT.md](archives/AUDIT.md)). The 
 | Priority | Item | Status | Note |
 |----------|------|--------|------|
 | 1 | Minimal test suite + **CI** | ✅ CI live | [.github/workflows/ci.yml](../.github/workflows/ci.yml) (3.10 + 3.12 matrix); 123 unit tests green 2026-06-10. Remaining: tracker-scenario + OSC tests; replay regression stays opt-in/GPU |
-| 1 | Typed config **validation + versioning** | 🟡 largely done (U2) | `config_schema.py` v2: profiles, migration, range clamps. Remaining: cross-field checks; show load warnings in the GUI (console-only today) |
-| 1 | Launcher update safety | ⬜ | `launcher/git_manager.py` force-syncs to remote HEAD — refuse on dirty tree, prompt before destructive update. (`check_updates` also reports "behind" when local is *ahead* — update would discard local commits) |
-| 1 | `run.sh` hardcoded `python3.10` lib path | ⬜ | Discover venv layout dynamically (pyproject allows 3.10–3.12); same work item as the §10 Python-3.12 bump |
+| 1 | Typed config **validation + versioning** | ✅ Done (2026-06-11) | `config_schema.py` v2: profiles, migration, range clamps; cross-field/structural checks (ratio ordering, ROI coercibility, exclusion-mask shape — each previously able to crash the load); load warnings now also surface as a GUI toast (`_report_config_warnings`) |
+| 1 | Launcher update safety | ✅ Done (2026-06-11) | `check_updates` now classifies up-to-date / behind / **ahead** / diverged (`dulwich.graph.can_fast_forward`); `update()` refuses on local modifications to tracked files (`DirtyWorkingTreeError`; untracked working data never counts); GUI warns-and-skips on dirty, asks an explicit destructive confirmation on diverged, never offers an update when ahead. Unit-tested ([test_launcher_git_manager.py](../application/tests/test_launcher_git_manager.py), runs in CI) |
+| 1 | `run.sh` hardcoded `python3.10` lib path | ✅ Done (2026-06-11) | `run.sh` + `extra/build_engines.sh` discover `.venv/lib/python3.*` by glob (any 3.10–3.12 venv). The actual 3.12 venv rebuild stays §10 P-8 (needs GPU-wheel re-verification) |
 | 2 | Decompose `app.py` (~4456 ln) into controllers | ⬜ | Runtime / playback / model-loading / session services; modules have *grown* since the audit |
 | 2 | Tracker scenario tests from known-hard sessions | ⬜ | Surround the tracker with reproducible tests before simplifying it (§8) |
-| 2 | README / `projects/` layout doc | 🟡 verify | The old `configs/` drift appears resolved in README; re-check and document the `projects/` structure |
+| 2 | README / `projects/` layout doc | ✅ Verified (2026-06-11) | No `configs/` drift left; README "Projects and Configs" matches `config_store.py` (timestamped saves, `calib2/`, `last_project.txt`); `_safe_defaults.json` now documented |
 | 3 | In-repo model-artifact footprint | ✅ resolved | Verified 2026-06-10: `models/` gitignored, `.git` ≈ 69 MB |
-| 3 | Untrack committed junk | ⬜ | `application/merge_dbg.log`, `application/src/tracking_events.jsonl` are tracked → perpetually-dirty tree when running; `git rm --cached` + gitignore |
+| 3 | Untrack committed junk | ✅ Done (2026-06-11) | `git rm --cached` on both; `.gitignore` now ignores `tracking_events.jsonl` / `merge_dbg.log` globally. The launcher dirty-check keeps a transition exemption for the two paths (`_DIRTY_EXEMPT`) until field checkouts are past this commit |
 | 3 | Unify install/update logic (scripts vs launcher) | ⬜ | One canonical policy, thin wrappers |
 | 3 | Consolidate stale docs | 🟡 in progress | *This roadmap is part of that work* |
 

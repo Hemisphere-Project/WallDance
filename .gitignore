@@ -39,7 +39,10 @@ projects/
 # OS
 .DS_Store
 Thumbs.db
-application/tracking_events.jsonl
+
+# Runtime-generated logs (written to the working dir wherever the app runs)
+tracking_events.jsonl
+merge_dbg.log
 
 # TUNING Phase B: YOLO detect-pass caches (large, regenerable)
 application/tests/cache/

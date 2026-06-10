@@ -130,6 +130,7 @@ Keyboard shortcuts: `Q` quit, `E` enhance, `S` skeleton, `K` keypoints, `B` bbox
 
 - On launch, a **project picker** opens (no silent auto-load): projects are listed by last-save date with the most recent highlighted (Enter launches it), plus **New**, **Rename**, and **Delete**. The last project is remembered in `projects/last_project.txt`.
 - Configs are stored under `projects/<project>/<project>_YYYYMMDD_HHMMSS.json` (timestamped versions; the top bar picks a version). Dancer-calibration evidence lives under `projects/<project>/calib2/`.
+- `projects/<project>/_safe_defaults.json` is a separate per-project fallback written only by the explicit **Save safe defaults** action (and loaded only by **Load safe defaults**) — it is not a timestamped version, never appears in the version list, and is not what startup or the picker loads.
 - Configs use **schema v2**: a set of shared keys (camera, ROI, model/imgsz, OSC, person height) plus two **lighting-profile** bundles (`show` / `rehearsal`) for the lighting-coupled values (exposure/gain, gamma/CLAHE, MOG2, exclusion mask, sensitivity). Older flat configs migrate automatically (wrapped as the `show` profile) and are range-validated on load.
 
 ## Runtime Flow
