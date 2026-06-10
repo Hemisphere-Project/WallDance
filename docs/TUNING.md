@@ -142,13 +142,16 @@ report. The user will point it at various recorded situations.
   6→10). Overlay confirms the frozen-wall ghost is gone.
 - **Honest residual:** a duplicate still *moving* toward its freeze point (~6
   frames) is spared — count+speed can't separate it from a real moving dancer;
-  needs spatial GT (A3) or duplicate-track merging.
+  needs spatial GT (A3) or duplicate-track merging.  **Resolved 2026-06-11:**
+  the takeover merge (`tracker._merge_takeover_duplicates`, ROADMAP §4.2
+  Phase 2 ②) absorbs these via the pair co-fed-history discriminator.
 
 **The loop is complete on this footage.** Highest-leverage next input = **broader
 labelled footage** (§2: YOLO-dropout, multi-dancer, `yolo_first`, small/far) —
 without it, C/E/F conclusions (and the FIXED-knob verdicts in `docs/KNOBS.md`)
 are slot4-specific. Then: productise the known-N calibration (A+C in the Go-Live
-UI), and consider duplicate-track merging for the moving-duplicate residual.
+UI), and consider duplicate-track merging for the moving-duplicate residual
+*(shipped 2026-06-11 as the Phase 2 ② takeover merge)*.
 
 ## 1. What already exists (the P3 foundation — reuse, don't rebuild)
 

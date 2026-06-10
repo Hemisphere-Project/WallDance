@@ -26,6 +26,8 @@ from config import (
     SHADOW_TRACK_VELOCITY_CORR, SHADOW_TRACK_FRAMES,
     SHADOW_PROXIMITY_RATIO,
     TRACKER_DUPLICATE_MERGE_PROXIMITY, TRACKER_DUPLICATE_MERGE_FRAMES,
+    TRACKER_DUP_TAKEOVER_PROXIMITY_RATIO, TRACKER_DUP_TAKEOVER_HITS,
+    TRACKER_DUP_TAKEOVER_WINDOW, TRACKER_DUP_COFED_VETO,
     TRACKER_ESTABLISHED_MAX_AGE_MULT, TRACKER_CLOSE_PROXIMITY_RATIO,
     TRACKER_CLOSE_POS_WEIGHT, TRACKER_CLOSE_KPT_WEIGHT,
     TRACKER_CLOSE_SIZE_WEIGHT, TRACKER_ESTABLISHED_SEP_BOOST,
@@ -312,6 +314,35 @@ class DancerTrack:
             return True
         return (sum(self._warmup_history) >= TRACK_WARMUP_SLOW_CREDITS
                 and self._warmup_travel_ok())
+
+    def inherit_subject_from(self, other: 'DancerTrack'):
+        """Adopt another track's kinematic + pose + warmup state.
+
+        Takeover merge (Phase 2 ②): when the absorbed duplicate is the one
+        currently holding the detection stream, the surviving (older) track
+        jumps onto the subject so reporting continues under the established
+        id without a warmup gap — the older track's integral has usually
+        decayed during its stale stretch and the younger one's state is the
+        live, accurate one.
+        """
+        self.kf.x = other.kf.x.copy()
+        self.kf.P = other.kf.P.copy()
+        self.keypoints = other.keypoints.copy()
+        self.confidence = other.confidence.copy()
+        self.bbox = other.bbox.copy()
+        self.time_since_update = other.time_since_update
+        self._frames_since_skeleton = other._frames_since_skeleton
+        self._occluded = other._occluded
+        self.is_bridged = other.is_bridged
+        self.bridge_frames = other.bridge_frames
+        self._bridge_prev_centroid = (
+            None if other._bridge_prev_centroid is None
+            else other._bridge_prev_centroid.copy())
+        self.hits = max(self.hits, other.hits)
+        self._warmup_score = max(self._warmup_score, other._warmup_score)
+        self._warmup_history = other._warmup_history.copy()
+        self._smoothed_centroid = other._smoothed_centroid.copy()
+        self.history.append(other.get_centroid().copy())
 
     def _warmup_travel_ok(self) -> bool:
         """Has this track moved like a subject (vs a fixed flicker spot)?"""
@@ -775,6 +806,11 @@ class DancerTracker:
 
         # Pairwise distance history for separation memory (Phase 2+4)
         self._pair_distances: dict[tuple[int, int], deque] = {}
+        # Takeover-merge pair memory (ROADMAP §4.2 Phase 2 ②): lifetime
+        # co-fed frame count (both tracks skeleton-fed the same frame) and
+        # the rolling qualifying-frame window, per established pair.
+        self._pair_cofed: dict[tuple[int, int], int] = {}
+        self._dup_takeover_hist: dict[tuple[int, int], deque] = {}
         self._separation_penalty_weight = TRACKER_SEPARATION_PENALTY_WEIGHT
         self._velocity_prediction_influence = TRACKER_VELOCITY_PREDICTION_INFLUENCE
 
@@ -916,6 +952,8 @@ class DancerTracker:
         self.tracks = []
         self._dormant = []
         self._pair_distances = {}
+        self._pair_cofed = {}
+        self._dup_takeover_hist = {}
         self._motion_blob_cells = {}
         self._merge_swap_cooldown = {}
         self.frame_count = 0
@@ -3002,6 +3040,11 @@ class DancerTracker:
         # frames are the same dancer — absorb the younger one.
         self._merge_duplicate_tracks()
 
+        # ---- Takeover duplicate merge (Phase 2 ②) ----
+        # A track that lost its dancer to another track keeps wandering on
+        # bridge/ghost feeds; absorb it via the co-fed-history discriminator.
+        self._merge_takeover_duplicates()
+
     def _effective_max_age_for_track(self, track: DancerTrack) -> tuple[int, bool]:
         """Return effective expiry age and edge-exit classification for a track."""
         last_x = float(track.get_last_known_position()[0])
@@ -3358,3 +3401,113 @@ class DancerTracker:
         if absorbed:
             self.tracks = [t for t in self.tracks
                            if t.track_id not in absorbed]
+
+    def _merge_takeover_duplicates(self):
+        """Absorb a duplicate track that lost its dancer to another track.
+
+        The corpus-measured duplicate pressure (ROADMAP §4.2 Phase 2 ②,
+        replay evidence in tmp_analysis/phase2/) is not the co-located case
+        ``_merge_duplicate_tracks`` handles: duo/textured scenes carry 3–6
+        long-lived established tracks per 2 dancers, scattered 1.3–5×h
+        apart.  Each lost its subject at a *takeover* moment — another track
+        won the detection stream — then kept wandering on bridge/ghost
+        feeds.  Because it moves, the frozen-ghost report gate
+        (skeleton-stale + slow, TUNING Phase F) never catches it; that
+        residual is documented there.
+
+        Discriminator (measured on the 12-scenario corpus): a real pair of
+        dancers is seen *simultaneously* by YOLO early and often — both
+        tracks skeleton-fed in the same frame on 22–96 % of their shared
+        frames — while a zombie+real pair shares one detection stream and
+        essentially never co-feeds (~0 %).  So a pair that
+
+        * is currently within TRACKER_DUP_TAKEOVER_PROXIMITY_RATIO × h,
+        * is fed one-sided this frame (exactly one got a real skeleton), and
+        * has co-fed fewer than TRACKER_DUP_COFED_VETO frames in its life
+
+        is one dancer with two tracks.  After TRACKER_DUP_TAKEOVER_HITS such
+        frames within a TRACKER_DUP_TAKEOVER_WINDOW-frame window the lower-
+        hits track is removed and, when it was the side holding the
+        detection stream, the keeper adopts its live kinematic/pose/warmup
+        state so the subject stays reported under the established id
+        (``inherit_subject_from``).  Embracing/crossing real dancers are
+        protected by the co-fed veto, which accrues during normal tracking
+        long before any occlusion episode.  (Replay-measured alternatives,
+        texture-duo scores, lower = better, this design = 0.59: absorbing
+        the *stale* side instead = 0.70 — the established id's continuity
+        is what keeps the subject reported through the takeover; retiring
+        victims to the dormant pool for resurrectability = 0.70 — dormant
+        victims resurrect on stray detections and re-steal the stream.)
+        """
+        established = [t for t in self.tracks if t.is_established]
+        if len(established) >= 2:
+            prox = self._person_height_px * TRACKER_DUP_TAKEOVER_PROXIMITY_RATIO
+            absorbed = set()
+            for i, ta in enumerate(established):
+                if ta.track_id in absorbed:
+                    continue
+                for j in range(i + 1, len(established)):
+                    tb = established[j]
+                    if tb.track_id in absorbed:
+                        continue
+                    key = self._pair_key(ta.track_id, tb.track_id)
+
+                    # Lifetime co-fed accumulation (established pairs only)
+                    fed_a = ta._frames_since_skeleton == 0
+                    fed_b = tb._frames_since_skeleton == 0
+                    if fed_a and fed_b:
+                        self._pair_cofed[key] = self._pair_cofed.get(key, 0) + 1
+
+                    dist = float(np.linalg.norm(
+                        ta.get_centroid() - tb.get_centroid()))
+                    qualifying = (
+                        dist < prox
+                        and fed_a != fed_b
+                        and self._pair_cofed.get(key, 0) < TRACKER_DUP_COFED_VETO)
+
+                    hist = self._dup_takeover_hist.get(key)
+                    if hist is None:
+                        hist = deque(maxlen=TRACKER_DUP_TAKEOVER_WINDOW)
+                        self._dup_takeover_hist[key] = hist
+                    hist.append(1 if qualifying else 0)
+
+                    if qualifying and sum(hist) >= TRACKER_DUP_TAKEOVER_HITS:
+                        # Keep the longer-lived id (identity continuity);
+                        # when the absorbed track is the one currently
+                        # holding the detection stream, the keeper adopts
+                        # its live state so the dancer stays reported under
+                        # the established id.
+                        victim, keeper = ((ta, tb) if ta.hits < tb.hits
+                                          else (tb, ta))
+                        if victim._frames_since_skeleton == 0:
+                            keeper.inherit_subject_from(victim)
+                        absorbed.add(victim.track_id)
+                        hist.clear()
+                        self.logger.log("TRACK_MERGED", {
+                            "mode": "takeover",
+                            "victim_id": victim.track_id,
+                            "keeper_id": keeper.track_id,
+                            "victim_hits": victim.hits,
+                            "keeper_hits": keeper.hits,
+                            "distance": round(dist, 1),
+                            "pair_cofed": self._pair_cofed.get(key, 0),
+                        })
+                        if TRACKER_DEBUG:
+                            print(f"[TRACKER] Takeover merge: #{victim.track_id} "
+                                  f"(hits={victim.hits}) absorbed by "
+                                  f"#{keeper.track_id} (hits={keeper.hits}), "
+                                  f"dist={dist:.0f}")
+
+            if absorbed:
+                self.tracks = [t for t in self.tracks
+                               if t.track_id not in absorbed]
+
+        # Prune pair memory once both ids are fully gone (active + dormant),
+        # mirroring the _pair_distances policy.
+        active_ids = {t.track_id for t in self.tracks}
+        dormant_ids = {s.track_id for s in self._dormant}
+        known = active_ids | dormant_ids
+        for d in (self._pair_cofed, self._dup_takeover_hist):
+            stale = [k for k in d if k[0] not in known and k[1] not in known]
+            for k in stale:
+                del d[k]

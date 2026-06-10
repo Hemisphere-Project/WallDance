@@ -212,6 +212,22 @@ SHADOW_TRACK_FRAMES = 12                # Consecutive shadow-correlated frames
 TRACKER_DUPLICATE_MERGE_PROXIMITY = 0.3  # Centroids within person_height × this
 TRACKER_DUPLICATE_MERGE_FRAMES = 8       # Consecutive close frames to trigger merge
 
+# Takeover duplicate merge (ROADMAP §4.2 Phase 2 ②).  Corpus-measured: the
+# duplicate pressure on duo/textured scenes is NOT two tracks sitting on one
+# spot (the case above) — it is a track that loses its dancer to another
+# track at a "takeover" moment, then wanders on bridge/ghost feeds.  It keeps
+# moving, so the frozen-ghost report gate (skeleton-stale + slow) never
+# catches it.  Discriminator: a real pair of dancers is seen simultaneously
+# by YOLO early and often (both tracks skeleton-fed the same frame: 22–96 %
+# of frames on real pairs vs ~0 % on zombie pairs across the 12-scenario
+# corpus), so a pair that has essentially never co-fed, currently close, fed
+# one-sided, is one dancer with two tracks.
+TRACKER_DUP_TAKEOVER_PROXIMITY_RATIO = 0.6  # Centroids within person_height × this
+TRACKER_DUP_TAKEOVER_HITS = 4            # Qualifying frames within the window …
+TRACKER_DUP_TAKEOVER_WINDOW = 8          # … of this many pair-coexistence frames
+TRACKER_DUP_COFED_VETO = 3               # Pair co-fed frames ≥ this ⇒ two real
+                                         # dancers — never takeover-merge them
+
 # Production refinements — identity lock, close-dancing resilience
 # Once a track is established (hits >= TRACKER_ESTABLISHED_FRAMES), it
 # gets special treatment to preserve identity during close dancing.
