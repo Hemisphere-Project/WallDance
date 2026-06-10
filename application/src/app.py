@@ -1080,8 +1080,7 @@ class WallDanceApp:
         self._profiles = {n: dict(b) for n, b in structured["profiles"].items()}
         self._active_profile = structured.get("active_profile", config_schema.DEFAULT_PROFILE)
         flat, cfg_warnings = config_schema.validate_flat(config_schema.flatten(structured))
-        for w in cfg_warnings:
-            print(f"[Config] {w}")
+        self._report_config_warnings(cfg_warnings)
         config = flat
 
         # 5. Extract model info before applying config
@@ -2506,14 +2505,23 @@ class WallDanceApp:
             self.gui.show_save_indicator("Safe defaults saved!")
         print(f"Safe defaults saved: {filepath}")
 
+    def _report_config_warnings(self, cfg_warnings):
+        """Console detail + one summary toast for config-load validation warnings."""
+        for w in cfg_warnings:
+            print(f"[Config] {w}")
+        if cfg_warnings:
+            self.gui and self.gui.show_toast(
+                f"Config: {len(cfg_warnings)} value(s) adjusted on load - see console",
+                duration=4.0, color=(255, 200, 100),
+            )
+
     def _cb_load_safe_defaults(self):
         """Load safe defaults for this project."""
         raw = self.config_store.load_safe_defaults(self._current_project)
         if raw:
             structured = config_schema.migrate(raw)
             config, cfg_warnings = config_schema.validate_flat(config_schema.flatten(structured))
-            for w in cfg_warnings:
-                print(f"[Config] {w}")
+            self._report_config_warnings(cfg_warnings)
             # Check if model or imgsz would change
             model_changes = config.get("model", self.current_model_name) != self.current_model_name
             imgsz_changes = config.get("yolo_imgsz", self.settings.imgsz) != self.settings.imgsz

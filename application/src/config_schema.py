@@ -172,4 +172,69 @@ def validate_flat(flat: Dict) -> Tuple[Dict, List[str]]:
         except (TypeError, ValueError):
             warnings.append(f"yolo_imgsz: invalid value {out['yolo_imgsz']!r} dropped")
             out.pop("yolo_imgsz")
+
+    _validate_cross_field(out, warnings)
     return out, warnings
+
+
+def _validate_cross_field(out: Dict, warnings: List[str]) -> None:
+    """Structural checks the apply path depends on (it must never crash).
+
+    Mutates `out` in place; appends to `warnings`.
+    """
+    # Height ratios: _RANGES already pins min <= 1.0 <= max, but keep the
+    # ordering invariant explicit in case the ranges ever loosen.
+    lo, hi = out.get("person_height_min_ratio"), out.get("person_height_max_ratio")
+    if isinstance(lo, (int, float)) and isinstance(hi, (int, float)) and lo > hi:
+        out["person_height_min_ratio"], out["person_height_max_ratio"] = hi, lo
+        warnings.append(
+            f"person_height_min_ratio {lo} > person_height_max_ratio {hi}: swapped")
+
+    # ROI: the apply path int()-coerces these raw; drop anything that would
+    # crash it or describe an impossible rectangle (apply falls back to the
+    # in-app current/default ROI for missing keys).
+    for key in ("roi_x", "roi_y", "roi_w", "roi_h", "roi_source_w", "roi_source_h"):
+        if key not in out or out[key] is None:
+            continue
+        try:
+            val = int(float(out[key]))
+        except (TypeError, ValueError):
+            warnings.append(f"{key}: invalid value {out[key]!r} dropped")
+            out.pop(key)
+            continue
+        minimum = 0 if key in ("roi_x", "roi_y") else 1
+        if val < minimum:
+            warnings.append(f"{key}: {out[key]!r} dropped (must be >= {minimum})")
+            out.pop(key)
+        else:
+            out[key] = val
+
+    # Exclusion mask: set_cells() indexes grid[0]/grid[1] and each cell's
+    # [0]/[1]; a malformed shape crashes the project load. Drop the pair
+    # whole rather than half-repairing it.
+    def _mask_ok():
+        grid, cells = out.get("exclusion_grid"), out.get("exclusion_cells")
+        if grid is not None:
+            if not isinstance(grid, (list, tuple)) or len(grid) != 2:
+                return False
+            try:
+                if int(grid[0]) < 1 or int(grid[1]) < 1:
+                    return False
+            except (TypeError, ValueError):
+                return False
+        if cells is not None:
+            if not isinstance(cells, (list, tuple)):
+                return False
+            for c in cells:
+                if not isinstance(c, (list, tuple)) or len(c) != 2:
+                    return False
+                try:
+                    int(c[0]), int(c[1])
+                except (TypeError, ValueError):
+                    return False
+        return True
+
+    if not _mask_ok():
+        warnings.append("exclusion_grid/exclusion_cells: malformed mask dropped")
+        out.pop("exclusion_grid", None)
+        out.pop("exclusion_cells", None)

@@ -163,3 +163,69 @@ def test_sensitivity_var_anchor_profile_scoped_and_clamped():
     out, warnings = cs.validate_flat({"sensitivity_var_anchor": 1.0})
     assert out["sensitivity_var_anchor"] == 4.0
     assert warnings
+
+
+# ------------------------------------------------- cross-field / structural
+
+
+def test_validate_swaps_inverted_height_ratios():
+    # _RANGES pins min <= 1.0 <= max today; the explicit ordering check is
+    # defense-in-depth should those ranges ever loosen.
+    out, warnings = cs.validate_flat(
+        {"person_height_min_ratio": 0.9, "person_height_max_ratio": 1.0})
+    assert out["person_height_min_ratio"] <= out["person_height_max_ratio"]
+    assert warnings == []  # in-range, ordered: silent
+
+
+def test_validate_roi_drops_non_numeric():
+    # The apply path int()-coerces ROI keys raw; junk must not crash the load.
+    out, warnings = cs.validate_flat({"roi_x": "abc", "roi_y": None, "roi_w": 100})
+    assert "roi_x" not in out
+    assert out["roi_w"] == 100
+    assert len(warnings) == 1  # None is treated as absent, only roi_x warns
+
+
+def test_validate_roi_drops_impossible_rect():
+    out, warnings = cs.validate_flat({"roi_x": -5, "roi_w": 0, "roi_h": 240})
+    assert "roi_x" not in out
+    assert "roi_w" not in out
+    assert out["roi_h"] == 240
+    assert len(warnings) == 2
+
+
+def test_validate_roi_coerces_numeric_strings():
+    out, warnings = cs.validate_flat({"roi_x": "10", "roi_w": 640.0})
+    assert out["roi_x"] == 10
+    assert out["roi_w"] == 640
+    assert warnings == []
+
+
+def test_validate_exclusion_mask_well_formed_silent():
+    out, warnings = cs.validate_flat(
+        {"exclusion_grid": [16, 10], "exclusion_cells": [[3, 4], [0, 0]]})
+    assert out["exclusion_grid"] == [16, 10]
+    assert warnings == []
+
+
+def test_validate_exclusion_mask_malformed_dropped_whole():
+    # set_cells() indexes grid[0]/grid[1] and each cell pair - malformed
+    # shapes crashed the project load before validation covered them.
+    for bad in (
+        {"exclusion_grid": "16x10", "exclusion_cells": [[3, 4]]},
+        {"exclusion_grid": [16], "exclusion_cells": [[3, 4]]},
+        {"exclusion_grid": [16, 0], "exclusion_cells": [[3, 4]]},
+        {"exclusion_grid": [16, 10], "exclusion_cells": [[3, 4], [5]]},
+        {"exclusion_grid": [16, 10], "exclusion_cells": [["a", "b"]]},
+        {"exclusion_grid": [16, 10], "exclusion_cells": {"3": 4}},
+    ):
+        out, warnings = cs.validate_flat(dict(bad))
+        assert "exclusion_grid" not in out, bad
+        assert "exclusion_cells" not in out, bad
+        assert len(warnings) == 1, bad
+
+
+def test_validate_exclusion_cells_alone_ok():
+    # Cells without a grid: the apply path falls back to the default grid.
+    out, warnings = cs.validate_flat({"exclusion_cells": [[1, 2]]})
+    assert out["exclusion_cells"] == [[1, 2]]
+    assert warnings == []
