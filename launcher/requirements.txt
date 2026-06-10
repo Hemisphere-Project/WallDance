@@ -1,5 +1,5 @@
 customtkinter
-dulwich
+dulwich>=0.22
 pyinstaller
 winshell
 pypiwin32

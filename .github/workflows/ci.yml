@@ -3,6 +3,7 @@ name: CI
 # Run the unit tests on every push to main and on every pull request.
 # The suite is import-light (cv2 + numpy only — no torch/IDS/dearpygui), so CI
 # installs a minimal dependency set rather than the full CUDA/IDS stack.
+# dulwich (pure-python) covers the launcher git-update safety tests.
 on:
   push:
     branches: [main]
@@ -29,7 +30,7 @@ jobs:
           cache: pip
 
       - name: Install test dependencies
-        run: python -m pip install --upgrade pip numpy opencv-python-headless pytest
+        run: python -m pip install --upgrade pip numpy opencv-python-headless pytest dulwich
 
       - name: Run tests
         run: python -m pytest application/tests -q

@@ -4,7 +4,7 @@ import re
 import os
 import sys
 from tkinter import messagebox
-from git_manager import GitManager
+from git_manager import GitManager, UpdateStatus, DirtyWorkingTreeError
 from process_runner import ProcessRunner
 
 # Patterns to detect in install.bat output (only actionable ones)
@@ -150,25 +150,53 @@ class LauncherGUI(ctk.CTk):
                 self.update_status("Checking for updates...")
                 self.append_log("Checking for updates...\n")
                 
-                has_updates = False
+                status = UpdateStatus.UNKNOWN
                 try:
-                    has_updates = self.git_manager.check_updates()
+                    status = self.git_manager.check_updates()
                 except Exception as e:
                     self.append_log(f"Failed to check updates (offline?): {e}\n")
 
-                if has_updates:
+                if status in (UpdateStatus.BEHIND, UpdateStatus.DIVERGED):
                     self.append_log("Update available.\n")
-                    # Ask user in main thread safely
-                    update_choice = self.ask_update_sync()
-                    if update_choice:
-                        self.update_status("Updating repository...")
-                        self.append_log("Syncing to latest version...\n")
-                        try:
-                            self.needs_install = self.git_manager.update()
-                            self.append_log("Update complete.\n")
-                        except Exception as e:
-                            self.append_log(f"Failed to update: {e}\n")
-                            self.show_error_sync("Update Failed", f"Failed to update: {e}")
+                    # Refuse before prompting if tracked files were edited locally
+                    # (a force-sync would overwrite them). Fail safe: if the dirty
+                    # check itself errors, treat the tree as dirty.
+                    dirty = None
+                    try:
+                        dirty = self.git_manager.dirty_files()
+                    except Exception as e:
+                        self.append_log(f"Could not verify local changes: {e}\n")
+                    if dirty is None or dirty:
+                        self._warn_update_skipped_dirty(dirty)
+                    else:
+                        if status is UpdateStatus.BEHIND:
+                            # Ask user in main thread safely
+                            update_choice = self.ask_update_sync()
+                        else:  # DIVERGED: updating discards local commits
+                            update_choice = self.ask_choice_sync(
+                                "Local Version Differs",
+                                "The server version and this machine's version have both "
+                                "changed. Updating will PERMANENTLY DISCARD the local "
+                                "commits and sync to the server version.\n\n"
+                                "Untracked working data (models/, projects/, recordings) "
+                                "is not affected.\n\nDiscard local commits and update?",
+                                yes_text="Discard and Update",
+                                no_text="Keep Local Version",
+                            )
+                        if update_choice:
+                            self.update_status("Updating repository...")
+                            self.append_log("Syncing to latest version...\n")
+                            try:
+                                self.needs_install = self.git_manager.update()
+                                self.append_log("Update complete.\n")
+                            except DirtyWorkingTreeError as e:
+                                # Raced edit between the check and the sync
+                                self._warn_update_skipped_dirty(e.files)
+                            except Exception as e:
+                                self.append_log(f"Failed to update: {e}\n")
+                                self.show_error_sync("Update Failed", f"Failed to update: {e}")
+                elif status is UpdateStatus.AHEAD:
+                    self.append_log("Local version is ahead of the server - skipping update.\n")
                 else:
                     self.append_log("No updates available.\n")
 
@@ -326,6 +354,29 @@ class LauncherGUI(ctk.CTk):
         self.process_runner.run_bat(bat_file, on_output, on_done)
         event.wait()
         return return_code[0]
+
+    def _warn_update_skipped_dirty(self, dirty):
+        """Tell the user the update was refused because tracked files were edited."""
+        if dirty:
+            self.append_log("Update skipped: local changes to tracked files:\n")
+            for f in dirty:
+                self.append_log(f"  {f}\n")
+            shown = "\n".join(dirty[:10])
+            if len(dirty) > 10:
+                shown += f"\n... and {len(dirty) - 10} more"
+        else:
+            self.append_log("Update skipped: could not verify local changes.\n")
+            shown = "(could not list the files - see the log)"
+        self.show_warning_sync(
+            "Update Skipped - Local Changes",
+            "An update is available but was NOT applied, because these files "
+            "have local changes that an update would overwrite:\n\n"
+            f"{shown}\n\n"
+            "WallDance will start with the current version.\n\n"
+            "To update later: back up your edits, restore the original files, "
+            "then relaunch. Untracked working data (models/, projects/, "
+            "recordings) is never affected by updates.",
+        )
 
     def ask_update_sync(self):
         result = [False]
