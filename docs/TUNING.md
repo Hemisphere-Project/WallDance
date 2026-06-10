@@ -1,9 +1,13 @@
 # WallDance — Autonomous Detection-Tuning Capability (plan)
 
 **Date:** 2026-06-09
-**Status:** Phases **A + B + C + D + E DONE** (see "## Progress" below). F still to
-do. Plan / handoff doc — written so a *fresh* Claude session can execute it
-without the originating conversation's context.
+**Status:** **ALL phases A–F DONE** (see "## Progress" below). The end-to-end
+loop — trustworthy objective → fast cache → search → visual diagnosis → knob
+analysis → algorithm fix → re-measure — is built and validated on
+residence1-solo. The main thing left is **broader labelled footage** (§2 corpus
+gap), which gates how far the conclusions generalise. Plan / handoff doc —
+written so a *fresh* Claude session can execute it without the originating
+conversation's context.
 **Branch:** this builds on `p3-motion-simplification` (the P3 motion-subsystem
 rewrite). Check that branch out first — `motion_model.py`, the scored gate, the
 replay harness, and the goldens all live there, not on `main`.
@@ -118,12 +122,32 @@ report. The user will point it at various recorded situations.
   **CALIBRATE-derived** = height/ratios + var (done) + recommend var↔scale
   co-tuning; **FIXED** = the inert knobs (hide from user, keep as constants).
 
-**Next:** F (robustness payoff): fix the **duplicate/stale-track ghost** D exposed
-(cold-blob seeding spawns a 2nd track that freezes on empty wall instead of
-dying), then re-measure that the C-found `var=8/scale=0.7` win stops trading
-drops for ghosts. The corpus gap (§2: dropout/multi-dancer/`yolo_first`/small-far)
-is still the main thing limiting how far C/E/F generalise — broader labelled
-footage is the highest-leverage input.
+**Phase F (robustness payoff) — DONE.**
+- Fixed the failure mode D exposed: the duplicate/stale-track **frozen ghost**.
+  Diagnosis (reading the actual track objects, not just counts): the ghost is
+  *not* skeleton-less — it had the dancer earlier (hits~50), then lost it and
+  **froze on the wall**, sustained by recurring cold-blob matches. Discriminator
+  = skeleton-stale **AND** stationary (a gap-bridged dancer moves; a still dancer
+  gets skeletons).
+- Fix (`tracker.py`, **report boundary only** → golden metrics untouched):
+  `DancerTrack._frames_since_skeleton` (predict++ / update-resets-on-pose);
+  `_collect_confirmed_tracks` suppresses skeleton-stale + slow tracks
+  (`TRACKER_GHOST_SKELETON_AGE=3`, `TRACKER_GHOST_FROZEN_SPEED_RATIO=0.03`,
+  master `TRACKER_REPORT_REQUIRES_SKELETON`). Unit-tested
+  (`tests/test_tracker_ghost_gate.py`).
+- **Re-measured:** slot3 0.0→0.0, slot4 baseline 0.211→0.211 (gate inert on tame
+  configs — golden still passes), slot4 `var8/scale0.7` 0.126→**0.111** (ghost
+  frames 15→6; ~4 ghost-*masked* "recoveries" now honestly counted as drops,
+  6→10). Overlay confirms the frozen-wall ghost is gone.
+- **Honest residual:** a duplicate still *moving* toward its freeze point (~6
+  frames) is spared — count+speed can't separate it from a real moving dancer;
+  needs spatial GT (A3) or duplicate-track merging.
+
+**The loop is complete on this footage.** Highest-leverage next input = **broader
+labelled footage** (§2: YOLO-dropout, multi-dancer, `yolo_first`, small/far) —
+without it, C/E/F conclusions (and the FIXED-knob verdicts in `docs/KNOBS.md`)
+are slot4-specific. Then: productise the known-N calibration (A+C in the Go-Live
+UI), and consider duplicate-track merging for the moving-duplicate residual.
 
 ## 1. What already exists (the P3 foundation — reuse, don't rebuild)
 
