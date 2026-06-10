@@ -25,14 +25,12 @@ Core application is built and in production use — inventory, not active work (
 
 **Goal:** Reliable long-run unattended operation. *The main open operational cluster — **elevated to step ⑤ of the ROADMAP §4.1 sequence** (2026-06-10 review: a USB3 stall at minute 40 is worse than any ghost). Detail lives here.*
 
-- ⬜ Pre-Go-Live **"show readiness" check** — camera FPS, TRT active vs fallback, OSC target reachable, calibration age + active profile, recording disk space (also closes part of Phase 8)
-
-- 🟡 Stall detection + diagnostics logging (detection only, no auto-recovery)
+- ✅ Pre-Go-Live **"show readiness" check** (2026-06-11) — `[Readiness]` console block + toast on STANDBY→RUN: camera FPS, TRT active vs fallback, OSC connected-UDP probe, calibration age + active profile, recording disk space, GPU temp. Best-effort, never blocks RUN ([ops_monitor.py](../application/src/ops_monitor.py) + `_run_readiness_check` in app.py; also closes part of Phase 8)
 - 🟡 Runtime diagnostics: budget breakdowns every 5s, spike logging, IDS counters
-- 🟡 Auto-reconnect camera on disconnect (reconnect *state* + status UI exist; recovery logic incomplete)
-- ⬜ Watchdog auto-recovery (restart camera, alert user)
-- ⬜ FPS drop / no-detection / GPU temp alerts
-- ⬜ Long-run stability test (4+ hours)
+- ✅ Auto-reconnect camera on disconnect (2026-06-11) — the recovery gap is closed: a capture/acquisition error while the camera is still marked open (e.g. the IDS acquisition thread dying after 100 consecutive errors) used to idle the loop forever; it now funnels into `_mark_camera_unavailable` + the existing retry/backoff machinery. *Rig USB-pull validation pending*
+- ✅ Watchdog + alert user (2026-06-11) — `LoopWatchdog` daemon reports main-loop hangs (faulthandler stack dump, busy-suppressed during model/TRT loads); prolonged camera-down escalates to a re-ringing `[Alert]` toast after `OPS_CAMERA_DOWN_ALERT_S`. Recovery actions stay in the main loop; the watchdog only observes
+- ✅ FPS drop / no-detection / GPU temp alerts (2026-06-11) — `HealthMonitor` 1 Hz tick: rolling-baseline FPS drop, zero-tracked-in-RUN, GPU temp, each with sustain windows + cooldowns; alerts go to console `[Alert]` + toast + `OPS_ALERT` JSONL event. `OPS_*` constants in config.py
+- 🟡 Long-run stability test (4+ hours) — harness shipped ([tests/soak.py](../application/tests/soak.py): chunked looped playback, progress.jsonl, stall sentinel, RSS/CUDA-slope SUMMARY.md verdict; smoke-tested). *The actual 4 h run is pending*
 
 ---
 
