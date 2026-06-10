@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Deque, Dict, List, Optional
 
 import cv2
@@ -73,6 +74,12 @@ from config import (
     YOLO_IMGSZ,
     YOLO_MODEL,
     TrackingMode,
+    OPS_READINESS_ENABLED,
+    OPS_OSC_PROBE_TIMEOUT_S,
+    OPS_MIN_SHOW_FPS,
+    OPS_CALIB_AGE_WARN_H,
+    OPS_DISK_WARN_FREE_GB,
+    OPS_DISK_FAIL_FREE_GB,
 )
 import config_schema
 from config_store import ConfigStore, format_config_display, sanitize_project_name
@@ -80,7 +87,18 @@ from model_manager import ModelManager, ModelProgress, ModelStatus
 from osc_output import OSCSender
 from pipeline import FrameProcessor, ProcessingSettings, ScaledTrack
 from visualization import draw_dancer
-from gui import WallDanceGUI, get_display_scale
+from gui import WallDanceGUI, get_display_scale, get_gpu_stats
+from ops_monitor import (
+    HealthMonitor,
+    LoopWatchdog,
+    ReadinessReport,
+    check_calibration,
+    check_camera,
+    check_disk,
+    check_gpu_temp,
+    check_osc,
+    check_tensorrt,
+)
 from gui_builder import SystemState
 from enhancer import ImageEnhancer
 from tracker import DancerTracker
@@ -324,6 +342,11 @@ class WallDanceApp:
         self._ids_disconnect_timeout_s = 2.5
         self._last_camera_open_time = 0.0
 
+        # Ops cluster (TODO Phase 7): health alerts + main-loop watchdog
+        self._health = HealthMonitor(gpu_stats_fn=get_gpu_stats)
+        self._watchdog = LoopWatchdog()
+        self._last_ops_tick = 0.0
+
     # ------------------------------------------------------------------
     # OSC
     # ------------------------------------------------------------------
@@ -424,6 +447,7 @@ class WallDanceApp:
     def _get_gui_callbacks(self) -> Dict:
         return {
             "show_qr": self._show_qr,
+            "on_system_state_change": self._cb_system_state_change,
             "on_enhance_toggle": self._cb_enhance_toggle,
             "on_enhance_lite_toggle": self._cb_enhance_lite_toggle,
             "on_enhance_force_toggle": self._cb_enhance_force_toggle,
@@ -1038,11 +1062,20 @@ class WallDanceApp:
                 self.gui.set_current_config(current_display)
 
     def _execute_project_switch(self, config_filepath: str):
+        """Project switch can block the loop for minutes (model/TRT load) -
+        suppress the loop watchdog for the duration."""
+        self._watchdog.push_busy("project_switch")
+        try:
+            return self._execute_project_switch_impl(config_filepath)
+        finally:
+            self._watchdog.pop_busy()
+
+    def _execute_project_switch_impl(self, config_filepath: str):
         """Execute a full project switch with proper cleanup and initialization.
-        
+
         This is the unified path for both startup and runtime project switching.
         It ensures everything is properly closed and reinitialized.
-        
+
         Args:
             config_filepath: Path to the config file to load
         """
@@ -3262,6 +3295,108 @@ class WallDanceApp:
             self._last_gpu_stats_time = t
             self.gui.update_gpu_stats()
 
+    def _ops_heartbeat(self):
+        """Watchdog beat + 1 Hz health tick.
+
+        Must run on EVERY main-loop iteration - including the camera-down /
+        no-frame continue paths, which never reach the FPS block at the loop
+        tail. That guarantee is what lets the camera-down alert keep ringing
+        during an outage.
+        """
+        self._watchdog.beat()
+        now = time.time()
+        if now - self._last_ops_tick < 1.0:
+            return
+        self._last_ops_tick = now
+        in_run = bool(self.gui and self.gui.get_system_state() == SystemState.RUN)
+        try:
+            alerts = self._health.tick(
+                now,
+                fps=self.fps,
+                n_tracked=len(self.last_tracked),
+                in_run=in_run,
+                model_ready=self._model_loaded and not self._model_loading,
+                camera_open=self.camera.state.is_open,
+                camera_reconnecting=self._camera_reconnecting,
+                playback_active=self.recorder.is_playing,
+            )
+        except Exception as e:  # noqa: BLE001 - monitoring must never kill the loop
+            print(f"[Alert] health tick failed: {e}")
+            return
+        for alert in alerts:
+            self._emit_ops_alert(alert)
+
+    def _emit_ops_alert(self, alert):
+        print(f"[Alert] {alert.message}")
+        if self.gui:
+            self.gui.show_toast(f"/!\\ {alert.message}", duration=8.0,
+                                color=(255, 80, 80))
+        try:
+            self.tracker.logger.log("OPS_ALERT", {"kind": alert.kind, **alert.data})
+        except Exception:
+            pass
+
+    def _cb_system_state_change(self, state, old_state):
+        """GUI system-state transitions; readiness check on entering RUN."""
+        if (OPS_READINESS_ENABLED and state == SystemState.RUN
+                and old_state != SystemState.RUN):
+            threading.Thread(target=self._run_readiness_check,
+                             name="OpsReadiness", daemon=True).start()
+
+    def _run_readiness_check(self):
+        """Best-effort Go-Live readiness line (~0.3 s, off the main loop).
+
+        Prints a [Readiness] block + one toast. NEVER prevents RUN.
+        """
+        try:
+            results = []
+            ids_frames = ids_dropped = 0
+            try:
+                if self._use_unified_camera and self.unified_camera is not None:
+                    ids_frames, ids_dropped = self.unified_camera.get_ids_counters()
+            except Exception:
+                pass
+            results.append(check_camera(
+                is_open=self.camera.state.is_open,
+                reconnecting=self._camera_reconnecting,
+                source=str(self.camera.state.source),
+                fps=self.fps, min_fps=OPS_MIN_SHOW_FPS,
+                ids_frames=ids_frames, ids_dropped=ids_dropped))
+            results.append(check_tensorrt(
+                trt_requested=bool(self._trt_requested),
+                trt_active=self.model_manager.is_using_tensorrt(),
+                fallback_reason=self.model_manager.get_tensorrt_fallback_reason(),
+                gpu_fallback_reason=self.processor.gpu_fallback_reason or ""))
+            results.append(check_osc(
+                enabled=self.osc_enabled, ip=self.osc_ip, port=self.osc_port,
+                timeout_s=OPS_OSC_PROBE_TIMEOUT_S))
+            saved_at = None
+            try:
+                latest = self.config_store.latest_for_project(self._current_project)
+                if latest:
+                    saved_at = datetime.fromtimestamp(
+                        os.path.getmtime(latest)).isoformat()
+            except Exception:
+                pass
+            results.append(check_calibration(
+                saved_at_iso=saved_at, active_profile=self._active_profile,
+                warn_age_h=OPS_CALIB_AGE_WARN_H))
+            results.append(check_disk(
+                recordings_dir=self.recorder.recordings_dir,
+                warn_free_gb=OPS_DISK_WARN_FREE_GB,
+                fail_free_gb=OPS_DISK_FAIL_FREE_GB))
+            results.append(check_gpu_temp(gpu_stats=get_gpu_stats(),
+                                          warn_c=int(self._health.gpu_temp_c)))
+            report = ReadinessReport(results)
+            print(report.console_block(
+                f"(project={self._current_project}, "
+                f"profile={self._active_profile}) "))
+            if self.gui:
+                msg, color = report.toast_summary()
+                self.gui.show_toast(msg, duration=6.0, color=color)
+        except Exception as e:  # noqa: BLE001 - never disturb Go-Live
+            print(f"[Readiness] check failed: {e}")
+
     def _log_timing_spikes_if_any(self, timing: Optional[Dict[str, float]]):
         """Diagnosis-only: print timing spikes with per-stage breakdown (throttled)."""
         if not timing:
@@ -3447,6 +3582,15 @@ class WallDanceApp:
     # Model Loading with Progress
     # ------------------------------------------------------------------
     def _load_model_with_progress(self, model_name: str, force_pt: bool = False) -> bool:
+        """Model loads/TRT builds block the loop for minutes - suppress the
+        loop watchdog for the duration."""
+        self._watchdog.push_busy("model_load")
+        try:
+            return self._load_model_with_progress_impl(model_name, force_pt)
+        finally:
+            self._watchdog.pop_busy()
+
+    def _load_model_with_progress_impl(self, model_name: str, force_pt: bool = False) -> bool:
         """
         Load model with GUI progress modal.
         Blocks until complete.
@@ -3809,8 +3953,10 @@ class WallDanceApp:
 
         print("Starting main loop...")
         self.running = True
+        self._watchdog.start()
         rec_ui_update_counter = 0
         while self.running and dpg.is_dearpygui_running():
+            self._ops_heartbeat()
             # Handle pending project switch (deferred from callback)
             # This is the unified path for project/config switching
             if self._pending_project_switch is not None:
@@ -3857,6 +4003,7 @@ class WallDanceApp:
                 
                 # Wait for user to click a button
                 while user_choice["build_trt"] is None:
+                    self._watchdog.beat()  # modal wait is not a hang
                     self.gui.update_gpu_stats()
                     dpg.render_dearpygui_frame()
                     time.sleep(0.016)
@@ -3982,6 +4129,18 @@ class WallDanceApp:
                         camera_ready = False
                 
                 if not camera_ready:
+                    if self.camera.state.is_open:
+                        # Capture/acquisition error while the camera is still
+                        # marked open (e.g. the IDS acquisition thread died
+                        # after 100 consecutive errors). The retry pump only
+                        # runs when is_open is False, so without this the loop
+                        # idles here forever with a green badge. Funnel into
+                        # the existing reconnect state machine.
+                        print("[Camera] Capture error while marked open - scheduling reconnect")
+                        self._mark_camera_unavailable(self.camera.state.source,
+                                                      close_active=True)
+                        self._schedule_camera_retry(delay=0.5)
+                        continue
                     if self.gui:
                         self.gui.render_frame()
                         # Still update GPU stats periodically when waiting for camera
@@ -4415,6 +4574,7 @@ class WallDanceApp:
                 if 'camera_read_ms' not in self.timing:
                     self.timing["camera_read"] = camera_read_ms if 'camera_read_ms' in dir() else 0.0
 
+        self._watchdog.stop()
         if self._web_monitor is not None:
             self._web_monitor.stop()
             self._web_monitor = None

@@ -761,3 +761,24 @@ DANCER_COLORS = [
     (190, 130, 60),    # 14  Teal
     (130, 80, 230),    # 15  Salmon
 ]
+
+# =============================================================================
+# OPS CLUSTER - readiness check, health alerts, watchdog (TODO Phase 7)
+# =============================================================================
+OPS_READINESS_ENABLED = True        # Run the show-readiness check on STANDBY->RUN
+OPS_OSC_PROBE_TIMEOUT_S = 0.25      # Connected-UDP probe wait (best effort)
+OPS_MIN_SHOW_FPS = 15.0             # Readiness warns if loop FPS is below this
+OPS_CALIB_AGE_WARN_H = 24.0         # Warn if the newest project save is older
+OPS_DISK_WARN_FREE_GB = 60.0        # ~1 h of MJPG recording (measured ~55 GB/h)
+OPS_DISK_FAIL_FREE_GB = 10.0        # ~10 min of recording headroom
+OPS_FPS_BASELINE_WINDOW_S = 60.0    # Rolling-median FPS baseline window (RUN only)
+OPS_FPS_DROP_FRACTION = 0.5         # Alert when fps < fraction * baseline ...
+OPS_FPS_DROP_SUSTAIN_S = 10.0       # ... sustained this long
+OPS_NO_DETECTION_ALERT_S = 30.0     # Zero tracked dancers in RUN (live, model ready)
+OPS_CAMERA_DOWN_ALERT_S = 15.0      # Reconnecting longer than this = loud alert
+OPS_GPU_TEMP_ALERT_C = 85           # Matches the GUI badge red threshold
+OPS_GPU_TEMP_SUSTAIN_S = 30.0
+OPS_GPU_POLL_S = 5.0                # GPU stats poll cadence inside the health tick
+OPS_ALERT_COOLDOWN_S = 120.0        # Per-alert-kind re-fire interval
+OPS_WATCHDOG_HANG_S = 10.0          # Heartbeat age that counts as a main-loop hang
+OPS_WATCHDOG_POLL_S = 1.0

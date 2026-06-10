@@ -121,6 +121,11 @@ class VideoRecorder:
     def playback_path(self) -> Optional[str]:
         """Return the currently playing recording path, if any."""
         return self._playback_path
+
+    @property
+    def recordings_dir(self) -> str:
+        """Public recordings path for the current project (ops readiness disk check)."""
+        return self._get_recordings_dir()
     
     def set_project(self, project_name: str):
         """Set the current project (creates recordings folder if needed)."""
