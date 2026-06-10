@@ -1,9 +1,9 @@
 # WallDance — Autonomous Detection-Tuning Capability (plan)
 
 **Date:** 2026-06-09
-**Status:** Phases **A + B DONE** (2026-06-09; see "## Progress" below). C–F still
-to do. Plan / handoff doc — written so a *fresh* Claude session can execute it
-without the originating conversation's context.
+**Status:** Phases **A + B + C DONE** (see "## Progress" below). D–F still to do.
+Plan / handoff doc — written so a *fresh* Claude session can execute it without
+the originating conversation's context.
 **Branch:** this builds on `p3-motion-simplification` (the P3 motion-subsystem
 rewrite). Check that branch out first — `motion_model.py`, the scored gate, the
 replay harness, and the goldens all live there, not on `main`.
@@ -64,10 +64,34 @@ report. The user will point it at various recorded situations.
   only tracker params, or further `motion_detector`/`motion_model` vectorisation)
   — not YOLO. Profile lives in the Phase B commit message.
 
-**Next:** C (search harness — `tune.py` over `_track_detections`-tunable params,
-scoring via A on B's cache, multi-scenario). The objective + cache are ready.
-The corpus gap (§2: dropout/multi-dancer/`yolo_first`/small-far) is the main
-thing limiting how far C/E/F generalise.
+**Phase C (search harness) — DONE.**
+- C1: θ_s/θ_m levers wired into the harness `_build_processor` (config keys
+  `crossval_skel_min_kpts/conf`, `crossval_motion_min_ratio`); `replay.py --set
+  KEY=VALUE` for arbitrary overrides (`--var` kept as shorthand).
+- C2: `tests/tune.py` — coordinate-descent (default) / grid / random; eval via
+  B's cache (`reuse_grays` memoises the PNG decode); ranked output; best config
+  written. Each eval resolves the cache for its *merged* config, so post-YOLO
+  levers reuse one cache/scenario and a front-end param (e.g. `confidence`)
+  rebuilds on demand. Search logic unit-tested (`tests/test_tune.py`, no GPU).
+- C3: `scoring.score_multi` mean across scenarios is the objective → can't win by
+  overfitting one scene.
+- **Demonstrated:** coord over both seeds, 25 evals, converged in 1 pass:
+  baseline mean 0.1055 → best **0.0629** (`mog2_var_threshold=8, mog2_scale=0.7`);
+  slot4 0.211→0.126, slot3 stays 0.0 (generalises). Confirmed on the full
+  pipeline. **It's a drops↔ghosts TRADE** (slot4 missed 45→6 but ghosts 0→15):
+  aggressive cold-blob seeding recovers the fast aerial dancer *and* spawns
+  spurious 2nd tracks; equal weights make it a net win. **Don't ship blind** —
+  (a) confirm the drop/ghost weighting (`tune.py --weights`), (b) Phase-D overlay
+  to verify the recovered/ghost frames are the real dancer, (c) `mog2_var` is
+  normally P2-calibration-driven and `mog2_scale=0.7` raises the dominant
+  motion-feed cost.
+
+**Next:** D (overlay render — make the count-vs-N drops/ghosts *visible* so the C
+results, esp. the slot4 ghost frames, are verifiable; this is also what turns the
+drops↔ghosts trade from a number into an operator decision). Then E (knob
+sensitivity) → F (robustness). The corpus gap (§2:
+dropout/multi-dancer/`yolo_first`/small-far) is the main thing limiting how far
+C/E/F generalise — broader labelled footage is the highest-leverage input now.
 
 ## 1. What already exists (the P3 foundation — reuse, don't rebuild)
 
