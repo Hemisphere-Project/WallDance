@@ -5,6 +5,7 @@ deliverable. Uses a temp projects dir so nothing touches the real ``projects/``.
 """
 
 import json
+import os
 import time
 
 import pytest
@@ -83,3 +84,51 @@ def test_delete_keeps_unrelated_last_pointer(store):
     store.save("Second", {"x": 2})                     # last = Second
     assert store.delete_project("First") is True
     assert store.read_last_project() == "Second"       # untouched
+
+
+# ----------------------------------------------------------- bug #7 (latest)
+
+def test_safe_defaults_never_wins_latest(store):
+    # '_safe_defaults.json' reverse-name-sorts above capitalized project names
+    # ('A' < '_'), so it used to hijack "latest" → startup silently loaded
+    # safe defaults instead of the last save.
+    store.save("Alpha", {"x": 1})
+    store.save_safe_defaults("Alpha", {"x": "safe"})   # newer mtime, too
+
+    latest = store.latest_for_project("Alpha")
+    assert latest and not os.path.basename(latest).startswith("_")
+
+    history = store.project_history("Alpha")
+    assert len(history.configs) == 1
+    assert all(not os.path.basename(path).startswith("_")
+               for _disp, path in history.configs)
+
+    info = next(i for i in store.list_projects_by_date() if i.name == "Alpha")
+    assert info.save_count == 1
+    assert not os.path.basename(info.latest_config).startswith("_")
+
+
+def test_latest_picked_by_mtime_not_name(store, tmp_path):
+    # A renamed project keeps old-prefix filenames, so a name sort can
+    # disagree with save order — mtime decides.
+    pdir = tmp_path / "Renamed"
+    pdir.mkdir()
+    older = pdir / "zzz_20250101_000000.json"          # name-sorts first
+    newer = pdir / "aaa_20260101_000000.json"
+    older.write_text("{}")
+    newer.write_text("{}")
+    past = time.time() - 1000
+    os.utime(older, (past, past))
+
+    latest = store.latest_for_project("Renamed")
+    assert latest.endswith("aaa_20260101_000000.json")
+    assert store.project_history("Renamed").configs[0][1] == latest
+
+
+def test_project_with_only_safe_defaults_not_listed(store):
+    store.save_safe_defaults("GhostProj", {"x": 1})
+    assert "GhostProj" not in store.list_projects()
+    assert all(i.name != "GhostProj" for i in store.list_projects_by_date())
+    assert store.latest_for_project("GhostProj") is None
+    # the safe defaults themselves stay loadable (separate explicit action)
+    assert store.has_safe_defaults("GhostProj")

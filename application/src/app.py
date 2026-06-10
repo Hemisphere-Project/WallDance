@@ -1006,6 +1006,10 @@ class WallDanceApp:
             "blur_budget_ms": self.blur_budget_ms,
             "sensitivity": self.sensitivity,
             "sensitivity_conf_seed": self._sensitivity_conf_seed,
+            # Persist the calibrated anchor, not just the live macro output —
+            # otherwise a save while the dial is loose ratchets the calibrated
+            # varThreshold away on the next load (ROADMAP bug #8).
+            "sensitivity_var_anchor": self._sensitivity_var_anchor,
         }
 
     def _update_topbar_state(self, selected_filepath: Optional[str] = None):
@@ -1214,6 +1218,10 @@ class WallDanceApp:
         if "mog2_var_threshold" in config:
             self.processor.set_motion_var_threshold(float(config["mog2_var_threshold"]))
             self._sensitivity_var_anchor = float(config["mog2_var_threshold"])
+        # The persisted anchor (calibrated value) overrides the live macro
+        # output above — older configs lack it and keep the fallback.
+        if "sensitivity_var_anchor" in config:
+            self._sensitivity_var_anchor = float(config["sensitivity_var_anchor"])
         # Sensitivity macro: restore the seed + dial (older configs lack them —
         # anchor on the loaded confidence at the midpoint).
         if "sensitivity_conf_seed" in config:
@@ -1507,6 +1515,9 @@ class WallDanceApp:
         self.settings.confidence = value
         self._sensitivity_conf_seed = float(value)
         self.sensitivity = 50.0
+        # Dial 50 means "anchor values": undo any macro-lowered varThreshold
+        # so the dial position and the applied state agree (ROADMAP bug #8).
+        self.processor.set_motion_var_threshold(self._sensitivity_var_anchor)
         self.gui and self.gui.sync_slider('sensitivity', 50.0)
         print(f"Confidence: {value:.2f}")
         self._request_reprocess()
@@ -1959,9 +1970,12 @@ class WallDanceApp:
             servo_line = (self._servo_result.summary_line() + "\n"
                           if self._servo_result else "")
             gamma_line = f"Gamma seeded: {self.enhancer.gamma:.2f}\n"
+            # "Save to project" must be a normal timestamped save (what startup
+            # and the picker load) — safe-defaults stays a separate explicit
+            # action (ROADMAP bug #6).
             self.gui.show_calibration_result_dialog(
                 servo_line + gamma_line + result.summary() + "\n" + excl.summary_line(),
-                on_save=self._cb_save_safe_defaults)
+                on_save=self._cb_save_config)
 
     # ------------------------------------------------------------------
     # Calib2 — dancer evidence pool (UX_PLAN U4)
@@ -2104,7 +2118,7 @@ class WallDanceApp:
         if self.gui:
             self.gui.show_calibration_result_dialog(
                 "Dancer calibration (pooled)\n" + prop.summary(),
-                on_save=self._cb_save_safe_defaults)
+                on_save=self._cb_save_config)
 
     def _cb_calib2_clear(self):
         removed = self._calib2_pool().clear()

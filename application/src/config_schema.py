@@ -41,6 +41,7 @@ PROFILE_KEYS = frozenset({
     "confidence",
     "sensitivity",
     "sensitivity_conf_seed",
+    "sensitivity_var_anchor",
 })
 
 _STRUCTURE_KEYS = ("config_version", "active_profile", "profiles")
@@ -64,6 +65,7 @@ _RANGES = {
     "blur_budget_ms": (5.0, 60.0),
     "sensitivity": (0.0, 100.0),
     "sensitivity_conf_seed": (0.05, 0.95),
+    "sensitivity_var_anchor": (4.0, 256.0),
 }
 
 _IMGSZ_PRESETS = (640, 800, 960, 1280, 1536, 1920)

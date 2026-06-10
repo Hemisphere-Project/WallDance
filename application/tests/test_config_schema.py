@@ -154,3 +154,12 @@ def test_validate_preserves_int_type():
     out, _ = cs.validate_flat({"person_height_px": 200, "osc_port": 9000})
     assert isinstance(out["person_height_px"], int)
     assert isinstance(out["osc_port"], int)
+
+
+def test_sensitivity_var_anchor_profile_scoped_and_clamped():
+    # Bug #8: the calibrated anchor is persisted alongside the live macro
+    # output; it is lighting-coupled, so it must travel with the profile.
+    assert "sensitivity_var_anchor" in cs.PROFILE_KEYS
+    out, warnings = cs.validate_flat({"sensitivity_var_anchor": 1.0})
+    assert out["sensitivity_var_anchor"] == 4.0
+    assert warnings

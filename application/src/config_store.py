@@ -42,14 +42,33 @@ def format_config_display(filename: str) -> str:
     return display_name
 
 
+def list_config_files(project_dir: str) -> List[str]:
+    """Timestamped config filenames in a project dir, newest first (by mtime).
+
+    Skips `_`-prefixed specials (`_safe_defaults.json`): they are not project
+    saves and must never be picked as "latest" — uppercase project names would
+    otherwise sort them first (bug #7).
+    """
+    if not os.path.exists(project_dir):
+        return []
+    configs = [f for f in os.listdir(project_dir)
+               if f.endswith(".json") and not f.startswith("_")]
+
+    def mtime(name: str) -> float:
+        try:
+            return os.path.getmtime(os.path.join(project_dir, name))
+        except OSError:
+            return 0.0
+
+    configs.sort(key=lambda f: (mtime(f), f), reverse=True)
+    return configs
+
+
 def get_latest_config_in_project(project_dir: str) -> Optional[str]:
     """Get the most recent config file in a project directory."""
-    if not os.path.exists(project_dir):
-        return None
-    configs = [f for f in os.listdir(project_dir) if f.endswith(".json")]
+    configs = list_config_files(project_dir)
     if not configs:
         return None
-    configs.sort(reverse=True)
     return os.path.join(project_dir, configs[0])
 
 
@@ -122,23 +141,16 @@ class ConfigStore:
         projects = []
         for item in sorted(os.listdir(self.config_dir)):
             item_path = os.path.join(self.config_dir, item)
-            if os.path.isdir(item_path):
-                json_files = [f for f in os.listdir(item_path) if f.endswith(".json")]
-                if json_files:
-                    projects.append(item)
+            if os.path.isdir(item_path) and list_config_files(item_path):
+                projects.append(item)
         return projects
 
     def project_history(self, project: str) -> ProjectHistory:
         project_dir = os.path.join(self.config_dir, project)
         entries: List[Tuple[str, str]] = []
-        current_display = ""
-        if os.path.exists(project_dir):
-            configs = sorted([f for f in os.listdir(project_dir) if f.endswith(".json")], reverse=True)
-            for idx, filename in enumerate(configs):
-                display = format_config_display(filename)
-                entries.append((display, os.path.join(project_dir, filename)))
-                if idx == 0:
-                    current_display = display
+        for filename in list_config_files(project_dir):
+            entries.append((format_config_display(filename),
+                            os.path.join(project_dir, filename)))
         return ProjectHistory(project=project, configs=entries)
 
     def latest_for_project(self, project: str) -> Optional[str]:
@@ -150,18 +162,18 @@ class ConfigStore:
         infos: List[ProjectInfo] = []
         for name in self.list_projects():
             project_dir = os.path.join(self.config_dir, name)
-            jsons = [f for f in os.listdir(project_dir) if f.endswith(".json")]
+            configs = list_config_files(project_dir)
             mtime = 0.0
-            for f in jsons:
+            for f in configs:
                 try:
                     mtime = max(mtime, os.path.getmtime(os.path.join(project_dir, f)))
                 except OSError:
                     pass
             infos.append(ProjectInfo(
                 name=name,
-                latest_config=get_latest_config_in_project(project_dir),
+                latest_config=(os.path.join(project_dir, configs[0]) if configs else None),
                 last_saved=mtime,
-                save_count=len(jsons),
+                save_count=len(configs),
             ))
         infos.sort(key=lambda i: i.last_saved, reverse=True)
         return infos
