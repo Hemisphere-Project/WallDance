@@ -6,8 +6,12 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR/application"
 
 # Ensure PyTorch's bundled CUDA/cuDNN libs take priority over
-# potentially outdated system-installed versions.
-NVIDIA_PACKAGES="$ROOT_DIR/application/.venv/lib/python3.10/site-packages/nvidia"
+# potentially outdated system-installed versions. The venv may hold any
+# python3.x (pyproject allows 3.10-3.12), so discover the layout.
+NVIDIA_PACKAGES=""
+for _d in "$ROOT_DIR/application/.venv/lib/python"*/site-packages/nvidia; do
+    [ -d "$_d" ] && NVIDIA_PACKAGES="$_d" && break
+done
 if [ -d "$NVIDIA_PACKAGES" ]; then
     _EXTRA_LD=""
     for _subdir in "$NVIDIA_PACKAGES"/*/lib; do
