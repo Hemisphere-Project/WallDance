@@ -47,7 +47,10 @@ from config import (
     PERSON_HEIGHT_MAX_RATIO,
     PERSON_HEIGHT_MIN_RATIO,
     PERSON_HEIGHT_PX,
+    AUTOCAL_BLUR_BUDGET_MS,
     AUTOCAL_EXCL_GRID,
+    AUTOCAL2_FRAME_SAMPLES,
+    AUTOCAL2_WINDOW_FRAMES,
     PROJECT_PICKER_ON_START,
     MOTION_BRIDGE_SENSITIVITY,
     PREVIEW_ENABLED,
@@ -84,6 +87,8 @@ from tracker import DancerTracker
 from tracking_logger import _json_default
 from video_recorder import VideoRecorder, RecorderState
 from web_monitor import WebMonitor
+from calib2 import SubjectCollector, SubjectPool
+from calib2 import aggregate as calib2_aggregate
 from calibration import ExposureServo, SceneCalibrator, seed_gamma
 
 
@@ -290,6 +295,11 @@ class WallDanceApp:
         self._calibrating = False               # True while a calibration window is collecting
         self._servo: Optional[ExposureServo] = None      # Calib1 phase A (live IDS only)
         self._servo_result = None                        # ServoResult for the result dialog
+        # Calib2 (UX_PLAN U4): dancer evidence pool — accumulative across runs.
+        self._calib2 = SubjectCollector()
+        self._calibrating2 = False
+        self._calib2_saved_frames = 0
+        self.blur_budget_ms: float = AUTOCAL_BLUR_BUDGET_MS
         self.last_tracked: List[ScaledTrack] = []
         self._total_frame_count: int = 0  # Phase 0: cumulative frame counter (live mode)
         self._last_raw_frame: Optional[np.ndarray] = None  # Last raw camera frame for BG capture
@@ -433,6 +443,9 @@ class WallDanceApp:
             "on_imgsz_change": self._cb_imgsz_change,
             "on_person_height_change": self._cb_person_height_change,
             "on_calibrate": self._cb_calibrate,
+            "on_calib2": self._cb_calib2,
+            "on_calib2_apply": self._cb_calib2_apply,
+            "on_calib2_clear": self._cb_calib2_clear,
             "on_visualization_toggle": self._cb_visualization_toggle,
             "on_tracker_age_change": self._cb_tracker_age_change,
             "on_mog2_scale_change": self._cb_mog2_scale_change,
@@ -983,6 +996,7 @@ class WallDanceApp:
             "bg_subtract_enabled": self.settings.bg_subtract_enabled,
             "bg_subtract_sensitivity": self.settings.bg_subtract_sensitivity,
             "mog2_scale": self.processor.get_motion_scale(),
+            "blur_budget_ms": self.blur_budget_ms,
         }
 
     def _update_topbar_state(self, selected_filepath: Optional[str] = None):
@@ -1340,6 +1354,8 @@ class WallDanceApp:
         if "bg_subtract_sensitivity" in config:
             self.settings.bg_subtract_sensitivity = config["bg_subtract_sensitivity"]
             self.gui and self.gui.sync_slider("bg_sensitivity", config["bg_subtract_sensitivity"])
+        if "blur_budget_ms" in config:
+            self.blur_budget_ms = float(config["blur_budget_ms"])
         # MOG2 scale
         if "mog2_scale" in config and self.processor.motion_detector is not None:
             self.processor.set_motion_scale(config["mog2_scale"])
@@ -1780,7 +1796,8 @@ class WallDanceApp:
         )
         self._calibrating = True
         if live_ids:
-            self._servo = ExposureServo(self.ids_exposure_us, self.ids_gain_db)
+            self._servo = ExposureServo(self.ids_exposure_us, self.ids_gain_db,
+                                        blur_budget_ms=self.blur_budget_ms)
             if self.gui:
                 self.gui.set_calibrate_status("Calibrating exposure...")
                 self.gui.show_toast("Calibrating - driving exposure/gain, keep the stage clear",
@@ -1897,6 +1914,154 @@ class WallDanceApp:
             self.gui.show_calibration_result_dialog(
                 servo_line + gamma_line + result.summary() + "\n" + excl.summary_line(),
                 on_save=self._cb_save_safe_defaults)
+
+    # ------------------------------------------------------------------
+    # Calib2 — dancer evidence pool (UX_PLAN U4)
+    # ------------------------------------------------------------------
+    def _calib2_pool(self) -> SubjectPool:
+        return SubjectPool(os.path.join(self.config_store.config_dir,
+                                        self._current_project))
+
+    def _cb_calib2(self):
+        """CALIB DANCERS button: collect one evidence run (live or playback)."""
+        if self._calibrating2:
+            self._calibrating2 = False
+            self._calib2.cancel()
+            if self.gui:
+                self.gui.set_calibrate_status(None)
+                self.gui.show_toast("Dancer calibration cancelled",
+                                    duration=2.0, color=(255, 180, 80))
+            print("[Calib2] cancelled")
+            return
+        if self._calibrating:
+            self.gui and self.gui.show_toast("Scene calibration is running",
+                                             duration=2.5, color=(255, 180, 80))
+            return
+        if not self._model_loaded or self.model is None:
+            self.gui and self.gui.show_toast("Load a model before calibrating",
+                                             duration=3.0, color=(255, 180, 80))
+            return
+        cam_open = (
+            (self.unified_camera is not None and self.unified_camera.is_open)
+            or (self.camera is not None and self.camera.state.is_open)
+        )
+        if not cam_open and not self.recorder.is_playing:
+            self.gui and self.gui.show_toast("Start the camera or play a recording first",
+                                             duration=3.0, color=(255, 180, 80))
+            return
+        source = (f"slot {self.recorder.status.current_slot}"
+                  if self.recorder.is_playing else "live")
+        frame_w, frame_h = self._roi_source_size
+        roi = self._get_effective_roi(frame_w, frame_h)
+        self._calib2.start(source, self._active_profile, roi, (frame_w, frame_h))
+        self._calib2_saved_frames = 0
+        self._calibrating2 = True
+        if self.gui:
+            self.gui.set_calibrate_status("Dancers 0%")
+            self.gui.show_toast("Dancer calibration - have 1-4 dancers move around",
+                                duration=3.0, color=(160, 200, 255))
+        print(f"[Calib2] run started ({source}, profile={self._active_profile})")
+
+    def _step_calib2(self, tracked, process_wall_ms):
+        """Feed one processed frame to the dancer-run collector."""
+        col = self._calib2
+        if not col.is_collecting:
+            self._calibrating2 = False
+            return
+        samples = []
+        for t in (tracked or []):
+            b = getattr(t, 'bbox', None)
+            if b is None or len(b) < 4 or b[3] <= 0:
+                continue
+            conf = getattr(t, 'confidence', None)
+            mean_conf = float(np.mean(conf)) if conf is not None else 0.0
+            vel = getattr(t, 'velocity', None)
+            speed = float(np.linalg.norm(vel)) if vel is not None else 0.0
+            samples.append((float(b[3]), mean_conf, speed))
+        fps_sample = (1000.0 / process_wall_ms) if process_wall_ms > 0 else 0.0
+        col.feed(samples, fps_sample)
+
+        # Save a few raw frames for the future gamma/CLAHE confidence sweep.
+        stride = max(1, AUTOCAL2_WINDOW_FRAMES // AUTOCAL2_FRAME_SAMPLES)
+        if (col.run.frames % stride == 0
+                and self._calib2_saved_frames < AUTOCAL2_FRAME_SAMPLES
+                and self._last_raw_frame is not None):
+            fdir = self._calib2_pool().frames_dir(col.run)
+            try:
+                os.makedirs(fdir, exist_ok=True)
+                cv2.imwrite(os.path.join(fdir, f"f{col.run.frames:04d}.jpg"),
+                            self._last_raw_frame)
+                self._calib2_saved_frames += 1
+            except Exception:
+                pass
+
+        if self.gui:
+            self.gui.set_calibrate_status(f"Dancers {int(col.progress() * 100)}%")
+        if col.ready:
+            self._calibrating2 = False
+            run = col.finish()
+            pool = self._calib2_pool()
+            path = pool.save_run(run)
+            print(f"[Calib2] run saved: {path} ({run.samples} samples)")
+            if self.gui:
+                self.gui.set_calibrate_status(None)
+            self._show_calib2_dialog()
+
+    def _show_calib2_dialog(self):
+        """Open the evidence-pool dialog with all stored runs + a proposal preview."""
+        if not self.gui:
+            return
+        pool = self._calib2_pool()
+        entries = pool.load_runs()
+        frame_w, frame_h = self._roi_source_size
+        roi = self._get_effective_roi(frame_w, frame_h)
+        rows = [
+            {
+                "path": path,
+                "label": run.label(),
+                "stale": run.stale_for(roi, (frame_w, frame_h)),
+            }
+            for path, run in entries
+        ]
+        proposal = calib2_aggregate([r for _p, r in entries], max(roi[2], roi[3]))
+        self.gui.show_calib2_dialog(rows, proposal.summary())
+
+    def _cb_calib2_apply(self, selected_paths):
+        """Apply the pooled proposal from the selected runs."""
+        pool = self._calib2_pool()
+        chosen = [run for path, run in pool.load_runs() if path in set(selected_paths)]
+        frame_w, frame_h = self._roi_source_size
+        roi = self._get_effective_roi(frame_w, frame_h)
+        prop = calib2_aggregate(chosen, max(roi[2], roi[3]))
+        if not prop.ok:
+            self.gui and self.gui.show_toast(prop.summary(),
+                                             duration=4.0, color=(255, 180, 80))
+            return
+        self.settings.person_height_px = int(prop.person_height_px)
+        self.settings.person_height_min_ratio = float(prop.min_ratio)
+        self.settings.person_height_max_ratio = float(prop.max_ratio)
+        self.tracker.set_person_height(int(prop.person_height_px))
+        self.gui and self.gui.sync_slider('person_height', int(prop.person_height_px))
+        if prop.confidence is not None:
+            self.settings.confidence = float(prop.confidence)
+            self.gui and self.gui.sync_slider('confidence', float(prop.confidence))
+        if prop.blur_budget_ms is not None:
+            self.blur_budget_ms = float(prop.blur_budget_ms)
+        if prop.imgsz and prop.imgsz != int(self.settings.imgsz):
+            self.gui and self.gui.sync_combo('imgsz', str(prop.imgsz))
+            self._cb_imgsz_change(prop.imgsz)   # handles the TRT engine reload
+        print("[Calib2] applied: " + prop.summary().replace("\n", " | "))
+        self._request_reprocess()
+        if self.gui:
+            self.gui.show_calibration_result_dialog(
+                "Dancer calibration (pooled)\n" + prop.summary(),
+                on_save=self._cb_save_safe_defaults)
+
+    def _cb_calib2_clear(self):
+        removed = self._calib2_pool().clear()
+        print(f"[Calib2] pool cleared ({removed} runs)")
+        self.gui and self.gui.show_toast(f"Cleared {removed} run(s)",
+                                         duration=2.5, color=(150, 200, 255))
 
     def _cb_visualization_toggle(self, name: str, enabled: bool):
         if name == "skeleton":
@@ -3859,7 +4024,7 @@ class WallDanceApp:
             # Exception: a scene calibration forces YOLO on (even in Standby /
             # during playback) so it can measure detection heights.
             if (self.gui and self.gui.get_system_state() != SystemState.RUN
-                    and not self._calibrating):
+                    and not self._calibrating and not self._calibrating2):
                 should_process = False
 
             # Phase 0: compute display frame number for tracker logging
@@ -3926,6 +4091,8 @@ class WallDanceApp:
                 self.latency_ms = latency_ms
                 if self._calibrating:
                     self._step_calibration(tracked, process_wall_ms)
+                elif self._calibrating2:
+                    self._step_calib2(tracked, process_wall_ms)
             else:
                 process_wall_ms = 0.0
                 # No processing (STANDBY mode) - show preview without YOLO.

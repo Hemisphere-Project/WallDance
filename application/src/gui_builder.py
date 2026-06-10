@@ -601,9 +601,23 @@ def build_bottom_bar(gui: Any):
                 )
                 dpg.bind_item_theme(calib_btn, gui._btn_standby_theme)
                 with dpg.tooltip(calib_btn):
-                    dpg.add_text("Measure the scene (person height, ratios, MOG2 varThreshold)\n"
-                                 "from what YOLO sees. Works live or during recording playback.\n"
-                                 "Review the result, then Save to project or Keep session.")
+                    dpg.add_text("Calib 1 - SCENE (empty stage, during rigging):\n"
+                                 "drives IDS exposure/gain to the blur budget, seeds\n"
+                                 "gamma/CLAHE, sweeps MOG2 var+scale, builds the\n"
+                                 "exclusion mask. Re-click after each focus/IR change.")
+                dancers_btn = dpg.add_button(
+                    label="DANCERS",
+                    tag="calib2_btn",
+                    width=scaled(80),
+                    height=scaled(28),
+                    callback=gui._on_calib2,
+                )
+                dpg.bind_item_theme(dancers_btn, gui._btn_standby_theme)
+                with dpg.tooltip(dancers_btn):
+                    dpg.add_text("Calib 2 - DANCERS (1-4 people, live or playback):\n"
+                                 "collects one evidence run (sizes, confidences, speeds)\n"
+                                 "into the project pool, then lets you apply the pooled\n"
+                                 "result: person height, image size, sensitivity seed.")
                 dpg.add_text("", tag="calibrate_status", color=(160, 200, 255), show=False)
                 dpg.add_spacer(width=scaled(10))
                 standby_btn = dpg.add_button(

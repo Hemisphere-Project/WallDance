@@ -59,6 +59,7 @@ _RANGES = {
     "motion_sensitivity": (0.0, 1.0),
     "brightness_threshold": (0, 255),
     "osc_port": (1, 65535),
+    "blur_budget_ms": (5.0, 60.0),
 }
 
 _IMGSZ_PRESETS = (640, 800, 960, 1280, 1536, 1920)

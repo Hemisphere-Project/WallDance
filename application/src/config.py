@@ -448,6 +448,21 @@ AUTOCAL_CLAHE_DEFAULT = 2.5
 AUTOCAL_CLAHE_NOISY = 1.5
 AUTOCAL_CLAHE_NOISE_SIGMA = 4.0     # Noise σ above which the reduced clip is used
 
+# --- Calib2 subject pass (UX_PLAN.md U4) -------------------------------------
+# Dancer calibration: accumulative evidence pool across runs/situations
+# (live or playback).  All numeric rules provisional until the
+# annotated-footage loop re-fits them (UX_PLAN §6).
+AUTOCAL2_WINDOW_FRAMES = 240        # Collection window per run (~10 s @ 24 fps)
+AUTOCAL2_MIN_SAMPLES = 40           # Min pooled height samples to trust the pool
+AUTOCAL2_NET_HEIGHT_TARGET = 110.0  # Dancer height in YOLO net-input px (pose needs ~>100)
+AUTOCAL2_CONF_MARGIN = 0.05         # Sensitivity seed: p05 keypoint-conf minus this
+AUTOCAL2_CONF_BOUNDS = (0.15, 0.50) # Clamp for the seeded confidence
+AUTOCAL2_BLUR_FRACTION = 0.10       # Allowed motion blur as a fraction of person height
+AUTOCAL2_SPEED_PCTL = 95.0          # Speed percentile that sets the blur budget
+AUTOCAL2_BLUR_BOUNDS_MS = (5.0, 30.0)  # Clamp for the refined blur budget
+AUTOCAL2_STALE_TOL = 0.10           # ROI long-side relative change → run flagged stale
+AUTOCAL2_FRAME_SAMPLES = 12         # Raw frames saved per run (future gamma/CLAHE sweep)
+
 # --- Auto exclusion mask (P1.4) -------------------------------------------
 # During calibration, grid cells that show persistent MOG2 motion but ~never a
 # confirmed skeleton are scenery / ghost sources (trees, balcony, wall paint,
