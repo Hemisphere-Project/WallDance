@@ -189,6 +189,7 @@ def replay_from_cache(
     *,
     log_dir: Optional[str] = None,
     reuse_grays: bool = False,
+    track_details: bool = False,
 ) -> Dict:
     """Re-run gate + motion + tracker from a cache, skipping YOLO.
 
@@ -227,12 +228,8 @@ def replay_from_cache(
         timing: Dict[str, float] = {}
         tracks = proc._track_detections(
             dets, fr["roi_x"], fr["roi_y"], fr["ow"], fr["oh"], i, timing)
-        per_frame.append({
-            "frame": i,
-            "abs_frame": meta["start_frame"] + i,
-            "reported": len(tracks),
-            "ids": sorted(int(t.track_id) for t in tracks),
-        })
+        per_frame.append(replay.per_frame_record(
+            i, meta["start_frame"] + i, tracks, track_details))
     proc.tracker.logger.close()
 
     return replay._summary_from_log(

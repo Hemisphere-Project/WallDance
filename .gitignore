@@ -45,3 +45,5 @@ application/tracking_events.jsonl
 application/tests/cache/
 # TUNING Phase C: tune.py search outputs
 application/tests/tuned_*.json
+# TUNING Phase D: overlay renders (large, regenerable)
+application/tests/overlays/

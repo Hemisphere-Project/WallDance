@@ -190,6 +190,38 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
     return proc
 
 
+def per_frame_record(frame_idx: int, abs_frame: int, tracks, track_details: bool = False) -> dict:
+    """One timeline row from the OSC-faithful returned tracks.
+
+    ``track_details=True`` adds spatial info (bbox/centroid/bridged) for the
+    Phase-D overlay; default off so the Phase-A/B timelines stay lean and the
+    cache-equivalence comparison is unaffected.
+    """
+    rec = {
+        "frame": frame_idx,
+        "abs_frame": abs_frame,
+        "reported": len(tracks),
+        "ids": sorted(int(t.track_id) for t in tracks),
+    }
+    if track_details:
+        det = []
+        for t in tracks:
+            bbox = [float(x) for x in t.bbox]
+            sc = getattr(t, "smoothed_centroid", None)
+            if sc is not None:
+                centroid = [float(sc[0]), float(sc[1])]
+            else:
+                centroid = [bbox[0] + bbox[2] / 2, bbox[1] + bbox[3] / 2]
+            det.append({
+                "id": int(t.track_id),
+                "bbox": bbox,
+                "centroid": centroid,
+                "bridged": bool(getattr(t, "is_bridged", False)),
+            })
+        rec["tracks"] = det
+    return rec
+
+
 def replay_recording(
     video_path: str,
     config: dict,
@@ -199,6 +231,7 @@ def replay_recording(
     start_frame: int = 0,
     max_frames: Optional[int] = None,
     log_dir: Optional[str] = None,
+    track_details: bool = False,
 ) -> Dict:
     """Replay a recording and return a compact metric summary.
 
@@ -234,12 +267,8 @@ def replay_recording(
                 break
             tracks, _enh, _timing, _lat = proc.process(
                 frame, need_preview=False, frame_number=processed)
-            per_frame.append({
-                "frame": processed,                       # window-relative
-                "abs_frame": start_frame + processed,     # into the recording
-                "reported": len(tracks),
-                "ids": sorted(int(t.track_id) for t in tracks),
-            })
+            per_frame.append(per_frame_record(
+                processed, start_frame + processed, tracks, track_details))
             processed += 1
     finally:
         cap.release()
