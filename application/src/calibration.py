@@ -24,9 +24,11 @@ samples — see ``tests/test_calibration.py``.
 
 from __future__ import annotations
 
+import math
+
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -48,7 +50,23 @@ from config import (
     AUTOCAL_EXCL_MOTION_FREQ,
     AUTOCAL_EXCL_SKEL_FREQ,
     AUTOCAL_EXCL_MIN_FRAMES,
+    AUTOCAL_SCALE_CANDIDATES,
+    AUTOCAL_SCALE_PREFERENCE,
+    AUTOCAL_SWEEP_STRIDE,
+    AUTOCAL_BLUR_BUDGET_MS,
+    AUTOCAL_SERVO_TARGET_BRIGHTNESS,
+    AUTOCAL_SERVO_TOLERANCE,
+    AUTOCAL_SERVO_CLIP_MAX_PCT,
+    AUTOCAL_SERVO_GAIN_MAX_DB,
+    AUTOCAL_SERVO_SETTLE_FRAMES,
+    AUTOCAL_SERVO_MAX_STEPS,
+    AUTOCAL_GAMMA_TARGET,
+    AUTOCAL_GAMMA_BOUNDS,
+    AUTOCAL_CLAHE_DEFAULT,
+    AUTOCAL_CLAHE_NOISY,
+    AUTOCAL_CLAHE_NOISE_SIGMA,
 )
+from ids_camera import IDS_EXPOSURE_MIN_FPS, max_exposure_for_fps
 
 # Hard bounds for PERSON_HEIGHT_PX (mirrors the GUI slider range, config.py).
 _HEIGHT_MIN_PX = 20
@@ -57,6 +75,189 @@ _HEIGHT_MAX_PX = 800
 
 def _clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
+
+
+def seed_gamma(brightness_mean: float,
+               target: float = AUTOCAL_GAMMA_TARGET,
+               bounds: Tuple[float, float] = AUTOCAL_GAMMA_BOUNDS) -> float:
+    """Gamma that maps the measured raw mean toward ``target`` mid-gray.
+
+    The enhancer LUT is ``out = 255 * (in/255) ** (1/gamma)`` (gamma > 1
+    brightens), so solving (b/255)^(1/g) = target/255 gives
+    g = ln(b/255) / ln(target/255).  Clamped: a near-black IR scene wants the
+    sensor/gain fixed first (servo), not an extreme gamma.
+    """
+    b = _clamp(float(brightness_mean), 1.0, 250.0)
+    g = math.log(b / 255.0) / math.log(target / 255.0)
+    return round(_clamp(g, bounds[0], bounds[1]), 2)
+
+
+def seed_clahe(noise_sigma: float) -> float:
+    """CLAHE clip seed: back off on noisy scenes (CLAHE amplifies noise)."""
+    return (AUTOCAL_CLAHE_NOISY if noise_sigma > AUTOCAL_CLAHE_NOISE_SIGMA
+            else AUTOCAL_CLAHE_DEFAULT)
+
+
+def scene_report_stats(gray: np.ndarray, grid: Tuple[int, int] = (8, 5),
+                       center_frac: float = 0.5) -> dict:
+    """Focus/clip/uniformity snapshot of one gray frame (Calib1 report card).
+
+    Same metrics as the phone monitor (variance-of-Laplacian focus on the
+    centre crop, clip percentages, min/max grid-tile uniformity with the
+    darkest tile), kept here as a pure function for the calibration report.
+    """
+    if gray.ndim == 3:
+        gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
+    h, w = gray.shape[:2]
+    cf = center_frac
+    x0, x1 = int(w * (0.5 - cf / 2)), int(w * (0.5 + cf / 2))
+    y0, y1 = int(h * (0.5 - cf / 2)), int(h * (0.5 + cf / 2))
+    crop = gray[y0:y1, x0:x1]
+    focus = float(cv2.Laplacian(crop, cv2.CV_64F).var()) if crop.size else 0.0
+    total = gray.size or 1
+    clip_high = float(np.count_nonzero(gray >= 250)) / total * 100.0
+    clip_low = float(np.count_nonzero(gray <= 5)) / total * 100.0
+    gx, gy = grid
+    tiles = cv2.resize(gray.astype(np.float32), (gx, gy),
+                       interpolation=cv2.INTER_AREA)
+    t_max = float(tiles.max()) if tiles.size else 0.0
+    t_min = float(tiles.min()) if tiles.size else 0.0
+    uniformity = (t_min / t_max) if t_max > 1e-6 else 0.0
+    dark = np.unravel_index(int(tiles.argmin()), tiles.shape) if tiles.size else (0, 0)
+    return {
+        "focus": focus,
+        "clip_high": clip_high,
+        "clip_low": clip_low,
+        "uniformity": uniformity,
+        "dark_tile": (int(dark[1]), int(dark[0])),   # (col, row)
+    }
+
+
+@dataclass
+class ServoResult:
+    """Outcome of the exposure/gain servo phase (Calib1 phase A)."""
+    ran: bool = False
+    converged: bool = False
+    steps: int = 0
+    brightness: float = 0.0
+    exposure_us: float = 0.0
+    gain_db: float = 0.0
+    note: str = ""
+
+    def summary_line(self) -> str:
+        if not self.ran:
+            return "Exposure: not driven (playback or non-IDS camera) - kept current"
+        state = "converged" if self.converged else f"stopped ({self.note})"
+        return (f"Exposure: {self.exposure_us/1000.0:.1f} ms  gain {self.gain_db:.1f} dB  "
+                f"-> brightness {self.brightness:.0f}  ({state}, {self.steps} steps)")
+
+
+class ExposureServo:
+    """Drives IDS exposure/gain toward a brightness target under a blur budget.
+
+    Order of authority (UX_PLAN U3): exposure rises first, but only up to
+    ``min(blur budget, FPS floor)`` — motion blur is the binding constraint,
+    not frame rate — then analog gain takes over (Starvis2 = low read noise).
+    Clipping always backs gain off before exposure.
+
+    Pure logic: ``feed(brightness, clip_pct)`` returns ``("exposure", us)`` /
+    ``("gain", db)`` commands for the caller to apply to the camera, or None
+    while settling/done.  Unit-testable without hardware.
+    """
+
+    _EXPOSURE_MIN_US = 200.0
+
+    def __init__(self, exposure_us: float, gain_db: float,
+                 blur_budget_ms: float = AUTOCAL_BLUR_BUDGET_MS,
+                 min_fps: float = IDS_EXPOSURE_MIN_FPS,
+                 target: float = AUTOCAL_SERVO_TARGET_BRIGHTNESS,
+                 tolerance: float = AUTOCAL_SERVO_TOLERANCE,
+                 clip_max_pct: float = AUTOCAL_SERVO_CLIP_MAX_PCT,
+                 gain_max_db: float = AUTOCAL_SERVO_GAIN_MAX_DB,
+                 settle_frames: int = AUTOCAL_SERVO_SETTLE_FRAMES,
+                 max_steps: int = AUTOCAL_SERVO_MAX_STEPS):
+        self.exposure_cap_us = min(float(blur_budget_ms) * 1000.0,
+                                   max_exposure_for_fps(min_fps))
+        self.exposure_us = _clamp(float(exposure_us),
+                                  self._EXPOSURE_MIN_US, self.exposure_cap_us)
+        self.gain_db = _clamp(float(gain_db), 0.0, float(gain_max_db))
+        self.target = float(target)
+        self.tolerance = float(tolerance)
+        self.clip_max_pct = float(clip_max_pct)
+        self.gain_max_db = float(gain_max_db)
+        self.settle_frames = int(settle_frames)
+        self.max_steps = int(max_steps)
+        self._settle = settle_frames  # let the initial state produce a frame
+        self._steps = 0
+        self._done = False
+        self._converged = False
+        self._note = ""
+        self._brightness = 0.0
+
+    @property
+    def done(self) -> bool:
+        return self._done
+
+    def feed(self, brightness: float, clip_high_pct: float):
+        """One frame's measurement in, at most one camera command out."""
+        if self._done:
+            return None
+        self._brightness = float(brightness)
+        if self._settle > 0:
+            self._settle -= 1
+            return None
+        if self._steps >= self.max_steps:
+            self._finish(False, "step limit")
+            return None
+
+        b = float(brightness)
+        if clip_high_pct > self.clip_max_pct:
+            if self.gain_db > 0.5:
+                self.gain_db = max(0.0, self.gain_db - 3.0)
+                return self._command("gain", self.gain_db)
+            if self.exposure_us > self._EXPOSURE_MIN_US * 1.01:
+                self.exposure_us = max(self._EXPOSURE_MIN_US, self.exposure_us * 0.7)
+                return self._command("exposure", self.exposure_us)
+            self._finish(False, "clipping at minimum settings")
+            return None
+        if b < self.target - self.tolerance:
+            if self.exposure_us < self.exposure_cap_us * 0.99:
+                factor = _clamp(self.target / max(b, 1.0), 1.3, 2.5)
+                self.exposure_us = min(self.exposure_cap_us, self.exposure_us * factor)
+                return self._command("exposure", self.exposure_us)
+            if self.gain_db < self.gain_max_db - 0.1:
+                self.gain_db = min(self.gain_max_db, self.gain_db + 3.0)
+                return self._command("gain", self.gain_db)
+            self._finish(False, "at exposure+gain limits - scene still dark, add IR")
+            return None
+        if b > self.target + self.tolerance:
+            if self.gain_db > 0.5:
+                self.gain_db = max(0.0, self.gain_db - 3.0)
+                return self._command("gain", self.gain_db)
+            factor = _clamp(self.target / max(b, 1.0), 0.4, 0.8)
+            if self.exposure_us > self._EXPOSURE_MIN_US * 1.01:
+                self.exposure_us = max(self._EXPOSURE_MIN_US, self.exposure_us * factor)
+                return self._command("exposure", self.exposure_us)
+            self._finish(False, "too bright at minimum settings")
+            return None
+        self._finish(True, "")
+        return None
+
+    def _command(self, kind: str, value: float):
+        self._steps += 1
+        self._settle = self.settle_frames
+        return (kind, float(value))
+
+    def _finish(self, converged: bool, note: str) -> None:
+        self._done = True
+        self._converged = converged
+        self._note = note
+
+    def result(self) -> ServoResult:
+        return ServoResult(ran=True, converged=self._converged,
+                           steps=self._steps, brightness=self._brightness,
+                           exposure_us=self.exposure_us, gain_db=self.gain_db,
+                           note=self._note)
 
 
 class CalState(Enum):
@@ -78,20 +279,33 @@ class CalibrationResult:
     min_ratio: Optional[float] = None
     max_ratio: Optional[float] = None
 
-    # MOG2 varThreshold — chosen by empirical background false-positive sweep.
+    # MOG2 varThreshold + scale — chosen by a joint empirical background
+    # false-positive sweep (they interact; KNOBS.md finding #2).
     var_ok: bool = False
     var_threshold: Optional[float] = None
-    var_fp_rate: float = 0.0          # background FP rate of the chosen threshold
-    var_saturated: bool = False       # True if no candidate met the FP target
+    mog2_scale: Optional[float] = None
+    var_fp_rate: float = 0.0          # background FP rate of the chosen pair
+    var_saturated: bool = False       # True if no pair met the FP target
     # Diagnostic only (not used to set varThreshold): temporal noise of the
     # MOG2-input gray.  High σ on a near-black scene = CLAHE-amplified noise.
     noise_sigma: float = 0.0
+
+    # CLAHE clip derived from the measured noise (gamma is seeded *before*
+    # the window by the app, so the sweep sees the final motion-feed gamma).
+    clahe_value: Optional[float] = None
 
     # Report-only
     brightness_mean: float = 0.0
     brightness_cv: float = 0.0
     exposure_stable: bool = False
     fps_achieved: float = 0.0
+    # Scene report card (median over sampled raw frames)
+    report_ok: bool = False
+    focus_score: float = 0.0
+    clip_high_pct: float = 0.0
+    clip_low_pct: float = 0.0
+    uniformity: float = 0.0
+    dark_tile: tuple = (0, 0)
 
     def log_line(self) -> str:
         """Single structured line for the console log."""
@@ -99,16 +313,20 @@ class CalibrationResult:
         r = (f"[{self.min_ratio:.2f},{self.max_ratio:.2f}]"
              if self.height_ok else "[--]")
         if self.var_ok:
-            vt = (f"{self.var_threshold:.0f}(fp={self.var_fp_rate*100:.2f}%"
+            vt = (f"{self.var_threshold:.0f}@s{self.mog2_scale:.2f}"
+                  f"(fp={self.var_fp_rate*100:.2f}%"
                   f"{',SAT' if self.var_saturated else ''})")
         else:
             vt = "n/a"
+        rep = (f" focus={self.focus_score:.0f} uniform={self.uniformity*100:.0f}%"
+               f" clip={self.clip_high_pct:.2f}%" if self.report_ok else "")
         return (f"[Calibrate] frames={self.frames} height={h} ratios={r} "
-                f"(n={self.height_samples}) varThreshold={vt} "
+                f"(n={self.height_samples}) var+scale={vt} "
+                f"clahe={self.clahe_value} "
                 f"noise_sigma={self.noise_sigma:.2f} brightness={self.brightness_mean:.0f} "
                 f"cv={self.brightness_cv:.3f} exposure="
                 f"{'stable' if self.exposure_stable else 'drifting'} "
-                f"fps={self.fps_achieved:.1f}")
+                f"fps={self.fps_achieved:.1f}{rep}")
 
     def summary(self) -> str:
         """Multi-line human summary for the result dialog."""
@@ -123,17 +341,33 @@ class CalibrationResult:
                          f"(only {self.height_samples} detections; "
                          f"need {AUTOCAL_MIN_HEIGHT_SAMPLES}) - kept current value")
         if self.var_ok and not self.var_saturated:
-            lines.append(f"MOG2 varThreshold: {self.var_threshold:.0f}  "
+            lines.append(f"MOG2: varThreshold {self.var_threshold:.0f} @ scale "
+                         f"{self.mog2_scale:.2f}  "
                          f"(background false-positives {self.var_fp_rate*100:.2f}%)")
         elif self.var_ok and self.var_saturated:
-            lines.append(f"MOG2 varThreshold: {self.var_threshold:.0f} (max)  "
+            lines.append(f"MOG2: varThreshold {self.var_threshold:.0f} @ scale "
+                         f"{self.mog2_scale:.2f} (max)  "
                          f"- background still {self.var_fp_rate*100:.2f}% noisy: "
                          f"the scene is too noisy for MOG2 (raise IR / decouple CLAHE)")
         else:
             lines.append("MOG2 varThreshold: NOT measured - kept current value")
+        if self.clahe_value is not None:
+            noisy = self.noise_sigma > AUTOCAL_CLAHE_NOISE_SIGMA
+            lines.append(f"CLAHE clip: {self.clahe_value:.1f}"
+                         + ("  (reduced: scene noise is high)" if noisy else ""))
         lines.append(f"Brightness: {self.brightness_mean:.0f}  "
                      f"({'stable' if self.exposure_stable else 'still drifting'}, "
                      f"cv {self.brightness_cv:.3f}; noise sigma {self.noise_sigma:.2f})")
+        if self.report_ok:
+            warn_focus = " (LOW - check focus)" if self.focus_score < 50.0 else ""
+            lines.append(f"Focus score: {self.focus_score:.0f}{warn_focus}")
+            col, row = self.dark_tile
+            warn_uni = (f" (darkest tile col {col} row {row} - aim IR there)"
+                        if self.uniformity < 0.25 else "")
+            lines.append(f"IR uniformity: {self.uniformity*100:.0f}%{warn_uni}")
+            if self.clip_high_pct > 0.5:
+                lines.append(f"Highlight clipping: {self.clip_high_pct:.2f}% "
+                             f"- lower gain/exposure")
         lines.append(f"Achieved inference FPS: {self.fps_achieved:.1f}")
         return "\n".join(lines)
 
@@ -285,11 +519,19 @@ class SceneCalibrator:
         self._noise_n = 0
         self._noise_mean: Optional[np.ndarray] = None
         self._noise_m2: Optional[np.ndarray] = None
-        # Empirical varThreshold sweep: one MOG2 model per candidate + its
-        # per-frame background-FP samples (median grid-tile foreground fraction).
-        self._var_candidates: list[float] = [float(v) for v in AUTOCAL_VARTHRESH_CANDIDATES]
+        # Joint empirical var×scale sweep: one MOG2 model per (varThreshold,
+        # scale) pair + its per-frame background-FP samples (median grid-tile
+        # foreground fraction).  Scales are swept jointly with var because
+        # they interact (KNOBS.md finding #2).
+        self._var_pairs: list[tuple[float, float]] = [
+            (float(v), float(s))
+            for s in AUTOCAL_SCALE_CANDIDATES
+            for v in AUTOCAL_VARTHRESH_CANDIDATES
+        ]
         self._var_models: list = []
-        self._var_fp: list[list[float]] = [[] for _ in self._var_candidates]
+        self._var_fp: list[list[float]] = [[] for _ in self._var_pairs]
+        # Scene report card samples (from the raw frame, every ~10th frame).
+        self._report_samples: list[dict] = []
 
     # ------------------------------------------------------------------
     # Lifecycle / status
@@ -297,13 +539,13 @@ class SceneCalibrator:
     def start(self) -> None:
         """Begin a fresh collection window."""
         self._reset_accumulators()
-        # One independent MOG2 model per candidate varThreshold.  history =
-        # window so each adapts its background within the collection window.
+        # One independent MOG2 model per (var, scale) pair.  history = window
+        # so each adapts its background within the collection window.
         hist = max(2, self.window_frames)
         self._var_models = [
             cv2.createBackgroundSubtractorMOG2(
                 history=hist, varThreshold=v, detectShadows=True)
-            for v in self._var_candidates
+            for v, _s in self._var_pairs
         ]
         self._state = CalState.COLLECTING
 
@@ -334,18 +576,21 @@ class SceneCalibrator:
     # ------------------------------------------------------------------
     def feed(self, noise_gray: np.ndarray, track_heights: Iterable[float],
              fps_sample: float, now: float,
-             brightness: Optional[float] = None) -> None:
+             brightness: Optional[float] = None,
+             report_frame: Optional[np.ndarray] = None) -> None:
         """Add one processed frame's samples to the window.
 
-        noise_gray:    2D uint8 frame the background model consumes (any
-                       resolution; downscaled internally) — its temporal sigma
-                       drives varThreshold.  Pass the *MOG2 input* gray, not the
-                       raw frame, so the measured noise matches what MOG2 fights.
+        noise_gray:    2D uint8 frame the background model consumes (full
+                       resolution, pre-MOG2-scale) — its temporal sigma drives
+                       varThreshold and the joint var×scale sweep resizes it
+                       per candidate scale exactly as the motion model would.
         track_heights: bbox heights (px) of the confirmed tracks this frame.
         fps_sample:    achieved inference FPS for this frame (1000/process_wall_ms).
         now:           wall-clock timestamp (unused for gating; reserved).
         brightness:    raw-scene mean luma for the exposure report.  If None,
                        falls back to the mean of ``noise_gray`` (test convenience).
+        report_frame:  raw frame for the scene report card (focus/clip/
+                       uniformity); sampled every ~10th frame.
         """
         if self._state != CalState.COLLECTING:
             return
@@ -357,11 +602,18 @@ class SceneCalibrator:
         if noise_gray is not None and noise_gray.size:
             small = self._downscale(noise_gray)
             self._accumulate_noise(small)
-            self._score_var_candidates(small)
+            if self._frames % AUTOCAL_SWEEP_STRIDE == 0:
+                self._score_var_candidates(noise_gray)
             self._brightness.append(
                 float(brightness) if brightness is not None else float(small.mean()))
         elif brightness is not None:
             self._brightness.append(float(brightness))
+
+        if report_frame is not None and self._frames % 10 == 0:
+            try:
+                self._report_samples.append(scene_report_stats(report_frame))
+            except Exception:
+                pass  # report card is best-effort; never break collection
 
         if fps_sample and fps_sample > 0:
             self._fps.append(float(fps_sample))
@@ -390,18 +642,30 @@ class SceneCalibrator:
         self._noise_mean += delta / self._noise_n
         self._noise_m2 += delta * (x - self._noise_mean)
 
-    def _score_var_candidates(self, small: np.ndarray) -> None:
-        """Run each candidate MOG2 model on this frame and record its background
-        false-positive level: the median grid-tile foreground fraction.
+    def _score_var_candidates(self, gray: np.ndarray) -> None:
+        """Run each candidate (var, scale) MOG2 model on this frame and record
+        its background false-positive level: the median grid-tile foreground
+        fraction.
 
-        The median over a grid is robust to the dancer minority — tiles with a
-        dancer are outliers, so the median tile reflects the *background*.  A
-        too-low varThreshold lights up every tile (noise) → high median; a
-        good one leaves the background quiet → median ~0.
+        Each candidate scale resizes the full-resolution MOG2-input gray
+        exactly as the production motion model would, so the FP measurement
+        carries the real noise-averaging effect of the downscale.  The median
+        over a grid is robust to the dancer minority — tiles with a dancer are
+        outliers, so the median tile reflects the *background*.
         """
+        if gray.ndim == 3:
+            gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
         gx, gy = AUTOCAL_FP_GRID
-        for model, fp_list in zip(self._var_models, self._var_fp):
-            mask = model.apply(small)              # learningRate auto (1/history)
+        smalls = {}
+        for s in AUTOCAL_SCALE_CANDIDATES:
+            if s < 1.0:
+                smalls[s] = cv2.resize(gray, None, fx=s, fy=s,
+                                       interpolation=cv2.INTER_AREA)
+            else:
+                smalls[s] = gray
+        for (v, s), model, fp_list in zip(self._var_pairs, self._var_models,
+                                          self._var_fp):
+            mask = model.apply(smalls[s])          # learningRate auto (1/history)
             fg = (mask == 255).astype(np.float32)  # hard foreground only
             # INTER_AREA resize of a 0/1 mask to the grid = mean (fraction) per tile.
             tiles = cv2.resize(fg, (gx, gy), interpolation=cv2.INTER_AREA)
@@ -437,20 +701,50 @@ class SceneCalibrator:
             # std is the static-background sensor/scene noise floor.
             res.noise_sigma = float(np.median(std))
 
-        # --- varThreshold by empirical background false-positive sweep ---
-        if self._var_candidates and any(len(l) for l in self._var_fp):
-            fp_rates = [float(np.median(l)) if l else 1.0 for l in self._var_fp]
+        # --- var×scale by joint empirical background false-positive sweep ---
+        if self._var_pairs and any(len(l) for l in self._var_fp):
+            fp_by_pair = {
+                pair: (float(np.median(l)) if l else 1.0)
+                for pair, l in zip(self._var_pairs, self._var_fp)
+            }
             chosen = None
-            for i, fp in enumerate(fp_rates):       # candidates ascending → lowest first
-                if fp <= AUTOCAL_FP_TARGET:
-                    chosen = i
+            # Lowest var (most sensitive silhouette) wins first; at equal var,
+            # scales in preference order (0.7 = Phase-C winner, then 1.0, 0.5).
+            for v in sorted(AUTOCAL_VARTHRESH_CANDIDATES):
+                for s in AUTOCAL_SCALE_PREFERENCE:
+                    pair = (float(v), float(s))
+                    if pair in fp_by_pair and fp_by_pair[pair] <= AUTOCAL_FP_TARGET:
+                        chosen = pair
+                        break
+                if chosen:
                     break
-            if chosen is None:                       # none clean enough → most conservative
-                chosen = len(self._var_candidates) - 1
+            if chosen is None:
+                # Nothing clean enough → most conservative pair (max var,
+                # smallest scale = strongest noise averaging) + saturated flag.
+                chosen = (float(max(AUTOCAL_VARTHRESH_CANDIDATES)),
+                          float(min(AUTOCAL_SCALE_CANDIDATES)))
                 res.var_saturated = True
             res.var_ok = True
-            res.var_threshold = float(self._var_candidates[chosen])
-            res.var_fp_rate = fp_rates[chosen]
+            res.var_threshold = chosen[0]
+            res.mog2_scale = chosen[1]
+            res.var_fp_rate = fp_by_pair.get(chosen, 1.0)
+
+        # --- CLAHE clip from the measured noise (gamma was seeded pre-window) ---
+        res.clahe_value = seed_clahe(res.noise_sigma)
+
+        # --- scene report card (median over sampled raw frames) ---
+        if self._report_samples:
+            res.report_ok = True
+            res.focus_score = float(np.median(
+                [s["focus"] for s in self._report_samples]))
+            res.clip_high_pct = float(np.median(
+                [s["clip_high"] for s in self._report_samples]))
+            res.clip_low_pct = float(np.median(
+                [s["clip_low"] for s in self._report_samples]))
+            res.uniformity = float(np.median(
+                [s["uniformity"] for s in self._report_samples]))
+            tiles = [s["dark_tile"] for s in self._report_samples]
+            res.dark_tile = max(set(tiles), key=tiles.count)
 
         # --- report: exposure stability + FPS ---
         if self._brightness:

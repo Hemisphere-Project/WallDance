@@ -84,7 +84,7 @@ from tracker import DancerTracker
 from tracking_logger import _json_default
 from video_recorder import VideoRecorder, RecorderState
 from web_monitor import WebMonitor
-from calibration import SceneCalibrator
+from calibration import ExposureServo, SceneCalibrator, seed_gamma
 
 
 # IDS Camera support (optional, falls back to OpenCV)
@@ -288,6 +288,8 @@ class WallDanceApp:
         self._web_monitor: Optional[WebMonitor] = None  # smartphone focus/lighting monitor
         self._calibrator = SceneCalibrator()    # Go-Live scene calibration (P2)
         self._calibrating = False               # True while a calibration window is collecting
+        self._servo: Optional[ExposureServo] = None      # Calib1 phase A (live IDS only)
+        self._servo_result = None                        # ServoResult for the result dialog
         self.last_tracked: List[ScaledTrack] = []
         self._total_frame_count: int = 0  # Phase 0: cumulative frame counter (live mode)
         self._last_raw_frame: Optional[np.ndarray] = None  # Last raw camera frame for BG capture
@@ -1741,6 +1743,7 @@ class WallDanceApp:
             # Second press cancels a run that is still collecting (e.g. if
             # playback was paused before the window filled).
             self._calibrating = False
+            self._servo = None
             self._calibrator.cancel()
             self.processor.cancel_exclusion_calibration()
             if self.gui:
@@ -1764,18 +1767,78 @@ class WallDanceApp:
                 self.gui.show_toast("Start the camera or play a recording first",
                                     duration=3.0, color=(255, 180, 80))
             return
-        self._calibrator.start()
-        self.processor.start_exclusion_calibration()
+        # Calib1 phase A: exposure/gain servo — only when we can actually
+        # drive the sensor (live IDS camera, not playback).
+        self._servo = None
+        self._servo_result = None
+        live_ids = (
+            not self.recorder.is_playing
+            and self._use_unified_camera
+            and self.unified_camera is not None
+            and self.unified_camera.is_open
+            and self.unified_camera.source_type == CameraSource.IDS_PEAK
+        )
         self._calibrating = True
-        if self.gui:
-            self.gui.set_calibrate_status("Calibrating 0%")
-            self.gui.show_toast("Calibrating scene - keep dancers in frame",
-                                duration=2.5, color=(160, 200, 255))
+        if live_ids:
+            self._servo = ExposureServo(self.ids_exposure_us, self.ids_gain_db)
+            if self.gui:
+                self.gui.set_calibrate_status("Calibrating exposure...")
+                self.gui.show_toast("Calibrating - driving exposure/gain, keep the stage clear",
+                                    duration=2.5, color=(160, 200, 255))
+        else:
+            # No camera control: seed gamma from the current raw brightness so
+            # the var sweep sees the final motion-feed gamma, then collect.
+            raw = self._last_raw_frame
+            if raw is not None:
+                self._seed_gamma_for_calibration(float(raw.mean()))
+            self._calibrator.start()
+            self.processor.start_exclusion_calibration()
+            if self.gui:
+                self.gui.set_calibrate_status("Calibrating 0%")
+                self.gui.show_toast("Calibrating scene - keep dancers in frame",
+                                    duration=2.5, color=(160, 200, 255))
         print("[Calibrate] started "
-              f"({'playback' if self.recorder.is_playing else 'live'})")
+              f"({'playback' if self.recorder.is_playing else 'live'}"
+              f"{', exposure servo' if self._servo else ''})")
+
+    def _seed_gamma_for_calibration(self, brightness: float):
+        """Apply the gamma seed before the collection window (Calib1 phase B)."""
+        g = seed_gamma(brightness)
+        self.enhancer.gamma = g
+        self.enhancer._update_gamma_lut()
+        self.gui and self.gui.sync_slider('gamma', g)
+        print(f"[Calibrate] gamma seeded to {g:.2f} "
+              f"(raw brightness {brightness:.0f})")
 
     def _step_calibration(self, tracked, process_wall_ms):
         """Feed one processed frame to the active calibrator; finalize when ready."""
+        # Phase A: exposure/gain servo (live IDS). Commands are applied through
+        # the normal IDS callbacks so sliders/persistence stay in sync.
+        if self._servo is not None:
+            raw = self._last_raw_frame
+            if raw is not None:
+                b = float(raw.mean())
+                clip_pct = float(np.count_nonzero(raw >= 250)) / raw.size * 100.0
+                cmd = self._servo.feed(b, clip_pct)
+                if cmd is not None:
+                    kind, value = cmd
+                    if kind == "exposure":
+                        self._cb_ids_exposure_change(value)
+                        self.gui and self.gui.sync_slider("ids_exposure_us", self.ids_exposure_us)
+                    else:
+                        self._cb_ids_gain_change(value)
+                        self.gui and self.gui.sync_slider("ids_gain_db", self.ids_gain_db)
+                if self.gui:
+                    self.gui.set_calibrate_status(f"Calibrating exposure ({b:.0f})")
+            if self._servo.done:
+                self._servo_result = self._servo.result()
+                print("[Calibrate] " + self._servo_result.summary_line())
+                self._seed_gamma_for_calibration(self._servo_result.brightness)
+                self._servo = None
+                self._calibrator.start()
+                self.processor.start_exclusion_calibration()
+            return
+
         cal = self._calibrator
         if not cal.is_collecting:
             self._calibrating = False
@@ -1794,7 +1857,8 @@ class WallDanceApp:
         if noise_gray is None:
             noise_gray = raw  # motion detection disabled → fall back to raw
         brightness = float(raw.mean()) if raw is not None else None
-        cal.feed(noise_gray, heights, fps_sample, time.time(), brightness=brightness)
+        cal.feed(noise_gray, heights, fps_sample, time.time(),
+                 brightness=brightness, report_frame=raw)
         if self.gui:
             self.gui.set_calibrate_status(f"Calibrating {int(cal.progress() * 100)}%")
         if cal.ready:
@@ -1813,6 +1877,13 @@ class WallDanceApp:
                 self.gui.sync_slider('person_height', ph)
         if result.var_ok and result.var_threshold:
             self.processor.set_motion_var_threshold(result.var_threshold)
+        if result.var_ok and result.mog2_scale:
+            self.processor.set_motion_scale(result.mog2_scale)
+            self.gui and self.gui.sync_slider("mog2_scale", result.mog2_scale)
+        if result.clahe_value is not None:
+            self.enhancer.clahe_clip = float(result.clahe_value)
+            self.enhancer._update_clahe()
+            self.gui and self.gui.sync_slider("clahe", float(result.clahe_value))
         # P1.4: build + activate the auto exclusion mask from the same window.
         excl = self.processor.finish_exclusion_calibration()
         print(result.log_line())
@@ -1820,8 +1891,11 @@ class WallDanceApp:
         self._request_reprocess()
         if self.gui:
             self.gui.set_calibrate_status(None)
+            servo_line = (self._servo_result.summary_line() + "\n"
+                          if self._servo_result else "")
+            gamma_line = f"Gamma seeded: {self.enhancer.gamma:.2f}\n"
             self.gui.show_calibration_result_dialog(
-                result.summary() + "\n" + excl.summary_line(),
+                servo_line + gamma_line + result.summary() + "\n" + excl.summary_line(),
                 on_save=self._cb_save_safe_defaults)
 
     def _cb_visualization_toggle(self, name: str, enabled: bool):

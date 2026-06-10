@@ -79,14 +79,14 @@ def test_varthreshold_picks_lowest_on_clean_background():
 
 
 def test_varthreshold_selection_logic():
-    # White-box: inject per-candidate FP rates and check the decision.
+    # White-box: inject per-pair FP rates and check the joint decision.
     cal = SceneCalibrator(window_frames=2)
     cal.start()
-    cands = list(AUTOCAL_VARTHRESH_CANDIDATES)
-    # First two candidates noisy (above target), the third clean → pick the third.
+    cands = sorted(AUTOCAL_VARTHRESH_CANDIDATES)
+    # Single-scale injection: first two vars noisy, the third clean → third wins.
+    cal._var_pairs = [(v, 0.7) for v in cands]
     fp = [AUTOCAL_FP_TARGET * 5, AUTOCAL_FP_TARGET * 2,
           AUTOCAL_FP_TARGET * 0.5] + [0.0] * (len(cands) - 3)
-    cal._var_candidates = cands
     cal._var_fp = [[v] for v in fp]
     # satisfy readiness / brightness so compute() runs the rest cleanly
     cal._frames = cal.window_frames
@@ -94,22 +94,37 @@ def test_varthreshold_selection_logic():
 
     assert res.var_ok and not res.var_saturated
     assert res.var_threshold == pytest.approx(cands[2])
+    assert res.mog2_scale == pytest.approx(0.7)
     assert res.var_fp_rate == pytest.approx(fp[2])
 
 
-def test_varthreshold_saturates_when_none_clean():
-    # White-box: every candidate exceeds the FP target (scene too noisy for MOG2)
-    # → fall back to the highest candidate and flag it saturated.
+def test_var_scale_preference_order():
+    # At the same (lowest passing) var, the preferred scale (0.7) wins even if
+    # other scales also pass.
     cal = SceneCalibrator(window_frames=2)
     cal.start()
-    cands = list(AUTOCAL_VARTHRESH_CANDIDATES)
-    cal._var_candidates = cands
-    cal._var_fp = [[AUTOCAL_FP_TARGET * 3] for _ in cands]
+    v0 = sorted(AUTOCAL_VARTHRESH_CANDIDATES)[0]
+    cal._var_pairs = [(v0, 0.5), (v0, 0.7), (v0, 1.0)]
+    cal._var_fp = [[0.0], [0.0], [0.0]]
+    cal._frames = cal.window_frames
+    res = cal.compute()
+
+    assert res.var_threshold == pytest.approx(v0)
+    assert res.mog2_scale == pytest.approx(0.7)
+
+
+def test_varthreshold_saturates_when_none_clean():
+    # White-box: every pair exceeds the FP target (scene too noisy for MOG2)
+    # → fall back to the most conservative pair (max var, smallest scale).
+    cal = SceneCalibrator(window_frames=2)
+    cal.start()
+    cal._var_fp = [[AUTOCAL_FP_TARGET * 3] for _ in cal._var_pairs]
     cal._frames = cal.window_frames
     res = cal.compute()
 
     assert res.var_ok and res.var_saturated
-    assert res.var_threshold == pytest.approx(max(cands))
+    assert res.var_threshold == pytest.approx(max(AUTOCAL_VARTHRESH_CANDIDATES))
+    assert res.mog2_scale == pytest.approx(min(calibration.AUTOCAL_SCALE_CANDIDATES))
     assert res.var_fp_rate > AUTOCAL_FP_TARGET
 
 
@@ -254,3 +269,112 @@ def test_state_machine_guards():
     assert cal.is_collecting and not cal.ready
     cal.feed(np.zeros((8, 8), np.uint8), [200.0], 30.0, 0.0)
     assert cal.progress() == pytest.approx(1 / 3, abs=1e-6)
+
+
+# --------------------------------------------------------------------------
+# U3 — exposure servo (Calib1 phase A)
+# --------------------------------------------------------------------------
+from calibration import ExposureServo, seed_clahe, seed_gamma, scene_report_stats
+
+
+def _drive(servo, brightness, clip=0.0, max_frames=400):
+    """Feed a constant measurement until the servo is done; collect commands."""
+    cmds = []
+    for _ in range(max_frames):
+        c = servo.feed(brightness, clip)
+        if c is not None:
+            cmds.append(c)
+        if servo.done:
+            break
+    return cmds
+
+
+def test_servo_exposure_cap_is_blur_budget():
+    # 25 ms blur budget < 66.6 ms (15 FPS floor) → blur is the binding cap.
+    s = ExposureServo(exposure_us=10000.0, gain_db=0.0)
+    assert s.exposure_cap_us == pytest.approx(25000.0)
+
+
+def test_servo_dark_scene_exposure_first_then_gain():
+    s = ExposureServo(exposure_us=5000.0, gain_db=0.0)
+    cmds = _drive(s, brightness=5.0)
+    kinds = [k for k, _ in cmds]
+    # exposure rises to the cap before any gain command
+    first_gain = kinds.index("gain")
+    assert all(k == "exposure" for k in kinds[:first_gain])
+    assert s.exposure_us == pytest.approx(s.exposure_cap_us)
+    # still dark at limits → stopped with the add-IR note
+    assert s.done and not s.result().converged
+    assert "IR" in s.result().note
+
+
+def test_servo_clipping_backs_gain_off_first():
+    s = ExposureServo(exposure_us=20000.0, gain_db=12.0)
+    cmds = _drive(s, brightness=200.0, clip=5.0, max_frames=20)
+    assert cmds[0][0] == "gain"
+    assert cmds[0][1] == pytest.approx(9.0)
+
+
+def test_servo_converges_in_band():
+    s = ExposureServo(exposure_us=10000.0, gain_db=6.0)
+    cmds = _drive(s, brightness=70.0)
+    assert cmds == []
+    assert s.done and s.result().converged
+
+
+def test_servo_too_bright_drops_gain_then_exposure():
+    s = ExposureServo(exposure_us=10000.0, gain_db=3.0)
+    cmds = _drive(s, brightness=150.0, max_frames=200)
+    kinds = [k for k, _ in cmds]
+    assert kinds[0] == "gain"
+    assert "exposure" in kinds[1:]
+    assert s.exposure_us < 10000.0
+
+
+# --------------------------------------------------------------------------
+# U3 — gamma / CLAHE seeds
+# --------------------------------------------------------------------------
+def test_seed_gamma_mapping():
+    assert seed_gamma(5.0) == pytest.approx(2.2)      # near-black → clamp high
+    assert seed_gamma(110.0) == pytest.approx(1.0, abs=0.05)
+    assert seed_gamma(200.0) == pytest.approx(0.8)    # bright → clamp low
+    assert seed_gamma(30.0) > seed_gamma(60.0)        # darker → stronger gamma
+
+
+def test_seed_clahe_noise_aware():
+    assert seed_clahe(1.0) == pytest.approx(2.5)
+    assert seed_clahe(6.0) == pytest.approx(1.5)
+
+
+# --------------------------------------------------------------------------
+# U3 — scene report card
+# --------------------------------------------------------------------------
+def test_scene_report_stats_uniform_frame():
+    gray = np.full((100, 160), 128, dtype=np.uint8)
+    s = scene_report_stats(gray)
+    assert s["uniformity"] == pytest.approx(1.0, abs=0.01)
+    assert s["clip_high"] == 0.0 and s["clip_low"] == 0.0
+    assert s["focus"] == pytest.approx(0.0, abs=1e-6)  # flat frame = no edges
+
+
+def test_scene_report_stats_dark_corner_and_clip():
+    gray = np.full((100, 160), 128, dtype=np.uint8)
+    gray[80:, :40] = 2          # dark bottom-left corner
+    gray[:10, 120:] = 255       # clipped top-right strip
+    s = scene_report_stats(gray, grid=(4, 4))
+    assert s["clip_high"] > 0.0
+    assert s["uniformity"] < 0.5
+    col, row = s["dark_tile"]
+    assert col == 0 and row == 3  # bottom-left tile of the 4x4 grid
+
+
+def test_compute_fills_report_card():
+    cal = SceneCalibrator(window_frames=30)
+    cal.start()
+    gray = np.full((54, 96), 128, dtype=np.uint8)
+    for i in range(30):
+        cal.feed(gray, [], 30.0, float(i), report_frame=gray)
+    res = cal.compute()
+    assert res.report_ok
+    assert res.uniformity == pytest.approx(1.0, abs=0.01)
+    assert res.clahe_value is not None

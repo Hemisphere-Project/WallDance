@@ -416,9 +416,37 @@ AUTOCAL_EXPOSURE_STABLE_CV = 0.03   # Brightness σ/μ below this → exposure c
 # The lowest (most sensitive) candidate whose FP rate stays under the target
 # wins; if even the highest cannot, the highest is used and flagged "saturated"
 # (the scene is too noisy for MOG2 — fix IR / decouple CLAHE per audit #1).
-AUTOCAL_VARTHRESH_CANDIDATES = (16.0, 24.0, 32.0, 40.0, 56.0, 80.0, 120.0)  # ascending
+# 8.0 added per the TUNING Phase-C joint search (var=8 woke MOG2 cold-blob
+# recovery on slot 4); safe to offer now that the Phase-F frozen-ghost gate landed.
+AUTOCAL_VARTHRESH_CANDIDATES = (8.0, 16.0, 24.0, 32.0, 40.0, 56.0, 80.0, 120.0)  # ascending
 AUTOCAL_FP_TARGET = 0.005           # Max background median-tile foreground fraction (0.5%)
 AUTOCAL_FP_GRID = (8, 5)            # Grid for the robust background-FP estimate
+
+# --- Calib1 scene pass (UX_PLAN.md U3) --------------------------------------
+# varThreshold and mog2_scale interact (KNOBS.md finding #2: scale only pays
+# off once var wakes the silhouette), so the FP sweep runs jointly over
+# var × scale.  Preference order at equal sensitivity: 0.7 first (Phase-C
+# winner), then full-res fidelity, then the cheap/conservative 0.5.
+AUTOCAL_SCALE_CANDIDATES = (0.5, 0.7, 1.0)
+AUTOCAL_SCALE_PREFERENCE = (0.7, 1.0, 0.5)
+AUTOCAL_SWEEP_STRIDE = 2            # Score the var×scale models every Nth frame (CPU cost)
+# Exposure servo: drive IDS exposure first (up to the motion-blur budget),
+# then analog gain (Starvis2 = low read noise).  All provisional until the
+# annotated-footage loop re-fits them (UX_PLAN §6).
+AUTOCAL_BLUR_BUDGET_MS = 25.0       # Max exposure: motion-blur cap (NOT the FPS cap)
+AUTOCAL_SERVO_TARGET_BRIGHTNESS = 70.0  # Raw-scene mean luma target
+AUTOCAL_SERVO_TOLERANCE = 12.0      # Acceptable band around the target
+AUTOCAL_SERVO_CLIP_MAX_PCT = 0.5    # Back off when > this % of pixels >= 250
+AUTOCAL_SERVO_GAIN_MAX_DB = 36.0    # Analog-gain ceiling for the servo
+AUTOCAL_SERVO_SETTLE_FRAMES = 6     # Frames to let the sensor apply each command
+AUTOCAL_SERVO_MAX_STEPS = 30        # Hard stop for the servo loop
+# Gamma seed: chosen so the measured raw median maps near mid-gray; CLAHE is
+# reduced on noisy scenes (CLAHE amplifies noise — ROADMAP bug #1 lesson).
+AUTOCAL_GAMMA_TARGET = 110.0
+AUTOCAL_GAMMA_BOUNDS = (0.8, 2.2)
+AUTOCAL_CLAHE_DEFAULT = 2.5
+AUTOCAL_CLAHE_NOISY = 1.5
+AUTOCAL_CLAHE_NOISE_SIGMA = 4.0     # Noise σ above which the reduced clip is used
 
 # --- Auto exclusion mask (P1.4) -------------------------------------------
 # During calibration, grid cells that show persistent MOG2 motion but ~never a
