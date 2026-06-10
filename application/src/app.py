@@ -162,6 +162,9 @@ class WallDanceApp:
         self._pending_trt_switch: Optional[bool] = None  # True=switch to TRT, False=switch to PT
         self._pending_trt_build: Optional[str] = None  # Model name to build TRT engine for
         self._pending_model_for_trt_build: Optional[str] = None  # Model to switch to after TRT build prompt
+        # Intent vs reality: requested follows config/operator; the banner fires
+        # when requested but the loaded model fell back to PyTorch.
+        self._trt_requested: bool = USE_TENSORRT
 
         self.settings = ProcessingSettings(
             confidence=YOLO_CONFIDENCE,
@@ -169,7 +172,9 @@ class WallDanceApp:
             use_fp16=True,
             enhance_enabled=ENHANCE_ENABLED,
             enhance_lite=False,
-            enhance_force=False,
+            # Always-on semantics: enhancement applies whenever enabled; the
+            # legacy brightness gate is an expert-mode override.
+            enhance_force=True,
             person_height_px=PERSON_HEIGHT_PX,
             motion_sensitivity=MOTION_BRIDGE_SENSITIVITY,
             person_height_min_ratio=PERSON_HEIGHT_MIN_RATIO,
@@ -409,9 +414,9 @@ class WallDanceApp:
             "on_bg_sensitivity_change": self._cb_bg_sensitivity_change,
             "on_confidence_change": self._cb_confidence_change,
             "on_motion_sensitivity_change": self._cb_motion_sensitivity_change,
-            "on_tracking_mode_change": self._cb_tracking_mode_change,
             "on_model_change": self._cb_model_change,
             "on_trt_toggle": self._cb_trt_toggle,
+            "on_trt_rebuild": self._cb_trt_rebuild,
             "on_ids_ratio_change": self._cb_ids_ratio_change,
             "on_ids_gain_change": self._cb_ids_gain_change,
             "on_ids_exposure_change": self._cb_ids_exposure_change,
@@ -431,12 +436,7 @@ class WallDanceApp:
             "on_preview_cap_toggle": self._cb_preview_cap_toggle,
             "on_preview_scale_change": self._cb_preview_scale_change,
             "on_roi_toggle": self._cb_roi_toggle,
-            "on_roi_edit_toggle": self._cb_roi_edit_toggle,
             "on_roi_reset": self._cb_roi_reset,
-            "on_roi_x_change": self._cb_roi_x_change,
-            "on_roi_y_change": self._cb_roi_y_change,
-            "on_roi_w_change": self._cb_roi_w_change,
-            "on_roi_h_change": self._cb_roi_h_change,
             "on_save_config": self._cb_save_config,
             "on_save_as_config": self._cb_save_as_config,
             "on_save_safe_defaults": self._cb_save_safe_defaults,
@@ -553,11 +553,13 @@ class WallDanceApp:
         if not self.gui:
             return
         self.gui.sync_checkbox("roi_enable", self.settings.roi_enabled)
-        self.gui.sync_checkbox("roi_edit", self.roi_edit_mode)
-        self.gui.sync_input("roi_x", self.settings.roi_x)
-        self.gui.sync_input("roi_y", self.settings.roi_y)
-        self.gui.sync_input("roi_w", self.settings.roi_w)
-        self.gui.sync_input("roi_h", self.settings.roi_h)
+        self.gui.update_roi_rect_text(
+            self.settings.roi_x,
+            self.settings.roi_y,
+            self.settings.roi_w,
+            self.settings.roi_h,
+            edit_mode=self.roi_edit_mode,
+        )
         self._update_imgsz_roi_warning()
 
     def _get_recommended_imgsz_for_roi(self) -> tuple[int, int, int, int] | None:
@@ -923,7 +925,9 @@ class WallDanceApp:
         return {
             "camera_source": self.camera.state.source,
             "model": self.current_model_name,
-            "use_tensorrt": self.model_manager.is_using_tensorrt(),
+            # Save the *intent* (not the loaded state) so a fallback session
+            # doesn't silently persist TRT=off and mute the alert banner.
+            "use_tensorrt": self._trt_requested,
             "confidence": self.settings.confidence,
             "yolo_imgsz": self.settings.imgsz,
             "fp16": self.settings.use_fp16,
@@ -1039,6 +1043,7 @@ class WallDanceApp:
         # 5. Extract model info before applying config
         model_name = config.get("model", self.current_model_name)
         use_trt = config.get("use_tensorrt", False)
+        self._trt_requested = bool(use_trt)
         new_imgsz = config.get("yolo_imgsz", self.settings.imgsz)
         base_name = model_name.replace('.pt', '').replace('.engine', '')
         
@@ -1075,7 +1080,9 @@ class WallDanceApp:
                         print(f"[Project Switch] User declined TRT build, using PyTorch")
                         force_pt = True
                         use_trt = False
+                        self._trt_requested = False
                 else:
+                    # Keep _trt_requested True: the banner must flag the fallback
                     print(f"[Project Switch] TRT not available, using PyTorch")
                     force_pt = True
                     use_trt = False
@@ -1122,6 +1129,7 @@ class WallDanceApp:
         if self.gui:
             self.gui.sync_combo("model", base_name)
             self.gui.set_trt_checkbox(self.model_manager.is_using_tensorrt())
+            self._update_trt_banner()
             self.gui.update_camera_sources(self._camera_ui_sources(), self.camera.state.source, self.camera.state.unavailable)
             
             cam_type_str = ""
@@ -1227,7 +1235,6 @@ class WallDanceApp:
                 mode = TrackingMode.YOLO_FIRST
             self.tracker.set_tracking_mode(mode)
             self.processor.set_tracking_mode(mode)
-            self.gui and self.gui.sync_combo("tracking_mode", "Motion First" if mode == TrackingMode.MOTION_FIRST else "YOLO First")
         # Load tracker_max_age AFTER tracking_mode so user value wins
         if "tracker_max_age" in config:
             self.tracker.max_age = config["tracker_max_age"]
@@ -1448,13 +1455,6 @@ class WallDanceApp:
     def _cb_motion_sensitivity_change(self, value: float):
         self.processor.set_motion_sensitivity(value)
         print(f"Motion bridge sensitivity: {value:.2f}")
-        self._request_reprocess()
-
-    def _cb_tracking_mode_change(self, mode_str: str):
-        mode = TrackingMode(mode_str)
-        self.tracker.set_tracking_mode(mode)
-        self.processor.set_tracking_mode(mode)
-        print(f"Tracking mode: {mode.value}")
         self._request_reprocess()
 
     def _cb_camera_change(self, value: str):
@@ -2136,6 +2136,7 @@ class WallDanceApp:
                 else:
                     print("User declined TRT build at startup, using PyTorch")
                     force_pt_default = True
+                    self._trt_requested = False
             elif not is_tensorrt_available():
                 force_pt_default = True
         if not self._load_model_with_progress(YOLO_MODEL, force_pt=force_pt_default):
@@ -2144,6 +2145,7 @@ class WallDanceApp:
         if self.gui:
             self.gui.sync_combo("model", self.current_model_name)
             self.gui.set_trt_checkbox(self.model_manager.is_using_tensorrt())
+        self._update_trt_banner()
         self._update_topbar_state()
         return True
 
@@ -2279,13 +2281,15 @@ class WallDanceApp:
         - Switch to .pt model
         """
         base_name = self.current_model_name
-        
+        self._trt_requested = bool(enabled)
+
         if enabled:
             # User wants to enable TensorRT
             from model_manager import is_tensorrt_available
-            
+
             if not is_tensorrt_available():
                 print("TensorRT not available on this system")
+                self._trt_requested = False
                 self.gui.set_trt_checkbox(False)
                 self.gui.show_toast("TensorRT not available", duration=3.0, color=(255, 100, 100))
                 return
@@ -2306,6 +2310,39 @@ class WallDanceApp:
             self._pending_trt_switch = False
             self._pending_model_switch = base_name
             self._model_loading = True  # Block processing until model is reloaded
+
+    def _cb_trt_rebuild(self):
+        """Banner button: force a fresh TensorRT engine export for the current model."""
+        from model_manager import is_tensorrt_available
+        base_name = self.current_model_name
+        if not is_tensorrt_available():
+            self.gui and self.gui.show_toast(
+                "TensorRT is not installed on this system", duration=4.0, color=(255, 100, 100))
+            return
+        engine_path = self.model_manager.get_engine_path(base_name)
+        if os.path.exists(engine_path):
+            try:
+                os.remove(engine_path)
+                print(f"[TRT Rebuild] Removed stale engine: {engine_path}")
+            except OSError as e:
+                print(f"[TRT Rebuild] Could not remove {engine_path}: {e}")
+        self._trt_requested = True
+        self.model_manager.use_tensorrt = True
+        if self.gui:
+            self.gui.update_trt_banner("Rebuilding TensorRT engine...", exporting=True)
+        self._pending_trt_switch = True
+        self._pending_model_switch = base_name
+        self._model_loading = True
+
+    def _update_trt_banner(self):
+        """Show the red preview banner when TRT was requested but isn't running."""
+        if not self.gui:
+            return
+        if not self._trt_requested or self.model_manager.is_using_tensorrt():
+            self.gui.update_trt_banner(None)
+            return
+        reason = self.model_manager.get_tensorrt_fallback_reason() or "engine not loaded"
+        self.gui.update_trt_banner(f"TensorRT OFF - running PyTorch ({reason})")
 
     def _cb_ids_ratio_change(self, value: float):
         """Handle IDS crop-ratio slider change."""
@@ -2587,27 +2624,30 @@ class WallDanceApp:
         if enabled and not self.settings.roi_enabled:
             self.settings.roi_enabled = True
         self.roi_edit_mode = bool(enabled) and self.settings.roi_enabled
+        if not self.roi_edit_mode:
+            self._roi_drag_active = False
+            self._roi_drag_mode = None
+            self._roi_drag_origin = None
+            self._roi_drag_start_rect = None
         self._sync_roi_ui()
         if self.gui:
             message = "ROI edit mode: drag on preview" if self.roi_edit_mode else "ROI edit mode: off"
             self.gui.show_toast(message, duration=2.0, color=(120, 200, 255))
 
+    def _handle_preview_double_click(self, sender=None, app_data=None):
+        """Double-click on the preview toggles ROI edit mode."""
+        if app_data != dpg.mvMouseButton_Left:
+            return
+        if self.gui and self.gui.project_picker_visible():
+            return
+        if self._get_preview_mouse_point() is None:
+            return
+        self._cb_roi_edit_toggle(not self.roi_edit_mode)
+
     def _cb_roi_reset(self):
         frame_w, frame_h = self._roi_source_size
         self._set_roi_rect(0, 0, frame_w, frame_h)
         print("ROI reset to full frame")
-
-    def _cb_roi_x_change(self, value: int):
-        self._set_roi_rect(value, self.settings.roi_y, self.settings.roi_w, self.settings.roi_h)
-
-    def _cb_roi_y_change(self, value: int):
-        self._set_roi_rect(self.settings.roi_x, value, self.settings.roi_w, self.settings.roi_h)
-
-    def _cb_roi_w_change(self, value: int):
-        self._set_roi_rect(self.settings.roi_x, self.settings.roi_y, value, self.settings.roi_h)
-
-    def _cb_roi_h_change(self, value: int):
-        self._set_roi_rect(self.settings.roi_x, self.settings.roi_y, self.settings.roi_w, value)
 
     # ------------------------------------------------------------------
     # Recording callbacks
@@ -2992,7 +3032,13 @@ class WallDanceApp:
                     self.gui.hide_project_picker()
                     self._cb_project_launch(sel)
             return
-        if key == dpg.mvKey_E:
+        ctrl_down = dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
+        shift_down = dpg.is_key_down(dpg.mvKey_LShift) or dpg.is_key_down(dpg.mvKey_RShift)
+        if key == dpg.mvKey_E and ctrl_down and shift_down:
+            if self.gui:
+                self.gui.set_expert_mode(not self.gui.expert_mode)
+                print(f"Expert mode: {'ON' if self.gui.expert_mode else 'OFF'}")
+        elif key == dpg.mvKey_E and not ctrl_down:
             self.settings.enhance_enabled = not self.settings.enhance_enabled
             self.gui and self.gui.sync_checkbox("enhance", self.settings.enhance_enabled)
             print(f"Enhancement: {'ON' if self.settings.enhance_enabled else 'OFF'}")
@@ -3328,6 +3374,7 @@ class WallDanceApp:
             dpg.add_mouse_down_handler(callback=self._handle_roi_mouse_down)
             dpg.add_mouse_move_handler(callback=self._handle_roi_mouse_move)
             dpg.add_mouse_release_handler(callback=self._handle_roi_mouse_up)
+            dpg.add_mouse_double_click_handler(callback=self._handle_preview_double_click)
         dpg.show_viewport()
         self._sync_roi_ui()
         
@@ -3500,6 +3547,7 @@ class WallDanceApp:
                     if self.gui:
                         is_trt = self.model_manager.is_using_tensorrt()
                         self.gui.set_trt_checkbox(is_trt)
+                self._update_trt_banner()
                 continue  # Restart loop after model switch
             
             # Skip processing while model is loading/switching

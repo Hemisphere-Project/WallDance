@@ -445,7 +445,7 @@ def build_top_bar(gui: Any):
 
 
 def build_video_panel(gui: Any):
-    """Video preview area - just the image, dynamically sized."""
+    """Video preview area - alert banner (hidden) + image, dynamically sized."""
     with dpg.child_window(
         width=gui.video_width + scaled(8),
         height=gui._middle_height,
@@ -453,6 +453,25 @@ def build_video_panel(gui: Any):
         no_scrollbar=True,
         tag="video_panel",
     ):
+        with dpg.child_window(
+            tag="trt_banner_window",
+            width=gui.video_width,
+            height=scaled(34),
+            border=False,
+            no_scrollbar=True,
+            show=False,
+        ):
+            with dpg.group(horizontal=True):
+                dpg.add_text("", tag="trt_banner_text", color=(255, 230, 230))
+                dpg.add_button(
+                    label="Rebuild TRT",
+                    tag="trt_banner_btn",
+                    callback=gui._on_trt_rebuild,
+                )
+        with dpg.theme() as _trt_banner_theme:
+            with dpg.theme_component(dpg.mvChildWindow):
+                dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (130, 25, 25))
+        dpg.bind_item_theme("trt_banner_window", _trt_banner_theme)
         dpg.add_image(
             gui.frame_texture_tag,
             width=gui.video_width,
@@ -677,20 +696,6 @@ def build_control_panel(gui: Any):
 def build_detection_section(gui: Any):
     """Detection settings - person height, confidence, max dancers."""
     with dpg.collapsing_header(label="Detection", default_open=False, tag="section_detection"):
-        # Tracking Mode
-        dpg.add_text("Tracking Mode", color=(180, 180, 180))
-        tracking_mode_combo = dpg.add_combo(
-            items=["YOLO First", "Motion First"],
-            tag="tracking_mode_combo",
-            default_value="Motion First" if gui.config.get("tracking_mode", "yolo_first") == "motion_first" else "YOLO First",
-            width=scaled(150),
-            callback=gui._on_tracking_mode_change,
-        )
-        with dpg.tooltip(tracking_mode_combo):
-            dpg.add_text("YOLO First: YOLO detects dancers, motion\nblobs only bridge gaps when YOLO drops.\n\nMotion First: motion blobs are primary\ndetections alongside YOLO. Better for\nweird angles, painted backgrounds, or\npartial body visibility.")
-
-        dpg.add_spacer(height=scaled(6))
-
         # Person Height
         dpg.add_text("Person Height", color=(180, 180, 180))
         with dpg.group(horizontal=True):
@@ -920,37 +925,43 @@ def build_enhancement_section(gui: Any):
     """Enhancement settings - open by default."""
     with dpg.collapsing_header(label="Enhancement", default_open=False, tag="section_enhancement", closable=False):
         with dpg.group(horizontal=True):
-            dpg.add_checkbox(
+            enable_chk = dpg.add_checkbox(
                 label="Enable",
                 tag="adv_enhance_checkbox",
                 default_value=gui.config.get("enhance_enabled", False),
                 callback=gui._on_enhance_toggle,
             )
-            dpg.add_checkbox(
-                label="Force",
-                tag="adv_enhance_force_checkbox",
-                default_value=gui.config.get("enhance_force", False),
-                callback=gui._on_enhance_force_toggle,
-            )
-            dpg.add_checkbox(
+            grey_chk = dpg.add_checkbox(
                 label="Greyscale",
                 tag="adv_greyscale_checkbox",
                 default_value=gui.config.get("greyscale", False),
                 callback=gui._on_greyscale_toggle,
             )
-        
-        dpg.add_text("Brightness Threshold", color=(180, 180, 180))
-        with dpg.group(horizontal=True):
-            dpg.add_slider_int(
-                tag="adv_brightness_threshold_slider",
-                default_value=gui.config.get("brightness_threshold", 60),
-                min_value=0,
-                max_value=255,
-                width=scaled(-90),
-                callback=gui._on_brightness_threshold_change,
+        with dpg.tooltip(enable_chk):
+            dpg.add_text("A/B toggle: enhancement (gamma + CLAHE)\nis always applied when enabled.")
+        with dpg.tooltip(grey_chk):
+            dpg.add_text("Process in greyscale. Matches the IR camera;\nalso useful to simulate it on color footage.")
+
+        # Expert-only: legacy brightness-gated auto-enhance controls.
+        with dpg.group(tag="enhance_expert_group", show=gui.expert_mode):
+            dpg.add_checkbox(
+                label="Force (skip brightness gate)",
+                tag="adv_enhance_force_checkbox",
+                default_value=gui.config.get("enhance_force", True),
+                callback=gui._on_enhance_force_toggle,
             )
-            _add_slider_row("adv_brightness_threshold_slider", 5, 0, 255, gui._on_brightness_threshold_change)
-        
+            dpg.add_text("Brightness Threshold", color=(180, 180, 180))
+            with dpg.group(horizontal=True):
+                dpg.add_slider_int(
+                    tag="adv_brightness_threshold_slider",
+                    default_value=gui.config.get("brightness_threshold", 60),
+                    min_value=0,
+                    max_value=255,
+                    width=scaled(-90),
+                    callback=gui._on_brightness_threshold_change,
+                )
+                _add_slider_row("adv_brightness_threshold_slider", 5, 0, 255, gui._on_brightness_threshold_change)
+
         dpg.add_text("CLAHE Clip", color=(180, 180, 180))
         with dpg.group(horizontal=True):
             dpg.add_slider_float(
@@ -979,8 +990,8 @@ def build_enhancement_section(gui: Any):
 
 
 def build_background_section(gui: Any):
-    """Background subtraction settings."""
-    with dpg.collapsing_header(label="Background", default_open=False, tag="section_background", closable=False):
+    """Background subtraction settings (expert-only; superseded by MOG2 + calibration)."""
+    with dpg.collapsing_header(label="Background", default_open=False, tag="section_background", closable=False, show=gui.expert_mode):
         # Row 1: Capture / Enable / Clear buttons
         with dpg.group(horizontal=True):
             dpg.add_button(
@@ -1146,58 +1157,23 @@ def build_roi_section(gui: Any):
                 default_value=gui.config.get("roi_enabled", False),
                 callback=gui._on_roi_toggle,
             )
-            dpg.add_checkbox(
-                label="Edit On Preview",
-                tag="adv_roi_edit_checkbox",
-                default_value=gui.config.get("roi_edit_mode", False),
-                callback=gui._on_roi_edit_toggle,
-            )
             dpg.add_button(
                 label="Reset",
                 tag="adv_roi_reset_btn",
                 callback=gui._on_roi_reset,
                 width=scaled(60),
             )
-        dpg.add_text("ROI Rect (full-frame px)", color=(180, 180, 180))
-        with dpg.group(horizontal=True):
-            dpg.add_input_int(
-                tag="adv_roi_x_input",
-                default_value=gui.config.get("roi_x", 0),
-                step=1,
-                width=scaled(72),
-                callback=gui._on_roi_x_change,
-            )
-            dpg.add_input_int(
-                tag="adv_roi_y_input",
-                default_value=gui.config.get("roi_y", 0),
-                step=1,
-                width=scaled(72),
-                callback=gui._on_roi_y_change,
-            )
-            dpg.add_input_int(
-                tag="adv_roi_w_input",
-                default_value=gui.config.get("roi_w", gui.config.get("camera_width", 1920)),
-                step=1,
-                width=scaled(72),
-                callback=gui._on_roi_w_change,
-            )
-            dpg.add_input_int(
-                tag="adv_roi_h_input",
-                default_value=gui.config.get("roi_h", gui.config.get("camera_height", 1080)),
-                step=1,
-                width=scaled(72),
-                callback=gui._on_roi_h_change,
-            )
-        with dpg.group(horizontal=True):
-            dpg.add_text("X", color=(120, 120, 120))
-            dpg.add_spacer(width=scaled(54))
-            dpg.add_text("Y", color=(120, 120, 120))
-            dpg.add_spacer(width=scaled(54))
-            dpg.add_text("W", color=(120, 120, 120))
-            dpg.add_spacer(width=scaled(54))
-            dpg.add_text("H", color=(120, 120, 120))
+        roi_x = gui.config.get("roi_x", 0)
+        roi_y = gui.config.get("roi_y", 0)
+        roi_w = gui.config.get("roi_w", gui.config.get("camera_width", 1920))
+        roi_h = gui.config.get("roi_h", gui.config.get("camera_height", 1080))
         dpg.add_text(
-            "Enable edit mode, then drag in the preview to draw, move, or resize the ROI.",
+            f"{roi_x},{roi_y}  {roi_w}x{roi_h}",
+            tag="roi_rect_text",
+            color=(150, 150, 150),
+        )
+        dpg.add_text(
+            "Double-click the preview to toggle edit mode, then drag to draw, move, or resize.",
             color=(120, 120, 120),
             wrap=scaled(300),
         )

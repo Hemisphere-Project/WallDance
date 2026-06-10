@@ -263,7 +263,11 @@ class WallDanceGUI:
         
         # DPI scaling for high-resolution displays (4K)
         self._dpi_scale = get_display_scale()
-        
+
+        # Expert mode: reveals developer-grade knob panels (Ctrl+Shift+E or WD_EXPERT=1).
+        self.expert_mode = os.environ.get("WD_EXPERT", "0") == "1"
+        self._expert_only_tags = ["section_background", "enhance_expert_group"]
+
         # Initialize DearPyGui
         dpg.create_context()
         
@@ -386,30 +390,31 @@ class WallDanceGUI:
         if 'on_roi_toggle' in self.callbacks:
             self.callbacks['on_roi_toggle'](value)
 
-    def _on_roi_edit_toggle(self, sender, value):
-        if 'on_roi_edit_toggle' in self.callbacks:
-            self.callbacks['on_roi_edit_toggle'](value)
-
     def _on_roi_reset(self, sender=None, value=None):
         if 'on_roi_reset' in self.callbacks:
             self.callbacks['on_roi_reset']()
 
-    def _on_roi_x_change(self, sender, value):
-        if 'on_roi_x_change' in self.callbacks:
-            self.callbacks['on_roi_x_change'](int(value))
+    def update_roi_rect_text(self, x: int, y: int, w: int, h: int, edit_mode: bool = False):
+        """Update the read-only ROI rect display (replaces the numeric inputs)."""
+        if not dpg.does_item_exist("roi_rect_text"):
+            return
+        suffix = "  (editing)" if edit_mode else ""
+        dpg.set_value("roi_rect_text", f"{x},{y}  {w}x{h}{suffix}")
+        dpg.configure_item("roi_rect_text", color=(80, 220, 120) if edit_mode else (150, 150, 150))
 
-    def _on_roi_y_change(self, sender, value):
-        if 'on_roi_y_change' in self.callbacks:
-            self.callbacks['on_roi_y_change'](int(value))
+    def set_expert_mode(self, enabled: bool):
+        """Show/hide developer-grade knob panels."""
+        self.expert_mode = bool(enabled)
+        for tag in self._expert_only_tags:
+            if dpg.does_item_exist(tag):
+                dpg.configure_item(tag, show=self.expert_mode)
+        self.show_toast(
+            "Expert mode ON" if self.expert_mode else "Expert mode OFF",
+            duration=2.0,
+            color=(255, 200, 100) if self.expert_mode else (150, 150, 150),
+        )
 
-    def _on_roi_w_change(self, sender, value):
-        if 'on_roi_w_change' in self.callbacks:
-            self.callbacks['on_roi_w_change'](int(value))
 
-    def _on_roi_h_change(self, sender, value):
-        if 'on_roi_h_change' in self.callbacks:
-            self.callbacks['on_roi_h_change'](int(value))
-    
     def _update_preview_row_state(self, enabled: bool):
         """Grey out PREVIEW row controls when disabled."""
         if dpg.does_item_exist("preview_tex_text"):
@@ -456,11 +461,6 @@ class WallDanceGUI:
         if 'on_motion_sensitivity_change' in self.callbacks:
             self.callbacks['on_motion_sensitivity_change'](float(value))
 
-    def _on_tracking_mode_change(self, sender, value):
-        if 'on_tracking_mode_change' in self.callbacks:
-            mode_str = "motion_first" if value == "Motion First" else "yolo_first"
-            self.callbacks['on_tracking_mode_change'](mode_str)
-    
     def _on_max_persons_change(self, sender, value):
         if 'on_max_persons_change' in self.callbacks:
             self.callbacks['on_max_persons_change'](value)
@@ -472,6 +472,26 @@ class WallDanceGUI:
     def _on_trt_toggle(self, sender, value):
         if 'on_trt_toggle' in self.callbacks:
             self.callbacks['on_trt_toggle'](value)
+
+    def _on_trt_rebuild(self, sender=None, value=None):
+        if 'on_trt_rebuild' in self.callbacks:
+            self.callbacks['on_trt_rebuild']()
+
+    def update_trt_banner(self, message: Optional[str], exporting: bool = False):
+        """Red alert band over the preview when TensorRT was requested but is not in use.
+
+        message=None hides the banner; exporting=True shows a progress notice
+        (no rebuild button).
+        """
+        if not dpg.does_item_exist("trt_banner_window"):
+            return
+        if not message:
+            dpg.configure_item("trt_banner_window", show=False)
+            return
+        dpg.set_value("trt_banner_text", message)
+        dpg.configure_item("trt_banner_text", color=(255, 220, 140) if exporting else (255, 230, 230))
+        dpg.configure_item("trt_banner_btn", show=not exporting)
+        dpg.configure_item("trt_banner_window", show=True)
     
     def _on_ids_ratio_change(self, sender, value):
         if 'on_ids_ratio_change' in self.callbacks:
@@ -1410,7 +1430,6 @@ class WallDanceGUI:
             'osc': ['osc_checkbox'],
             'bg_enable': ['bg_enable_checkbox'],
             'roi_enable': ['adv_roi_enable_checkbox'],
-            'roi_edit': ['adv_roi_edit_checkbox'],
         }
         # Visualization toggles - update toolbar button themes instead of checkboxes
         vis_toggles = ['skeleton', 'keypoints', 'bbox', 'trails', 'ids']
@@ -1493,7 +1512,6 @@ class WallDanceGUI:
             'model': ['adv_model_combo'],
             'imgsz': ['adv_imgsz_combo'],
             'camera': ['adv_camera_combo'],
-            'tracking_mode': ['tracking_mode_combo'],
         }
         if name in tag_map:
             for tag in tag_map[name]:
@@ -1629,12 +1647,8 @@ class WallDanceGUI:
         tag_map = {
             'osc_ip': 'osc_ip_input',
             'osc_port': 'osc_port_input',
-            'roi_x': 'adv_roi_x_input',
-            'roi_y': 'adv_roi_y_input',
-            'roi_w': 'adv_roi_w_input',
-            'roi_h': 'adv_roi_h_input',
         }
-        if name in tag_map:
+        if name in tag_map and dpg.does_item_exist(tag_map[name]):
             dpg.set_value(tag_map[name], value)
     
     # === Top Bar Methods ===
