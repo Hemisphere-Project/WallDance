@@ -47,3 +47,5 @@ application/tests/cache/
 application/tests/tuned_*.json
 # TUNING Phase D: overlay renders (large, regenerable)
 application/tests/overlays/
+# TUNING Phase E: sensitivity sweep output (regenerable; numbers live in docs/KNOBS.md)
+application/tests/sensitivity_result.json

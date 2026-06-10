@@ -85,3 +85,21 @@ def test_default_space_is_post_yolo_only():
     # so a default search reuses one cache per scenario.
     import detect_cache
     assert set(tune.DEFAULT_SPACE).isdisjoint(detect_cache.REBUILD_KEYS)
+
+
+# --------------------------------------------------------------------------- #
+# Phase E1 sensitivity sweep (OAT) — uses the same FakeTuner
+# --------------------------------------------------------------------------- #
+def test_sensitivity_ranks_high_impact_knob_first():
+    import sensitivity
+    # 'a' moves the score across [0..3]^2=9; 'b' is inert (optimum constant).
+    space = {"a": [0, 1, 2, 3], "b": [0, 1, 2, 3]}
+    opt = {"a": 3, "b": 0}                 # score = (a-3)^2 + (b-0)^2
+    tuner = FakeTuner(opt, base={"a": 0, "b": 0})
+    base_mean, rows = sensitivity.sweep(tuner, space)
+    assert rows[0]["knob"] == "a"          # highest impact ranked first
+    assert rows[0]["best_value"] == 3
+    assert rows[-1]["knob"] == "b"
+    # 'b' from baseline 0 is already optimal -> no improvement available
+    b_row = next(r for r in rows if r["knob"] == "b")
+    assert b_row["improvement_vs_baseline"] == pytest.approx(0.0)
