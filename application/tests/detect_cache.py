@@ -188,12 +188,17 @@ def replay_from_cache(
     config: dict,
     *,
     log_dir: Optional[str] = None,
+    reuse_grays: bool = False,
 ) -> Dict:
     """Re-run gate + motion + tracker from a cache, skipping YOLO.
 
     ``config`` supplies the tunable (post-YOLO) params; the YOLO front-end is
     already baked into the cache.  Returns the same summary dict (incl.
     ``per_frame``) as ``replay.replay_recording`` so it is directly comparable.
+
+    ``reuse_grays``: memoise the PNG-decoded motion grays on the cache dict
+    (``cache["_decoded"]``) so a search re-using one cache across many evals pays
+    the ~12 ms/frame imdecode once.  Costs ~one extra decoded gray set in RAM.
     """
     import replay
     meta = cache["meta"]
@@ -205,9 +210,17 @@ def replay_from_cache(
     tmp = log_dir or tempfile.mkdtemp(prefix="wd_cachereplay_")
     proc.tracker.logger.start_session(tmp)
 
+    grays = None
+    if reuse_grays:
+        grays = cache.get("_decoded")
+        if grays is None:
+            grays = [cv2.imdecode(np.frombuffer(fr["gray_png"], np.uint8),
+                                  cv2.IMREAD_GRAYSCALE) for fr in cache["frames"]]
+            cache["_decoded"] = grays
+
     per_frame = []
     for i, fr in enumerate(cache["frames"]):
-        gray = cv2.imdecode(
+        gray = grays[i] if grays is not None else cv2.imdecode(
             np.frombuffer(fr["gray_png"], np.uint8), cv2.IMREAD_GRAYSCALE)
         proc._feed_motion_detectors(gray)
         dets = [(k, c, b) for (k, c, b) in fr["dets"]]

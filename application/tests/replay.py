@@ -109,6 +109,8 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
         YOLO_CONFIDENCE, PERSON_HEIGHT_PX, PERSON_HEIGHT_MIN_RATIO,
         PERSON_HEIGHT_MAX_RATIO, BRIGHTNESS_THRESHOLD, ENHANCE_ENABLED,
         MOTION_BRIDGE_SENSITIVITY, TrackingMode, AUTOCAL_EXCL_GRID,
+        MOTION_CROSSVAL_CONFIDENT_MIN_KPTS, MOTION_CROSSVAL_CONFIDENT_MIN_CONF,
+        MOTION_CROSSVAL_FRAMEDIFF_MIN_RATIO,
     )
 
     if load_model:
@@ -131,6 +133,11 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
         motion_sensitivity=config.get("motion_sensitivity", MOTION_BRIDGE_SENSITIVITY),
         person_height_min_ratio=config.get("person_height_min_ratio", PERSON_HEIGHT_MIN_RATIO),
         person_height_max_ratio=config.get("person_height_max_ratio", PERSON_HEIGHT_MAX_RATIO),
+        # θ_s / θ_m scored-gate levers (TUNING.md's "main levers"; defaults from
+        # config.py).  Surfaced as config keys so the Phase C search can set them.
+        crossval_skel_min_kpts=config.get("crossval_skel_min_kpts", MOTION_CROSSVAL_CONFIDENT_MIN_KPTS),
+        crossval_skel_min_conf=config.get("crossval_skel_min_conf", MOTION_CROSSVAL_CONFIDENT_MIN_CONF),
+        crossval_motion_min_ratio=config.get("crossval_motion_min_ratio", MOTION_CROSSVAL_FRAMEDIFF_MIN_RATIO),
         brightness_threshold=config.get("brightness_threshold", BRIGHTNESS_THRESHOLD),
         denoise_strength=config.get("denoise_strength", 0.0),
         greyscale=config.get("greyscale", False),
@@ -287,6 +294,28 @@ def _summary_from_log(
     }
 
 
+def parse_set_value(v: str):
+    """Parse a --set value: JSON first (ints/floats/bools/lists), else raw str.
+
+    So ``--set mog2_var_threshold=20`` -> int, ``=0.02`` -> float,
+    ``=true`` -> bool, ``=[16,10]`` -> list, ``=motion_first`` -> str.
+    """
+    try:
+        return json.loads(v)
+    except (ValueError, TypeError):
+        return v
+
+
+def apply_overrides(config: dict, sets: list) -> dict:
+    """Apply ``KEY=VALUE`` overrides (from --set) onto a config dict, in place."""
+    for kv in sets or []:
+        key, sep, val = kv.partition("=")
+        if not sep:
+            raise SystemExit(f"--set expects KEY=VALUE, got: {kv!r}")
+        config[key.strip()] = parse_set_value(val.strip())
+    return config
+
+
 def main():
     ap = argparse.ArgumentParser(description="Replay a recording -> metric summary")
     ap.add_argument("--project", default=None,
@@ -302,7 +331,11 @@ def main():
     ap.add_argument("--start", type=int, default=0)
     ap.add_argument("--frames", type=int, default=None)
     ap.add_argument("--var", type=float, default=None,
-                    help="override mog2_var_threshold (Stage 3c measurement)")
+                    help="override mog2_var_threshold (shorthand for --set mog2_var_threshold=)")
+    ap.add_argument("--set", dest="sets", action="append", default=[], metavar="KEY=VALUE",
+                    help="override any config key (repeatable); value parsed as JSON then str. "
+                         "Levers: crossval_motion_min_ratio/skel_min_kpts/skel_min_conf, "
+                         "mog2_var_threshold/scale, person_height_px, tracker_max_age/smoothing")
     ap.add_argument("--out", default=None, help="write lean JSON summary to this path")
     ap.add_argument("--timeline", default=None,
                     help="write the per-frame reported-count timeline to this path")
@@ -332,6 +365,7 @@ def main():
     config = _latest_config(args.project) or {}
     if args.var is not None:
         config["mog2_var_threshold"] = args.var
+    apply_overrides(config, args.sets)
     video = args.video or _find_recording(args.project, args.slot)
     if not video:
         sys.exit(f"no recording found for {args.project} slot {args.slot}")
