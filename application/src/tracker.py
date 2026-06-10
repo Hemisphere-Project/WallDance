@@ -63,6 +63,8 @@ from config import (
     MOTION_FIRST_SYNTHETIC_MIN_FRAMES,
     MOTION_FIRST_SYNTHETIC_CELL_RATIO,
     TRACK_WARMUP_THRESHOLD, TRACK_WARMUP_DECAY,
+    TRACKER_REPORT_REQUIRES_SKELETON, TRACKER_GHOST_SKELETON_AGE,
+    TRACKER_GHOST_FROZEN_SPEED_RATIO,
 )
 from tracking_logger import TrackingLogger
 
@@ -180,6 +182,15 @@ class DancerTrack:
         # TRACK_WARMUP_THRESHOLD.
         self._warmup_score: float = 1.0  # First detection = 1.0
 
+        # Frames since the last *real skeleton* update (≥1 keypoint over
+        # KEYPOINT_CONFIDENCE).  Cold-blob synthetic detections are all
+        # zero-confidence, so a track sustained only by them (or by pure
+        # bridging) lets this grow.  Combined with low speed it flags an
+        # abandoned "frozen ghost" at the report boundary (TUNING Phase F).
+        # predict() increments it each frame; update() resets it on a real pose.
+        self._frames_since_skeleton: int = (
+            0 if np.any(confidence > KEYPOINT_CONFIDENCE) else 999)
+
         self._last_match_frame = -1
         self._last_occluded_frame = -1
         self._occlusion_start_frame: int | None = None
@@ -273,6 +284,10 @@ class DancerTrack:
     
     def predict(self):
         """Predict next state."""
+        # Frames since the last real skeleton (reset in update() on a real pose).
+        # Grows on every miss / bridge / cold-blob-only frame → feeds the
+        # frozen-ghost report gate.
+        self._frames_since_skeleton += 1
         # Add slight friction to missing tracks so they don't accelerate away,
         # but let them coast through occlusions so they emerge on the correct side!
         if self.time_since_update > 0:
@@ -348,6 +363,8 @@ class DancerTrack:
         """
         self.keypoints = keypoints.copy()
         self.confidence = confidence.copy()
+        if np.any(confidence > KEYPOINT_CONFIDENCE):
+            self._frames_since_skeleton = 0  # real pose, not a cold-blob synthetic
         self.bbox = np.array(bbox)
         self.bbox_area_history.append(float(bbox[2] * bbox[3]))
         self.hits += 1
@@ -3005,6 +3022,21 @@ class DancerTracker:
         for track in self.tracks:
             if track.hits >= self.min_hits or self.frame_count <= self.min_hits:
                 if track._warmup_score >= TRACK_WARMUP_THRESHOLD:
+                    # Frozen-ghost gate (TUNING Phase F): drop a track that is
+                    # both skeleton-stale AND effectively stationary — an
+                    # abandoned track kept alive by recurring cold blobs at a
+                    # fixed wall spot.  A real gap-bridged dancer is moving and a
+                    # still dancer keeps getting skeletons, so both are spared.
+                    if (TRACKER_REPORT_REQUIRES_SKELETON
+                            and track._frames_since_skeleton > TRACKER_GHOST_SKELETON_AGE):
+                        speed = float(np.linalg.norm(track.get_velocity()))
+                        if speed < TRACKER_GHOST_FROZEN_SPEED_RATIO * self._person_height_px:
+                            self.logger.log("GHOST_FROZEN_SUPPRESSED", {
+                                "track_id": track.track_id,
+                                "frames_since_skeleton": track._frames_since_skeleton,
+                                "speed": round(speed, 2),
+                            })
+                            continue
                     confirmed.append(track)
         return confirmed
 

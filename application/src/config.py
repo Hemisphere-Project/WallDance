@@ -626,6 +626,29 @@ TRACK_WARMUP_DECAY = 0.8                 # Score decay per missed frame.
                                           # Higher = misses hurt more, ghosts
                                           # drained faster.  Must be < 1.0.
 
+# Report-gate against "frozen-on-the-wall" ghost tracks (TUNING Phase F).
+# A track abandoned by its dancer can linger if recurring cold-blob detections
+# (aggressive low-varThreshold / high mog2_scale) keep matching it at a fixed
+# wall feature/shadow.  Measured: residence1-solo slot4 @ var8/scale0.7 — an
+# established track lost the dancer, froze at (681,995), and was reported for 15
+# frames as a 2nd "ghost dancer" while the real dancer (a separate track) swung
+# away.
+#
+# Discriminator: such a ghost is BOTH (a) skeleton-stale — no real pose
+# (≥1 keypoint over KEYPOINT_CONFIDENCE) for several frames, only zero-confidence
+# cold-blob/bridge updates — AND (b) effectively stationary.  A real dancer in a
+# YOLO gap is *moving* (bridge/blobs follow them), and a still dancer keeps
+# getting skeletons — so the AND of the two is specific to abandoned ghosts and
+# preserves both legitimate bridging and motion-only moving dancers.
+TRACKER_REPORT_REQUIRES_SKELETON = True   # master switch for the gate
+TRACKER_GHOST_SKELETON_AGE = 3            # frames w/o a real skeleton before the
+                                          # frozen-check applies (small is safe:
+                                          # a gap-bridged dancer is moving, so the
+                                          # speed test below spares it)
+TRACKER_GHOST_FROZEN_SPEED_RATIO = 0.03   # × person_height_px = px/frame below
+                                          # which a skeleton-stale track counts
+                                          # as "frozen" → ghost, not reported
+
 # 15 perceptually distinct colors for dancer IDs (BGR).
 # Deterministic by track_id: color = DANCER_COLORS[(id-1) % 15].
 DANCER_COLORS = [
