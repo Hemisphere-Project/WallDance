@@ -1,9 +1,9 @@
 # WallDance — Autonomous Detection-Tuning Capability (plan)
 
 **Date:** 2026-06-09
-**Status:** Phases **A + B + C DONE** (see "## Progress" below). D–F still to do.
-Plan / handoff doc — written so a *fresh* Claude session can execute it without
-the originating conversation's context.
+**Status:** Phases **A + B + C + D DONE** (see "## Progress" below). E–F still to
+do. Plan / handoff doc — written so a *fresh* Claude session can execute it
+without the originating conversation's context.
 **Branch:** this builds on `p3-motion-simplification` (the P3 motion-subsystem
 rewrite). Check that branch out first — `motion_model.py`, the scored gate, the
 replay harness, and the goldens all live there, not on `main`.
@@ -86,12 +86,28 @@ report. The user will point it at various recorded situations.
   normally P2-calibration-driven and `mog2_scale=0.7` raises the dominant
   motion-feed cost.
 
-**Next:** D (overlay render — make the count-vs-N drops/ghosts *visible* so the C
-results, esp. the slot4 ghost frames, are verifiable; this is also what turns the
-drops↔ghosts trade from a number into an operator decision). Then E (knob
-sensitivity) → F (robustness). The corpus gap (§2:
-dropout/multi-dancer/`yolo_first`/small-far) is the main thing limiting how far
-C/E/F generalise — broader labelled footage is the highest-leverage input now.
+**Phase D (diagnosis & visualisation) — DONE.**
+- D-prep: opt-in per-frame track spatial detail via `replay.per_frame_record`
+  (track_details flag, default off → A/B timelines + cache-equivalence unchanged).
+- D1+D2: `tests/overlay.py` — authoritative tracks from the cache replay (or
+  `--full`) drawn on the brightened recording (boxes + IDs + bridged marker +
+  ROI + `rep/N/status` header); auto-flags count≠N frames (warmup-aware) into a
+  contact-sheet montage (+context) and optional MP4. `tests/test_overlay.py`
+  (flag logic, no GPU). Outputs in `tests/overlays/` (gitignored).
+- **Closed the loop on the C tradeoff (visually verified):** slot4 baseline = 45
+  DROP frames (dancer present, no box). Tuned (`mog2_var=8, mog2_scale=0.7`) = 21
+  flagged (6 drop + 15 over). The 15 ghosts are a **real spurious track**, not a
+  score artifact: a duplicate spawns on the dancer (~f1766) then **freezes on
+  empty wall at (681,995) and goes bridged** while the real dancer (track 1)
+  swings right (690→811→913 px). Root cause now visible → **Phase F target:
+  stale-track / duplicate suppression after aggressive cold-blob seeding.**
+
+**Next:** E (knob-sensitivity sweep + minimal user knob set — `tune.py`'s
+per-param deltas already hint at it: on this footage `mog2_scale`/`var` move the
+score a lot, `crossval_motion_min_ratio`/`person_height` barely) → F (robustness:
+fix the duplicate-track ghost D exposed, re-measure). The corpus gap (§2:
+dropout/multi-dancer/`yolo_first`/small-far) is still the main thing limiting how
+far C/E/F generalise — broader labelled footage is the highest-leverage input.
 
 ## 1. What already exists (the P3 foundation — reuse, don't rebuild)
 
