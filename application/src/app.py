@@ -90,6 +90,7 @@ from web_monitor import WebMonitor
 from calib2 import SubjectCollector, SubjectPool
 from calib2 import aggregate as calib2_aggregate
 from calibration import ExposureServo, SceneCalibrator, seed_gamma
+from sensitivity_macro import macro_to_settings
 
 
 # IDS Camera support (optional, falls back to OpenCV)
@@ -300,6 +301,10 @@ class WallDanceApp:
         self._calibrating2 = False
         self._calib2_saved_frames = 0
         self.blur_budget_ms: float = AUTOCAL_BLUR_BUDGET_MS
+        # Sensitivity macro (UX_PLAN U5): one operator dial; 50 = calibrated seed.
+        self.sensitivity: float = 50.0
+        self._sensitivity_conf_seed: float = YOLO_CONFIDENCE
+        self._sensitivity_var_anchor: float = self.processor.get_motion_var_threshold()
         self.last_tracked: List[ScaledTrack] = []
         self._total_frame_count: int = 0  # Phase 0: cumulative frame counter (live mode)
         self._last_raw_frame: Optional[np.ndarray] = None  # Last raw camera frame for BG capture
@@ -401,6 +406,7 @@ class WallDanceApp:
             "camera_running": self.camera.state.is_open,
             "camera_reconnecting": self._camera_reconnecting,
             "active_profile": self._active_profile,
+            "sensitivity": self.sensitivity,
         }
 
     def _show_qr(self):
@@ -431,6 +437,7 @@ class WallDanceApp:
             "on_bg_clear": self._cb_bg_clear,
             "on_bg_sensitivity_change": self._cb_bg_sensitivity_change,
             "on_confidence_change": self._cb_confidence_change,
+            "on_sensitivity_change": self._cb_sensitivity_change,
             "on_motion_sensitivity_change": self._cb_motion_sensitivity_change,
             "on_model_change": self._cb_model_change,
             "on_trt_toggle": self._cb_trt_toggle,
@@ -997,6 +1004,8 @@ class WallDanceApp:
             "bg_subtract_sensitivity": self.settings.bg_subtract_sensitivity,
             "mog2_scale": self.processor.get_motion_scale(),
             "blur_budget_ms": self.blur_budget_ms,
+            "sensitivity": self.sensitivity,
+            "sensitivity_conf_seed": self._sensitivity_conf_seed,
         }
 
     def _update_topbar_state(self, selected_filepath: Optional[str] = None):
@@ -1204,6 +1213,18 @@ class WallDanceApp:
             self.settings.person_height_max_ratio = float(config["person_height_max_ratio"])
         if "mog2_var_threshold" in config:
             self.processor.set_motion_var_threshold(float(config["mog2_var_threshold"]))
+            self._sensitivity_var_anchor = float(config["mog2_var_threshold"])
+        # Sensitivity macro: restore the seed + dial (older configs lack them —
+        # anchor on the loaded confidence at the midpoint).
+        if "sensitivity_conf_seed" in config:
+            self._sensitivity_conf_seed = float(config["sensitivity_conf_seed"])
+        elif "confidence" in config:
+            self._sensitivity_conf_seed = float(config["confidence"])
+        if "sensitivity" in config:
+            self.sensitivity = float(config["sensitivity"])
+        elif "confidence" in config:
+            self.sensitivity = 50.0
+        self.gui and self.gui.sync_slider('sensitivity', self.sensitivity)
         if "exclusion_cells" in config:
             grid = tuple(config.get("exclusion_grid") or AUTOCAL_EXCL_GRID)
             self.processor.set_exclusion(grid, config["exclusion_cells"])
@@ -1482,9 +1503,35 @@ class WallDanceApp:
         return None
 
     def _cb_confidence_change(self, value: float):
+        # Expert override: also re-anchor the sensitivity macro on the new value.
         self.settings.confidence = value
+        self._sensitivity_conf_seed = float(value)
+        self.sensitivity = 50.0
+        self.gui and self.gui.sync_slider('sensitivity', 50.0)
         print(f"Confidence: {value:.2f}")
         self._request_reprocess()
+
+    def _cb_sensitivity_change(self, value: float):
+        """Operator macro: one dial driving confidence (+var at the loose end)."""
+        self.sensitivity = float(value)
+        m = macro_to_settings(value, self._sensitivity_conf_seed,
+                              self._sensitivity_var_anchor)
+        self.settings.confidence = m["confidence"]
+        self.processor.set_motion_var_threshold(m["mog2_var_threshold"])
+        self.gui and self.gui.sync_slider('confidence', m["confidence"])
+        print(f"Sensitivity {value:.0f} -> confidence {m['confidence']:.2f}, "
+              f"varThreshold {m['mog2_var_threshold']:.0f}")
+        self._request_reprocess()
+
+    def _reset_sensitivity_anchor(self, conf_seed: Optional[float] = None,
+                                  var_anchor: Optional[float] = None):
+        """Re-center the macro at 50 after a calibration set new seeds."""
+        if conf_seed is not None:
+            self._sensitivity_conf_seed = float(conf_seed)
+        if var_anchor is not None:
+            self._sensitivity_var_anchor = float(var_anchor)
+        self.sensitivity = 50.0
+        self.gui and self.gui.sync_slider('sensitivity', 50.0)
 
     def _cb_motion_sensitivity_change(self, value: float):
         self.processor.set_motion_sensitivity(value)
@@ -1894,6 +1941,7 @@ class WallDanceApp:
                 self.gui.sync_slider('person_height', ph)
         if result.var_ok and result.var_threshold:
             self.processor.set_motion_var_threshold(result.var_threshold)
+            self._reset_sensitivity_anchor(var_anchor=result.var_threshold)
         if result.var_ok and result.mog2_scale:
             self.processor.set_motion_scale(result.mog2_scale)
             self.gui and self.gui.sync_slider("mog2_scale", result.mog2_scale)
@@ -2045,6 +2093,7 @@ class WallDanceApp:
         if prop.confidence is not None:
             self.settings.confidence = float(prop.confidence)
             self.gui and self.gui.sync_slider('confidence', float(prop.confidence))
+            self._reset_sensitivity_anchor(conf_seed=float(prop.confidence))
         if prop.blur_budget_ms is not None:
             self.blur_budget_ms = float(prop.blur_budget_ms)
         if prop.imgsz and prop.imgsz != int(self.settings.imgsz):

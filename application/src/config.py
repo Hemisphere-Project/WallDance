@@ -463,6 +463,16 @@ AUTOCAL2_BLUR_BOUNDS_MS = (5.0, 30.0)  # Clamp for the refined blur budget
 AUTOCAL2_STALE_TOL = 0.10           # ROI long-side relative change → run flagged stale
 AUTOCAL2_FRAME_SAMPLES = 12         # Raw frames saved per run (future gamma/CLAHE sweep)
 
+# --- Detection-sensitivity macro (UX_PLAN.md U5 / KNOBS.md E2) ---------------
+# One operator dial 0-100 (50 = the calibrated seed).  Higher = more sensitive
+# (fewer drops, more ghosts): confidence drops below the seed, and at the loose
+# end varThreshold ramps to the floor to wake MOG2 cold-blob recovery (safe now
+# that the Phase-F frozen-ghost gate landed).  Lower = stricter (fewer ghosts).
+SENS_CONF_STRICT_DELTA = 0.25       # Confidence added at slider = 0 (strictest)
+SENS_CONF_LOOSE_DELTA = 0.15        # Confidence removed at slider = 100 (loosest)
+SENS_VAR_FLOOR = 8.0                # varThreshold at slider = 100
+SENS_VAR_KNEE = 75.0                # Slider point where var starts ramping down
+
 # --- Auto exclusion mask (P1.4) -------------------------------------------
 # During calibration, grid cells that show persistent MOG2 motion but ~never a
 # confirmed skeleton are scenery / ghost sources (trees, balcony, wall paint,

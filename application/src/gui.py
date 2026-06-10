@@ -266,7 +266,8 @@ class WallDanceGUI:
 
         # Expert mode: reveals developer-grade knob panels (Ctrl+Shift+E or WD_EXPERT=1).
         self.expert_mode = os.environ.get("WD_EXPERT", "0") == "1"
-        self._expert_only_tags = ["section_background", "enhance_expert_group"]
+        self._expert_only_tags = ["section_background", "enhance_expert_group",
+                                  "detection_expert_group"]
 
         # Initialize DearPyGui
         dpg.create_context()
@@ -456,6 +457,10 @@ class WallDanceGUI:
     def _on_confidence_change(self, sender, value):
         if 'on_confidence_change' in self.callbacks:
             self.callbacks['on_confidence_change'](value)
+
+    def _on_sensitivity_change(self, sender, value):
+        if 'on_sensitivity_change' in self.callbacks:
+            self.callbacks['on_sensitivity_change'](float(value))
 
     def _on_motion_sensitivity_change(self, sender, value):
         if 'on_motion_sensitivity_change' in self.callbacks:
@@ -1463,6 +1468,7 @@ class WallDanceGUI:
         """Sync slider state (when changed via keyboard or config load)."""
         tag_map = {
             'confidence': ['show_conf_slider'],
+            'sensitivity': ['sensitivity_slider'],
             'motion_sensitivity': ['motion_sensitivity_slider'],
             'clahe': ['adv_clahe_slider'],
             'gamma': ['adv_gamma_slider'],

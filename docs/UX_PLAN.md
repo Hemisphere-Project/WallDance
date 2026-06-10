@@ -1,6 +1,8 @@
 # WallDance — Production UX plan (operator track)
 
-**Date:** 2026-06-10 · **Status:** agreed with operator, ready to build
+**Date:** 2026-06-10 · **Status:** U0–U5 built on branch `ux-track` (U0 0d7382c,
+U2 c034956, U3 2234d67, U4 9ab4f09, U5 below; U1 picker pre-existed at f2e5e8c).
+Numeric rules ship provisional — re-fit on annotated footage (§6).
 **Serves:** ROADMAP §0 north star — *rig, aim IR, press one calibration button, monitor*.
 **Decisions locked (operator, 2026-06-10):** two lighting profiles per project ·
 full knob panels kept behind a hidden Expert mode · calibration may drive IDS

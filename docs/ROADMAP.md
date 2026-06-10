@@ -78,7 +78,7 @@ All field answers point the same way: **better lighting + spatial ghost rejectio
 | Launcher update safety | Maint. | ⬜ Not started | Force-sync can clobber local field tweaks |
 | Model-artifact footprint | Maint. | ⬜ Not started | ~2.4 GB of binaries in-repo |
 | Startup project picker | Enhancement | ✅ Done | §7B; shipped (`config_store.rename_project`/`delete_project`, modal picker, Enter-launch) |
-| **Production UX track (U0–U5)** | UX | 🟡 U0 done (branch `ux-track`) | See [UX_PLAN.md](UX_PLAN.md): expert mode, calib1/calib2 split, lighting profiles, sensitivity macro |
+| **Production UX track (U0–U5)** | UX | ✅ Built (branch `ux-track`) | See [UX_PLAN.md](UX_PLAN.md): expert mode, lighting profiles, calib1 (scene/servo/joint sweep), calib2 (evidence pool/imgsz), sensitivity macro. Numeric rules provisional → re-fit on annotated footage |
 
 ---
 

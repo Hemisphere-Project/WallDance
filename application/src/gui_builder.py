@@ -721,7 +721,7 @@ def build_control_panel(gui: Any):
 def build_detection_section(gui: Any):
     """Detection settings - person height, confidence, max dancers."""
     with dpg.collapsing_header(label="Detection", default_open=False, tag="section_detection"):
-        # Person Height
+        # Person Height (manual + calibrated via DANCERS)
         dpg.add_text("Person Height", color=(180, 180, 180))
         with dpg.group(horizontal=True):
             height_slider = dpg.add_slider_int(
@@ -735,78 +735,90 @@ def build_detection_section(gui: Any):
             )
             _add_slider_row("person_height_slider", 5, 20, 800, gui._on_person_height_change)
         with dpg.tooltip(height_slider):
-            dpg.add_text("Expected dancer height in pixels at current\ncamera distance. All tracking thresholds\nscale from this value. Measure on the\npreview and adjust per venue.")
+            dpg.add_text("Expected dancer height in pixels at current\ncamera distance. All tracking thresholds\nscale from this value. Set by the DANCERS\ncalibration; adjust manually if needed.")
 
         dpg.add_spacer(height=scaled(6))
 
-        # Confidence threshold
-        dpg.add_text("Detection Confidence", color=(180, 180, 180))
+        # Detection Sensitivity — the one operator dial (KNOBS.md E2 macro)
+        dpg.add_text("Detection Sensitivity", color=(180, 180, 180))
         with dpg.group(horizontal=True):
-            conf_slider = dpg.add_slider_float(
-                tag="show_conf_slider",
-                default_value=gui.config.get("confidence", 0.25),
-                min_value=0.1,
-                max_value=0.9,
-                format="%.2f",
-                width=scaled(-90),
-                callback=gui._on_confidence_change,
-            )
-            _add_slider_row("show_conf_slider", 0.01, 0.1, 0.9, gui._on_confidence_change)
-        with dpg.tooltip(conf_slider):
-            dpg.add_text("Detection sensitivity.\nLower = catches more dancers but may create\nghost detections from shadows or rigging.\nHigher = only confident detections.\nStart at 0.25, raise if you see ghosts.")
-
-        dpg.add_spacer(height=scaled(6))
-
-        # Tracker Max Age
-        dpg.add_text("Tracker Max Age (frames)", color=(180, 180, 180))
-        with dpg.group(horizontal=True):
-            age_slider = dpg.add_slider_int(
-                tag="tracker_age_slider",
-                default_value=gui.config.get("tracker_max_age", 20),
-                min_value=5,
-                max_value=60,
-                width=scaled(-90),
-                callback=gui._on_tracker_age_change,
-            )
-            _add_slider_row("tracker_age_slider", 1, 5, 60, gui._on_tracker_age_change)
-        with dpg.tooltip(age_slider):
-            dpg.add_text("How long (in frames) to remember a dancer\nwho disappears. Higher = keeps ID longer\nduring occlusions but slower to drop\nstale tracks. 30-45 is a good default.")
-
-        dpg.add_spacer(height=scaled(6))
-
-        # MOG2 Resolution
-        dpg.add_text("Motion Bridge Resolution", color=(180, 180, 180))
-        with dpg.group(horizontal=True):
-            mog2_slider = dpg.add_slider_float(
-                tag="mog2_scale_slider",
-                default_value=gui.config.get("mog2_scale", 0.75),
-                min_value=0.25,
-                max_value=1.0,
-                format="%.2f",
-                width=scaled(-90),
-                callback=gui._on_mog2_scale_change,
-            )
-            _add_slider_row("mog2_scale_slider", 0.05, 0.25, 1.0, gui._on_mog2_scale_change)
-        with dpg.tooltip(mog2_slider):
-            dpg.add_text("MOG2 background subtraction resolution.\nRuns in parallel with YOLO so cost is hidden.\n0.50 = fastest, 1.00 = best blob accuracy.\n0.75 is a good default for ~50px dancers.")
-
-        dpg.add_spacer(height=scaled(6))
-
-        # Motion Bridge Sensitivity
-        dpg.add_text("Motion Sensitivity", color=(180, 180, 180))
-        with dpg.group(horizontal=True):
-            motion_slider = dpg.add_slider_float(
-                tag="motion_sensitivity_slider",
-                default_value=gui.config.get("motion_sensitivity", 0.55),
+            sens_slider = dpg.add_slider_float(
+                tag="sensitivity_slider",
+                default_value=gui.config.get("sensitivity", 50.0),
                 min_value=0.0,
-                max_value=1.0,
-                format="%.2f",
+                max_value=100.0,
+                format="%.0f",
                 width=scaled(-90),
-                callback=gui._on_motion_sensitivity_change,
+                callback=gui._on_sensitivity_change,
             )
-            _add_slider_row("motion_sensitivity_slider", 0.05, 0.0, 1.0, gui._on_motion_sensitivity_change)
-        with dpg.tooltip(motion_slider):
-            dpg.add_text("Bridge-only recovery sensitivity.\nHigher = smaller/weaker motion can keep an\nexisting dancer track alive when YOLO drops.\nLower = cleaner but easier to lose continuity.\nIf stale tracks linger, reduce this slider.")
+            _add_slider_row("sensitivity_slider", 5.0, 0.0, 100.0, gui._on_sensitivity_change)
+        with dpg.tooltip(sens_slider):
+            dpg.add_text("The one live dial. 50 = calibrated.\nLosing the dancer? Raise it (catches more,\nmay add ghosts). Too many ghosts? Lower it\n(stricter). Calibration re-centers it at 50.")
+
+        # Expert-only: the raw knobs behind the macro + tier-3 tracker params.
+        with dpg.group(tag="detection_expert_group", show=gui.expert_mode):
+            dpg.add_spacer(height=scaled(6))
+            dpg.add_text("Detection Confidence (raw)", color=(180, 180, 180))
+            with dpg.group(horizontal=True):
+                conf_slider = dpg.add_slider_float(
+                    tag="show_conf_slider",
+                    default_value=gui.config.get("confidence", 0.25),
+                    min_value=0.1,
+                    max_value=0.9,
+                    format="%.2f",
+                    width=scaled(-90),
+                    callback=gui._on_confidence_change,
+                )
+                _add_slider_row("show_conf_slider", 0.01, 0.1, 0.9, gui._on_confidence_change)
+            with dpg.tooltip(conf_slider):
+                dpg.add_text("Raw YOLO confidence. Moving this re-anchors\nthe sensitivity macro at 50.")
+
+            dpg.add_spacer(height=scaled(6))
+            dpg.add_text("Tracker Max Age (frames)", color=(180, 180, 180))
+            with dpg.group(horizontal=True):
+                age_slider = dpg.add_slider_int(
+                    tag="tracker_age_slider",
+                    default_value=gui.config.get("tracker_max_age", 20),
+                    min_value=5,
+                    max_value=60,
+                    width=scaled(-90),
+                    callback=gui._on_tracker_age_change,
+                )
+                _add_slider_row("tracker_age_slider", 1, 5, 60, gui._on_tracker_age_change)
+            with dpg.tooltip(age_slider):
+                dpg.add_text("How long (in frames) to remember a dancer\nwho disappears. Higher = keeps ID longer\nduring occlusions but slower to drop\nstale tracks. 30-45 is a good default.")
+
+            dpg.add_spacer(height=scaled(6))
+            dpg.add_text("Motion Bridge Resolution", color=(180, 180, 180))
+            with dpg.group(horizontal=True):
+                mog2_slider = dpg.add_slider_float(
+                    tag="mog2_scale_slider",
+                    default_value=gui.config.get("mog2_scale", 0.75),
+                    min_value=0.25,
+                    max_value=1.0,
+                    format="%.2f",
+                    width=scaled(-90),
+                    callback=gui._on_mog2_scale_change,
+                )
+                _add_slider_row("mog2_scale_slider", 0.05, 0.25, 1.0, gui._on_mog2_scale_change)
+            with dpg.tooltip(mog2_slider):
+                dpg.add_text("MOG2 background subtraction resolution.\nSet by the scene calibration (joint sweep\nwith varThreshold). 0.50 = fastest,\n1.00 = best blob accuracy.")
+
+            dpg.add_spacer(height=scaled(6))
+            dpg.add_text("Motion Sensitivity", color=(180, 180, 180))
+            with dpg.group(horizontal=True):
+                motion_slider = dpg.add_slider_float(
+                    tag="motion_sensitivity_slider",
+                    default_value=gui.config.get("motion_sensitivity", 0.55),
+                    min_value=0.0,
+                    max_value=1.0,
+                    format="%.2f",
+                    width=scaled(-90),
+                    callback=gui._on_motion_sensitivity_change,
+                )
+                _add_slider_row("motion_sensitivity_slider", 0.05, 0.0, 1.0, gui._on_motion_sensitivity_change)
+            with dpg.tooltip(motion_slider):
+                dpg.add_text("Bridge-only recovery sensitivity.\nHigher = smaller/weaker motion can keep an\nexisting dancer track alive when YOLO drops.\nLower = cleaner but easier to lose continuity.\nIf stale tracks linger, reduce this slider.")
 
 
 def build_visualization_toolbar(gui: Any):

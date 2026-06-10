@@ -87,8 +87,9 @@ def test_flatten_picks_active_profile():
 
 
 def test_split_profile():
-    shared, profile = cs.split_profile(_v1_config())
-    assert set(profile) == {k for k in cs.PROFILE_KEYS}
+    v1 = _v1_config()
+    shared, profile = cs.split_profile(v1)
+    assert set(profile) == {k for k in cs.PROFILE_KEYS if k in v1}
     assert "model" in shared and "confidence" not in shared
 
 

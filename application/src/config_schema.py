@@ -39,6 +39,8 @@ PROFILE_KEYS = frozenset({
     "exclusion_grid",
     "exclusion_cells",
     "confidence",
+    "sensitivity",
+    "sensitivity_conf_seed",
 })
 
 _STRUCTURE_KEYS = ("config_version", "active_profile", "profiles")
@@ -60,6 +62,8 @@ _RANGES = {
     "brightness_threshold": (0, 255),
     "osc_port": (1, 65535),
     "blur_budget_ms": (5.0, 60.0),
+    "sensitivity": (0.0, 100.0),
+    "sensitivity_conf_seed": (0.05, 0.95),
 }
 
 _IMGSZ_PRESETS = (640, 800, 960, 1280, 1536, 1920)
