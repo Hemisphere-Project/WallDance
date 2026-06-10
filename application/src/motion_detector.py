@@ -29,6 +29,7 @@ from config import (
     MOTION_LOWLIGHT_MEDIAN_KERNEL,
     MOTION_LOWLIGHT_VAR_THRESHOLD_MULT,
     MOTION_CROSSVAL_MIN_COHERENCE,
+    MOTION_DIFF_PAIR_MAX_AGE_FRAMES,
 )
 
 
@@ -78,6 +79,7 @@ class MotionDetector:
         # would destroy.
         self._prev_raw: np.ndarray | None = None
         self._curr_raw: np.ndarray | None = None
+        self._diff_pair_age = 0  # frames since the raw pair last advanced (bug #4)
         self._diff_scale = min(1.0, self._scale * 2.0)  # less aggressive downscale for diff
         self._diff_inv_scale = 1.0 / self._diff_scale
         # Static blob suppression: spatial hash → consecutive frame count
@@ -252,9 +254,17 @@ class MotionDetector:
                 if peak_diff > 8:  # real motion threshold on unblurred pixels
                     self._prev_raw = self._curr_raw
                     self._curr_raw = raw_small
+                    self._diff_pair_age = 0
+                else:
+                    # Pair frozen (clean static stretch). Count frames so the
+                    # diff queries stop reporting the last motion event
+                    # forever (bug #4); the stale curr still accumulates a
+                    # slow mover's diff and re-advances above.
+                    self._diff_pair_age += 1
             else:
                 self._prev_raw = None
                 self._curr_raw = raw_small
+                self._diff_pair_age = 0
         # Adaptive varThreshold: raise in low light to reject noise at the model level.
         # Scales the (possibly calibrated) base, not the module constant.
         if brightness < MOTION_LOWLIGHT_LUMA_THRESHOLD:
@@ -501,6 +511,10 @@ class MotionDetector:
         """
         if self._prev_raw is None or self._curr_raw is None:
             return None, 0.0
+        if self._diff_pair_age > MOTION_DIFF_PAIR_MAX_AGE_FRAMES:
+            # Frozen pair: the diff describes a long-gone motion event, not
+            # "moving now" — report zero instead (bug #4).
+            return None, 0.0
 
         s = self._diff_scale
         inv = self._diff_inv_scale
@@ -585,6 +599,7 @@ class MotionDetector:
             "has_fg_mask": self._fg_mask is not None,
             "has_prev": self._prev_raw is not None,
             "has_curr": self._curr_raw is not None,
+            "diff_pair_age": self._diff_pair_age,
         }
         s = self._scale
         sx, sy = max(0, int(x * s)), max(0, int(y * s))
@@ -723,3 +738,6 @@ class MotionDetector:
         self._clean_mask = None
         self._frame_count = 0
         self._static_cells.clear()
+        self._prev_raw = None
+        self._curr_raw = None
+        self._diff_pair_age = 0

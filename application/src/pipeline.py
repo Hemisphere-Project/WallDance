@@ -1221,8 +1221,11 @@ class FrameProcessor:
         mask = motion_det._clean_mask if motion_det is not None else None
         if mask is None:
             return None
-        ox = (cx - pad_x) / scale if scale != 1.0 else cx
-        oy = (cy - pad_y) / scale if scale != 1.0 else cy
+        # Pad must be subtracted even at scale == 1.0 — the letterbox can pad
+        # one axis without scaling (e.g. 1280x720 ROI @ imgsz 1280). Bug #9.
+        inv = 1.0 / scale if scale > 0 else 1.0
+        ox = (cx - pad_x) * inv
+        oy = (cy - pad_y) * inv
         if not roi_local:
             ox -= roi_x
             oy -= roi_y
@@ -1546,11 +1549,15 @@ class FrameProcessor:
         for kpts, conf, bbox in detections:
             cell = self._crossval_cell_key(bbox, person_height)
 
-            # Convert tracker-space bbox -> original-space -> ROI-local mask space
-            ox = (bbox[0] - letterbox_pad_x) / scale if scale != 1.0 else bbox[0]
-            oy = (bbox[1] - letterbox_pad_y) / scale if scale != 1.0 else bbox[1]
-            ow = bbox[2] / scale if scale != 1.0 else bbox[2]
-            oh = bbox[3] / scale if scale != 1.0 else bbox[3]
+            # Convert tracker-space bbox -> original-space -> ROI-local mask
+            # space. Pad is subtracted unconditionally: scale == 1.0 can still
+            # carry a one-axis letterbox pad (bug #9; _unscale_letterbox is
+            # the reference).
+            inv = 1.0 / scale if scale > 0 else 1.0
+            ox = (bbox[0] - letterbox_pad_x) * inv
+            oy = (bbox[1] - letterbox_pad_y) * inv
+            ow = bbox[2] * inv
+            oh = bbox[3] * inv
             if roi_local_after_unscale:
                 mask_x, mask_y = ox, oy
             else:

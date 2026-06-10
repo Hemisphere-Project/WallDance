@@ -9,6 +9,7 @@ import pytest
 pytest.importorskip("cv2")
 import cv2  # noqa: E402
 
+from config import MOTION_DIFF_PAIR_MAX_AGE_FRAMES  # noqa: E402
 from motion_model import MotionModel  # noqa: E402
 
 W, H = 640, 480
@@ -83,6 +84,42 @@ def test_recent_motion_fires_on_moving_square():
     roi_quiet = (40, 40, 80, 160)
     assert m.recent_motion(roi_moving) > 0.05
     assert m.recent_motion(roi_quiet) < 0.01
+
+
+def test_recent_motion_stale_pair_caps_out():
+    """Bug #4: the raw pair only advances on global change, so a clean static
+    stretch freezes it and the diff kept reporting the LAST motion event.
+    Under the cap the stale report stays (it bridges slow movers); past the
+    cap it must read zero."""
+    m = MotionModel()
+    _settle(m)
+    m.feed(_frame_with_square(280, H / 2))
+    m.feed(_frame_with_square(360, H / 2))
+    roi = (300, H / 2 - 90, 140, 180)
+    assert m.recent_motion(roi) > 0.05          # fresh motion reports
+
+    static = _frame_with_square(360, H / 2)     # bit-identical frames
+    for _ in range(MOTION_DIFF_PAIR_MAX_AGE_FRAMES):
+        m.feed(static)
+    assert m.recent_motion(roi) > 0.05          # age == cap: still bridging
+    m.feed(static)                              # one past the cap
+    assert m.recent_motion(roi) == 0.0
+    blob, ratio = m.recent_motion_blob(roi)
+    assert blob is None and ratio == 0.0
+
+
+def test_recent_motion_revives_after_stale_cap():
+    m = MotionModel()
+    _settle(m)
+    m.feed(_frame_with_square(280, H / 2))
+    m.feed(_frame_with_square(360, H / 2))
+    static = _frame_with_square(360, H / 2)
+    for _ in range(MOTION_DIFF_PAIR_MAX_AGE_FRAMES + 5):
+        m.feed(static)
+    assert m.recent_motion((300, H / 2 - 90, 140, 180)) == 0.0
+    # New movement advances the pair -> reporting resumes immediately.
+    m.feed(_frame_with_square(440, H / 2))
+    assert m.recent_motion((360, H / 2 - 90, 160, 180)) > 0.0
 
 
 # ---------------------------------------------------------------------------

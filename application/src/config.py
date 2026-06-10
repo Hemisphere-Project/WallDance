@@ -662,6 +662,15 @@ MOTION_CROSSVAL_CONFIDENT_MIN_CONF = 0.45  # Min mean conf for auto-pass.
 # killer.  θ_m below is the minimum frame-diff foreground fraction in the box.
 MOTION_CROSSVAL_FRAMEDIFF_MIN_RATIO = 0.02  # θ_m — tuned on residence1-solo
 
+# Frame-diff staleness cap (bug #4).  The raw frame pair behind frame-diff
+# queries only advances when the GLOBAL peak diff exceeds a small threshold;
+# on a clean static stretch (quiet sensor + even IR — exactly the Starvis2
+# scenes we are building toward) the pair freezes and queries keep reporting
+# the LAST motion event indefinitely.  Past this many frames without an
+# advance, frame-diff reports zero.  Under the cap the stale pair still
+# bridges slow movers (their accumulating diff re-advances the pair).
+MOTION_DIFF_PAIR_MAX_AGE_FRAMES = 30      # ~1.2 s at 25 fps; replay-validated
+
 # =============================================================================
 # TRACK WARMUP SCORING — delay output, not tracking
 # =============================================================================

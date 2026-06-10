@@ -54,6 +54,7 @@ def _letterbox_forward(pt, scale, pad_x, pad_y, roi_x=0, roi_y=0):
     (0.5, 120, 40, 0, 0),    # downscale + letterbox padding
     (0.5, 120, 40, 300, 150),  # downscale + padding + ROI offset
     (0.75, 0, 64, 0, 0),     # vertical-only pad (wide source)
+    (1.0, 0, 280, 0, 0),     # bug #9 regime: no scaling, one-axis pad
 ])
 def test_unscale_letterbox_inverts_forward(scale, pad_x, pad_y, roi_x, roi_y):
     # Known points in ORIGINAL camera space.
@@ -112,9 +113,14 @@ def _stub_motion_det(mask_w, mask_h, mog_scale):
 def _crossval_mask_xy(cx, cy, scale, pad_x, pad_y, roi_x, roi_y,
                       roi_local, mog_scale, mw, mh):
     """Replicates the inline crossval transform in _crossval_motion_filter,
-    expressed as normalized mask coords -- the spec _exclusion_norm_xy must match."""
-    ox = (cx - pad_x) / scale if scale != 1.0 else cx
-    oy = (cy - pad_y) / scale if scale != 1.0 else cy
+    expressed as normalized mask coords -- the spec _exclusion_norm_xy must match.
+
+    Pad is subtracted unconditionally: scale == 1.0 can still carry a one-axis
+    letterbox pad (bug #9; the old ``if scale != 1.0`` guard dropped it).
+    """
+    inv = 1.0 / scale if scale > 0 else 1.0
+    ox = (cx - pad_x) * inv
+    oy = (cy - pad_y) * inv
     if roi_local:
         mask_x, mask_y = ox, oy
     else:
@@ -127,6 +133,8 @@ def _crossval_mask_xy(cx, cy, scale, pad_x, pad_y, roi_x, roi_y,
     (0.5, 120, 40, 0, 0, False),
     (0.5, 120, 40, 300, 150, False),   # CPU path: subtract ROI offset
     (0.5, 120, 40, 300, 150, True),    # GPU path: roi already local
+    (1.0, 0, 280, 0, 0, True),         # bug #9: scale 1, one-axis pad (1280x720 @ 1280)
+    (1.0, 160, 0, 300, 150, False),    # bug #9: scale 1, x pad + ROI offset
 ])
 def test_exclusion_norm_xy_matches_crossval_transform(
         scale, pad_x, pad_y, roi_x, roi_y, roi_local):
@@ -146,6 +154,20 @@ def test_exclusion_norm_xy_none_without_mask():
     out = FrameProcessor._exclusion_norm_xy(
         None, 100.0, 100.0, md, 1.0, 0, 0, 0, 0, False)
     assert out is None
+
+
+def test_exclusion_norm_xy_subtracts_pad_at_scale_one():
+    """Bug #9 ground truth: a 1280x720 ROI at imgsz 1280 letterboxes with
+    scale 1.0 and pad_y 280 -- the pad must still be subtracted (the old
+    ``if scale != 1.0`` guard skipped it and sampled the mask 280 px off)."""
+    mw, mh, mog_scale = 640, 360, 0.5
+    md = _stub_motion_det(mw, mh, mog_scale)
+    # Dancer at ROI-local (600, 400) appears at letterbox y = 400 + 280.
+    nx, ny = FrameProcessor._exclusion_norm_xy(
+        None, 600.0, 400.0 + 280.0, md, 1.0, 0, 280, 0, 0, True)
+    np.testing.assert_allclose(
+        (nx, ny), ((600.0 * mog_scale) / mw, (400.0 * mog_scale) / mh),
+        atol=1e-9)
 
 
 def test_exclusion_norm_xy_roi_local_vs_global_differ_by_offset():
