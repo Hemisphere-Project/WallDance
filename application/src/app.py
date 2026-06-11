@@ -19,7 +19,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Deque, Dict, List, Optional
+from typing import Dict, List, Optional
 
 import cv2
 import dearpygui.dearpygui as dpg
@@ -104,7 +104,8 @@ from gui_builder import SystemState
 from enhancer import ImageEnhancer
 from tracker import DancerTracker
 from tracking_logger import _json_default
-from video_recorder import VideoRecorder, RecorderState
+from video_recorder import VideoRecorder
+from runtime.recording_controller import RecordingController
 from web_monitor import WebMonitor
 from calib2 import SubjectCollector, SubjectPool
 from calib2 import aggregate as calib2_aggregate
@@ -166,6 +167,87 @@ class ReviewStartupOptions:
     pause_at_frame: Optional[int] = None
 
 
+
+class _RecordingUiAdapter:
+    """RecordingUiPort over the dpg GUI; None-safe before the GUI exists."""
+
+    def __init__(self, app: "WallDanceApp"):
+        self._app = app
+
+    @property
+    def available(self) -> bool:
+        return self._app.gui is not None
+
+    def update_recording_ui(self, **kwargs):
+        if self._app.gui:
+            self._app.gui.update_recording_ui(**kwargs)
+
+    def set_camera_dimensions(self, width: int, height: int):
+        if self._app.gui:
+            self._app.gui.set_camera_dimensions(width, height)
+
+    def show_toast(self, message: str, duration: float, color):
+        if self._app.gui:
+            self._app.gui.show_toast(message, duration=duration, color=color)
+
+    def show_slot_history_menu(self, slot, recordings, on_pick):
+        self._app.gui.show_slot_history_menu(slot, recordings, on_pick)
+
+
+class _RecordingCameraAdapter:
+    """RecordingCameraPort over the app's unified/legacy camera pair."""
+
+    def __init__(self, app: "WallDanceApp"):
+        self._app = app
+
+    def set_frame_callback(self, callback):
+        self._app._set_camera_frame_callback(callback)
+
+    def start_acquisition(self):
+        if self._app._use_unified_camera and self._app.unified_camera is not None:
+            self._app.unified_camera.start_acquisition()
+
+    def stop_acquisition(self):
+        if self._app._use_unified_camera and self._app.unified_camera is not None:
+            self._app.unified_camera.stop_acquisition()
+
+    def live_dimensions(self):
+        cam = self._app.unified_camera
+        if cam and cam.is_open:
+            return (cam.width, cam.height)
+        return None
+
+    def record_dimensions(self):
+        state = self._app.camera.state
+        return (state.width, state.height)
+
+
+class _RecordingSessionAdapter:
+    """SessionInfoPort over the app's project/config/model state."""
+
+    def __init__(self, app: "WallDanceApp"):
+        self._app = app
+
+    @property
+    def config_dir(self) -> str:
+        return self._app.config_store.config_dir
+
+    @property
+    def current_project(self) -> str:
+        return self._app._current_project
+
+    @property
+    def model_name(self) -> str:
+        return self._app.current_model_name
+
+    @property
+    def imgsz(self) -> int:
+        return self._app.settings.imgsz
+
+    def saveable_config(self) -> dict:
+        return self._app._get_saveable_config()
+
+
 class WallDanceApp:
     """Main application orchestrator."""
 
@@ -184,7 +266,6 @@ class WallDanceApp:
         self.current_model_name = YOLO_MODEL.replace(".pt", "").replace(".engine", "")
         self._model_loaded = False
         self._model_loading = False  # True while model is being loaded/switched
-        self._source_transitioning = False  # True during playback↔live transitions
         self._pending_model_switch: Optional[str] = None  # Deferred model switch
         self._pending_trt_switch: Optional[bool] = None  # True=switch to TRT, False=switch to PT
         self._pending_trt_build: Optional[str] = None  # Model name to build TRT engine for
@@ -259,9 +340,6 @@ class WallDanceApp:
 
         # Video recording
         self.recorder = VideoRecorder()
-        self.recorder.on_playback_start = self._on_playback_start_event
-        self._pending_rec_slot: Optional[int] = None  # Slot being recorded to
-        self._rec_armed: bool = False  # True when REC clicked, waiting for slot selection
 
         # Preview/display state
         self.preview_enabled = PREVIEW_ENABLED
@@ -337,13 +415,22 @@ class WallDanceApp:
         self._last_raw_frame: Optional[np.ndarray] = None  # Last raw camera frame for BG capture
         self._last_review_frame: Optional[np.ndarray] = None
         self._startup_review = startup_review or ReviewStartupOptions()
-        self._pause_at_frame_target = self._startup_review.pause_at_frame
+        # Recording/playback orchestration (DECOMPOSITION_PLAN Phase 2 (1)):
+        # the controller owns slot/record/playback state and wires
+        # recorder.on_playback_start itself.
+        self.recording = RecordingController(
+            recorder=self.recorder,
+            tracker_logger=self.tracker.logger,
+            camera=_RecordingCameraAdapter(self),
+            ui=_RecordingUiAdapter(self),
+            session=_RecordingSessionAdapter(self),
+            on_playback_restart=self._on_playback_restart,
+            startup_review=self._startup_review,
+        )
         
         # Pending operations (deferred to main loop)
         self._pending_camera_refresh = False
         self._pending_project_switch: Optional[str] = None  # Config filepath to switch to
-        self._pending_playback_events: Deque[str] = deque()
-        self._pending_playback_events_lock = threading.Lock()
         self._camera_retry_backoff_s = 1.0
         self._camera_retry_max_s = 5.0
         self._next_camera_retry_time = 0.0
@@ -516,14 +603,14 @@ class WallDanceApp:
             "on_project_rename": self._cb_project_rename,
             "on_project_delete": self._cb_project_delete,
             "on_project_blank": self._cb_project_blank,
-            "on_rec_live": self._cb_rec_live,
-            "on_rec_toggle": self._cb_rec_toggle,
-            "on_rec_slot_click": self._cb_rec_slot_click,
-            "on_playback_speed_change": self._cb_playback_speed_change,
-            "on_playback_pause": self._cb_playback_pause,
-            "on_playback_force_pause": self._cb_playback_force_pause,
-            "on_playback_next_frame": self._cb_playback_next_frame,
-            "on_playback_prev_frame": self._cb_playback_prev_frame,
+            "on_rec_live": self.recording._cb_rec_live,
+            "on_rec_toggle": self.recording._cb_rec_toggle,
+            "on_rec_slot_click": self.recording._cb_rec_slot_click,
+            "on_playback_speed_change": self.recording._cb_playback_speed_change,
+            "on_playback_pause": self.recording._cb_playback_pause,
+            "on_playback_force_pause": self.recording._cb_playback_force_pause,
+            "on_playback_next_frame": self.recording._cb_playback_next_frame,
+            "on_playback_prev_frame": self.recording._cb_playback_prev_frame,
             "on_report_issue_request": self._cb_report_issue_request,
             "on_issue_submit": self._cb_issue_submit,
             "on_issue_dialog_closed": self._cb_issue_dialog_closed,
@@ -1394,7 +1481,7 @@ class WallDanceApp:
         
         # 14. Update UI
         self._update_topbar_state(selected_filepath=config_filepath)
-        self._update_recording_ui()
+        self.recording._update_recording_ui()
         if self.gui:
             self.gui.sync_combo("model", base_name)
             self.gui.set_trt_checkbox(self.model_manager.is_using_tensorrt())
@@ -2408,74 +2495,10 @@ class WallDanceApp:
             self.osc.send_clear()
         print("Tracker reset")
 
-    def _on_playback_start_event(self, event: str):
-        """Called by VideoRecorder on playback start/restart/loop.
-
-        The callback may be invoked by the playback decoder thread on
-        loop/restart. Queue the work and let the main loop perform the
-        reset/session rollover so tracker state is mutated from one thread.
-        """
-        print(f"[Playback] Event '{event}' — queueing tracker reset")
-        with self._pending_playback_events_lock:
-            self._pending_playback_events.append(event)
-
-    def _drain_pending_playback_event(self) -> Optional[str]:
-        """Return the next deferred playback event, if any."""
-        with self._pending_playback_events_lock:
-            if not self._pending_playback_events:
-                return None
-            return self._pending_playback_events.popleft()
-
-    def _handle_playback_start_event(self, event: str):
-        """Apply deferred playback start/restart/loop handling."""
-        print(f"[Playback] Event '{event}' — resetting tracker")
+    def _on_playback_restart(self):
+        """Playback loop/restart rollover: reset frame counter + tracker (main thread)."""
         self._total_frame_count = 0
         self._cb_tracker_reset()
-        self._start_session()
-
-    def _start_session(self):
-        """Create a per-run session directory and redirect the logger."""
-        slot = self.recorder.status.current_slot
-        stamp = time.strftime("%Y%m%d_%H%M%S")
-        session_name = f"{stamp}_slot{slot}"
-        sessions_root = os.path.join(
-            self.config_store.config_dir,
-            self._current_project,
-            "sessions",
-        )
-        session_dir = os.path.join(sessions_root, session_name)
-        os.makedirs(session_dir, exist_ok=True)
-
-        # Redirect logger to the new session directory
-        self.tracker.logger.start_session(session_dir)
-        self.tracker.logger.log_settings(self._get_saveable_config())
-
-        # Write session metadata
-        meta = {
-            "session": session_name,
-            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "project": self._current_project,
-            "slot": slot,
-            "model": self.current_model_name,
-            "imgsz": self.settings.imgsz,
-            "playback_path": self.recorder.playback_path,
-        }
-        meta_path = os.path.join(session_dir, "session.json")
-        with open(meta_path, "w", encoding="utf-8") as fh:
-            json.dump(meta, fh, indent=2, default=_json_default)
-
-        # Maintain a 'latest' symlink
-        latest_link = os.path.join(sessions_root, "latest")
-        try:
-            if os.path.islink(latest_link):
-                os.remove(latest_link)
-            elif os.path.exists(latest_link):
-                os.remove(latest_link)
-            os.symlink(session_name, latest_link)
-        except OSError as exc:
-            print(f"[Session] Could not create 'latest' symlink: {exc}")
-
-        print(f"[Session] {session_dir}")
 
     def _cb_report_issue_request(self):
         """Build the current playback context for issue reporting."""
@@ -2645,7 +2668,7 @@ class WallDanceApp:
         if new_project != self._current_project:
             self._current_project = new_project
             self.recorder.set_project(self._current_project)
-            self._update_recording_ui()  # Refresh slots for new project
+            self.recording._update_recording_ui()  # Refresh slots for new project
         self._update_topbar_state()
         if self.gui:
             self.gui.show_save_indicator("Saved!")
@@ -3040,93 +3063,9 @@ class WallDanceApp:
             self.unified_camera.set_exposure_auto(enabled)
             print(f"[IDS Exposure] Auto {'ON' if enabled else 'OFF'}")
 
-    def _cb_playback_speed_change(self, speed: float):
-        """Handle playback speed change."""
-        self.recorder.set_playback_speed(speed)
-    
-    def _cb_playback_pause(self):
-        """Handle pause/resume toggle."""
-        if self.recorder.is_paused():
-            self.recorder.resume_playback()
-        else:
-            self.recorder.pause_playback()
-            self.tracker.logger.flush()  # Phase 0: flush log on pause
-        self._update_recording_ui()
-
-    def _cb_playback_force_pause(self):
-        """Pause playback without toggling — no-op if already paused."""
-        if self.recorder.is_playing and not self.recorder.is_paused():
-            self.recorder.pause_playback()
-            self.tracker.logger.flush()
-            self._update_recording_ui()
-    
-    def _cb_playback_next_frame(self):
-        """Handle next frame button."""
-        self.recorder.next_frame()
-        self.tracker.logger.flush()  # Phase 0: flush log on frame step
-    
-    def _cb_playback_prev_frame(self):
-        """Handle previous frame button."""
-        self.recorder.prev_frame()
-        self.tracker.logger.flush()  # Phase 0: flush log on frame step
-
     def _cb_issue_dialog_closed(self):
         """Refresh playback controls after the review dialog closes."""
-        self._update_recording_ui()
-
-    def _apply_startup_review_mode(self):
-        """Apply optional startup playback automation for review sessions."""
-        opts = self._startup_review
-        if opts.slot is None:
-            return
-
-        if not self.recorder.start_playback(
-                opts.slot,
-                opts.recording_index,
-                start_frame=opts.play_at_frame):
-            print(f"[Review] Failed to start playback for slot {opts.slot}")
-            return
-
-        if opts.playback_speed > 0:
-            self.recorder.set_playback_speed(opts.playback_speed)
-        if opts.paused:
-            self.recorder.pause_playback()
-        if opts.play_at_frame is not None:
-            print(f"[Review] Jumped to frame {opts.play_at_frame}")
-
-        self._pause_at_frame_target = opts.pause_at_frame
-        self._update_recording_ui()
-        if self.gui:
-            message = f"Review mode: slot {opts.slot}"
-            if opts.recording_index:
-                message += f" item {opts.recording_index}"
-            if opts.play_at_frame is not None:
-                message += f" play@{opts.play_at_frame}"
-            if opts.pause_at_frame is not None:
-                message += f" pause@{opts.pause_at_frame}"
-            self.gui.show_toast(message, duration=3.5, color=(120, 200, 255))
-
-    def _maybe_pause_at_target_frame(self):
-        """Pause playback automatically when the requested frame is reached."""
-        if self._pause_at_frame_target is None:
-            return
-        if not self.recorder.is_playing or self.recorder.is_paused():
-            return
-        if self.recorder.status.playback_frame < self._pause_at_frame_target:
-            return
-
-        target = self._pause_at_frame_target
-        self._pause_at_frame_target = None
-        self.recorder.pause_playback()
-        self.tracker.logger.flush()
-        self._update_recording_ui()
-        print(f"[Review] Auto-paused at frame {target}")
-        if self.gui:
-            self.gui.show_toast(
-                f"Paused at frame {target}",
-                duration=3.0,
-                color=(120, 200, 255),
-            )
+        self.recording._update_recording_ui()
 
     def _cb_quit(self):
         self.tracker.logger.close()  # Phase 0: flush and close tracking log
@@ -3278,180 +3217,6 @@ class WallDanceApp:
             self.unified_camera.set_frame_callback(callback)
         else:
             self.camera.set_frame_callback(callback)
-
-    def _camera_frame_callback(self, frame: np.ndarray):
-        """Called from camera thread for each captured frame. Used for recording."""
-        if self.recorder.is_recording:
-            self.recorder.write_frame(frame)
-    
-    def _cb_rec_live(self):
-        """Switch to live camera mode."""
-        self._source_transitioning = True
-        try:
-            self._set_camera_frame_callback(None)  # Clear recording callback
-            self.recorder.go_live()
-            self._pending_rec_slot = None
-            self._rec_armed = False
-            # Restart IDS acquisition (was stopped during playback)
-            if self._use_unified_camera and self.unified_camera is not None:
-                self.unified_camera.start_acquisition()
-            # Restore live camera dimensions for preview aspect ratio
-            if self.gui and self.unified_camera and self.unified_camera.is_open:
-                self.gui.set_camera_dimensions(self.unified_camera.width, self.unified_camera.height)
-            self._update_recording_ui()
-            print("Switched to LIVE input")
-        finally:
-            self._source_transitioning = False
-
-    def _apply_playback_dimensions(self):
-        """Update GUI preview dimensions to match the video being played."""
-        status = self.recorder.status
-        if self.gui and status.playback_width > 0 and status.playback_height > 0:
-            self.gui.set_camera_dimensions(status.playback_width, status.playback_height)
-
-    def _cb_rec_toggle(self):
-        """Toggle recording mode."""
-        if self.recorder.is_recording:
-            # Stop recording - clear callback first
-            self._set_camera_frame_callback(None)
-            filepath = self.recorder.stop_recording()
-            self._pending_rec_slot = None
-            self._rec_armed = False
-            self._update_recording_ui()
-            print(f"Recording stopped: {filepath}")
-        elif self.recorder.is_live:
-            if self._rec_armed:
-                # Cancel armed state
-                self._rec_armed = False
-                self._update_recording_ui()
-                print("REC cancelled")
-            else:
-                # Arm for recording - waiting for slot selection
-                self._rec_armed = True
-                self._update_recording_ui()
-                print("REC armed. Select a slot to start recording.")
-        else:
-            # Playing - ignore REC
-            print("REC: Switch to LIVE mode first.")
-
-    def _cb_rec_slot_click(self, slot: int, ctrl_held: bool):
-        """Handle slot button click."""
-        if ctrl_held:
-            # Show history menu
-            slot_info = self.recorder.get_slot_info(slot)
-            if slot_info.has_recordings:
-                self.gui.show_slot_history_menu(
-                    slot, 
-                    slot_info.recordings, 
-                    lambda fp: self._play_recording(slot, fp)
-                )
-            else:
-                print(f"Slot {slot} is empty")
-            return
-
-        if self.recorder.is_recording:
-            # Already recording - stop and switch?
-            print(f"Recording in progress. Stop first.")
-            return
-
-        slot_info = self.recorder.get_slot_info(slot)
-        
-        # If REC is armed, clicking any slot starts recording to it
-        if self._rec_armed and self.recorder.is_live:
-            fps = CAMERA_FPS
-            size = (self.camera.state.width, self.camera.state.height)
-            # Wire up camera callback BEFORE starting recording
-            self._set_camera_frame_callback(self._camera_frame_callback)
-            if self.recorder.start_recording(slot, fps, size):
-                self._rec_armed = False
-                self._pending_rec_slot = slot
-                self._update_recording_ui()
-                print(f"Recording to slot {slot}...")
-            else:
-                print(f"Failed to start recording to slot {slot}")
-                self._set_camera_frame_callback(None)  # Remove callback on failure
-                self._rec_armed = False
-                self._update_recording_ui()
-            return
-        
-        # Normal click: play if has recordings, show empty otherwise
-        if slot_info.has_recordings:
-            self._start_playback_safe(slot)
-        else:
-            print(f"Slot {slot} is empty")
-
-    def _start_playback_safe(self, slot: int, recording_index: int = 0):
-        """Start playback with proper IDS acquisition pause and transition guard.
-
-        Ensures USB3 DMA from the IDS camera is stopped before playback
-        begins, preventing PCIe bus contention with CUDA uploads that
-        can trigger driver-level IRQ conflicts (BSOD).
-        """
-        self._source_transitioning = True
-        try:
-            # Flush any in-flight GPU work from the previous source
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    torch.cuda.synchronize()
-            except Exception:
-                pass
-
-            # Stop IDS acquisition BEFORE opening the new VideoCapture.
-            # This eliminates USB3 DMA traffic during the transition and
-            # prevents the main loop from reading a stale IDS frame in
-            # the brief LIVE window inside start_playback().
-            if self._use_unified_camera and self.unified_camera is not None:
-                self.unified_camera.stop_acquisition()
-
-            if not self.recorder.start_playback(slot, recording_index):
-                # Playback failed — restart acquisition
-                if self._use_unified_camera and self.unified_camera is not None:
-                    self.unified_camera.start_acquisition()
-                return
-
-            self._pending_rec_slot = None
-            self._apply_playback_dimensions()
-            self._update_recording_ui()
-        finally:
-            self._source_transitioning = False
-
-    def _play_recording(self, slot: int, filepath: str):
-        """Play a specific recording from history."""
-        slot_info = self.recorder.get_slot_info(slot)
-        for idx, (display, path) in enumerate(slot_info.recordings):
-            if path == filepath:
-                self._start_playback_safe(slot, idx)
-                return
-        print(f"Recording not found: {filepath}")
-
-    def _update_recording_ui(self):
-        """Update the recording UI to match current state."""
-        if not self.gui:
-            return
-        
-        status = self.recorder.status
-        slots_info = [(i, self.recorder.get_slot_info(i).has_recordings) for i in range(1, 10)]
-        
-        # Map state to string, including armed state
-        if self._rec_armed and status.state == RecorderState.LIVE:
-            state_str = "armed"
-        else:
-            state_str = status.state.value  # 'live', 'recording', 'playing'
-        
-        current_slot = status.current_slot
-        
-        self.gui.update_recording_ui(
-            state=state_str,
-            current_slot=current_slot if current_slot > 0 else (self._pending_rec_slot or 0),
-            slots_info=slots_info,
-            recording_frames=status.recording_frames,
-            playback_frame=status.playback_frame,
-            playback_total=status.playback_total,
-            playback_fps=status.playback_fps,
-            paused=self.recorder.is_paused(),
-            playback_speed=self.recorder._playback_speed,
-        )
 
     # ------------------------------------------------------------------
     # Helpers
@@ -3814,7 +3579,7 @@ class WallDanceApp:
             if self.recorder.is_playing and not self.recorder.is_paused():
                 self.recorder.pause_playback()
                 self.tracker.logger.flush()
-                self._update_recording_ui()
+                self.recording._update_recording_ui()
             context = self._cb_report_issue_request()
             if context and self.gui:
                 self.gui.show_issue_report_dialog(context)
@@ -4012,7 +3777,7 @@ class WallDanceApp:
                             for _ in range(10):
                                 self.camera.cap.grab()
                         if self.recorder.is_playing:
-                            self._apply_playback_dimensions()
+                            self.recording._apply_playback_dimensions()
                     return True
                 else:
                     print(f"Fallback also failed: {fallback_result['error']}")
@@ -4028,7 +3793,7 @@ class WallDanceApp:
                     for _ in range(10):
                         self.camera.cap.grab()
                 if self.recorder.is_playing:
-                    self._apply_playback_dimensions()
+                    self.recording._apply_playback_dimensions()
             return False
         
         # Success path
@@ -4099,7 +3864,7 @@ class WallDanceApp:
                     self.camera.cap.grab()
             # If playback is active, restore video dimensions (camera reopen overwrites them)
             if self.recorder.is_playing:
-                self._apply_playback_dimensions()
+                self.recording._apply_playback_dimensions()
         print(f"Model loading complete: {self.current_model_name}")
         return True
 
@@ -4168,8 +3933,8 @@ class WallDanceApp:
 
         # Initialize recording UI
         self.recorder.set_project(self._current_project)
-        self._update_recording_ui()
-        self._apply_startup_review_mode()
+        self.recording._update_recording_ui()
+        self.recording._apply_startup_review_mode()
 
         # Show CPU fallback badge immediately if GPU is not available
         if self.gui and self.processor:
@@ -4212,9 +3977,9 @@ class WallDanceApp:
                 continue  # Restart loop after switch
 
             # Handle pending playback events (deferred from decoder thread)
-            pending_playback_event = self._drain_pending_playback_event()
+            pending_playback_event = self.recording._drain_pending_playback_event()
             if pending_playback_event is not None:
-                self._handle_playback_start_event(pending_playback_event)
+                self.recording._handle_playback_start_event(pending_playback_event)
                 continue  # Restart loop after tracker/session reset
             
             # Handle pending camera refresh (deferred from callback)
@@ -4309,7 +4074,7 @@ class WallDanceApp:
                 continue  # Restart loop after model switch
             
             # Skip processing while model is loading/switching
-            if self._model_loading or self._source_transitioning:
+            if self._model_loading or self.recording.source_transitioning:
                 dpg.render_dearpygui_frame()
                 time.sleep(0.016)  # ~60 FPS UI update
                 continue
@@ -4362,7 +4127,7 @@ class WallDanceApp:
                         self.unified_camera.start_acquisition()
                     if self.unified_camera and self.unified_camera.is_open:
                         self.gui.set_camera_dimensions(self.unified_camera.width, self.unified_camera.height)
-                    self._update_recording_ui()
+                    self.recording._update_recording_ui()
                     continue
             else:
                 # Read from camera - with safety checks for sudden disconnection
@@ -4808,8 +4573,8 @@ class WallDanceApp:
             rec_ui_update_counter += 1
             if rec_ui_update_counter >= 10:
                 rec_ui_update_counter = 0
-                self._update_recording_ui()
-            self._maybe_pause_at_target_frame()
+                self.recording._update_recording_ui()
+            self.recording._maybe_pause_at_target_frame()
             
             _dpg_t0 = time.perf_counter()
             dpg.render_dearpygui_frame()
