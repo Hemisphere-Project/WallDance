@@ -82,8 +82,7 @@ from config import (
     OPS_HEIGHT_WINDOW_S,
     OPS_HEIGHT_MIN_SAMPLES,
 )
-import config_schema
-from config_store import ConfigStore, format_config_display, sanitize_project_name
+from config_store import sanitize_project_name
 from osc_output import OSCSender
 from pipeline import FrameProcessor, ProcessingSettings, ScaledTrack
 from visualization import draw_dancer
@@ -107,6 +106,7 @@ from video_recorder import VideoRecorder
 from runtime.recording_controller import RecordingController
 from runtime.model_controller import ModelController
 from runtime.camera_controller import CameraController
+from runtime.config_manager import ConfigManager
 from web_monitor import WebMonitor
 from calib2 import SubjectCollector, SubjectPool
 from calib2 import aggregate as calib2_aggregate
@@ -166,6 +166,59 @@ class ReviewStartupOptions:
     play_at_frame: Optional[int] = None
     pause_at_frame: Optional[int] = None
 
+
+
+class _ConfigUiAdapter:
+    """ConfigUiPort over the dpg GUI; available is False before the GUI exists."""
+
+    def __init__(self, app: "WallDanceApp"):
+        self._app = app
+
+    @property
+    def available(self) -> bool:
+        return self._app.gui is not None
+
+    def update_project_list(self, projects, current):
+        self._app.gui.update_project_list(projects, current)
+
+    def update_config_list(self, configs, current_display):
+        self._app.gui.update_config_list(configs, current_display)
+
+    def set_current_config(self, display: str):
+        self._app.gui.set_current_config(display)
+
+    def show_save_config_dialog(self, project: str):
+        self._app.gui.show_save_config_dialog(project)
+
+    def show_load_config_dialog(self, config_dir: str, project: str):
+        self._app.gui.show_load_config_dialog(config_dir, project)
+
+    def show_save_indicator(self, message: str):
+        self._app.gui.show_save_indicator(message)
+
+    def show_toast(self, message: str, duration: float, color):
+        self._app.gui.show_toast(message, duration=duration, color=color)
+
+    def set_active_profile(self, name: str):
+        self._app.gui.set_active_profile(name)
+
+    def show_project_picker(self, rows, last_project: str):
+        self._app.gui.show_project_picker(rows, last_project=last_project)
+
+    def sync_combo(self, name: str, value: str):
+        self._app.gui.sync_combo(name, value)
+
+    def set_trt_checkbox(self, enabled: bool):
+        self._app.gui.set_trt_checkbox(enabled)
+
+    def update_camera_sources(self, sources, current, unavailable):
+        self._app.gui.update_camera_sources(sources, current, unavailable)
+
+    def update_camera_status(self, is_open: bool, source: str, reconnecting: bool):
+        self._app.gui.update_camera_status(is_open, source, reconnecting=reconnecting)
+
+    def set_camera_type(self, camera_type: str):
+        self._app.gui.config['camera_type'] = camera_type
 
 
 class _CameraUiAdapter:
@@ -330,11 +383,11 @@ class _RecordingSessionAdapter:
 
     @property
     def config_dir(self) -> str:
-        return self._app.config_store.config_dir
+        return self._app.configs.config_store.config_dir
 
     @property
     def current_project(self) -> str:
-        return self._app._current_project
+        return self._app.configs._current_project
 
     @property
     def model_name(self) -> str:
@@ -370,7 +423,7 @@ class WallDanceApp:
             processor=lambda: self.processor,
             watchdog=lambda: self._watchdog,
             restore_playback_dims=self._restore_playback_dims,
-            update_topbar=self._update_topbar_state,
+            update_topbar=lambda: self.configs._update_topbar_state(),
         )
 
         self.settings = ProcessingSettings(
@@ -439,12 +492,6 @@ class WallDanceApp:
             self._init_osc()
 
         self.gui: Optional[WallDanceGUI] = None
-        self.config_store = ConfigStore()
-        self._current_project = "default"
-        # Lighting profiles (UX_PLAN U2): bundles of lighting-coupled values.
-        # Empty bundles are seeded from live values on first switch.
-        self._profiles: Dict[str, Dict] = {name: {} for name in config_schema.PROFILE_NAMES}
-        self._active_profile: str = config_schema.DEFAULT_PROFILE
 
         # Video recording
         self.recorder = VideoRecorder()
@@ -535,9 +582,28 @@ class WallDanceApp:
             on_playback_restart=self._on_playback_restart,
             startup_review=self._startup_review,
         )
+        # Project/profile/config persistence flows (DECOMPOSITION_PLAN
+        # Phase 2 (4)): owns the config store, current project, lighting
+        # profile bundles and the deferred project-switch request; the
+        # whole-app config appliers stay on the app, injected as callables.
+        self.configs = ConfigManager(
+            models=self.models,
+            cameras=self.cameras,
+            recording=self.recording,
+            recorder=self.recorder,
+            camera=self.camera,
+            unified_camera=self.unified_camera,
+            use_unified=self._use_unified_camera,
+            settings=self.settings,
+            ui=_ConfigUiAdapter(self),
+            watchdog=lambda: self._watchdog,
+            apply_config=self._apply_config_without_model,
+            saveable_config=self._get_saveable_config,
+            update_imgsz_roi_warning=self._update_imgsz_roi_warning,
+            request_reprocess=self._request_reprocess,
+        )
         
         # Pending operations (deferred to main loop)
-        self._pending_project_switch: Optional[str] = None  # Config filepath to switch to
 
         # Ops cluster (TODO Phase 7): health alerts + main-loop watchdog
         self._health = HealthMonitor(gpu_stats_fn=get_gpu_stats)
@@ -627,7 +693,7 @@ class WallDanceApp:
             "texture_height": self.preview.height,
             "camera_running": self.camera.state.is_open,
             "camera_reconnecting": self.cameras._camera_reconnecting,
-            "active_profile": self._active_profile,
+            "active_profile": self.configs._active_profile,
             "sensitivity": self.sensitivity,
         }
 
@@ -690,20 +756,20 @@ class WallDanceApp:
             "on_roi_reset": self._cb_roi_reset,
             "on_mask_edit_toggle": self._cb_mask_edit_toggle,
             "on_mask_clear": self._cb_mask_clear,
-            "on_save_config": self._cb_save_config,
-            "on_save_as_config": self._cb_save_as_config,
-            "on_save_safe_defaults": self._cb_save_safe_defaults,
-            "on_load_safe_defaults": self._cb_load_safe_defaults,
-            "on_load_config": self._cb_load_config,
-            "on_do_save_config": self._cb_do_save_config,
-            "on_do_load_config": self._cb_do_load_config,
-            "on_profile_switch": self._cb_profile_switch,
-            "on_project_select": self._cb_project_select,
-            "on_config_select": self._cb_config_select,
-            "on_project_launch": self._cb_project_launch,
-            "on_project_rename": self._cb_project_rename,
-            "on_project_delete": self._cb_project_delete,
-            "on_project_blank": self._cb_project_blank,
+            "on_save_config": self.configs._cb_save_config,
+            "on_save_as_config": self.configs._cb_save_as_config,
+            "on_save_safe_defaults": self.configs._cb_save_safe_defaults,
+            "on_load_safe_defaults": self.configs._cb_load_safe_defaults,
+            "on_load_config": self.configs._cb_load_config,
+            "on_do_save_config": self.configs._cb_do_save_config,
+            "on_do_load_config": self.configs._cb_do_load_config,
+            "on_profile_switch": self.configs._cb_profile_switch,
+            "on_project_select": self.configs._cb_project_select,
+            "on_config_select": self.configs._cb_config_select,
+            "on_project_launch": self.configs._cb_project_launch,
+            "on_project_rename": self.configs._cb_project_rename,
+            "on_project_delete": self.configs._cb_project_delete,
+            "on_project_blank": self.configs._cb_project_blank,
             "on_rec_live": self.recording._cb_rec_live,
             "on_rec_toggle": self.recording._cb_rec_toggle,
             "on_rec_slot_click": self.recording._cb_rec_slot_click,
@@ -1343,202 +1409,6 @@ class WallDanceApp:
             "sensitivity_var_anchor": self._sensitivity_var_anchor,
         }
 
-    def _update_topbar_state(self, selected_filepath: Optional[str] = None):
-        projects = self.config_store.list_projects()
-        if self.gui:
-            self.gui.update_project_list(projects, self._current_project)
-
-        history = self.config_store.project_history(self._current_project)
-
-        current_display = ""
-        if selected_filepath:
-            selected_abs = os.path.abspath(selected_filepath)
-            for display, path in history.configs:
-                if os.path.abspath(path) == selected_abs:
-                    current_display = display
-                    break
-            if not current_display:
-                current_display = format_config_display(os.path.basename(selected_filepath))
-
-        if not current_display and history.configs:
-            current_display = history.configs[0][0]
-
-        if self.gui:
-            self.gui.update_config_list(history.configs, current_display)
-            if current_display:
-                self.gui.set_current_config(current_display)
-
-    def _execute_project_switch(self, config_filepath: str):
-        """Project switch can block the loop for minutes (model/TRT load) -
-        suppress the loop watchdog for the duration."""
-        self._watchdog.push_busy("project_switch")
-        try:
-            return self._execute_project_switch_impl(config_filepath)
-        finally:
-            self._watchdog.pop_busy()
-
-    def _execute_project_switch_impl(self, config_filepath: str):
-        """Execute a full project switch with proper cleanup and initialization.
-
-        This is the unified path for both startup and runtime project switching.
-        It ensures everything is properly closed and reinitialized.
-
-        Args:
-            config_filepath: Path to the config file to load
-        """
-        print(f"\n{'='*60}")
-        print(f"[Project Switch] Starting switch to: {os.path.basename(config_filepath)}")
-        print(f"{'='*60}")
-        
-        # 1. Stop any recording/playback (clear callback first)
-        print("[Project Switch] Stopping recorder...")
-        self.cameras._set_camera_frame_callback(None)
-        self.recorder.stop_recording()
-        self.recorder.stop_playback()
-        
-        # 2. Block processing
-        self.models._model_loading = True
-        
-        # 3. Close camera
-        camera_was_open = self.camera.state.is_open
-        if camera_was_open:
-            print("[Project Switch] Closing camera...")
-            self.camera.close()
-            self.camera.state.is_open = False
-        
-        # 4. Load the config (migrate to schema v2, keep both profile bundles,
-        # then work on the flat view of the active profile)
-        try:
-            config = self.config_store.load(config_filepath)
-        except Exception as e:
-            print(f"[Project Switch] ERROR: Failed to load config: {e}")
-            self.models._model_loading = False
-            if camera_was_open:
-                self.cameras._open_camera(self.camera.state.source)
-            return False
-        structured = config_schema.migrate(config)
-        self._profiles = {n: dict(b) for n, b in structured["profiles"].items()}
-        self._active_profile = structured.get("active_profile", config_schema.DEFAULT_PROFILE)
-        flat, cfg_warnings = config_schema.validate_flat(config_schema.flatten(structured))
-        self._report_config_warnings(cfg_warnings)
-        config = flat
-
-        # 5. Extract model info before applying config
-        model_name = config.get("model", self.models.current_model_name)
-        use_trt = config.get("use_tensorrt", False)
-        self.models._trt_requested = bool(use_trt)
-        new_imgsz = config.get("yolo_imgsz", self.settings.imgsz)
-        base_name = model_name.replace('.pt', '').replace('.engine', '')
-        
-        print(f"[Project Switch] Target: model={model_name}, TRT={use_trt}, imgsz={new_imgsz}")
-        
-        # 6. Update imgsz in model manager BEFORE loading model
-        self.settings.imgsz = new_imgsz
-        self.models.model_manager.set_imgsz(new_imgsz)
-        self._update_imgsz_roi_warning()
-        
-        # 7. Determine if we need to reload the model
-        need_model_reload = (
-            base_name != self.models.current_model_name or
-            new_imgsz != self.settings.imgsz or
-            use_trt != self.models.model_manager.is_using_tensorrt()
-        )
-        
-        # For TRT, we always need to reload if imgsz changed (engines are size-specific)
-        if self.models.model_manager.is_using_tensorrt() or use_trt:
-            need_model_reload = True
-        
-        # 8. Load the model if needed
-        if need_model_reload:
-            # Check if TRT engine exists
-            force_pt = not use_trt
-            if use_trt and not self.models.model_manager.engine_exists(base_name):
-                from model_manager import is_tensorrt_available
-                if is_tensorrt_available():
-                    # Prompt user before starting long TRT build
-                    if self.models._prompt_trt_build_sync(base_name):
-                        print(f"[Project Switch] User accepted TRT build for {base_name}@{new_imgsz}")
-                        force_pt = False
-                    else:
-                        print(f"[Project Switch] User declined TRT build, using PyTorch")
-                        force_pt = True
-                        use_trt = False
-                        self.models._trt_requested = False
-                else:
-                    # Keep _trt_requested True: the banner must flag the fallback
-                    print(f"[Project Switch] TRT not available, using PyTorch")
-                    force_pt = True
-                    use_trt = False
-            
-            print(f"[Project Switch] Loading model {model_name}... (TRT={use_trt}, force_pt={force_pt})")
-            if not self.models._load_model_with_progress(model_name, force_pt=force_pt):
-                print(f"[Project Switch] ERROR: Failed to load model")
-                self.models._model_loading = False
-                if camera_was_open:
-                    self.cameras._open_camera(self.camera.state.source)
-                return False
-        
-        # 9. Apply the rest of the config (skip model since we just loaded it)
-        # Also skip imgsz since we already set it
-        print("[Project Switch] Applying config settings...")
-        self._apply_config_without_model(config)
-        
-        # 10. Update project tracking
-        self._current_project = self.config_store.infer_project_from_config(config, config_filepath)
-        self.config_store.remember_last_project(self._current_project)
-        
-        # 11. Update recorder
-        self.recorder.set_project(self._current_project)
-        
-        # 12. Clear any pending operations that were set during config apply
-        self.models._pending_model_switch = None
-        self.models._pending_trt_switch = None
-        self.models._pending_trt_build = None
-        self.models._pending_model_for_trt_build = None
-        
-        # 13. Reopen camera if it was open (using new camera source from config if specified)
-        camera_source = config.get("camera_source", self.camera.state.source)
-        if camera_was_open or camera_source != self.camera.state.source:
-            print(f"[Project Switch] Opening camera {camera_source}...")
-            if self.cameras._attempt_camera_connect(camera_source):
-                time.sleep(0.3)
-                if self.camera.cap:
-                    for _ in range(5):
-                        self.camera.cap.grab()
-        
-        # 14. Update UI
-        self._update_topbar_state(selected_filepath=config_filepath)
-        self.recording._update_recording_ui()
-        if self.gui:
-            self.gui.sync_combo("model", base_name)
-            self.gui.set_trt_checkbox(self.models.model_manager.is_using_tensorrt())
-            self.models._update_trt_banner()
-            self.gui.set_active_profile(self._active_profile)
-            self.gui.update_camera_sources(self.cameras._camera_ui_sources(), self.camera.state.source, self.camera.state.unavailable)
-            
-            cam_type_str = ""
-            if self._use_unified_camera and self.unified_camera is not None and self.unified_camera.is_open:
-                if self.unified_camera.source_type == CameraSource.IDS_PEAK:
-                    cam_type_str = "IDS_PEAK"
-                else:
-                    cam_type_str = "OPENCV"
-            elif self.camera.state.is_open:
-                cam_type_str = "OPENCV"
-            self.gui.config['camera_type'] = cam_type_str
-            
-            self.gui.update_camera_status(
-                self.camera.state.is_open,
-                self.camera.state.source,
-                reconnecting=self.cameras._camera_reconnecting,
-            )
-        
-        # 15. Resume processing
-        self.models._model_loading = False
-        
-        print(f"[Project Switch] Complete: {self._current_project}")
-        print(f"{'='*60}\n")
-        return True
-
     def _apply_config_without_model(self, config: Dict):
         """Apply config settings except model/imgsz (those are handled separately during project switch)."""
         # YOLO settings (except imgsz which is handled separately)
@@ -2128,14 +1998,14 @@ class WallDanceApp:
             # action (ROADMAP bug #6).
             self.gui.show_calibration_result_dialog(
                 servo_line + gamma_line + result.summary() + "\n" + excl.summary_line(),
-                on_save=self._cb_save_config)
+                on_save=self.configs._cb_save_config)
 
     # ------------------------------------------------------------------
     # Calib2 — dancer evidence pool (UX_PLAN U4)
     # ------------------------------------------------------------------
     def _calib2_pool(self) -> SubjectPool:
-        return SubjectPool(os.path.join(self.config_store.config_dir,
-                                        self._current_project))
+        return SubjectPool(os.path.join(self.configs.config_store.config_dir,
+                                        self.configs._current_project))
 
     def _cb_calib2(self):
         """CALIB DANCERS button: collect one evidence run (live or playback)."""
@@ -2168,7 +2038,7 @@ class WallDanceApp:
                   if self.recorder.is_playing else "live")
         frame_w, frame_h = self._roi_source_size
         roi = self._get_effective_roi(frame_w, frame_h)
-        self._calib2.start(source, self._active_profile, roi, (frame_w, frame_h),
+        self._calib2.start(source, self.configs._active_profile, roi, (frame_w, frame_h),
                            imgsz=int(self.settings.imgsz))
         self._calib2_saved_frames = 0
         self._calibrating2 = True
@@ -2176,7 +2046,7 @@ class WallDanceApp:
             self.gui.set_calibrate_status("Dancers 0%")
             self.gui.show_toast("Dancer calibration - have 1-4 dancers move around",
                                 duration=3.0, color=(160, 200, 255))
-        print(f"[Calib2] run started ({source}, profile={self._active_profile})")
+        print(f"[Calib2] run started ({source}, profile={self.configs._active_profile})")
 
     def _step_calib2(self, tracked, process_wall_ms):
         """Feed one processed frame to the dancer-run collector."""
@@ -2274,7 +2144,7 @@ class WallDanceApp:
         if self.gui:
             self.gui.show_calibration_result_dialog(
                 "Dancer calibration (pooled)\n" + prop.summary(),
-                on_save=self._cb_save_config)
+                on_save=self.configs._cb_save_config)
 
     def _cb_calib2_clear(self):
         removed = self._calib2_pool().clear()
@@ -2352,7 +2222,7 @@ class WallDanceApp:
 
         self.tracker.logger.flush()
         return {
-            "project": self._current_project,
+            "project": self.configs._current_project,
             "slot": self.recorder.status.current_slot,
             "frame": self.recorder.status.playback_frame,
             "playback_total": self.recorder.status.playback_total,
@@ -2381,8 +2251,8 @@ class WallDanceApp:
             issue_dir = os.path.join(session_dir, "issues")
         else:
             issue_dir = os.path.join(
-                self.config_store.config_dir,
-                self._current_project,
+                self.configs.config_store.config_dir,
+                self.configs._current_project,
                 "review_issues",
             )
         os.makedirs(issue_dir, exist_ok=True)
@@ -2425,7 +2295,7 @@ class WallDanceApp:
             "dancer_labels": payload["dancer_labels"],
             "frame": frame_num,
             "slot": slot_num,
-            "project": self._current_project,
+            "project": self.configs._current_project,
             "note": payload["note"],
             "json_path": json_path,
             "snapshot_path": payload["snapshot_path"],
@@ -2455,181 +2325,6 @@ class WallDanceApp:
             if self.osc_enabled:
                 self._init_osc()
             print(f"OSC target: {ip}:{port}")
-
-    def _cb_save_config(self):
-        self._cb_do_save_config(self._current_project)
-
-    def _cb_save_as_config(self):
-        if self.gui:
-            self.gui.show_save_config_dialog(self._current_project)
-
-    def _cb_load_config(self):
-        if self.gui:
-            self.gui.show_load_config_dialog(self.config_store.config_dir, self._current_project)
-
-    def _snapshot_active_profile(self) -> Dict:
-        """Capture live lighting-coupled values into the active profile bundle."""
-        _, profile = config_schema.split_profile(self._get_saveable_config())
-        self._profiles[self._active_profile] = dict(profile)
-        return profile
-
-    def _get_structured_config(self) -> Dict:
-        """v2 payload for persistence: current values + the inactive profile bundle."""
-        self._snapshot_active_profile()
-        return config_schema.structure(
-            self._get_saveable_config(), self._profiles, self._active_profile)
-
-    def _cb_profile_switch(self, profile_name: str):
-        """Top-bar switch: apply the other lighting profile atomically
-        (pipeline values + IDS hardware via the existing apply path)."""
-        name = str(profile_name).lower()
-        if name not in config_schema.PROFILE_NAMES or name == self._active_profile:
-            return
-        current = self._snapshot_active_profile()
-        self._active_profile = name
-        # First switch to a never-calibrated profile: seed it from the current
-        # one so the operator starts from a working state, then calibrates.
-        bundle = self._profiles.get(name) or dict(current)
-        self._profiles[name] = dict(bundle)
-        print(f"[Profile] Switching lighting profile -> {name}")
-        self._apply_config_without_model(bundle)
-        self._request_reprocess()
-        if self.gui:
-            self.gui.set_active_profile(name)
-            self.gui.show_toast(f"Lighting profile: {name.upper()}",
-                                duration=2.5, color=(150, 200, 255))
-
-    def _cb_do_save_config(self, project_name: str):
-        filepath = self.config_store.save(project_name, self._get_structured_config())
-        new_project = sanitize_project_name(project_name)
-        # Only switch recorder project if the name actually changed
-        # (avoids stopping playback when saving to the same project)
-        if new_project != self._current_project:
-            self._current_project = new_project
-            self.recorder.set_project(self._current_project)
-            self.recording._update_recording_ui()  # Refresh slots for new project
-        self._update_topbar_state()
-        if self.gui:
-            self.gui.show_save_indicator("Saved!")
-        print(f"Config saved: {filepath}")
-
-    def _cb_do_load_config(self, filepath: str):
-        """Handle config load request - defers to main loop for proper sequencing."""
-        # Defer the actual project switch to main loop to avoid race conditions
-        # The main loop will call _execute_project_switch() which handles:
-        # - Stopping recording/playback
-        # - Closing camera
-        # - Loading model with correct imgsz
-        # - Applying config
-        # - Reopening camera
-        print(f"Queuing project switch to: {os.path.basename(filepath)}")
-        self._pending_project_switch = filepath
-        self.models._model_loading = True  # Block processing immediately
-
-    def _cb_project_select(self, project_name: str):
-        latest = self.config_store.latest_for_project(project_name)
-        if latest:
-            self._cb_do_load_config(latest)
-            print(f"Loaded latest config for project: {project_name}")
-        else:
-            print(f"No configs found for project: {project_name}")
-
-    def _cb_config_select(self, project_name: str, config_display: str):
-        history = self.config_store.project_history(project_name)
-        for display, filepath in history.configs:
-            if display == config_display:
-                self._cb_do_load_config(filepath)
-                return
-        print(f"Config not found: {config_display}")
-
-    # ------------------------------------------------------------------
-    # Startup project picker (ROADMAP §7B)
-    # ------------------------------------------------------------------
-    def _show_startup_project_picker(self):
-        """Populate and show the launch-time project picker."""
-        if not self.gui:
-            return
-        infos = self.config_store.list_projects_by_date()
-        rows = [(i.name, i.last_saved_display, i.save_count) for i in infos]
-        last = self.config_store.read_last_project() or ""
-        self.gui.show_project_picker(rows, last_project=last)
-
-    def _cb_project_launch(self, name: str):
-        """Picker 'Launch' / Enter → queue a switch to the project's latest config."""
-        print(f"[Picker] Launching project: {name}")
-        self._cb_project_select(name)
-
-    def _cb_project_rename(self, old: str, new: str):
-        result = self.config_store.rename_project(old, new)
-        if result is None:
-            if self.gui:
-                self.gui.show_toast("Rename failed - name already in use?",
-                                    duration=3.0, color=(255, 180, 80))
-        else:
-            print(f"[Picker] Renamed '{old}' -> '{result}'")
-            if self._current_project == old:
-                self._current_project = result
-        self._show_startup_project_picker()  # refresh the list
-
-    def _cb_project_delete(self, name: str):
-        if self.config_store.delete_project(name):
-            print(f"[Picker] Deleted project: {name}")
-        elif self.gui:
-            self.gui.show_toast(f"Could not delete '{name}'",
-                                duration=3.0, color=(255, 180, 80))
-        self._show_startup_project_picker()  # refresh (may now be empty)
-
-    def _cb_project_blank(self):
-        """Picker 'Start blank' → load the default model, no project."""
-        print("[Picker] Starting blank (default model)")
-        self.models._load_default_model_startup()
-
-    def _cb_save_safe_defaults(self):
-        """Save current settings as safe defaults for this project."""
-        filepath = self.config_store.save_safe_defaults(self._current_project, self._get_structured_config())
-        if self.gui:
-            self.gui.show_save_indicator("Safe defaults saved!")
-        print(f"Safe defaults saved: {filepath}")
-
-    def _report_config_warnings(self, cfg_warnings):
-        """Console detail + one summary toast for config-load validation warnings."""
-        for w in cfg_warnings:
-            print(f"[Config] {w}")
-        if cfg_warnings:
-            self.gui and self.gui.show_toast(
-                f"Config: {len(cfg_warnings)} value(s) adjusted on load - see console",
-                duration=4.0, color=(255, 200, 100),
-            )
-
-    def _cb_load_safe_defaults(self):
-        """Load safe defaults for this project."""
-        raw = self.config_store.load_safe_defaults(self._current_project)
-        if raw:
-            structured = config_schema.migrate(raw)
-            config, cfg_warnings = config_schema.validate_flat(config_schema.flatten(structured))
-            self._report_config_warnings(cfg_warnings)
-            # Check if model or imgsz would change
-            model_changes = config.get("model", self.models.current_model_name) != self.models.current_model_name
-            imgsz_changes = config.get("yolo_imgsz", self.settings.imgsz) != self.settings.imgsz
-            trt_changes = config.get("use_tensorrt", self.models.model_manager.is_using_tensorrt()) != self.models.model_manager.is_using_tensorrt()
-
-            if model_changes or imgsz_changes or trt_changes:
-                # Need full project switch for model/imgsz/trt changes
-                # Save the config temporarily and trigger a project switch
-                temp_path = self.config_store.save(self._current_project, structured)
-                self._pending_project_switch = temp_path
-                self.models._model_loading = True
-            else:
-                # No model changes, just apply config directly
-                self._profiles = {n: dict(b) for n, b in structured["profiles"].items()}
-                self._active_profile = structured.get("active_profile", config_schema.DEFAULT_PROFILE)
-                self._apply_config_without_model(config)
-                self.gui and self.gui.set_active_profile(self._active_profile)
-            if self.gui:
-                self.gui.show_save_indicator("Safe defaults loaded!")
-            print(f"Safe defaults loaded for project: {self._current_project}")
-        else:
-            print(f"No safe defaults found for project: {self._current_project}")
 
     def _cb_issue_dialog_closed(self):
         """Refresh playback controls after the review dialog closes."""
@@ -2937,7 +2632,7 @@ class WallDanceApp:
                 timeout_s=OPS_OSC_PROBE_TIMEOUT_S))
             saved_at = None
             try:
-                latest = self.config_store.latest_for_project(self._current_project)
+                latest = self.configs.config_store.latest_for_project(self.configs._current_project)
                 if latest:
                     saved_at = datetime.fromtimestamp(
                         os.path.getmtime(latest)).isoformat()
@@ -2948,7 +2643,7 @@ class WallDanceApp:
             except Exception:
                 mask_cells = None
             results.append(check_calibration(
-                saved_at_iso=saved_at, active_profile=self._active_profile,
+                saved_at_iso=saved_at, active_profile=self.configs._active_profile,
                 warn_age_h=OPS_CALIB_AGE_WARN_H, mask_cells=mask_cells))
             results.append(check_disk(
                 recordings_dir=self.recorder.recordings_dir,
@@ -2958,8 +2653,8 @@ class WallDanceApp:
                                           warn_c=int(self._health.gpu_temp_c)))
             report = ReadinessReport(results)
             print(report.console_block(
-                f"(project={self._current_project}, "
-                f"profile={self._active_profile}) "))
+                f"(project={self.configs._current_project}, "
+                f"profile={self.configs._active_profile}) "))
             if self.gui:
                 msg, color = report.toast_summary()
                 self.gui.show_toast(msg, duration=6.0, color=color)
@@ -3099,7 +2794,7 @@ class WallDanceApp:
                 sel = self.gui.project_picker_selection()
                 if sel:
                     self.gui.hide_project_picker()
-                    self._cb_project_launch(sel)
+                    self.configs._cb_project_launch(sel)
             return
         ctrl_down = dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
         shift_down = dpg.is_key_down(dpg.mvKey_LShift) or dpg.is_key_down(dpg.mvKey_RShift)
@@ -3145,7 +2840,7 @@ class WallDanceApp:
             if context and self.gui:
                 self.gui.show_issue_report_dialog(context)
         if key == dpg.mvKey_S and (dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)):
-            self._cb_save_config()
+            self.configs._cb_save_config()
 
     # ------------------------------------------------------------------
     # Model Loading with Progress
@@ -3183,12 +2878,12 @@ class WallDanceApp:
         # Project startup (unified switch path). A deliberate picker (ROADMAP §7B)
         # unless a CLI override (--project / config path), the kiosk env var, or
         # the config flag says to auto-load the last project.
-        last_project = self.config_store.read_last_project()
+        last_project = self.configs.config_store.read_last_project()
         startup_config = None
         if self._startup_review.config_path:
             startup_config = os.path.abspath(self._startup_review.config_path)
         elif self._startup_review.project:
-            startup_config = self.config_store.latest_for_project(
+            startup_config = self.configs.config_store.latest_for_project(
                 sanitize_project_name(self._startup_review.project)
             )
         cli_override = startup_config is not None
@@ -3196,17 +2891,17 @@ class WallDanceApp:
             "WALLDANCE_AUTOLAUNCH_LAST", "").lower() in ("1", "true", "yes")
         show_picker = PROJECT_PICKER_ON_START and not cli_override and not autolaunch_env
 
-        if show_picker and self.config_store.list_projects():
+        if show_picker and self.configs.config_store.list_projects():
             # Nothing loads until the operator picks (or "Start blank"); the
             # picker queues a project switch handled by the main loop.
             print("Showing startup project picker")
-            self._show_startup_project_picker()
+            self.configs._show_startup_project_picker()
         else:
             if startup_config is None and last_project:
-                startup_config = self.config_store.latest_for_project(last_project)
+                startup_config = self.configs.config_store.latest_for_project(last_project)
             if startup_config:
                 print(f"Loading project: {last_project or os.path.basename(startup_config)}")
-                if not self._execute_project_switch(startup_config):
+                if not self.configs._execute_project_switch(startup_config):
                     print("ERROR: Failed to load project. Exiting.")
                     return
             elif not self.models._load_default_model_startup():
@@ -3214,7 +2909,7 @@ class WallDanceApp:
                 return
 
         # Initialize recording UI
-        self.recorder.set_project(self._current_project)
+        self.recorder.set_project(self.configs._current_project)
         self.recording._update_recording_ui()
         self.recording._apply_startup_review_mode()
 
@@ -3252,10 +2947,10 @@ class WallDanceApp:
             self._ops_heartbeat()
             # Handle pending project switch (deferred from callback)
             # This is the unified path for project/config switching
-            if self._pending_project_switch is not None:
-                config_filepath = self._pending_project_switch
-                self._pending_project_switch = None
-                self._execute_project_switch(config_filepath)
+            if self.configs._pending_project_switch is not None:
+                config_filepath = self.configs._pending_project_switch
+                self.configs._pending_project_switch = None
+                self.configs._execute_project_switch(config_filepath)
                 continue  # Restart loop after switch
 
             # Handle pending playback events (deferred from decoder thread)
