@@ -5,12 +5,21 @@ Provides real-time parameter adjustment with sliders, checkboxes, and buttons.
 
 import os, sys
 import subprocess
+import time
 from typing import Any, Callable, Dict, Optional
 
+import cv2
 import dearpygui.dearpygui as dpg
 import numpy as np
 
 from gui_builder import build_ui, create_texture, setup_theme, load_icon_font, SystemState, scaled, CONTROL_PANEL_WIDTH
+from gui_constants import (
+    TEXT_NORMAL, TEXT_MUTED, TEXT_DIM, TEXT_HINT, TEXT_FAINT,
+    HEADING_GREEN, OK_GREEN, BRIGHT_GREEN, WARN_AMBER, WARN_ORANGE,
+    ERROR_SOFT, ALERT_RED,
+    TOAST_POS, VIEWPORT_BASE_W, VIEWPORT_BASE_H, VIEWPORT_MIN,
+    LAYOUT_H_PAD, LAYOUT_V_MARGIN, LAYOUT_V_FALLBACK,
+)
 from config import DANCER_COLORS
 from gui_icons import Icons
 
@@ -250,6 +259,13 @@ class WallDanceGUI:
         
         # Smoothed timing for preview (avoid flickering 0 values)
         self._last_preview_time = 0
+
+        # Toast expiry deadline; expired by render_frame() on the main
+        # thread only — DPG is not thread-safe.
+        self._toast_deadline = 0.0
+
+        # Modals registered for live centering: tag -> (width, height)
+        self._centered_modals: Dict[str, tuple] = {}
         
         # Project/config state for top bar
         self._projects_list = []
@@ -361,15 +377,15 @@ class WallDanceGUI:
             return
         if not has_reference:
             dpg.set_value("bg_status_text", "No reference captured")
-            dpg.configure_item("bg_status_text", color=(120, 120, 120))
+            dpg.configure_item("bg_status_text", color=TEXT_DIM)
         elif is_mismatched:
             pct = int(fg_ratio * 100)
             dpg.set_value("bg_status_text", f"!! MISMATCH ({pct}% fg) - Recapture or disable")
-            dpg.configure_item("bg_status_text", color=(255, 80, 80))
+            dpg.configure_item("bg_status_text", color=ALERT_RED)
         elif enabled:
             pct = int(fg_ratio * 100)
             dpg.set_value("bg_status_text", f"Active ({pct}% foreground)")
-            dpg.configure_item("bg_status_text", color=(100, 255, 100))
+            dpg.configure_item("bg_status_text", color=BRIGHT_GREEN)
         else:
             dpg.set_value("bg_status_text", "Reference ready (disabled)")
             dpg.configure_item("bg_status_text", color=(180, 180, 100))
@@ -419,7 +435,7 @@ class WallDanceGUI:
             detail += f"  (auto {auto}, +{manual_add}, -{manual_remove})"
         dpg.set_value("mask_cells_text", detail)
         dpg.configure_item("mask_cells_text",
-                           color=(80, 220, 120) if effective else (150, 150, 150))
+                           color=(80, 220, 120) if effective else TEXT_MUTED)
 
     def update_roi_rect_text(self, x: int, y: int, w: int, h: int, edit_mode: bool = False):
         """Update the read-only ROI rect display (replaces the numeric inputs)."""
@@ -427,7 +443,7 @@ class WallDanceGUI:
             return
         suffix = "  (editing)" if edit_mode else ""
         dpg.set_value("roi_rect_text", f"{x},{y}  {w}x{h}{suffix}")
-        dpg.configure_item("roi_rect_text", color=(80, 220, 120) if edit_mode else (150, 150, 150))
+        dpg.configure_item("roi_rect_text", color=(80, 220, 120) if edit_mode else TEXT_MUTED)
 
     def set_expert_mode(self, enabled: bool):
         """Show/hide developer-grade knob panels."""
@@ -438,14 +454,14 @@ class WallDanceGUI:
         self.show_toast(
             "Expert mode ON" if self.expert_mode else "Expert mode OFF",
             duration=2.0,
-            color=(255, 200, 100) if self.expert_mode else (150, 150, 150),
+            color=WARN_AMBER if self.expert_mode else TEXT_MUTED,
         )
 
 
     def _update_preview_row_state(self, enabled: bool):
         """Grey out PREVIEW row controls when disabled."""
         if dpg.does_item_exist("preview_tex_text"):
-            color = (200, 200, 200) if enabled else (80, 80, 80)
+            color = (200, 200, 200) if enabled else TEXT_FAINT
             dpg.configure_item("preview_tex_text", color=color)
         if dpg.does_item_exist("adv_preview_cap_checkbox"):
             dpg.configure_item("adv_preview_cap_checkbox", enabled=enabled)
@@ -806,10 +822,10 @@ class WallDanceGUI:
                 dpg.configure_item("rec_status_text", color=(80, 200, 80))
             elif state == "armed":
                 dpg.set_value("rec_status_text", "REC ARMED - Select slot")
-                dpg.configure_item("rec_status_text", color=(255, 180, 80))
+                dpg.configure_item("rec_status_text", color=WARN_ORANGE)
             elif state == "recording":
                 dpg.set_value("rec_status_text", f"SLOT {current_slot}")
-                dpg.configure_item("rec_status_text", color=(255, 80, 80))
+                dpg.configure_item("rec_status_text", color=ALERT_RED)
             elif state == "playing":
                 dpg.set_value("rec_status_text", f"SLOT {current_slot}")
                 dpg.configure_item("rec_status_text", color=(80, 180, 255))
@@ -955,7 +971,7 @@ class WallDanceGUI:
             tag="issue_report_dialog",
             width=dlg_w,
             height=dlg_h,
-            pos=[dpg.get_viewport_width() // 2 - dlg_w // 2, dpg.get_viewport_height() // 2 - dlg_h // 2],
+            pos=self._center_modal("issue_report_dialog", dlg_w, dlg_h),
             no_resize=True,
             no_move=False,
         ):
@@ -1118,6 +1134,32 @@ class WallDanceGUI:
     def _on_viewport_resize(self, sender=None, app_data=None):
         """Called by DearPyGui when the viewport is resized."""
         self._recompute_layout()
+        self._recenter_modals()
+
+    # === Modal centering ===
+
+    def _centered_pos(self, w: int, h: int) -> list:
+        """Top-left position centering a w×h window in the viewport.
+
+        Uses the client (drawable) area — pos coordinates are client-relative,
+        so centering against the outer viewport size drifts down/right by the
+        decoration size. Falls back to the outer size when client metrics are
+        not ready yet (first frames).
+        """
+        vw = dpg.get_viewport_client_width() or dpg.get_viewport_width()
+        vh = dpg.get_viewport_client_height() or dpg.get_viewport_height()
+        return [max(0, (vw - w) // 2), max(0, (vh - h) // 2)]
+
+    def _center_modal(self, tag: str, w: int, h: int) -> list:
+        """Return an initial centered position for a modal and register it
+        for re-centering when the viewport is resized."""
+        self._centered_modals[tag] = (w, h)
+        return self._centered_pos(w, h)
+
+    def _recenter_modals(self):
+        for tag, (w, h) in self._centered_modals.items():
+            if dpg.does_item_exist(tag):
+                dpg.set_item_pos(tag, self._centered_pos(w, h))
 
     def _recompute_layout(self):
         """Recompute layout dimensions based on viewport size and camera aspect ratio.
@@ -1137,7 +1179,7 @@ class WallDanceGUI:
             return
 
         ctrl_w = scaled(CONTROL_PANEL_WIDTH)
-        h_pad = scaled(28)       # left(6) + right(6) + window padding + gap
+        h_pad = scaled(LAYOUT_H_PAD)
 
         # Dynamically measure top/bottom bar heights if rendered,
         # otherwise fall back to a safe estimate.
@@ -1154,10 +1196,10 @@ class WallDanceGUI:
         if top_h > 0 and bot_h > 0:
             # Measured bars + DPG window padding (2×8) + spacer(2) + item spacing gaps
             # Use generous padding to guarantee bottom bar stays visible
-            v_overhead = int(top_h + bot_h) + scaled(95)
+            v_overhead = int(top_h + bot_h) + scaled(LAYOUT_V_MARGIN)
         else:
             # First frame fallback (items not rendered yet)
-            v_overhead = scaled(220)
+            v_overhead = scaled(LAYOUT_V_FALLBACK)
 
         mid_h = max(scaled(200), vp_h - v_overhead)
         vid_w = max(scaled(200), vp_w - ctrl_w - h_pad)
@@ -1258,23 +1300,21 @@ class WallDanceGUI:
         """
         if frame is None:
             return
-        
-        import cv2
-        
+
         # Resize to display size if needed
         h, w = frame.shape[:2]
         if w != self.texture_width or h != self.texture_height:
             frame = cv2.resize(frame, (self.texture_width, self.texture_height))
-        
+
         # Convert BGR to RGBA
         rgba = cv2.cvtColor(frame, cv2.COLOR_BGR2RGBA)
-        
-        # Convert to float32 normalized, flatten, and ensure contiguous
-        # Reuse pre-allocated buffer for speed
+
         if self.frame_buffer.size != rgba.size:
             # Texture likely re-created; allocate matching buffer
             self.frame_buffer = np.zeros(rgba.size, dtype=np.float32)
-        np.copyto(self.frame_buffer, rgba.astype(np.float32).ravel() / 255.0)
+        # Scale+cast straight into the persistent buffer — this runs per
+        # frame, so no temporaries (astype/division copies) allowed here.
+        np.multiply(rgba.reshape(-1), np.float32(1.0 / 255.0), out=self.frame_buffer)
 
         # Update texture - pass the buffer directly
         if dpg.does_item_exist(self.frame_texture_tag):
@@ -1284,14 +1324,14 @@ class WallDanceGUI:
     def _fps_color(fps: float):
         """Return an (R, G, B) color for an FPS value.
 
-        >= 19  → green (120, 255, 120)
-        <= 10  → red   (255, 80, 80)
+        >= 19  → OK_GREEN
+        <= 10  → ALERT_RED
         Between 10 and 19 → smooth gradient from red to green.
         """
         if fps >= 19:
-            return (120, 255, 120)
+            return OK_GREEN
         if fps <= 10:
-            return (255, 80, 80)
+            return ALERT_RED
         t = (fps - 10) / 9.0  # 0..1
         r = int(255 + (120 - 255) * t)
         g = int(80 + (255 - 80) * t)
@@ -1352,7 +1392,7 @@ class WallDanceGUI:
         self._update_enhance_row_state(enhance_enabled, bypass=enhance_bypassed)
 
         # Status badges
-        cam_color = (120, 255, 120) if camera_running else (255, 120, 120)
+        cam_color = OK_GREEN if camera_running else ERROR_SOFT
         if dpg.does_item_exist("badge_cam"):
             dpg.set_value("badge_cam", "ON" if camera_running else "OFF")
             dpg.configure_item("badge_cam", color=cam_color)
@@ -1365,10 +1405,10 @@ class WallDanceGUI:
                 dpg.configure_item("badge_cam_type", color=(100, 200, 255))
             elif camera_type == "OPENCV":
                 dpg.set_value("badge_cam_type", "[CV]")
-                dpg.configure_item("badge_cam_type", color=(255, 200, 100))
+                dpg.configure_item("badge_cam_type", color=WARN_AMBER)
             else:
                 dpg.set_value("badge_cam_type", "[--]")
-                dpg.configure_item("badge_cam_type", color=(150, 150, 150))
+                dpg.configure_item("badge_cam_type", color=TEXT_MUTED)
 
         # Show/hide IDS-specific sliders based on camera type
         is_ids = (camera_type == "IDS_PEAK")
@@ -1379,7 +1419,7 @@ class WallDanceGUI:
         if not is_ids and dpg.does_item_exist("ids_hw_settings_group"):
             dpg.configure_item("ids_hw_settings_group", show=False)
 
-        osc_color = (120, 255, 120) if osc_enabled else (255, 120, 120)
+        osc_color = OK_GREEN if osc_enabled else ERROR_SOFT
         if dpg.does_item_exist("badge_osc"):
             dpg.set_value("badge_osc", "ON" if osc_enabled else "OFF")
             dpg.configure_item("badge_osc", color=osc_color)
@@ -1422,8 +1462,8 @@ class WallDanceGUI:
             
             # Update path indicators with colors
             # GPU = green [GPU], CPU = red [CPU]
-            gpu_color = (120, 255, 120)
-            cpu_color = (255, 120, 120)
+            gpu_color = OK_GREEN
+            cpu_color = ERROR_SOFT
             
             if dpg.does_item_exist("path_enhance"):
                 is_gpu = path_enhance == "gpu"
@@ -1443,11 +1483,11 @@ class WallDanceGUI:
             # Color code key timings
             def _colorize(tag, val, g=40, y=80):
                 if val < g:
-                    dpg.configure_item(tag, color=(100, 255, 100))
+                    dpg.configure_item(tag, color=BRIGHT_GREEN)
                 elif val < y:
                     dpg.configure_item(tag, color=(255, 200, 0))
                 else:
-                    dpg.configure_item(tag, color=(255, 80, 80))
+                    dpg.configure_item(tag, color=ALERT_RED)
 
             _colorize("time_yolo", yolo)
             _colorize("time_enhance", enh, g=10, y=30)
@@ -1532,7 +1572,7 @@ class WallDanceGUI:
 
         if min_fps <= implied_fps < warning_fps:
             dpg.set_value(tag, f"Exposure-limited: {implied_fps:.1f} FPS")
-            dpg.configure_item(tag, color=(255, 180, 80), show=True)
+            dpg.configure_item(tag, color=WARN_ORANGE, show=True)
         else:
             dpg.configure_item(tag, show=False)
 
@@ -1543,7 +1583,7 @@ class WallDanceGUI:
             return
         if message:
             dpg.set_value(tag, message)
-            dpg.configure_item(tag, color=(255, 180, 80), show=True)
+            dpg.configure_item(tag, color=WARN_ORANGE, show=True)
         else:
             dpg.configure_item(tag, show=False)
     
@@ -1600,20 +1640,20 @@ class WallDanceGUI:
             power_str = f"{gpu['power']:.0f}W" if gpu['power'] >= 0 else "?"
             dpg.set_value("topbar_gpu_util_text", f"{gpu['util']}%/{gpu['temp']}°C/{power_str}")
             if gpu['temp'] < 70:
-                dpg.configure_item("topbar_gpu_util_text", color=(100, 255, 100))
+                dpg.configure_item("topbar_gpu_util_text", color=BRIGHT_GREEN)
             elif gpu['temp'] < 85:
                 dpg.configure_item("topbar_gpu_util_text", color=(255, 200, 0))
             else:
-                dpg.configure_item("topbar_gpu_util_text", color=(255, 80, 80))
+                dpg.configure_item("topbar_gpu_util_text", color=ALERT_RED)
             # VRAM % - colored by usage
             vram_pct = gpu['vram_pct']
             dpg.set_value("topbar_gpu_vram_text", f"{vram_pct:.0f}%")
             if vram_pct < 50:
-                dpg.configure_item("topbar_gpu_vram_text", color=(100, 255, 100))
+                dpg.configure_item("topbar_gpu_vram_text", color=BRIGHT_GREEN)
             elif vram_pct < 80:
                 dpg.configure_item("topbar_gpu_vram_text", color=(255, 200, 0))
             else:
-                dpg.configure_item("topbar_gpu_vram_text", color=(255, 80, 80))
+                dpg.configure_item("topbar_gpu_vram_text", color=ALERT_RED)
         else:
             dpg.set_value("topbar_gpu_util_text", "N/A")
             dpg.set_value("topbar_gpu_vram_text", "N/A")
@@ -1676,7 +1716,7 @@ class WallDanceGUI:
     def update_camera_status(self, running: bool, source: str = "", reconnecting: bool = False):
         """Update camera badge color."""
         self.camera_running = running
-        cam_color = (120, 255, 120) if running else (255, 120, 120)
+        cam_color = OK_GREEN if running else ERROR_SOFT
         if dpg.does_item_exist("badge_cam"):
             dpg.set_value("badge_cam", "ON" if running else "OFF")
             dpg.configure_item("badge_cam", color=cam_color)
@@ -1733,7 +1773,7 @@ class WallDanceGUI:
         import time
         self._save_indicator_time = time.time()
         if dpg.does_item_exist("save_indicator"):
-            dpg.configure_item("save_indicator", show=True, color=(100, 255, 100))
+            dpg.configure_item("save_indicator", show=True, color=BRIGHT_GREEN)
     
     def set_current_project(self, project_name: str):
         """Set the current project in the top bar dropdown."""
@@ -1763,12 +1803,12 @@ class WallDanceGUI:
             tag="save_config_dialog",
             width=dlg_w,
             height=dlg_h,
-            pos=[dpg.get_viewport_width() // 2 - dlg_w // 2, dpg.get_viewport_height() // 2 - dlg_h // 2],
+            pos=self._center_modal("save_config_dialog", dlg_w, dlg_h),
             no_resize=True,
             no_move=False,
         ):
             dpg.add_text("Enter project name:")
-            dpg.add_text("(Config will be saved with timestamp in project folder)", color=(150, 150, 150))
+            dpg.add_text("(Config will be saved with timestamp in project folder)", color=TEXT_MUTED)
             dpg.add_spacer(height=scaled(5))
             dpg.add_input_text(
                 tag="save_config_name_input",
@@ -1829,16 +1869,15 @@ class WallDanceGUI:
                 dpg.delete_item("picker_action_area", children_only=True)
             return
 
-        vw, vh = dpg.get_viewport_width(), dpg.get_viewport_height()
         w, h = scaled(520), scaled(560)
         with dpg.window(
             label="WallDance - Select Project", modal=True, tag="project_picker_modal",
-            width=w, height=h, pos=[vw // 2 - w // 2, vh // 2 - h // 2],
+            width=w, height=h, pos=self._center_modal("project_picker_modal", w, h),
             no_resize=True, no_move=True, no_close=True, no_collapse=True,
         ):
             dpg.add_spacer(height=scaled(6))
             dpg.add_text("Select a project to launch  (Enter = launch highlighted)",
-                         color=(120, 200, 140))
+                         color=HEADING_GREEN)
             dpg.add_text("Ordered by last save, most recent first.", color=(140, 140, 140))
             dpg.add_spacer(height=scaled(8))
             dpg.add_child_window(height=scaled(270), border=True, tag="picker_list_area")
@@ -1865,9 +1904,9 @@ class WallDanceGUI:
         dpg.delete_item(area, children_only=True)
         self._picker_rows = []
         if not projects:
-            dpg.add_text("No saved projects yet.", parent=area, color=(255, 200, 100))
+            dpg.add_text("No saved projects yet.", parent=area, color=WARN_AMBER)
             dpg.add_text("Start blank below, then save to create one.",
-                         parent=area, color=(150, 150, 150))
+                         parent=area, color=TEXT_MUTED)
             return
         for name, saved, count in projects:
             tag = f"picker_row_{name}"
@@ -1941,7 +1980,7 @@ class WallDanceGUI:
                 cb(name)            # app deletes + refreshes the list in place
 
         dpg.add_text(f"Delete '{name}'?  Removes all its configs + recordings.",
-                     parent=area, color=(255, 180, 80))
+                     parent=area, color=WARN_ORANGE)
         with dpg.group(horizontal=True, parent=area):
             dpg.add_button(label="Delete", width=scaled(90), callback=do_delete)
             dpg.add_button(label="Cancel", width=scaled(80),
@@ -1994,15 +2033,15 @@ class WallDanceGUI:
             tag="load_config_dialog",
             width=load_w,
             height=load_h,
-            pos=[dpg.get_viewport_width() // 2 - load_w // 2, dpg.get_viewport_height() // 2 - load_h // 2],
+            pos=self._center_modal("load_config_dialog", load_w, load_h),
             no_resize=True,
             no_move=False,
         ):
             if not projects:
-                dpg.add_text("No saved projects found.", color=(255, 200, 100))
-                dpg.add_text("Save a config first to create a project.", color=(150, 150, 150))
+                dpg.add_text("No saved projects found.", color=WARN_AMBER)
+                dpg.add_text("Save a config first to create a project.", color=TEXT_MUTED)
             else:
-                dpg.add_text("Select a project:", color=(120, 200, 140))
+                dpg.add_text("Select a project:", color=HEADING_GREEN)
                 dpg.add_spacer(height=scaled(5))
                 
                 # Store project list for deselection logic
@@ -2021,11 +2060,11 @@ class WallDanceGUI:
                         self._project_selectables.append((sel, project_name))
                 
                 dpg.add_spacer(height=scaled(10))
-                dpg.add_text("Config history:", tag="history_label", color=(120, 200, 140))
+                dpg.add_text("Config history:", tag="history_label", color=HEADING_GREEN)
                 dpg.add_spacer(height=scaled(5))
                 
                 with dpg.child_window(height=scaled(150), border=True, tag="config_history_window"):
-                    dpg.add_text("Select a project above...", tag="history_placeholder", color=(100, 100, 100))
+                    dpg.add_text("Select a project above...", tag="history_placeholder", color=TEXT_HINT)
                 
                 dpg.add_spacer(height=scaled(10))
                 dpg.add_button(
@@ -2113,7 +2152,7 @@ class WallDanceGUI:
                 if dpg.does_item_exist("load_selected_btn"):
                     dpg.configure_item("load_selected_btn", enabled=True)
             else:
-                dpg.add_text("No configs in this project", color=(100, 100, 100), parent="config_history_window")
+                dpg.add_text("No configs in this project", color=TEXT_HINT, parent="config_history_window")
     
     def _on_config_history_select(self, sender, value, user_data):
         """Handle config file selection in history - enforce single selection."""
@@ -2147,18 +2186,16 @@ class WallDanceGUI:
         # Clean up any existing modals first
         self._cleanup_model_modals()
         
-        vp_width = dpg.get_viewport_width()
-        vp_height = dpg.get_viewport_height()
         modal_width = scaled(500)
         modal_height = scaled(200)
-        
+
         with dpg.window(
             label="Model Loading",
             modal=True,
             tag="model_loading_modal",
             width=modal_width,
             height=modal_height,
-            pos=[vp_width // 2 - modal_width // 2, vp_height // 2 - modal_height // 2],
+            pos=self._center_modal("model_loading_modal", modal_width, modal_height),
             no_resize=True,
             no_move=True,
             no_close=True,
@@ -2174,7 +2211,7 @@ class WallDanceGUI:
                 height=scaled(25),
             )
             dpg.add_spacer(height=scaled(8))
-            dpg.add_text("", tag="model_loading_detail", color=(150, 150, 150), wrap=scaled(480))
+            dpg.add_text("", tag="model_loading_detail", color=TEXT_MUTED, wrap=scaled(480))
     
     def update_model_loading_progress(self, message: str, progress: float, detail: str = "", animate: bool = False):
         """Update the model loading modal progress.
@@ -2218,8 +2255,6 @@ class WallDanceGUI:
         # Clean up any existing modals first
         self._cleanup_model_modals()
         
-        vp_width = dpg.get_viewport_width()
-        vp_height = dpg.get_viewport_height()
         modal_width = scaled(450)
         modal_height = scaled(180)
         
@@ -2239,7 +2274,7 @@ class WallDanceGUI:
             tag="tensorrt_prompt_modal",
             width=modal_width,
             height=modal_height,
-            pos=[vp_width // 2 - modal_width // 2, vp_height // 2 - modal_height // 2],
+            pos=self._center_modal("tensorrt_prompt_modal", modal_width, modal_height),
             no_resize=True,
             no_move=True,
             no_close=True,
@@ -2252,7 +2287,7 @@ class WallDanceGUI:
                 "Build TensorRT engine for faster inference (5-10 min)?\n"
                 "Or use PyTorch directly (slower but instant).",
                 wrap=scaled(420),
-                color=(180, 180, 180)
+                color=TEXT_NORMAL
             )
             dpg.add_spacer(height=scaled(15))
             with dpg.group(horizontal=True):
@@ -2283,8 +2318,6 @@ class WallDanceGUI:
         if dpg.does_item_exist("calib2_modal"):
             dpg.delete_item("calib2_modal")
 
-        vp_width = dpg.get_viewport_width()
-        vp_height = dpg.get_viewport_height()
         modal_width = scaled(560)
         modal_height = scaled(420)
         checkbox_tags = []
@@ -2311,7 +2344,7 @@ class WallDanceGUI:
             tag="calib2_modal",
             width=modal_width,
             height=modal_height,
-            pos=[vp_width // 2 - modal_width // 2, vp_height // 2 - modal_height // 2],
+            pos=self._center_modal("calib2_modal", modal_width, modal_height),
             no_resize=True,
             no_move=True,
             no_close=True,
@@ -2319,7 +2352,7 @@ class WallDanceGUI:
         ):
             dpg.add_spacer(height=scaled(6))
             dpg.add_text("Runs in the pool (uncheck to exclude):",
-                         color=(180, 180, 180))
+                         color=TEXT_NORMAL)
             with dpg.child_window(height=scaled(150), border=True):
                 for i, row in enumerate(rows):
                     tag = f"calib2_run_chk_{i}"
@@ -2328,20 +2361,20 @@ class WallDanceGUI:
                         label = row["label"]
                         if row.get("stale"):
                             dpg.add_text(label + "  [STALE - framing changed]",
-                                         color=(255, 180, 80))
+                                         color=WARN_ORANGE)
                         else:
                             dpg.add_text(label)
                     checkbox_tags.append((tag, row["path"]))
                 if not rows:
                     dpg.add_text("(empty - run DANCERS to add evidence)",
-                                 color=(120, 120, 120))
+                                 color=TEXT_DIM)
             dpg.add_spacer(height=scaled(8))
-            dpg.add_text("Pooled proposal (all runs):", color=(180, 180, 180))
+            dpg.add_text("Pooled proposal (all runs):", color=TEXT_NORMAL)
             dpg.add_text(proposal, wrap=scaled(520))
             dpg.add_spacer(height=scaled(10))
             dpg.add_text("Add more runs (other costumes / positions / recordings)\n"
                          "for a more robust pool, or Apply now.",
-                         color=(120, 120, 120))
+                         color=TEXT_DIM)
             dpg.add_spacer(height=scaled(8))
             with dpg.group(horizontal=True):
                 dpg.add_button(label="Apply selected", callback=on_apply,
@@ -2362,8 +2395,6 @@ class WallDanceGUI:
         if dpg.does_item_exist("calibration_result_modal"):
             dpg.delete_item("calibration_result_modal")
 
-        vp_width = dpg.get_viewport_width()
-        vp_height = dpg.get_viewport_height()
         modal_width = scaled(460)
         modal_height = scaled(250)
 
@@ -2383,7 +2414,7 @@ class WallDanceGUI:
             tag="calibration_result_modal",
             width=modal_width,
             height=modal_height,
-            pos=[vp_width // 2 - modal_width // 2, vp_height // 2 - modal_height // 2],
+            pos=self._center_modal("calibration_result_modal", modal_width, modal_height),
             no_resize=True,
             no_move=True,
             no_close=True,
@@ -2391,7 +2422,7 @@ class WallDanceGUI:
         ):
             dpg.add_spacer(height=scaled(8))
             dpg.add_text("Measured and applied to this session:",
-                         color=(180, 180, 180))
+                         color=TEXT_NORMAL)
             dpg.add_spacer(height=scaled(6))
             dpg.add_text(summary, wrap=scaled(430))
             dpg.add_spacer(height=scaled(14))
@@ -2431,8 +2462,6 @@ class WallDanceGUI:
         else:
             canvas = scaled(240)
 
-        vp_w = dpg.get_viewport_width()
-        vp_h = dpg.get_viewport_height()
         modal_w = canvas + scaled(40)
         modal_h = canvas + scaled(150)
 
@@ -2446,7 +2475,7 @@ class WallDanceGUI:
             tag="qr_modal",
             width=modal_w,
             height=modal_h,
-            pos=[vp_w // 2 - modal_w // 2, vp_h // 2 - modal_h // 2],
+            pos=self._center_modal("qr_modal", modal_w, modal_h),
             no_resize=True,
             no_collapse=True,
         ):
@@ -2480,7 +2509,7 @@ class WallDanceGUI:
             dpg.add_button(label="Close", callback=on_close, width=scaled(100))
 
 
-    def show_toast(self, message: str, duration: float = 3.0, color: tuple = (255, 200, 100)):
+    def show_toast(self, message: str, duration: float = 3.0, color: tuple = WARN_AMBER):
         """Show a temporary toast notification at top-left of preview area.
         
         Args:
@@ -2488,16 +2517,11 @@ class WallDanceGUI:
             duration: How long to show the toast (seconds)
             color: Text color (R, G, B)
         """
-        import threading
-        
         # Remove existing toast if any
         if dpg.does_item_exist("toast_window"):
             dpg.delete_item("toast_window")
         
-        # Position at top-left of preview area (below top bar)
-        # Top bar is ~30px, so position toast just below it
-        toast_x = 15
-        toast_y = 38
+        toast_x, toast_y = TOAST_POS
         
         # Create toast window (compact, no padding)
         with dpg.window(
@@ -2513,28 +2537,20 @@ class WallDanceGUI:
             min_size=(10, 10),
         ):
             dpg.add_text(message, tag="toast_text", color=color)
-        
-        # Auto-hide after duration
-        def hide_toast():
-            import time
-            time.sleep(duration)
-            if dpg.does_item_exist("toast_window"):
-                try:
-                    dpg.delete_item("toast_window")
-                except:
-                    pass
-        
-        threading.Thread(target=hide_toast, daemon=True).start()
 
-    def setup(self, width: int = 1340, height: int = 900):
+        # Expired by render_frame() on the main thread; deleting from a
+        # background thread races the render loop (DPG is not thread-safe).
+        self._toast_deadline = time.monotonic() + duration
+
+    def setup(self, width: int = VIEWPORT_BASE_W, height: int = VIEWPORT_BASE_H):
         """Setup viewport and prepare for rendering.
-        
+
         Args:
             width: Viewport width (should already be DPI-scaled if called from app.py)
             height: Viewport height (should already be DPI-scaled if called from app.py)
         """
         # Min dimensions should be scaled for high DPI
-        scaled_min = int(900 * self._dpi_scale)
+        scaled_min = int(VIEWPORT_MIN * self._dpi_scale)
         
         dpg.create_viewport(
             title="WallDance Control Panel",
@@ -2565,10 +2581,16 @@ class WallDanceGUI:
         """
         if not dpg.is_dearpygui_running():
             return False
-        
+
         # Check for section mutual exclusion
         self._check_section_exclusion()
-        
+
+        # Expire the toast (main thread — see show_toast)
+        if self._toast_deadline and time.monotonic() >= self._toast_deadline:
+            self._toast_deadline = 0.0
+            if dpg.does_item_exist("toast_window"):
+                dpg.delete_item("toast_window")
+
         dpg.render_dearpygui_frame()
         return True
     

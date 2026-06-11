@@ -16,6 +16,11 @@ import dearpygui.dearpygui as dpg
 import numpy as np
 
 from gui_icons import Icons
+from gui_constants import (
+    TEXT_NORMAL, TEXT_MUTED, TEXT_DIM, TEXT_HINT, TEXT_FAINT,
+    HEADING_GREEN, BRIGHT_GREEN, PALE_GREEN, WARN_ORANGE, ERROR_SOFT,
+    CONTROL_PANEL_WIDTH,
+)
 
 
 class SystemState(Enum):
@@ -43,8 +48,8 @@ STATE_LABELS = {
 # Global DPI scale factor - set by setup_theme based on gui._dpi_scale
 _dpi_scale = 1.0
 
-# Layout constants (in unscaled pixels, use scaled() for actual values)
-CONTROL_PANEL_WIDTH = 370
+# Layout constants live in gui_constants.py (CONTROL_PANEL_WIDTH is
+# re-exported above for the existing `from gui_builder import ...` sites).
 
 
 def scaled(value: int) -> int:
@@ -336,7 +341,7 @@ def build_top_bar(gui: Any):
         dpg.add_table_column(init_width_or_weight=0.0, width_stretch=False, width_fixed=True)
         with dpg.table_row():
             with dpg.group(horizontal=True):
-                dpg.add_text("Project:", color=(120, 200, 140))
+                dpg.add_text("Project:", color=HEADING_GREEN)
                 dpg.add_combo(
                     items=["+ New..."],
                     tag="topbar_project_combo",
@@ -345,7 +350,7 @@ def build_top_bar(gui: Any):
                     callback=gui._on_topbar_project_change,
                 )
                 dpg.add_spacer(width=scaled(15))
-                dpg.add_text("Version:", color=(120, 200, 140))
+                dpg.add_text("Version:", color=HEADING_GREEN)
                 dpg.add_combo(
                     items=[],
                     tag="topbar_config_combo",
@@ -400,7 +405,7 @@ def build_top_bar(gui: Any):
                 with dpg.tooltip(profile_radio):
                     dpg.add_text("Lighting profile: separate calibrated settings\n(exposure/gain, gamma/CLAHE, MOG2, exclusion\nmask, sensitivity) per lighting condition.\nCalibrate once per profile, then switch freely.")
 
-                save_ind = dpg.add_text(Icons.CHECK, tag="save_indicator", color=(100, 255, 100), show=False)
+                save_ind = dpg.add_text(Icons.CHECK, tag="save_indicator", color=BRIGHT_GREEN, show=False)
                 if gui._icon_font:
                     dpg.bind_item_font(save_ind, gui._icon_font)
             with dpg.group(horizontal=True):
@@ -410,14 +415,14 @@ def build_top_bar(gui: Any):
                 with dpg.tooltip(state_badge):
                     dpg.add_text("System state:\n• STANDBY: Preview only, no YOLO\n• RUN: Full YOLO + OSC output")
                 dpg.add_spacer(width=scaled(12))
-                dpg.add_text("|", color=(80, 80, 80))
+                dpg.add_text("|", color=TEXT_FAINT)
                 dpg.add_spacer(width=scaled(8))
-                dpg.add_text("CAM:", color=(180, 180, 180))
-                cam_badge = dpg.add_text("OFF", tag="badge_cam", color=(255, 120, 120))
+                dpg.add_text("CAM:", color=TEXT_NORMAL)
+                cam_badge = dpg.add_text("OFF", tag="badge_cam", color=ERROR_SOFT)
                 with dpg.tooltip(cam_badge):
                     dpg.add_text("Camera status: ON (green) or OFF (red)")
                 dpg.add_spacer(width=scaled(3))
-                cam_type_badge = dpg.add_text("[--]", tag="badge_cam_type", color=(150, 150, 150))
+                cam_type_badge = dpg.add_text("[--]", tag="badge_cam_type", color=TEXT_MUTED)
                 with dpg.tooltip(cam_type_badge):
                     dpg.add_text("Camera Source Type:\n[IDS] = IDS Peak SDK\n[CV] = OpenCV Fallback")
                 dpg.add_spacer(width=scaled(4))
@@ -428,31 +433,31 @@ def build_top_bar(gui: Any):
                     show=gui.config.get("camera_reconnecting", False),
                 )
                 dpg.add_spacer(width=scaled(6))
-                dpg.add_text("OSC:", color=(180, 180, 180))
-                osc_badge = dpg.add_text("OFF", tag="badge_osc", color=(255, 120, 120))
+                dpg.add_text("OSC:", color=TEXT_NORMAL)
+                osc_badge = dpg.add_text("OFF", tag="badge_osc", color=ERROR_SOFT)
                 with dpg.tooltip(osc_badge):
                     dpg.add_text("OSC output status: ON (green) or OFF (red)")
                 dpg.add_spacer(width=scaled(6))
-                dpg.add_text("Model:", color=(180, 180, 180))
+                dpg.add_text("Model:", color=TEXT_NORMAL)
                 dpg.add_text("--", tag="badge_model", color=(150, 200, 255))
                 dpg.add_spacer(width=scaled(3))
                 engine_badge = dpg.add_text("[PT]", tag="badge_engine_type", color=(255, 220, 100))  # Yellow for PyTorch
                 with dpg.tooltip(engine_badge):
                     dpg.add_text("[TRT] = TensorRT (fast, GPU-optimized)\n[PT] = PyTorch (slower, more compatible)")
                 dpg.add_spacer(width=scaled(6))
-                compute_badge = dpg.add_text("[CPU FALLBACK]", tag="badge_compute_mode", color=(255, 120, 120), show=False)
+                compute_badge = dpg.add_text("[CPU FALLBACK]", tag="badge_compute_mode", color=ERROR_SOFT, show=False)
                 with dpg.tooltip(compute_badge):
                     dpg.add_text("Running on CPU fallback mode", tag="badge_compute_reason_text", color=(255, 180, 120))
-                    dpg.add_text("Action: install a GPU-compatible PyTorch/CUDA build or keep CPU mode.", tag="badge_compute_action_text", color=(180, 180, 180))
+                    dpg.add_text("Action: install a GPU-compatible PyTorch/CUDA build or keep CPU mode.", tag="badge_compute_action_text", color=TEXT_NORMAL)
                 dpg.add_spacer(width=scaled(6))
-                dpg.add_text("FPS:", color=(180, 180, 180))
+                dpg.add_text("FPS:", color=TEXT_NORMAL)
                 dpg.add_text("--", tag="badge_fps", color=(150, 200, 255))
                 dpg.add_spacer(width=scaled(6))
-                dpg.add_text("GPU:", color=(180, 180, 180))
-                dpg.add_text("--", tag="topbar_gpu_util_text", color=(150, 150, 150))
+                dpg.add_text("GPU:", color=TEXT_NORMAL)
+                dpg.add_text("--", tag="topbar_gpu_util_text", color=TEXT_MUTED)
                 dpg.add_spacer(width=scaled(8))
-                dpg.add_text("VRAM:", color=(180, 180, 180))
-                dpg.add_text("--", tag="topbar_gpu_vram_text", color=(150, 150, 150))
+                dpg.add_text("VRAM:", color=TEXT_NORMAL)
+                dpg.add_text("--", tag="topbar_gpu_vram_text", color=TEXT_MUTED)
 
 
 def build_video_panel(gui: Any):
@@ -515,7 +520,7 @@ def build_bottom_bar(gui: Any):
         dpg.add_table_column(init_width_or_weight=2.0)   # Status/controls
         dpg.add_table_column(init_width_or_weight=0.0, width_fixed=True, width_stretch=False)  # STANDBY/RUN
         with dpg.table_row():
-            dpg.add_text("SOURCE", color=(120, 200, 140))
+            dpg.add_text("SOURCE", color=HEADING_GREEN)
 
             # LIVE/REC buttons + slot buttons
             with dpg.group(horizontal=True):
@@ -646,37 +651,37 @@ def build_bottom_bar(gui: Any):
 
     # Performance stats row
     with dpg.group(horizontal=True, tag="bottom_stats_group"):
-        dpg.add_text("Dancers:", color=(100, 100, 100))
-        dpg.add_text("0", tag="dancers_text", color=(140, 180, 140))
+        dpg.add_text("Dancers:", color=TEXT_HINT)
+        dpg.add_text("0", tag="dancers_text", color=PALE_GREEN)
         dpg.add_spacer(width=scaled(6))
-        dpg.add_text("In:", color=(100, 100, 100))
-        dpg.add_text("--", tag="input_res_text", color=(140, 180, 140))
+        dpg.add_text("In:", color=TEXT_HINT)
+        dpg.add_text("--", tag="input_res_text", color=PALE_GREEN)
         dpg.add_spacer(width=scaled(4))
-        dpg.add_text("Prev:", color=(80, 80, 80))
+        dpg.add_text("Prev:", color=TEXT_FAINT)
         dpg.add_text("--", tag="preview_tex_text", color=(90, 90, 90))
         dpg.add_spacer(width=scaled(6))
-        dpg.add_text("Bright:", color=(100, 100, 100))
-        dpg.add_text("--", tag="brightness_text", color=(120, 120, 120))
+        dpg.add_text("Bright:", color=TEXT_HINT)
+        dpg.add_text("--", tag="brightness_text", color=TEXT_DIM)
         dpg.add_spacer(width=scaled(8))
         dpg.add_text("|", color=(60, 60, 60))
         dpg.add_spacer(width=scaled(8))
-        dpg.add_text("FPS:", color=(100, 100, 100))
-        dpg.add_text("--", tag="fps_text", color=(140, 180, 140))
+        dpg.add_text("FPS:", color=TEXT_HINT)
+        dpg.add_text("--", tag="fps_text", color=PALE_GREEN)
         dpg.add_spacer(width=scaled(6))
-        dpg.add_text("Enh:", color=(80, 80, 80))
-        dpg.add_text("--", tag="time_enhance", color=(100, 100, 100))
+        dpg.add_text("Enh:", color=TEXT_FAINT)
+        dpg.add_text("--", tag="time_enhance", color=TEXT_HINT)
         dpg.add_spacer(width=scaled(3))
-        dpg.add_text("YOLO:", color=(80, 80, 80))
-        dpg.add_text("--", tag="time_yolo", color=(100, 100, 100))
+        dpg.add_text("YOLO:", color=TEXT_FAINT)
+        dpg.add_text("--", tag="time_yolo", color=TEXT_HINT)
         dpg.add_spacer(width=scaled(3))
-        dpg.add_text("Trk:", color=(80, 80, 80))
-        dpg.add_text("--", tag="time_track", color=(100, 100, 100))
+        dpg.add_text("Trk:", color=TEXT_FAINT)
+        dpg.add_text("--", tag="time_track", color=TEXT_HINT)
         dpg.add_spacer(width=scaled(3))
-        dpg.add_text("Prev:", color=(80, 80, 80))
-        dpg.add_text("--", tag="time_preview", color=(100, 100, 100))
+        dpg.add_text("Prev:", color=TEXT_FAINT)
+        dpg.add_text("--", tag="time_preview", color=TEXT_HINT)
         dpg.add_spacer(width=scaled(6))
-        dpg.add_text("Tot:", color=(100, 100, 100))
-        dpg.add_text("--", tag="time_total", color=(140, 180, 140))
+        dpg.add_text("Tot:", color=TEXT_HINT)
+        dpg.add_text("--", tag="time_total", color=PALE_GREEN)
 
     # Hidden tags (for code compatibility)
     with dpg.group(show=False):
@@ -724,7 +729,7 @@ def build_detection_section(gui: Any):
     """Detection settings - person height, confidence, max dancers."""
     with dpg.collapsing_header(label="Detection", default_open=False, tag="section_detection"):
         # Person Height (manual + calibrated via DANCERS)
-        dpg.add_text("Person Height", color=(180, 180, 180))
+        dpg.add_text("Person Height", color=TEXT_NORMAL)
         with dpg.group(horizontal=True):
             height_slider = dpg.add_slider_int(
                 tag="person_height_slider",
@@ -742,7 +747,7 @@ def build_detection_section(gui: Any):
         dpg.add_spacer(height=scaled(6))
 
         # Detection Sensitivity — the one operator dial (KNOBS.md E2 macro)
-        dpg.add_text("Detection Sensitivity", color=(180, 180, 180))
+        dpg.add_text("Detection Sensitivity", color=TEXT_NORMAL)
         with dpg.group(horizontal=True):
             sens_slider = dpg.add_slider_float(
                 tag="sensitivity_slider",
@@ -760,7 +765,7 @@ def build_detection_section(gui: Any):
         # Expert-only: the raw knobs behind the macro + tier-3 tracker params.
         with dpg.group(tag="detection_expert_group", show=gui.expert_mode):
             dpg.add_spacer(height=scaled(6))
-            dpg.add_text("Detection Confidence (raw)", color=(180, 180, 180))
+            dpg.add_text("Detection Confidence (raw)", color=TEXT_NORMAL)
             with dpg.group(horizontal=True):
                 conf_slider = dpg.add_slider_float(
                     tag="show_conf_slider",
@@ -776,7 +781,7 @@ def build_detection_section(gui: Any):
                 dpg.add_text("Raw YOLO confidence. Moving this re-anchors\nthe sensitivity macro at 50.")
 
             dpg.add_spacer(height=scaled(6))
-            dpg.add_text("Tracker Max Age (frames)", color=(180, 180, 180))
+            dpg.add_text("Tracker Max Age (frames)", color=TEXT_NORMAL)
             with dpg.group(horizontal=True):
                 age_slider = dpg.add_slider_int(
                     tag="tracker_age_slider",
@@ -791,7 +796,7 @@ def build_detection_section(gui: Any):
                 dpg.add_text("How long (in frames) to remember a dancer\nwho disappears. Higher = keeps ID longer\nduring occlusions but slower to drop\nstale tracks. 30-45 is a good default.")
 
             dpg.add_spacer(height=scaled(6))
-            dpg.add_text("Motion Bridge Resolution", color=(180, 180, 180))
+            dpg.add_text("Motion Bridge Resolution", color=TEXT_NORMAL)
             with dpg.group(horizontal=True):
                 mog2_slider = dpg.add_slider_float(
                     tag="mog2_scale_slider",
@@ -807,7 +812,7 @@ def build_detection_section(gui: Any):
                 dpg.add_text("MOG2 background subtraction resolution.\nSet by the scene calibration (joint sweep\nwith varThreshold). 0.50 = fastest,\n1.00 = best blob accuracy.")
 
             dpg.add_spacer(height=scaled(6))
-            dpg.add_text("Motion Sensitivity", color=(180, 180, 180))
+            dpg.add_text("Motion Sensitivity", color=TEXT_NORMAL)
             with dpg.group(horizontal=True):
                 motion_slider = dpg.add_slider_float(
                     tag="motion_sensitivity_slider",
@@ -826,7 +831,7 @@ def build_detection_section(gui: Any):
 def build_visualization_toolbar(gui: Any):
     """Compact icon-based visualization toggles."""
     with dpg.group(horizontal=True):
-        dpg.add_text("View:", color=(120, 200, 140))
+        dpg.add_text("View:", color=HEADING_GREEN)
         dpg.add_spacer(width=scaled(5))
         
         # Skeleton toggle
@@ -899,7 +904,7 @@ def build_osc_section(gui: Any):
                 dpg.add_text("Enable/disable OSC output")
         
         dpg.add_spacer(height=scaled(4))
-        dpg.add_text("Target Address", color=(180, 180, 180))
+        dpg.add_text("Target Address", color=TEXT_NORMAL)
         with dpg.group(horizontal=True):
             dpg.add_input_text(
                 tag="osc_ip_input",
@@ -907,7 +912,7 @@ def build_osc_section(gui: Any):
                 width=scaled(140),
                 callback=gui._on_osc_config_change,
             )
-            dpg.add_text(":", color=(150, 150, 150))
+            dpg.add_text(":", color=TEXT_MUTED)
             dpg.add_input_int(
                 tag="osc_port_input",
                 default_value=gui.config.get("osc_port", 9000),
@@ -922,7 +927,7 @@ def build_osc_section(gui: Any):
 def build_model_section(gui: Any):
     """Model settings - open by default."""
     with dpg.collapsing_header(label="Model", default_open=False, tag="section_model", closable=False):
-        dpg.add_text("YOLO Model", color=(180, 180, 180))
+        dpg.add_text("YOLO Model", color=TEXT_NORMAL)
         with dpg.group(horizontal=True):
             dpg.add_combo(
                 items=[
@@ -936,7 +941,7 @@ def build_model_section(gui: Any):
             )
         
         dpg.add_spacer(height=scaled(4))
-        dpg.add_text("Image Size", color=(180, 180, 180))
+        dpg.add_text("Image Size", color=TEXT_NORMAL)
         with dpg.group(horizontal=True):
             dpg.add_combo(
                 items=["640", "800", "960", "1280", "1536", "1920"],
@@ -954,7 +959,7 @@ def build_model_section(gui: Any):
         dpg.add_text(
             "",
             tag="adv_imgsz_roi_warning",
-            color=(255, 180, 80),
+            color=WARN_ORANGE,
             wrap=scaled(300),
             show=False,
         )
@@ -989,7 +994,7 @@ def build_enhancement_section(gui: Any):
                 default_value=gui.config.get("enhance_force", True),
                 callback=gui._on_enhance_force_toggle,
             )
-            dpg.add_text("Brightness Threshold", color=(180, 180, 180))
+            dpg.add_text("Brightness Threshold", color=TEXT_NORMAL)
             with dpg.group(horizontal=True):
                 dpg.add_slider_int(
                     tag="adv_brightness_threshold_slider",
@@ -1001,7 +1006,7 @@ def build_enhancement_section(gui: Any):
                 )
                 _add_slider_row("adv_brightness_threshold_slider", 5, 0, 255, gui._on_brightness_threshold_change)
 
-        dpg.add_text("CLAHE Clip", color=(180, 180, 180))
+        dpg.add_text("CLAHE Clip", color=TEXT_NORMAL)
         with dpg.group(horizontal=True):
             dpg.add_slider_float(
                 tag="adv_clahe_slider",
@@ -1014,7 +1019,7 @@ def build_enhancement_section(gui: Any):
             )
             _add_slider_row("adv_clahe_slider", 0.1, 1.0, 6.0, gui._on_clahe_change)
         
-        dpg.add_text("Gamma", color=(180, 180, 180))
+        dpg.add_text("Gamma", color=TEXT_NORMAL)
         with dpg.group(horizontal=True):
             dpg.add_slider_float(
                 tag="adv_gamma_slider",
@@ -1053,10 +1058,10 @@ def build_background_section(gui: Any):
             )
         
         # Status / mismatch warning line
-        dpg.add_text("No reference captured", tag="bg_status_text", color=(120, 120, 120))
+        dpg.add_text("No reference captured", tag="bg_status_text", color=TEXT_DIM)
         
         # Sensitivity slider
-        dpg.add_text("Sensitivity", color=(180, 180, 180))
+        dpg.add_text("Sensitivity", color=TEXT_NORMAL)
         with dpg.group(horizontal=True):
             dpg.add_slider_int(
                 tag="bg_sensitivity_slider",
@@ -1072,7 +1077,7 @@ def build_background_section(gui: Any):
 def build_input_section(gui: Any):
     """Input settings - open by default."""
     with dpg.collapsing_header(label="Input", default_open=True, tag="section_input", closable=False):
-        dpg.add_text("Camera", color=(180, 180, 180))
+        dpg.add_text("Camera", color=TEXT_NORMAL)
         with dpg.group(horizontal=True):
             dpg.add_combo(
                 items=gui.config.get("camera_sources", ["0"]),
@@ -1111,7 +1116,7 @@ def build_input_section(gui: Any):
         is_ids = gui.config.get("camera_type", "") == "IDS_PEAK"
         with dpg.group(tag="ids_sliders_group", show=is_ids):
             dpg.add_spacer(height=scaled(4))
-            dpg.add_text("IDS Crop Ratio (W/H)", color=(180, 180, 180))
+            dpg.add_text("IDS Crop Ratio (W/H)", color=TEXT_NORMAL)
             with dpg.group(horizontal=True):
                 dpg.add_slider_float(
                     tag="adv_ids_ratio_slider",
@@ -1127,7 +1132,7 @@ def build_input_section(gui: Any):
         # --- IDS hardware settings (gain/exposure) — toggled by gear button ---
         with dpg.group(tag="ids_hw_settings_group", show=False):
             dpg.add_spacer(height=scaled(4))
-            dpg.add_text("IDS Gain (dB)", color=(180, 180, 180))
+            dpg.add_text("IDS Gain (dB)", color=TEXT_NORMAL)
             with dpg.group(horizontal=True):
                 dpg.add_slider_float(
                     tag="adv_ids_gain_slider",
@@ -1141,7 +1146,7 @@ def build_input_section(gui: Any):
                 _add_slider_row("adv_ids_gain_slider", 0.5, 0.0, 48.0, gui._on_ids_gain_change)
 
             dpg.add_spacer(height=scaled(4))
-            dpg.add_text("IDS Exposure (\u00b5s)", color=(180, 180, 180))
+            dpg.add_text("IDS Exposure (\u00b5s)", color=TEXT_NORMAL)
             ids_exposure_max = float(gui.config.get("ids_exposure_max_us", 100000.0))
             with dpg.group(horizontal=True):
                 dpg.add_slider_float(
@@ -1159,7 +1164,7 @@ def build_input_section(gui: Any):
         dpg.add_text(
             "",
             tag="adv_ids_exposure_warning",
-            color=(255, 180, 80),
+            color=WARN_ORANGE,
             show=False,
         )
 
@@ -1182,8 +1187,8 @@ def build_preview_section(gui: Any):
             )
         dpg.add_spacer(height=scaled(4))
         with dpg.group(horizontal=True):
-            dpg.add_text("Auto-fit scale:", color=(120, 120, 120))
-            dpg.add_text("--", tag="preview_autofit_scale_text", color=(140, 180, 140))
+            dpg.add_text("Auto-fit scale:", color=TEXT_DIM)
+            dpg.add_text("--", tag="preview_autofit_scale_text", color=PALE_GREEN)
 
 
 def build_exclusion_mask_section(gui: Any):
@@ -1196,8 +1201,8 @@ def build_exclusion_mask_section(gui: Any):
     with dpg.collapsing_header(label="Exclusion Mask", default_open=False,
                                tag="section_exclusion_mask", closable=False):
         with dpg.group(horizontal=True):
-            dpg.add_text("Masked:", color=(120, 120, 120))
-            dpg.add_text("0 cell(s)", tag="mask_cells_text", color=(150, 150, 150))
+            dpg.add_text("Masked:", color=TEXT_DIM)
+            dpg.add_text("0 cell(s)", tag="mask_cells_text", color=TEXT_MUTED)
         with dpg.group(horizontal=True):
             dpg.add_button(
                 label="Edit",
@@ -1214,7 +1219,7 @@ def build_exclusion_mask_section(gui: Any):
         dpg.add_text(
             "Auto-built on every Calibrate. Edit: click/drag preview cells to "
             "mask (red) / unmask; manual cells survive recalibration.",
-            color=(120, 120, 120),
+            color=TEXT_DIM,
             wrap=scaled(300),
         )
 
@@ -1242,10 +1247,10 @@ def build_roi_section(gui: Any):
         dpg.add_text(
             f"{roi_x},{roi_y}  {roi_w}x{roi_h}",
             tag="roi_rect_text",
-            color=(150, 150, 150),
+            color=TEXT_MUTED,
         )
         dpg.add_text(
             "Double-click the preview to toggle edit mode, then drag to draw, move, or resize.",
-            color=(120, 120, 120),
+            color=TEXT_DIM,
             wrap=scaled(300),
         )
