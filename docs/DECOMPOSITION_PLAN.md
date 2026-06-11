@@ -13,7 +13,9 @@
 - Phase 2 (4) ✅ `4c63baf` — `ConfigManager` → `runtime/config_manager.py` (21 methods: project switch orchestration, save/load, profiles, picker, safe defaults; owns ConfigStore/current-project/profiles/pending-switch). `_get_saveable_config`/`_apply_config_without_model` stay app-side as injected callables — they dissolve into the Phase 3 seam.
 - Phase 2 (5) ✅ `04c7ee7` — `CalibrationFlows` → `runtime/calibration_flows.py` (10 methods: Calib1 servo/window/apply + Calib2 evidence pool; owns the calibrating flags + blur_budget_ms; math in core/ untouched).
 - Phase 2 (6) ✅ `1a33a40` — `RoiMaskEditor` → `ui/roi_mask_editor.py` (34 methods, dpg allowed there) + `runtime/roi_state.py` (source size + effective rect for headless consumers). **Phase 2 complete**: app.py 4856 → 2656 lines; six controllers behind narrow ports.
-- Next: Phase 3 — the command/event seam (`runtime/api.py`). Operator manual smoke (§6.3) owed across all Phase 2 commits — run it before Phase 3 starts converting GUI sync paths.
+- Operator quick smoke ✅ 2026-06-11 over the Phase 2 commits. Verified en route: the exclusion mask gates YOLO detections *and* cold-motion blobs but is anti-spawn by design — detections near a confirmed track survive (`pipeline._apply_exclusion` near-track guard), so a live dancer is never amputated by painting their zone.
+- Next: **Phase 3** — the command/event seam (`runtime/api.py`). Its gate is the heavier one: full manual pass (§6.3) + replay JSONL event-log diff, not just the quick smoke.
+- Post-Phase 3 follow-up (operator, 2026-06-11): desktop **"Calibrate All"** wizard chaining Calib1 → report card → Calib2 → pool review over the command seam — desktop precursor of the Phase 5 tablet wizard. Keep the two calibration engines separate (different stage directions, cadence, trust models); merge only the UX.
 
 ---
 
