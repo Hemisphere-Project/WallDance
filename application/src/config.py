@@ -310,21 +310,24 @@ TRACKER_CASCADED_MATCHING = True         # Established tracks match first (pass 
                                          # detections (pass 2).  Prevents newly-
                                          # spawned tracks from stealing detections
                                          # that belong to established dancers.
-TRACKER_CASCADE_OCCLUSION_SWAP = True    # Post-cascade swap: when a detection
-                                         # merger occurs (n_det < n_tracks) and
-                                         # an exiting established track claims a
-                                         # detection that a nearby tentative track
-                                         # should have, swap the assignment so the
-                                         # tentative track survives.
+TRACKER_SWAP_CORRECTORS = False          # Master switch for the three post-hoc
+                                         # swap correctors (occlusion-cascade,
+                                         # merge-direction, two-opt).  Default
+                                         # OFF (ROADMAP §3a / §4.2 Phase 2 ⑧):
+                                         # the slot-7-fit heuristics false-fire
+                                         # on aerial/erratic motion, suppressing
+                                         # the REAL track — corpus-measured off
+                                         # = mean −0.027, id churn improves on
+                                         # every affected scene, hangar-aerial
+                                         # golden flips to PASS.  Re-enable per
+                                         # scene via the replay/config key
+                                         # `tracker_swap_correctors` only for
+                                         # shows with sustained two-dancer
+                                         # contact (texture-duo regime).
 TRACKER_CASCADE_SUPPRESSION_FRAMES = 5   # After CASCADE_OCCLUSION_SWAP fires for
                                          # an established track, suppress it from
                                          # Pass 1 for this many frames so the
                                          # tentative track keeps priority.
-TRACKER_MERGE_DIRECTION_SWAP = True      # Post-cascade swap: when two tracks
-                                         # emerge from a merge/occlusion zone
-                                         # on the wrong sides (velocity direction
-                                         # reversed relative to pre-merge history),
-                                         # swap them back.
 TRACKER_MERGE_SWAP_COOLDOWN_FRAMES = 30 # After MERGE_DIRECTION_SWAP fires for a
                                          # pair of tracks, suppress it for this
                                          # many frames.  Prevents oscillation
@@ -337,11 +340,6 @@ TRACKER_MAX_DISPLACEMENT_RATIO = 0.5     # Max displacement (as fraction of
                                          # where skeleton matching masks a bad
                                          # centroid jump.  With dist_thresh=76px
                                          # → cap ≈ 38px (p99 of good matches ≈ 18).
-TRACKER_TWO_OPT_SWAP = True              # Post-assignment 2-opt swap detector.
-                                         # For each pair of nearby matched tracks,
-                                         # check if swapping their detections
-                                         # reduces total cost.  Catches wrong
-                                         # assignments that heuristic swaps miss.
 TRACKER_TWO_OPT_MIN_GAIN = 0.10          # Minimum relative cost reduction to
                                          # accept a 2-opt swap (fraction of
                                          # original cost sum).  Prevents noisy

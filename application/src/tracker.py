@@ -38,12 +38,12 @@ from config import (
     TRACKER_EVENT_LOG_ENABLED, TRACKER_EVENT_LOG_FILE,
     TRACKER_EVENT_LOG_MAX_ENTRIES, TRACKER_EVENT_LOG_FLUSH_INTERVAL,
     TRACKER_MAHALANOBIS_GATE, TRACKER_MAHALANOBIS_GATE_NOISE,
-    TRACKER_CASCADED_MATCHING, TRACKER_CASCADE_OCCLUSION_SWAP,
-    TRACKER_MERGE_DIRECTION_SWAP, TRACKER_CASCADE_SUPPRESSION_FRAMES,
+    TRACKER_CASCADED_MATCHING, TRACKER_SWAP_CORRECTORS,
+    TRACKER_CASCADE_SUPPRESSION_FRAMES,
     TRACKER_POSE_HISTORY_DEPTH, TRACKER_TRAJECTORY_WEIGHT,
     TRACKER_IOU_WEIGHT, TRACKER_CLOSE_IOU_WEIGHT,
     TRACKER_MERGE_SWAP_COOLDOWN_FRAMES,
-    TRACKER_TWO_OPT_SWAP, TRACKER_TWO_OPT_MIN_GAIN,
+    TRACKER_TWO_OPT_MIN_GAIN,
     TRACKER_CLOSE_ACCEPT_RATIO,
     TRACKER_MAX_DISPLACEMENT_RATIO,
     MOTION_BRIDGE_ENABLED, MOTION_BRIDGE_MAX_FRAMES,
@@ -797,6 +797,12 @@ class DancerTracker:
         # Suppressed-track count of the most recent frame — the app's health
         # tick reads this to surface "more people than max_persons visible".
         self.last_over_cap = 0
+        # Master switch for the three post-hoc swap correctors (§3a, Phase 2
+        # ⑧).  Default off: corpus-measured net harm (they false-fire on
+        # aerial/erratic motion and suppress the real track).  Per-scene
+        # config key `tracker_swap_correctors` re-enables for shows with
+        # sustained two-dancer contact.
+        self.swap_correctors = TRACKER_SWAP_CORRECTORS
         self._smoothing_depth = 1  # Temporal confidence smoothing depth
         self._person_height_px = 150  # updated via set_person_height()
 
@@ -2298,20 +2304,14 @@ class DancerTracker:
                 matched_det, matched_trk, matched_pairs_log,
                 frame_ctx=frame_ctx, defer_updates=True)
 
-            # --- Post-cascade occlusion swap check (Phase 1c) ---
-            if TRACKER_CASCADE_OCCLUSION_SWAP:
+            # --- Post-hoc swap correctors (off by default, §3a / ⑧) ---
+            if self.swap_correctors:
                 self._check_occlusion_cascade_swaps(
                     detections, frame_ctx,
                     matched_det, matched_trk, matched_pairs_log)
-
-            # --- Post-merge direction swap check (Phase 1d) ---
-            if TRACKER_MERGE_DIRECTION_SWAP:
                 self._check_merge_direction_swaps(
                     detections, frame_ctx,
                     matched_det, matched_trk, matched_pairs_log)
-
-            # --- Post-assignment 2-opt swap detector (Phase 2.3) ---
-            if TRACKER_TWO_OPT_SWAP:
                 self._check_two_opt_swaps(
                     detections, frame_ctx,
                     matched_det, matched_trk, matched_pairs_log)
