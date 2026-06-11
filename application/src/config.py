@@ -505,9 +505,16 @@ AUTOCAL2_FRAME_SAMPLES = 12         # Raw frames saved per run (future gamma/CLA
 # (fewer drops, more ghosts): confidence drops below the seed, and at the loose
 # end varThreshold ramps to the floor to wake MOG2 cold-blob recovery (safe now
 # that the Phase-F frozen-ghost gate landed).  Lower = stricter (fewer ghosts).
-SENS_CONF_STRICT_DELTA = 0.25       # Confidence added at slider = 0 (strictest)
-SENS_CONF_LOOSE_DELTA = 0.15        # Confidence removed at slider = 100 (loosest)
-SENS_VAR_FLOOR = 8.0                # varThreshold at slider = 100
+#
+# Span re-fit (Phase 2 ⑦): the dial interpolates from the seed to ABSOLUTE
+# corpus-measured bounds — best-τ spans 0.15–0.65 across the 12-scenario
+# corpus (CORPUS_ANALYSIS §6.5/§6.7).  The previous fixed deltas (+0.25/−0.15
+# around the seed) covered that range only when the seed happened to sit
+# right; absolute bounds make the full measured range reachable from ANY
+# seed, with the dial resolution adapting to where the seed sits.
+SENS_CONF_MAX = 0.65                # Confidence at slider = 0 (strictest)
+SENS_CONF_MIN = 0.15                # Confidence at slider = 100 (loosest)
+SENS_VAR_FLOOR = 8.0                # varThreshold at slider = 100 (corpus-confirmed §3.1)
 SENS_VAR_KNEE = 75.0                # Slider point where var starts ramping down
 
 # --- Auto exclusion mask (P1.4) -------------------------------------------
