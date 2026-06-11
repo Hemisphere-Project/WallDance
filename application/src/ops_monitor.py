@@ -35,6 +35,7 @@ from config import (
     OPS_GPU_TEMP_ALERT_C,
     OPS_GPU_TEMP_SUSTAIN_S,
     OPS_NO_DETECTION_ALERT_S,
+    OPS_OVER_CAP_ALERT_S,
     OPS_WATCHDOG_HANG_S,
     OPS_WATCHDOG_POLL_S,
 )
@@ -216,7 +217,7 @@ def check_gpu_temp(*, gpu_stats: Optional[dict], warn_c: int) -> CheckResult:
 
 @dataclass
 class Alert:
-    kind: str  # "fps_drop" | "no_detection" | "camera_down" | "gpu_temp"
+    kind: str  # "fps_drop" | "no_detection" | "camera_down" | "gpu_temp" | "over_cap"
     message: str
     data: dict = field(default_factory=dict)
 
@@ -234,6 +235,7 @@ class HealthMonitor:
                  fps_drop_fraction: float = OPS_FPS_DROP_FRACTION,
                  fps_sustain_s: float = OPS_FPS_DROP_SUSTAIN_S,
                  no_detection_s: float = OPS_NO_DETECTION_ALERT_S,
+                 over_cap_s: float = OPS_OVER_CAP_ALERT_S,
                  camera_down_s: float = OPS_CAMERA_DOWN_ALERT_S,
                  gpu_temp_c: float = OPS_GPU_TEMP_ALERT_C,
                  gpu_temp_sustain_s: float = OPS_GPU_TEMP_SUSTAIN_S,
@@ -245,6 +247,7 @@ class HealthMonitor:
         self.fps_drop_fraction = fps_drop_fraction
         self.fps_sustain_s = fps_sustain_s
         self.no_detection_s = no_detection_s
+        self.over_cap_s = over_cap_s
         self.camera_down_s = camera_down_s
         self.gpu_temp_c = gpu_temp_c
         self.gpu_temp_sustain_s = gpu_temp_sustain_s
@@ -257,6 +260,7 @@ class HealthMonitor:
         self._was_in_run = False
         self._fps_low_since: Optional[float] = None
         self._no_det_since: Optional[float] = None
+        self._over_cap_since: Optional[float] = None
         self._cam_down_since: Optional[float] = None
         self._gpu_hot_since: Optional[float] = None
         self._last_gpu_poll = 0.0
@@ -278,7 +282,7 @@ class HealthMonitor:
 
     def tick(self, now: float, *, fps: float, n_tracked: int, in_run: bool,
              model_ready: bool, camera_open: bool, camera_reconnecting: bool,
-             playback_active: bool) -> List[Alert]:
+             playback_active: bool, n_over_cap: int = 0) -> List[Alert]:
         out: List[Alert] = []
         live = (in_run and camera_open and not camera_reconnecting
                 and not playback_active and model_ready)
@@ -289,6 +293,7 @@ class HealthMonitor:
             self._fps_samples.clear()
             self._fps_low_since = None
             self._no_det_since = None
+            self._over_cap_since = None
         self._was_in_run = in_run
 
         # --- fps drop -----------------------------------------------------
@@ -327,6 +332,23 @@ class HealthMonitor:
                     {"seconds": now - self._no_det_since}), out)
         else:
             self._no_det_since = None
+
+        # --- reported tracks capped at max_persons (bug 12c) -----------------
+        # Unlike fps/no-detection this also matters during playback rehearsal
+        # (a ghost flood shows up the same way), so gate only on RUN + model.
+        if in_run and model_ready and n_over_cap > 0:
+            if self._over_cap_since is None:
+                self._over_cap_since = now
+            elif now - self._over_cap_since >= self.over_cap_s:
+                self._fire(now, Alert(
+                    "over_cap",
+                    f"More people than max_persons visible - "
+                    f"{n_over_cap} track(s) over the cap suppressed for "
+                    f"{now - self._over_cap_since:.0f}s (ghost flood, or "
+                    "raise max_persons)",
+                    {"n_over_cap": n_over_cap}), out)
+        else:
+            self._over_cap_since = None
 
         # --- camera down ----------------------------------------------------
         if camera_reconnecting or not camera_open:

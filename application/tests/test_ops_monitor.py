@@ -247,6 +247,31 @@ def test_no_detection_only_when_live():
     assert [a.kind for a in alerts] == ["no_detection"]
 
 
+def test_over_cap_fires_after_sustain_and_in_playback():
+    m = _mk(over_cap_s=5.0)
+    t = 0.0
+    alerts = []
+    # over cap while NOT in RUN -> suppressed (stale tracker value in standby)
+    for _ in range(10):
+        t += 1.0
+        alerts += m.tick(t, **_live(in_run=False), n_over_cap=2)
+    assert alerts == []
+    # transient flash under the sustain window -> quiet
+    for _ in range(3):
+        t += 1.0
+        alerts += m.tick(t, **_live(), n_over_cap=2)
+    t += 1.0
+    alerts += m.tick(t, **_live(), n_over_cap=0)
+    assert alerts == []
+    # sustained over cap during playback rehearsal -> fires (unlike fps/no-det
+    # this alert is gated only on RUN + model ready)
+    for _ in range(7):
+        t += 1.0
+        alerts += m.tick(t, **_live(playback_active=True), n_over_cap=3)
+    assert [a.kind for a in alerts] == ["over_cap"]
+    assert alerts[0].data["n_over_cap"] == 3
+
+
 def test_camera_down_escalates_and_refires_each_cooldown():
     m = _mk(camera_down_s=15.0, cooldown_s=60.0)
     t = 0.0

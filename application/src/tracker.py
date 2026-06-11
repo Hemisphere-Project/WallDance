@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from motion_detector import MotionBlob
 from config import (
+    MAX_PERSONS,
     TRACKER_MAX_AGE, TRACKER_MIN_HITS, TRACKER_DISTANCE_THRESHOLD,
     TRACKER_DORMANT_MAX_AGE,
     TRACKER_VELOCITY_WEIGHT, TRACKER_PROCESS_NOISE, TRACKER_MEASUREMENT_NOISE,
@@ -789,6 +790,13 @@ class DancerTracker:
         # config key `tracker_intermittent_confirm` enables it on scenes
         # where intermittent detection dominates (aerial, very dark).
         self.intermittent_confirm = TRACK_WARMUP_INTERMITTENT_ENABLED
+        # Report cap (bug 12c): at most this many tracks are exposed per
+        # frame (top-K by hits).  <=0 disables the cap.  Per-project config
+        # key `max_persons`; internal tracks are never capped.
+        self.max_persons = MAX_PERSONS
+        # Suppressed-track count of the most recent frame — the app's health
+        # tick reads this to surface "more people than max_persons visible".
+        self.last_over_cap = 0
         self._smoothing_depth = 1  # Temporal confidence smoothing depth
         self._person_height_px = 150  # updated via set_person_height()
 
@@ -957,6 +965,7 @@ class DancerTracker:
         self._motion_blob_cells = {}
         self._merge_swap_cooldown = {}
         self.frame_count = 0
+        self.last_over_cap = 0
         DancerTrack._id_counter = 0
         self.logger.reset()
     
@@ -3166,6 +3175,26 @@ class DancerTracker:
             else:
                 self.logger.log("WARMUP_SLOW_DUP_SUPPRESSED", {
                     "track_id": track.track_id, "near": near})
+
+        # MAX_PERSONS report cap (bug 12c): a ghost flood must not stream
+        # unbounded dancer ids to the OSC consumer.  Keep the K most
+        # established tracks — by hits (cumulative real matches, stable
+        # frame-to-frame), older id on ties — in their original order.
+        # Internal tracks are untouched; a capped ghost can still age out
+        # or be merged normally.
+        self.last_over_cap = (max(0, len(confirmed) - self.max_persons)
+                              if self.max_persons > 0 else 0)
+        if self.last_over_cap:
+            keep = {t.track_id for t in sorted(
+                confirmed, key=lambda t: (-t.hits, t.track_id)
+            )[:self.max_persons]}
+            self.logger.log("MAX_PERSONS_CAPPED", {
+                "cap": self.max_persons,
+                "n_confirmed": len(confirmed),
+                "suppressed": [t.track_id for t in confirmed
+                               if t.track_id not in keep],
+            })
+            confirmed = [t for t in confirmed if t.track_id in keep]
         return confirmed
 
     def _log_frame_summary(self, detections, matched_pairs_log):

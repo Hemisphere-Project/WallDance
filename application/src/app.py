@@ -40,7 +40,6 @@ from config import (
     DENOISE_STRENGTH,
     ENHANCE_ENABLED,
     GAMMA_CORRECTION,
-    MAX_PERSONS,
     MODELS_DIR,
     OSC_ENABLED,
     OSC_IP,
@@ -1006,6 +1005,7 @@ class WallDanceApp:
             "tracking_mode": self.tracker.tracking_mode.value,
             "tracker_max_age": self.tracker.max_age,
             "tracker_smoothing": self.tracker.smoothing_depth,
+            "max_persons": self.tracker.max_persons,
             "motion_sensitivity": self.processor.get_motion_sensitivity(),
             "osc_enabled": self.osc_enabled,
             "osc_ip": self.osc_ip,
@@ -1335,6 +1335,8 @@ class WallDanceApp:
         if "tracker_smoothing" in config:
             self.tracker.smoothing_depth = config["tracker_smoothing"]
             self.gui and self.gui.sync_slider("tracker_smoothing", config["tracker_smoothing"])
+        if "max_persons" in config:
+            self.tracker.max_persons = int(config["max_persons"])
         if "motion_sensitivity" in config:
             self.processor.set_motion_sensitivity(config["motion_sensitivity"])
             self.gui and self.gui.sync_slider("motion_sensitivity", config["motion_sensitivity"])
@@ -3319,6 +3321,7 @@ class WallDanceApp:
                 camera_open=self.camera.state.is_open,
                 camera_reconnecting=self._camera_reconnecting,
                 playback_active=self.recorder.is_playing,
+                n_over_cap=self.tracker.last_over_cap,
             )
         except Exception as e:  # noqa: BLE001 - monitoring must never kill the loop
             print(f"[Alert] health tick failed: {e}")

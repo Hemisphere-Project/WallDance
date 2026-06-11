@@ -56,7 +56,12 @@ YOLO_IMGSZ = 800                    # YOLO input size (640, 800, 960, 1280, 1536
                                     # - 1280: Balanced, good for 1080p cameras at medium distance
                                     # - 1920-2560: Only useful with 4K cameras for distant subjects
                                     # Values > camera resolution cause padding and reduced accuracy
-MAX_PERSONS = 6                     # Maximum dancers to track
+MAX_PERSONS = 6                     # Maximum dancers REPORTED (OSC/overlay).
+                                    # Enforced at the tracker report boundary
+                                    # (bug 12c): top-K by hits, older id wins
+                                    # ties. Internal tracks are not capped, so
+                                    # identity survives a transient ghost flood.
+                                    # Per-project config key: `max_persons`.
 
 # TensorRT optimization
 USE_TENSORRT = True                 # If True, export and use TensorRT .engine files
@@ -791,6 +796,9 @@ OPS_FPS_BASELINE_WINDOW_S = 60.0    # Rolling-median FPS baseline window (RUN on
 OPS_FPS_DROP_FRACTION = 0.5         # Alert when fps < fraction * baseline ...
 OPS_FPS_DROP_SUSTAIN_S = 10.0       # ... sustained this long
 OPS_NO_DETECTION_ALERT_S = 30.0     # Zero tracked dancers in RUN (live, model ready)
+OPS_OVER_CAP_ALERT_S = 10.0         # Reported tracks capped at MAX_PERSONS this long
+                                    # = "more people than max_persons visible" (bug 12c);
+                                    # transient ghost flashes stay quiet
 OPS_CAMERA_DOWN_ALERT_S = 15.0      # Reconnecting longer than this = loud alert
 OPS_GPU_TEMP_ALERT_C = 85           # Matches the GUI badge red threshold
 OPS_GPU_TEMP_SUSTAIN_S = 30.0

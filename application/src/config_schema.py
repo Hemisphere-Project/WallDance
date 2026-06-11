@@ -59,6 +59,7 @@ _RANGES = {
     "person_height_min_ratio": (0.05, 1.0),
     "person_height_max_ratio": (1.0, 10.0),
     "tracker_max_age": (1, 300),
+    "max_persons": (1, 32),
     "motion_sensitivity": (0.0, 1.0),
     "brightness_threshold": (0, 255),
     "osc_port": (1, 65535),

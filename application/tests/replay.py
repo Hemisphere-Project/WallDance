@@ -227,6 +227,8 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
         tracker.smoothing_depth = config["tracker_smoothing"]
     if "tracker_intermittent_confirm" in config:
         tracker.intermittent_confirm = bool(config["tracker_intermittent_confirm"])
+    if "max_persons" in config:
+        tracker.max_persons = int(config["max_persons"])
 
     proc = FrameProcessor(model=model, settings=settings,
                           enhancer=enhancer, tracker=tracker)
