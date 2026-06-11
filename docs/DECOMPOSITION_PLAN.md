@@ -12,7 +12,8 @@
 - Phase 2 (3) ✅ `6f57e66` — `CameraController` → `runtime/camera_controller.py` (21 methods: retry/backoff, IDS↔OpenCV swap, refresh, ids_* parameter cache; camera objects stay app-owned/injected). Found: the IDS gain/exposure auto-toggle callbacks are dead (no GUI wiring).
 - Phase 2 (4) ✅ `4c63baf` — `ConfigManager` → `runtime/config_manager.py` (21 methods: project switch orchestration, save/load, profiles, picker, safe defaults; owns ConfigStore/current-project/profiles/pending-switch). `_get_saveable_config`/`_apply_config_without_model` stay app-side as injected callables — they dissolve into the Phase 3 seam.
 - Phase 2 (5) ✅ `04c7ee7` — `CalibrationFlows` → `runtime/calibration_flows.py` (10 methods: Calib1 servo/window/apply + Calib2 evidence pool; owns the calibrating flags + blur_budget_ms; math in core/ untouched).
-- Next: Phase 2 (6) `RoiMaskEditor` → `ui/`.
+- Phase 2 (6) ✅ `1a33a40` — `RoiMaskEditor` → `ui/roi_mask_editor.py` (34 methods, dpg allowed there) + `runtime/roi_state.py` (source size + effective rect for headless consumers). **Phase 2 complete**: app.py 4856 → 2656 lines; six controllers behind narrow ports.
+- Next: Phase 3 — the command/event seam (`runtime/api.py`). Operator manual smoke (§6.3) owed across all Phase 2 commits — run it before Phase 3 starts converting GUI sync paths.
 
 ---
 
