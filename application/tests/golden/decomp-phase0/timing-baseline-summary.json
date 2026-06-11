@@ -1,0 +1,77 @@
+{
+  "source": "playback slot 4, 3_TANGO_HANGAR-whitebg2, 6.5 min, TRT yolo11x-pose 1280",
+  "fps": {
+    "n": 73,
+    "mean": 19.43,
+    "p50": 19.7,
+    "p95": 19.9
+  },
+  "budget_ms": {
+    "enhance": {
+      "n": 73,
+      "mean": 7.02,
+      "p50": 4.6,
+      "p95": 5.6
+    },
+    "extract_cpu_total": {
+      "n": 29,
+      "mean": 0.19,
+      "p50": 0.2,
+      "p95": 0.4
+    },
+    "mog2_cvt": {
+      "n": 41,
+      "mean": 1.03,
+      "p50": 1.0,
+      "p95": 1.5
+    },
+    "mog2_feed": {
+      "n": 73,
+      "mean": 19.45,
+      "p50": 19.3,
+      "p95": 23.3
+    },
+    "preview_download": {
+      "n": 64,
+      "mean": 1.15,
+      "p50": 1.0,
+      "p95": 1.7
+    },
+    "preview_draw": {
+      "n": 46,
+      "mean": 1.09,
+      "p50": 1.0,
+      "p95": 1.5
+    },
+    "preview_upload": {
+      "n": 73,
+      "mean": 2.74,
+      "p50": 3.0,
+      "p95": 3.5
+    },
+    "process_wall": {
+      "n": 73,
+      "mean": 33.71,
+      "p50": 31.7,
+      "p95": 38.4
+    },
+    "track": {
+      "n": 62,
+      "mean": 2.77,
+      "p50": 2.5,
+      "p95": 6.0
+    },
+    "tracker_update": {
+      "n": 62,
+      "mean": 2.76,
+      "p50": 2.5,
+      "p95": 6.0
+    },
+    "yolo": {
+      "n": 73,
+      "mean": 11.62,
+      "p50": 11.7,
+      "p95": 12.9
+    }
+  }
+}

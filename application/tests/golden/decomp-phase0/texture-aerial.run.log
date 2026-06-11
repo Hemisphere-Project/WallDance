@@ -1,0 +1,140 @@
+[Enhancer] PyTorch CUDA available: NVIDIA GeForce RTX 5080 Laptop GPU
+[Pipeline] CUDA available - YOLO on GPU, Enhancement on CPU
+{
+  "video": "slot_7_20260401_182034.avi",
+  "model": "yolo11x-pose",
+  "imgsz": 1280,
+  "start_frame": 200,
+  "frames_processed": 600,
+  "real_tracks": 2,
+  "marginal_tracks": 6,
+  "ghost_tracks": 4,
+  "total_tracks": 12,
+  "swap_count": 0,
+  "gate_rejections": 231,
+  "dormant_count": 4,
+  "resurrect_count": 1,
+  "zero_detection_frames": 14,
+  "avg_detections": 1.163,
+  "path": "cpu"
+}
+
+wrote tests\golden\decomp-phase0\texture-aerial.summary.json
+wrote tests\golden\decomp-phase0\texture-aerial.timeline.json
+
+=== SCORE ===
+{
+  "score": 0.10436,
+  "scenario": "texture-aerial",
+  "weights": {
+    "drop": 1.0,
+    "ghost": 1.0,
+    "frag": 0.3,
+    "id": 0.1
+  },
+  "components": {
+    "drop_rate": 0.05128,
+    "ghost_rate": 0.0,
+    "frag_rate": 0.01026,
+    "id_pen": 0.5,
+    "weighted": {
+      "drop": 0.05128,
+      "ghost": 0.0,
+      "frag": 0.00308,
+      "id": 0.05
+    }
+  },
+  "raw": {
+    "scored_frames": 585,
+    "reported_frames": 555,
+    "warmup_excluded": 15,
+    "expected_dancer_frames": 585,
+    "missed_dancer_frames": 30,
+    "missed_dancer_seconds": 1.51,
+    "ghost_dancer_frames": 0,
+    "ghost_dancer_seconds": 0.0,
+    "mean_abs_count_error": 0.05128,
+    "drop_episodes": 6,
+    "ghost_episodes": 0,
+    "longest_drop_frames": 11,
+    "longest_drop_seconds": 0.56,
+    "distinct_ids": 2,
+    "excess_ids": 1,
+    "id_switches": 0,
+    "drop_episode_spans_rel": [
+      [
+        15,
+        21
+      ],
+      [
+        127,
+        127
+      ],
+      [
+        234,
+        234
+      ],
+      [
+        334,
+        336
+      ],
+      [
+        405,
+        411
+      ],
+      [
+        515,
+        525
+      ]
+    ],
+    "drop_episode_spans_abs": [
+      [
+        215,
+        221
+      ],
+      [
+        327,
+        327
+      ],
+      [
+        434,
+        434
+      ],
+      [
+        534,
+        536
+      ],
+      [
+        605,
+        611
+      ],
+      [
+        715,
+        725
+      ]
+    ]
+  }
+}
+
+=== PASS LINE ===
+{
+  "passed": false,
+  "class": "A",
+  "checks": {
+    "drop_rate": {
+      "value": 0.05128,
+      "limit": 0.05,
+      "ok": false
+    },
+    "ghost_rate": {
+      "value": 0.0,
+      "limit": 0.05,
+      "ok": true
+    },
+    "longest_drop_s": {
+      "value": 0.56,
+      "limit": 1.0,
+      "ok": true
+    }
+  }
+}

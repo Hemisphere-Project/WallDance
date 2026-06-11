@@ -1,0 +1,148 @@
+[Enhancer] PyTorch CUDA available: NVIDIA GeForce RTX 5080 Laptop GPU
+[Pipeline] CUDA available - YOLO on GPU, Enhancement on CPU
+{
+  "video": "slot_9_20260426_195723.avi",
+  "model": "yolo11x-pose",
+  "imgsz": 1280,
+  "start_frame": 2500,
+  "frames_processed": 400,
+  "real_tracks": 2,
+  "marginal_tracks": 1,
+  "ghost_tracks": 2,
+  "total_tracks": 5,
+  "swap_count": 0,
+  "gate_rejections": 763,
+  "dormant_count": 1,
+  "resurrect_count": 0,
+  "zero_detection_frames": 0,
+  "avg_detections": 1.89,
+  "path": "cpu"
+}
+
+wrote tests\golden\decomp-phase0\outdoor-sitter.summary.json
+wrote tests\golden\decomp-phase0\outdoor-sitter.timeline.json
+
+=== SCORE ===
+{
+  "score": 0.07506,
+  "scenario": "outdoor-sitter",
+  "weights": {
+    "drop": 1.0,
+    "ghost": 1.0,
+    "frag": 0.3,
+    "id": 0.1
+  },
+  "components": {
+    "drop_rate": 0.06623,
+    "ghost_rate": 0.0,
+    "frag_rate": 0.01818,
+    "id_pen": 0.03377,
+    "weighted": {
+      "drop": 0.06623,
+      "ghost": 0.0,
+      "frag": 0.00545,
+      "id": 0.00338
+    }
+  },
+  "raw": {
+    "scored_frames": 385,
+    "reported_frames": 385,
+    "warmup_excluded": 15,
+    "expected_dancer_frames": 770,
+    "missed_dancer_frames": 51,
+    "missed_dancer_seconds": 2.61,
+    "ghost_dancer_frames": 0,
+    "ghost_dancer_seconds": 0.0,
+    "mean_abs_count_error": 0.13247,
+    "drop_episodes": 7,
+    "ghost_episodes": 0,
+    "longest_drop_frames": 34,
+    "longest_drop_seconds": 1.74,
+    "distinct_ids": 2,
+    "excess_ids": 0,
+    "id_switches": 13,
+    "drop_episode_spans_rel": [
+      [
+        15,
+        16
+      ],
+      [
+        192,
+        194
+      ],
+      [
+        200,
+        201
+      ],
+      [
+        208,
+        210
+      ],
+      [
+        220,
+        221
+      ],
+      [
+        275,
+        279
+      ],
+      [
+        281,
+        314
+      ]
+    ],
+    "drop_episode_spans_abs": [
+      [
+        2515,
+        2516
+      ],
+      [
+        2692,
+        2694
+      ],
+      [
+        2700,
+        2701
+      ],
+      [
+        2708,
+        2710
+      ],
+      [
+        2720,
+        2721
+      ],
+      [
+        2775,
+        2779
+      ],
+      [
+        2781,
+        2814
+      ]
+    ]
+  }
+}
+
+=== PASS LINE ===
+{
+  "passed": true,
+  "class": "B",
+  "checks": {
+    "drop_rate": {
+      "value": 0.06623,
+      "limit": 0.1,
+      "ok": true
+    },
+    "ghost_rate": {
+      "value": 0.0,
+      "limit": 0.15,
+      "ok": true
+    },
+    "longest_drop_s": {
+      "value": 1.74,
+      "limit": 2.0,
+      "ok": true
+    }
+  }
+}

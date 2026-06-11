@@ -1,0 +1,260 @@
+[Enhancer] PyTorch CUDA available: NVIDIA GeForce RTX 5080 Laptop GPU
+[Pipeline] CUDA available - YOLO on GPU, Enhancement on CPU
+{
+  "video": "slot_5_20260401_161146.avi",
+  "model": "yolo11x-pose",
+  "imgsz": 1280,
+  "start_frame": 1000,
+  "frames_processed": 400,
+  "real_tracks": 9,
+  "marginal_tracks": 7,
+  "ghost_tracks": 2,
+  "total_tracks": 18,
+  "swap_count": 0,
+  "gate_rejections": 2742,
+  "dormant_count": 6,
+  "resurrect_count": 2,
+  "zero_detection_frames": 7,
+  "avg_detections": 1.992,
+  "path": "cpu"
+}
+
+wrote tests\golden\decomp-phase0\texture-duo.summary.json
+wrote tests\golden\decomp-phase0\texture-duo.timeline.json
+
+=== SCORE ===
+{
+  "score": 0.6557,
+  "scenario": "texture-duo",
+  "weights": {
+    "drop": 1.0,
+    "ghost": 1.0,
+    "frag": 0.3,
+    "id": 0.1
+  },
+  "components": {
+    "drop_rate": 0.47662,
+    "ghost_rate": 0.06494,
+    "frag_rate": 0.08571,
+    "id_pen": 0.88428,
+    "weighted": {
+      "drop": 0.47662,
+      "ghost": 0.06494,
+      "frag": 0.02571,
+      "id": 0.08843
+    }
+  },
+  "raw": {
+    "scored_frames": 385,
+    "reported_frames": 283,
+    "warmup_excluded": 15,
+    "expected_dancer_frames": 770,
+    "missed_dancer_frames": 367,
+    "missed_dancer_seconds": 18.53,
+    "ghost_dancer_frames": 25,
+    "ghost_dancer_seconds": 1.26,
+    "mean_abs_count_error": 1.01818,
+    "drop_episodes": 21,
+    "ghost_episodes": 12,
+    "longest_drop_frames": 71,
+    "longest_drop_seconds": 3.58,
+    "distinct_ids": 8,
+    "excess_ids": 6,
+    "id_switches": 38,
+    "drop_episode_spans_rel": [
+      [
+        15,
+        85
+      ],
+      [
+        87,
+        91
+      ],
+      [
+        94,
+        96
+      ],
+      [
+        104,
+        107
+      ],
+      [
+        111,
+        113
+      ],
+      [
+        115,
+        117
+      ],
+      [
+        121,
+        143
+      ],
+      [
+        146,
+        149
+      ],
+      [
+        156,
+        156
+      ],
+      [
+        158,
+        160
+      ],
+      [
+        167,
+        174
+      ],
+      [
+        179,
+        179
+      ],
+      [
+        190,
+        197
+      ],
+      [
+        235,
+        239
+      ],
+      [
+        253,
+        258
+      ],
+      [
+        260,
+        261
+      ],
+      [
+        264,
+        264
+      ],
+      [
+        270,
+        270
+      ],
+      [
+        274,
+        274
+      ],
+      [
+        285,
+        340
+      ],
+      [
+        344,
+        399
+      ]
+    ],
+    "drop_episode_spans_abs": [
+      [
+        1015,
+        1085
+      ],
+      [
+        1087,
+        1091
+      ],
+      [
+        1094,
+        1096
+      ],
+      [
+        1104,
+        1107
+      ],
+      [
+        1111,
+        1113
+      ],
+      [
+        1115,
+        1117
+      ],
+      [
+        1121,
+        1143
+      ],
+      [
+        1146,
+        1149
+      ],
+      [
+        1156,
+        1156
+      ],
+      [
+        1158,
+        1160
+      ],
+      [
+        1167,
+        1174
+      ],
+      [
+        1179,
+        1179
+      ],
+      [
+        1190,
+        1197
+      ],
+      [
+        1235,
+        1239
+      ],
+      [
+        1253,
+        1258
+      ],
+      [
+        1260,
+        1261
+      ],
+      [
+        1264,
+        1264
+      ],
+      [
+        1270,
+        1270
+      ],
+      [
+        1274,
+        1274
+      ],
+      [
+        1285,
+        1340
+      ],
+      [
+        1344,
+        1399
+      ]
+    ]
+  }
+}
+
+=== PASS LINE ===
+{
+  "passed": false,
+  "class": "A",
+  "checks": {
+    "drop_rate": {
+      "value": 0.47662,
+      "limit": 0.05,
+      "ok": false
+    },
+    "ghost_rate": {
+      "value": 0.06494,
+      "limit": 0.05,
+      "ok": false
+    },
+    "longest_drop_s": {
+      "value": 3.58,
+      "limit": 1.0,
+      "ok": false
+    }
+  }
+}

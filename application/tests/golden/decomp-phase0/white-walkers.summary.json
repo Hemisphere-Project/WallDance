@@ -1,0 +1,18 @@
+{
+  "video": "slot_3_20260403_121814.avi",
+  "model": "yolo11x-pose",
+  "imgsz": 960,
+  "start_frame": 0,
+  "frames_processed": 400,
+  "real_tracks": 1,
+  "marginal_tracks": 0,
+  "ghost_tracks": 5,
+  "total_tracks": 6,
+  "swap_count": 0,
+  "gate_rejections": 4,
+  "dormant_count": 4,
+  "resurrect_count": 0,
+  "zero_detection_frames": 363,
+  "avg_detections": 0.092,
+  "path": "cpu"
+}

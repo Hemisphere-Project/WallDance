@@ -1,0 +1,100 @@
+[Enhancer] PyTorch CUDA available: NVIDIA GeForce RTX 5080 Laptop GPU
+[Pipeline] CUDA available - YOLO on GPU, Enhancement on CPU
+{
+  "video": "slot_4_20260402_210914.avi",
+  "model": "yolo11x-pose",
+  "imgsz": 1280,
+  "start_frame": 1500,
+  "frames_processed": 300,
+  "real_tracks": 1,
+  "marginal_tracks": 3,
+  "ghost_tracks": 4,
+  "total_tracks": 8,
+  "swap_count": 0,
+  "gate_rejections": 51,
+  "dormant_count": 6,
+  "resurrect_count": 1,
+  "zero_detection_frames": 16,
+  "avg_detections": 1.093,
+  "path": "cpu"
+}
+
+wrote tests\golden\decomp-phase0\hangar-aerial.summary.json
+wrote tests\golden\decomp-phase0\hangar-aerial.timeline.json
+
+=== SCORE ===
+{
+  "score": 0.04316,
+  "scenario": "hangar-aerial",
+  "weights": {
+    "drop": 1.0,
+    "ghost": 1.0,
+    "frag": 0.3,
+    "id": 0.1
+  },
+  "components": {
+    "drop_rate": 0.04211,
+    "ghost_rate": 0.0,
+    "frag_rate": 0.00351,
+    "id_pen": 0.0,
+    "weighted": {
+      "drop": 0.04211,
+      "ghost": 0.0,
+      "frag": 0.00105,
+      "id": 0.0
+    }
+  },
+  "raw": {
+    "scored_frames": 285,
+    "reported_frames": 273,
+    "warmup_excluded": 15,
+    "expected_dancer_frames": 285,
+    "missed_dancer_frames": 12,
+    "missed_dancer_seconds": 0.61,
+    "ghost_dancer_frames": 0,
+    "ghost_dancer_seconds": 0.0,
+    "mean_abs_count_error": 0.04211,
+    "drop_episodes": 1,
+    "ghost_episodes": 0,
+    "longest_drop_frames": 12,
+    "longest_drop_seconds": 0.61,
+    "distinct_ids": 1,
+    "excess_ids": 0,
+    "id_switches": 0,
+    "drop_episode_spans_rel": [
+      [
+        15,
+        26
+      ]
+    ],
+    "drop_episode_spans_abs": [
+      [
+        1515,
+        1526
+      ]
+    ]
+  }
+}
+
+=== PASS LINE ===
+{
+  "passed": true,
+  "class": "A",
+  "checks": {
+    "drop_rate": {
+      "value": 0.04211,
+      "limit": 0.05,
+      "ok": true
+    },
+    "ghost_rate": {
+      "value": 0.0,
+      "limit": 0.05,
+      "ok": true
+    },
+    "longest_drop_s": {
+      "value": 0.61,
+      "limit": 1.0,
+      "ok": true
+    }
+  }
+}

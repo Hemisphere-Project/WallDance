@@ -1,0 +1,116 @@
+[Enhancer] PyTorch CUDA available: NVIDIA GeForce RTX 5080 Laptop GPU
+[Pipeline] CUDA available - YOLO on GPU, Enhancement on CPU
+{
+  "video": "slot_5_20260226_161814.avi",
+  "model": "yolo11x-pose",
+  "imgsz": 960,
+  "start_frame": 0,
+  "frames_processed": 400,
+  "real_tracks": 2,
+  "marginal_tracks": 2,
+  "ghost_tracks": 8,
+  "total_tracks": 12,
+  "swap_count": 0,
+  "gate_rejections": 64,
+  "dormant_count": 26,
+  "resurrect_count": 14,
+  "zero_detection_frames": 258,
+  "avg_detections": 0.407,
+  "path": "cpu"
+}
+
+wrote tests\golden\decomp-phase0\dark-crowd.summary.json
+wrote tests\golden\decomp-phase0\dark-crowd.timeline.json
+
+=== SCORE ===
+{
+  "score": 0.88829,
+  "scenario": "dark-crowd",
+  "weights": {
+    "drop": 1.0,
+    "ghost": 1.0,
+    "frag": 0.3,
+    "id": 0.1
+  },
+  "components": {
+    "drop_rate": 0.88595,
+    "ghost_rate": 0.0,
+    "frag_rate": 0.00779,
+    "id_pen": 0.0,
+    "weighted": {
+      "drop": 0.88595,
+      "ghost": 0.0,
+      "frag": 0.00234,
+      "id": 0.0
+    }
+  },
+  "raw": {
+    "scored_frames": 385,
+    "reported_frames": 69,
+    "warmup_excluded": 15,
+    "expected_dancer_frames": 605,
+    "missed_dancer_frames": 536,
+    "missed_dancer_seconds": 17.87,
+    "ghost_dancer_frames": 0,
+    "ghost_dancer_seconds": 0.0,
+    "mean_abs_count_error": 1.39221,
+    "drop_episodes": 3,
+    "ghost_episodes": 0,
+    "longest_drop_frames": 287,
+    "longest_drop_seconds": 9.57,
+    "distinct_ids": 2,
+    "excess_ids": 0,
+    "id_switches": 0,
+    "drop_episode_spans_rel": [
+      [
+        15,
+        102
+      ],
+      [
+        107,
+        107
+      ],
+      [
+        113,
+        399
+      ]
+    ],
+    "drop_episode_spans_abs": [
+      [
+        15,
+        102
+      ],
+      [
+        107,
+        107
+      ],
+      [
+        113,
+        399
+      ]
+    ]
+  }
+}
+
+=== PASS LINE ===
+{
+  "passed": false,
+  "class": "B",
+  "checks": {
+    "drop_rate": {
+      "value": 0.88595,
+      "limit": 0.1,
+      "ok": false
+    },
+    "ghost_rate": {
+      "value": 0.0,
+      "limit": 0.15,
+      "ok": true
+    },
+    "longest_drop_s": {
+      "value": 9.57,
+      "limit": 2.0,
+      "ok": false
+    }
+  }
+}

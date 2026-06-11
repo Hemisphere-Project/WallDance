@@ -1,0 +1,92 @@
+[Enhancer] PyTorch CUDA available: NVIDIA GeForce RTX 5080 Laptop GPU
+[Pipeline] CUDA available - YOLO on GPU, Enhancement on CPU
+{
+  "video": "slot_1_20250627_193035.mp4",
+  "model": "yolo11x-pose",
+  "imgsz": 1920,
+  "start_frame": 200,
+  "frames_processed": 400,
+  "real_tracks": 23,
+  "marginal_tracks": 38,
+  "ghost_tracks": 69,
+  "total_tracks": 130,
+  "swap_count": 0,
+  "gate_rejections": 33192,
+  "dormant_count": 166,
+  "resurrect_count": 57,
+  "zero_detection_frames": 0,
+  "avg_detections": 8.148,
+  "path": "cpu"
+}
+
+wrote tests\golden\decomp-phase0\facade-ghosts.summary.json
+wrote tests\golden\decomp-phase0\facade-ghosts.timeline.json
+
+=== SCORE ===
+{
+  "score": 1.27488,
+  "scenario": "facade-ghosts",
+  "weights": {
+    "drop": 1.0,
+    "ghost": 1.0,
+    "frag": 0.3,
+    "id": 0.1
+  },
+  "components": {
+    "drop_rate": 0.03312,
+    "ghost_rate": 1.13766,
+    "frag_rate": 0.06494,
+    "id_pen": 0.84615,
+    "weighted": {
+      "drop": 0.03312,
+      "ghost": 1.13766,
+      "frag": 0.01948,
+      "id": 0.08462
+    }
+  },
+  "raw": {
+    "scored_frames": 385,
+    "reported_frames": 385,
+    "warmup_excluded": 15,
+    "expected_dancer_frames": 1540,
+    "missed_dancer_frames": 51,
+    "missed_dancer_seconds": 1.7,
+    "ghost_dancer_frames": 438,
+    "ghost_dancer_seconds": 14.59,
+    "mean_abs_count_error": 1.27013,
+    "drop_episodes": 2,
+    "ghost_episodes": 23,
+    "longest_drop_frames": 21,
+    "longest_drop_seconds": 0.7,
+    "distinct_ids": 26,
+    "excess_ids": 22,
+    "id_switches": 0,
+    "drop_episode_spans_rel": [
+      [
+        15,
+        33
+      ],
+      [
+        35,
+        55
+      ]
+    ],
+    "drop_episode_spans_abs": [
+      [
+        215,
+        233
+      ],
+      [
+        235,
+        255
+      ]
+    ]
+  }
+}
+
+=== PASS LINE ===
+{
+  "passed": true,
+  "class": "S",
+  "checks": {}
+}

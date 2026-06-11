@@ -1,0 +1,27 @@
+13:05:17 baseline run: 12 scenarios
+13:05:17 START blur-runner
+13:05:58 DONE blur-runner rc=0
+13:05:58 START dark-crowd
+13:06:22 DONE dark-crowd rc=0
+13:06:22 START facade-ghosts
+13:07:20 DONE facade-ghosts rc=0
+13:07:20 START hangar-aerial
+13:07:50 DONE hangar-aerial rc=0
+13:07:50 START hangar-floor
+13:08:12 DONE hangar-floor rc=0
+13:08:12 START outdoor-night
+13:08:34 DONE outdoor-night rc=0
+13:08:34 START outdoor-sitter
+13:09:12 DONE outdoor-sitter rc=0
+13:09:12 START texture-aerial
+13:10:04 DONE texture-aerial rc=0
+13:10:04 START texture-duo
+13:10:44 DONE texture-duo rc=0
+13:10:44 START texture-wallhang
+13:11:11 DONE texture-wallhang rc=0
+13:11:11 START white-duo
+13:11:49 DONE white-duo rc=0
+13:11:49 START white-walkers
+13:12:14 DONE white-walkers rc=0
+13:12:14 rerun hangar-aerial for determinism check
+13:12:42 ALL DONE

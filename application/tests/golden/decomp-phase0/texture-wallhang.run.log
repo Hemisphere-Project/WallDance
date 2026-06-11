@@ -1,0 +1,372 @@
+[Enhancer] PyTorch CUDA available: NVIDIA GeForce RTX 5080 Laptop GPU
+[Pipeline] CUDA available - YOLO on GPU, Enhancement on CPU
+{
+  "video": "slot_4_20260401_160433.avi",
+  "model": "yolo11x-pose",
+  "imgsz": 960,
+  "start_frame": 2500,
+  "frames_processed": 400,
+  "real_tracks": 1,
+  "marginal_tracks": 0,
+  "ghost_tracks": 1,
+  "total_tracks": 2,
+  "swap_count": 0,
+  "gate_rejections": 7,
+  "dormant_count": 1,
+  "resurrect_count": 0,
+  "zero_detection_frames": 138,
+  "avg_detections": 0.66,
+  "path": "cpu"
+}
+
+wrote tests\golden\decomp-phase0\texture-wallhang.summary.json
+wrote tests\golden\decomp-phase0\texture-wallhang.timeline.json
+
+=== SCORE ===
+{
+  "score": 0.38831,
+  "scenario": "texture-wallhang",
+  "weights": {
+    "drop": 1.0,
+    "ghost": 1.0,
+    "frag": 0.3,
+    "id": 0.1
+  },
+  "components": {
+    "drop_rate": 0.36104,
+    "ghost_rate": 0.0,
+    "frag_rate": 0.09091,
+    "id_pen": 0.0,
+    "weighted": {
+      "drop": 0.36104,
+      "ghost": 0.0,
+      "frag": 0.02727,
+      "id": 0.0
+    }
+  },
+  "raw": {
+    "scored_frames": 385,
+    "reported_frames": 246,
+    "warmup_excluded": 15,
+    "expected_dancer_frames": 385,
+    "missed_dancer_frames": 139,
+    "missed_dancer_seconds": 7.01,
+    "ghost_dancer_frames": 0,
+    "ghost_dancer_seconds": 0.0,
+    "mean_abs_count_error": 0.36104,
+    "drop_episodes": 35,
+    "ghost_episodes": 0,
+    "longest_drop_frames": 49,
+    "longest_drop_seconds": 2.47,
+    "distinct_ids": 1,
+    "excess_ids": 0,
+    "id_switches": 0,
+    "drop_episode_spans_rel": [
+      [
+        15,
+        63
+      ],
+      [
+        67,
+        67
+      ],
+      [
+        73,
+        74
+      ],
+      [
+        91,
+        91
+      ],
+      [
+        96,
+        98
+      ],
+      [
+        102,
+        103
+      ],
+      [
+        105,
+        112
+      ],
+      [
+        119,
+        119
+      ],
+      [
+        138,
+        138
+      ],
+      [
+        156,
+        158
+      ],
+      [
+        162,
+        163
+      ],
+      [
+        182,
+        183
+      ],
+      [
+        189,
+        190
+      ],
+      [
+        199,
+        221
+      ],
+      [
+        227,
+        229
+      ],
+      [
+        241,
+        243
+      ],
+      [
+        246,
+        246
+      ],
+      [
+        252,
+        257
+      ],
+      [
+        260,
+        261
+      ],
+      [
+        264,
+        266
+      ],
+      [
+        269,
+        270
+      ],
+      [
+        276,
+        278
+      ],
+      [
+        283,
+        283
+      ],
+      [
+        291,
+        292
+      ],
+      [
+        301,
+        301
+      ],
+      [
+        303,
+        305
+      ],
+      [
+        313,
+        313
+      ],
+      [
+        316,
+        316
+      ],
+      [
+        323,
+        323
+      ],
+      [
+        335,
+        335
+      ],
+      [
+        341,
+        341
+      ],
+      [
+        357,
+        357
+      ],
+      [
+        370,
+        370
+      ],
+      [
+        373,
+        373
+      ],
+      [
+        384,
+        384
+      ]
+    ],
+    "drop_episode_spans_abs": [
+      [
+        2515,
+        2563
+      ],
+      [
+        2567,
+        2567
+      ],
+      [
+        2573,
+        2574
+      ],
+      [
+        2591,
+        2591
+      ],
+      [
+        2596,
+        2598
+      ],
+      [
+        2602,
+        2603
+      ],
+      [
+        2605,
+        2612
+      ],
+      [
+        2619,
+        2619
+      ],
+      [
+        2638,
+        2638
+      ],
+      [
+        2656,
+        2658
+      ],
+      [
+        2662,
+        2663
+      ],
+      [
+        2682,
+        2683
+      ],
+      [
+        2689,
+        2690
+      ],
+      [
+        2699,
+        2721
+      ],
+      [
+        2727,
+        2729
+      ],
+      [
+        2741,
+        2743
+      ],
+      [
+        2746,
+        2746
+      ],
+      [
+        2752,
+        2757
+      ],
+      [
+        2760,
+        2761
+      ],
+      [
+        2764,
+        2766
+      ],
+      [
+        2769,
+        2770
+      ],
+      [
+        2776,
+        2778
+      ],
+      [
+        2783,
+        2783
+      ],
+      [
+        2791,
+        2792
+      ],
+      [
+        2801,
+        2801
+      ],
+      [
+        2803,
+        2805
+      ],
+      [
+        2813,
+        2813
+      ],
+      [
+        2816,
+        2816
+      ],
+      [
+        2823,
+        2823
+      ],
+      [
+        2835,
+        2835
+      ],
+      [
+        2841,
+        2841
+      ],
+      [
+        2857,
+        2857
+      ],
+      [
+        2870,
+        2870
+      ],
+      [
+        2873,
+        2873
+      ],
+      [
+        2884,
+        2884
+      ]
+    ]
+  }
+}
+
+=== PASS LINE ===
+{
+  "passed": false,
+  "class": "A",
+  "checks": {
+    "drop_rate": {
+      "value": 0.36104,
+      "limit": 0.05,
+      "ok": false
+    },
+    "ghost_rate": {
+      "value": 0.0,
+      "limit": 0.05,
+      "ok": true
+    },
+    "longest_drop_s": {
+      "value": 2.47,
+      "limit": 1.0,
+      "ok": false
+    }
+  }
+}

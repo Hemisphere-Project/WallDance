@@ -1,0 +1,6 @@
+C:\WallDance\WallDance\application\src\gui_builder.py:287: DeprecationWarning: Call to deprecated function add_font_range_hint (This call is a no-op because character ranges are now automatic).
+  dpg.add_font_range_hint(dpg.mvFontRangeHint_Default, parent=gui._icon_font)
+C:\WallDance\WallDance\application\src\gui_builder.py:288: DeprecationWarning: Call to deprecated function add_font_range (This call is a no-op because character ranges are now automatic).
+  dpg.add_font_range(0xf000, 0xf8ff, parent=gui._icon_font)
+C:\WallDance\WallDance\application\.venv\Lib\site-packages\tensorrt_bindings\__init__.py:103: DeprecationWarning: Context managers for TensorRT types are deprecated. Memory will be freed automatically when the reference count reaches 0.
+  warnings.warn(

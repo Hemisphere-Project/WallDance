@@ -1,0 +1,164 @@
+[Enhancer] PyTorch CUDA available: NVIDIA GeForce RTX 5080 Laptop GPU
+[Pipeline] CUDA available - YOLO on GPU, Enhancement on CPU
+{
+  "video": "slot_6_20260403_184613.avi",
+  "model": "yolo11x-pose",
+  "imgsz": 1280,
+  "start_frame": 900,
+  "frames_processed": 400,
+  "real_tracks": 2,
+  "marginal_tracks": 0,
+  "ghost_tracks": 2,
+  "total_tracks": 4,
+  "swap_count": 0,
+  "gate_rejections": 426,
+  "dormant_count": 2,
+  "resurrect_count": 0,
+  "zero_detection_frames": 0,
+  "avg_detections": 1.55,
+  "path": "cpu"
+}
+
+wrote tests\golden\decomp-phase0\blur-runner.summary.json
+wrote tests\golden\decomp-phase0\blur-runner.timeline.json
+
+=== SCORE ===
+{
+  "score": 0.05289,
+  "scenario": "blur-runner",
+  "weights": {
+    "drop": 1.0,
+    "ghost": 1.0,
+    "frag": 0.3,
+    "id": 0.1
+  },
+  "components": {
+    "drop_rate": 0.03471,
+    "ghost_rate": 0.01039,
+    "frag_rate": 0.02597,
+    "id_pen": 0.0,
+    "weighted": {
+      "drop": 0.03471,
+      "ghost": 0.01039,
+      "frag": 0.00779,
+      "id": 0.0
+    }
+  },
+  "raw": {
+    "scored_frames": 385,
+    "reported_frames": 385,
+    "warmup_excluded": 15,
+    "expected_dancer_frames": 605,
+    "missed_dancer_frames": 21,
+    "missed_dancer_seconds": 1.06,
+    "ghost_dancer_frames": 4,
+    "ghost_dancer_seconds": 0.2,
+    "mean_abs_count_error": 0.06494,
+    "drop_episodes": 9,
+    "ghost_episodes": 1,
+    "longest_drop_frames": 4,
+    "longest_drop_seconds": 0.2,
+    "distinct_ids": 2,
+    "excess_ids": 0,
+    "id_switches": 0,
+    "drop_episode_spans_rel": [
+      [
+        201,
+        201
+      ],
+      [
+        215,
+        216
+      ],
+      [
+        221,
+        223
+      ],
+      [
+        225,
+        227
+      ],
+      [
+        240,
+        243
+      ],
+      [
+        245,
+        248
+      ],
+      [
+        254,
+        254
+      ],
+      [
+        259,
+        260
+      ],
+      [
+        264,
+        264
+      ]
+    ],
+    "drop_episode_spans_abs": [
+      [
+        1101,
+        1101
+      ],
+      [
+        1115,
+        1116
+      ],
+      [
+        1121,
+        1123
+      ],
+      [
+        1125,
+        1127
+      ],
+      [
+        1140,
+        1143
+      ],
+      [
+        1145,
+        1148
+      ],
+      [
+        1154,
+        1154
+      ],
+      [
+        1159,
+        1160
+      ],
+      [
+        1164,
+        1164
+      ]
+    ]
+  }
+}
+
+=== PASS LINE ===
+{
+  "passed": true,
+  "class": "B",
+  "checks": {
+    "drop_rate": {
+      "value": 0.03471,
+      "limit": 0.1,
+      "ok": true
+    },
+    "ghost_rate": {
+      "value": 0.01039,
+      "limit": 0.15,
+      "ok": true
+    },
+    "longest_drop_s": {
+      "value": 0.2,
+      "limit": 2.0,
+      "ok": true
+    }
+  }
+}

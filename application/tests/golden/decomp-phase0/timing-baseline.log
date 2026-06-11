@@ -1,0 +1,296 @@
+[Enhancer] PyTorch CUDA available: NVIDIA GeForce RTX 5080 Laptop GPU
+============================================================
+WallDance 1080p - Multi-Person Pose Detection
+============================================================
+[Camera] UnifiedCamera available (IDS Peak: True)
+[Pipeline] GPU pipeline active - zero-copy enhancement + YOLO (kornia/PyTorch)
+OSC: Sending to 127.0.0.1:9000
+Detecting cameras...
+Refreshing camera list...
+[IDSCamera] Library force-closed for OpenCV handover
+OpenCV cameras: ['0']
+Available cameras: ['0']
+Opening camera 0...
+[CameraThread] Capture thread started
+[UnifiedCamera] Opened OpenCV camera: 1920x1080
+[Camera] OpenCV camera opened: 1920x1080
+Initializing GUI...
+[GUI] Detected display resolution: 2560x1600
+[GUI] Windows DPI: 144, system scale: 1.5
+[GUI] Screen width: 2560, System scale: 1.5, Logical width: 1707, Base: 1.0, Using UI scale: 1.5
+Texture created: 1440x810
+Loading project: 7_TANGO_TOGO-day
+
+============================================================
+[Project Switch] Starting switch to: 3_TANGO_HANGAR-whitebg2_20260610_213651.json
+============================================================
+[Project Switch] Stopping recorder...
+[Project Switch] Closing camera...
+[Project Switch] Target: model=yolo11x-pose, TRT=True, imgsz=960
+[Project Switch] Loading model yolo11x-pose... (TRT=True, force_pt=False)
+[Model] Starting model load: yolo11x-pose (force_pt=False)...
+[Model] Showing loading modal...
+[ModelManager] checking: Checking yolo11x-pose.pt... (10%)
+[ModelManager] loading: Loading TensorRT engine... (95%)
+Loading C:\WallDance\WallDance\models\yolo11x-pose_960.engine for TensorRT inference...
+[06/11/2026-13:13:57] [TRT] [I] Loaded engine size: 116 MiB
+[06/11/2026-13:13:58] [TRT] [I] [MemUsageChange] TensorRT-managed allocation in IExecutionContext creation: CPU +0, GPU +212, now: CPU 0, GPU 326 (MiB)
+[ModelManager] ready: TensorRT model ready: yolo11x-pose (100%)
+[Model] Running warmup inference...
+[Model] Warmup complete
+Model loading complete: yolo11x-pose
+[Project Switch] Applying config settings...
+OSC: Sending to 127.0.0.1:9000
+Preview FPS cap: ON (10 FPS limit, 0.5x preview)
+[IDS Ratio] update_crop_ratio failed for ratio=1.30
+[IDS Gain] 27.8 dB
+[IDS Exposure] 49327 µs
+[Project Switch] Opening camera ids...
+[CameraThread] Capture thread finished
+[IDSCamera] No accessible camera found (serial=None)
+[IDSCamera] Closed
+[Camera] Failed to open: ids
+[Project Switch] Complete: 3_TANGO_HANGAR-whitebg2
+============================================================
+
+[Playback] Using sidecar FPS: 19.70 (container says 30.00)
+Started playback from slot 4: C:\WallDance\WallDance\projects\3_TANGO_HANGAR-whitebg2\recordings\slot_4_20260402_210914.avi (5088 frames @ 19.7 FPS)
+[Playback] Event 'start' — queueing tracker reset
+Playback speed set to 1.0x
+[WebMonitor] live at http://192.168.8.156:8080/  (open on a phone on the same network)
+Starting main loop...
+[Playback] Event 'start' — resetting tracker
+Tracker reset
+[Session] Could not create 'latest' symlink: [WinError 1314] Le client ne dispose pas d’un privilège nécessaire: '20260611_131359_slot4' -> 'C:\\WallDance\\WallDance\\projects\\3_TANGO_HANGAR-whitebg2\\sessions\\latest'
+[Session] C:\WallDance\WallDance\projects\3_TANGO_HANGAR-whitebg2\sessions\20260611_131359_slot4
+[Budget] process_wall=217.6, yolo=11.8, preview_upload=1.5, preview_draw=3.0, preview_download=1.5, extract_cpu_total=0.1, mog2_cvt=0.5, mog2_feed=25.4, enhance=177.7  (FPS=0.0)
+[PerfSpike] total=217.8ms
+GUI resize_preview: tex 672x378 -> 1411x794
+[Budget] process_wall=36.1, yolo=11.9, preview_upload=3.0, preview_download=1.0, extract_cpu_total=0.2, mog2_cvt=0.5, mog2_feed=22.4, tracker_update=2.0, track=2.0, enhance=5.6  (FPS=19.9)
+[PerfSpike] total=36.7ms
+[PerfSpike] total=36.3ms
+[PerfSpike] total=35.2ms
+[Budget] process_wall=33.1, yolo=12.4, preview_upload=3.0, preview_draw=1.0, preview_download=1.0, mog2_cvt=1.0, mog2_feed=18.4, tracker_update=6.5, track=6.5, enhance=4.0  (FPS=19.5)
+[PerfSpike] total=38.6ms
+[PerfSpike] total=35.2ms
+[Alert] Camera down for 15s - check USB3/power
+[Budget] process_wall=32.7, yolo=12.9, preview_upload=3.0, preview_draw=1.0, preview_download=1.0, mog2_feed=22.5, tracker_update=1.0, track=1.0, enhance=5.5  (FPS=19.7)
+[PerfSpike] total=36.9ms
+[PerfSpike] total=35.9ms
+[PerfSpike] total=41.3ms
+[PerfSpike] total=39.4ms
+[Budget] process_wall=32.5, yolo=12.9, preview_upload=2.5, preview_draw=1.0, preview_download=1.0, extract_cpu_total=0.1, mog2_feed=20.9, tracker_update=2.5, track=2.5, enhance=5.0  (FPS=19.9)
+[PerfSpike] total=39.0ms
+[PerfSpike] total=35.9ms
+[PerfSpike] total=35.4ms
+[Budget] process_wall=31.6, yolo=11.5, preview_upload=2.5, preview_draw=1.4, preview_download=1.0, mog2_cvt=1.0, mog2_feed=18.5, tracker_update=2.0, track=2.0, enhance=5.0  (FPS=19.6)
+[PerfSpike] total=36.0ms
+[Budget] process_wall=26.9, yolo=12.1, preview_upload=3.0, preview_download=1.0, mog2_cvt=0.5, mog2_feed=16.7, tracker_update=1.0, track=1.0, enhance=4.5  (FPS=19.6)
+[PerfSpike] total=35.1ms
+[PerfSpike] total=40.5ms
+[PerfSpike] total=36.1ms
+[Budget] process_wall=34.9, yolo=9.8, preview_upload=2.4, preview_draw=1.0, preview_download=1.0, mog2_cvt=1.0, mog2_feed=23.4, tracker_update=1.5, track=1.5, enhance=5.4  (FPS=19.6)
+[PerfSpike] total=35.4ms
+[PerfSpike] total=36.1ms
+[Budget] process_wall=38.9, yolo=12.5, preview_upload=3.0, preview_draw=1.0, preview_download=1.0, extract_cpu_total=0.1, mog2_cvt=1.0, mog2_feed=22.5, tracker_update=6.3, track=6.3, enhance=4.5  (FPS=19.7)
+[PerfSpike] total=39.3ms
+[PerfSpike] total=35.6ms
+[PerfSpike] total=35.4ms
+[PerfSpike] total=40.3ms
+[Budget] process_wall=30.6, yolo=12.7, preview_upload=3.2, preview_download=1.0, extract_cpu_total=0.3, mog2_cvt=1.0, mog2_feed=19.3, tracker_update=2.0, track=2.0, enhance=4.6  (FPS=19.9)
+[PerfSpike] total=35.2ms
+[PerfSpike] total=36.1ms
+[Budget] process_wall=32.8, yolo=12.9, preview_upload=2.7, preview_draw=1.0, preview_download=0.5, mog2_cvt=1.2, mog2_feed=17.3, tracker_update=6.0, track=6.0, enhance=4.9  (FPS=19.8)
+[PerfSpike] total=35.7ms
+[PerfSpike] total=35.1ms
+[PerfSpike] total=36.6ms
+[Budget] process_wall=31.7, yolo=11.9, preview_upload=2.0, preview_draw=1.0, preview_download=1.0, extract_cpu_total=0.2, mog2_feed=18.5, tracker_update=3.8, track=3.8, enhance=5.0  (FPS=19.7)
+[PerfSpike] total=38.1ms
+[PerfSpike] total=35.3ms
+[PerfSpike] total=35.6ms
+[Budget] process_wall=30.9, yolo=11.4, preview_upload=3.5, preview_download=1.5, mog2_feed=23.0, enhance=4.0  (FPS=19.7)
+[PerfSpike] total=35.7ms
+[Budget] process_wall=27.2, yolo=12.2, preview_upload=3.0, preview_draw=1.0, preview_download=1.0, extract_cpu_total=0.2, mog2_feed=16.8, tracker_update=2.2, track=2.2, enhance=4.6  (FPS=19.5)
+[PerfSpike] total=36.3ms
+[PerfSpike] total=35.3ms
+[PerfSpike] total=36.0ms
+[PerfSpike] total=35.8ms
+[Budget] process_wall=28.7, yolo=10.5, preview_upload=2.5, preview_draw=1.0, preview_download=1.0, extract_cpu_total=0.1, mog2_cvt=1.0, mog2_feed=16.8, tracker_update=2.0, track=2.0, enhance=4.0  (FPS=19.7)
+[PerfSpike] total=35.8ms
+[Budget] process_wall=32.0, yolo=11.0, preview_upload=2.5, preview_draw=1.0, preview_download=1.0, mog2_feed=20.2, tracker_update=2.0, track=2.0, enhance=5.5  (FPS=19.6)
+[Budget] process_wall=26.1, yolo=12.5, preview_upload=3.0, preview_draw=1.5, mog2_cvt=1.5, mog2_feed=15.5, enhance=4.0  (FPS=19.6)
+[Budget] process_wall=30.3, yolo=10.0, preview_upload=2.0, preview_draw=1.0, preview_download=1.0, extract_cpu_total=0.2, mog2_feed=19.3, tracker_update=3.0, track=3.0, enhance=5.0  (FPS=19.7)
+[PerfSpike] total=35.7ms
+[Budget] process_wall=33.5, yolo=11.9, preview_upload=2.5, preview_draw=1.0, preview_download=1.0, extract_cpu_total=0.2, mog2_feed=23.6, enhance=4.5  (FPS=19.6)
+[PerfSpike] total=35.5ms
+[PerfSpike] total=35.3ms
+[PerfSpike] total=37.2ms
+[Budget] process_wall=40.0, yolo=10.0, preview_upload=4.7, preview_download=1.0, extract_cpu_total=0.2, mog2_cvt=1.0, mog2_feed=22.0, tracker_update=8.4, track=8.4, enhance=4.4  (FPS=19.4)
+[PerfSpike] total=40.1ms
+[PerfSpike] total=37.6ms
+[Budget] process_wall=29.9, yolo=11.9, preview_upload=3.0, preview_draw=1.0, preview_download=2.1, extract_cpu_total=0.2, mog2_feed=16.3, tracker_update=3.0, track=3.0, enhance=4.0  (FPS=19.9)
+[PerfSpike] total=35.6ms
+[PerfSpike] total=37.3ms
+[PerfSpike] total=36.8ms
+[PerfSpike] total=35.3ms
+[Budget] process_wall=28.3, yolo=12.5, preview_upload=2.5, preview_draw=1.0, preview_download=1.0, mog2_cvt=1.0, mog2_feed=18.0, tracker_update=1.2, track=1.2, enhance=4.5  (FPS=19.5)
+[PerfSpike] total=36.6ms
+[PerfSpike] total=35.6ms
+[PerfSpike] total=35.1ms
+[Budget] process_wall=25.2, yolo=11.3, preview_upload=1.0, preview_draw=1.0, preview_download=1.0, extract_cpu_total=0.1, mog2_cvt=1.1, mog2_feed=15.8, enhance=5.0  (FPS=19.7)
+[Budget] process_wall=29.6, yolo=11.5, preview_upload=3.0, preview_draw=0.5, preview_download=1.0, extract_cpu_total=0.5, mog2_cvt=1.2, mog2_feed=19.1, enhance=5.0  (FPS=19.7)
+[Budget] process_wall=33.3, yolo=12.6, preview_upload=3.8, preview_download=1.4, mog2_feed=23.3, tracker_update=0.5, track=0.5, enhance=5.0  (FPS=19.8)
+[PerfSpike] total=35.6ms
+[PerfSpike] total=35.1ms
+[PerfSpike] total=35.5ms
+[Budget] process_wall=32.7, yolo=9.0, preview_upload=3.0, preview_download=1.5, mog2_feed=22.8, tracker_update=1.3, track=1.3, enhance=4.0  (FPS=19.8)
+[PerfSpike] total=35.5ms
+[Budget] process_wall=34.3, yolo=11.6, preview_upload=3.0, preview_draw=1.5, preview_download=1.0, mog2_cvt=0.5, mog2_feed=22.1, tracker_update=2.0, track=3.0, enhance=4.2  (FPS=19.6)
+[Alert] Camera down for 136s - check USB3/power
+[Budget] process_wall=30.1, yolo=12.5, preview_upload=2.5, preview_draw=1.0, preview_download=1.5, extract_cpu_total=0.2, mog2_feed=20.6, enhance=4.1  (FPS=19.4)
+[Budget] process_wall=29.5, yolo=12.5, preview_upload=3.6, mog2_cvt=1.0, mog2_feed=19.4, tracker_update=1.0, track=1.0, enhance=4.9  (FPS=19.6)
+[PerfSpike] total=36.0ms
+[PerfSpike] total=35.2ms
+[PerfSpike] total=35.1ms
+[Budget] process_wall=34.1, yolo=9.0, preview_upload=3.5, preview_download=1.0, mog2_cvt=1.0, mog2_feed=21.8, tracker_update=2.0, track=2.0, enhance=4.0  (FPS=19.7)
+[PerfSpike] total=35.1ms
+[PerfSpike] total=35.9ms
+[Budget] process_wall=35.5, yolo=11.1, preview_upload=3.0, preview_download=1.0, extract_cpu_total=0.2, mog2_cvt=1.5, mog2_feed=22.1, tracker_update=2.0, track=2.0, enhance=4.0  (FPS=19.6)
+[PerfSpike] total=35.6ms
+[PerfSpike] total=37.1ms
+[PerfSpike] total=38.2ms
+[PerfSpike] total=37.6ms
+[PerfSpike] total=36.4ms
+[Budget] process_wall=34.1, yolo=11.7, preview_upload=3.0, preview_download=1.0, mog2_cvt=1.0, mog2_feed=21.7, tracker_update=3.5, track=3.5, enhance=4.0  (FPS=20.0)
+[PerfSpike] total=36.0ms
+[PerfSpike] total=35.6ms
+[Budget] process_wall=33.1, yolo=9.9, preview_upload=3.5, mog2_cvt=1.5, mog2_feed=23.0, enhance=5.1  (FPS=19.6)
+[PerfSpike] total=35.5ms
+[PerfSpike] total=47.0ms
+[PerfSpike] total=38.0ms
+[PerfSpike] total=35.4ms
+[Budget] process_wall=33.5, yolo=11.5, preview_upload=3.0, preview_draw=1.0, preview_download=1.5, extract_cpu_total=0.2, mog2_feed=23.0, tracker_update=2.5, track=2.5, enhance=4.5  (FPS=19.6)
+[PerfSpike] total=36.8ms
+[PerfSpike] total=35.2ms
+[Budget] process_wall=28.8, yolo=11.3, preview_upload=2.5, preview_draw=1.0, preview_download=2.0, extract_cpu_total=0.1, mog2_feed=18.5, enhance=4.5  (FPS=19.9)
+[PerfSpike] total=35.3ms
+[PerfSpike] total=36.0ms
+[PerfSpike] total=35.7ms
+[Budget] process_wall=28.5, yolo=12.0, preview_upload=2.5, preview_draw=1.0, preview_download=1.0, mog2_cvt=1.0, mog2_feed=18.0, tracker_update=1.5, track=1.5, enhance=5.0  (FPS=19.6)
+[PerfSpike] total=35.3ms
+[Budget] process_wall=28.7, yolo=12.0, preview_upload=3.0, preview_download=1.5, mog2_feed=16.5, tracker_update=2.5, track=2.5, enhance=5.0  (FPS=19.8)
+[PerfSpike] total=35.1ms
+[PerfSpike] total=35.1ms
+[Budget] process_wall=32.3, yolo=13.1, preview_upload=2.0, preview_draw=1.1, preview_download=1.0, mog2_feed=17.4, tracker_update=5.0, track=5.0, enhance=5.0  (FPS=19.7)
+[PerfSpike] total=39.0ms
+[Budget] process_wall=32.4, yolo=12.5, preview_upload=2.5, preview_draw=1.5, preview_download=2.1, extract_cpu_total=0.1, mog2_feed=22.1, enhance=4.5  (FPS=19.7)
+[PerfSpike] total=35.4ms
+[PerfSpike] total=35.1ms
+[Budget] process_wall=25.2, yolo=11.9, preview_upload=3.0, preview_draw=1.0, preview_download=1.0, mog2_cvt=1.0, mog2_feed=14.4, enhance=4.0  (FPS=19.9)
+[PerfSpike] total=35.3ms
+[Budget] process_wall=30.0, yolo=12.4, preview_upload=2.5, preview_draw=1.0, preview_download=1.0, mog2_cvt=1.3, mog2_feed=18.0, tracker_update=2.6, track=2.6, enhance=4.0  (FPS=19.6)
+[PerfSpike] total=37.3ms
+[PerfSpike] total=35.6ms
+[Budget] process_wall=25.7, yolo=10.3, preview_upload=2.5, preview_draw=1.0, preview_download=1.0, mog2_cvt=1.0, mog2_feed=15.3, tracker_update=0.5, track=0.5, enhance=4.6  (FPS=19.7)
+[PerfSpike] total=39.1ms
+[Budget] process_wall=32.4, yolo=11.4, preview_upload=2.0, preview_draw=1.0, preview_download=1.6, mog2_cvt=1.0, mog2_feed=19.9, tracker_update=3.5, track=3.5, enhance=4.5  (FPS=19.8)
+[PerfSpike] total=35.3ms
+[Budget] process_wall=28.9, yolo=11.6, preview_upload=3.0, preview_draw=1.0, mog2_cvt=1.0, mog2_feed=15.6, tracker_update=3.5, track=3.5, enhance=4.8  (FPS=19.5)
+[PerfSpike] total=35.9ms
+[PerfSpike] total=35.3ms
+[Budget] process_wall=35.5, yolo=10.8, preview_upload=3.0, preview_download=1.7, mog2_cvt=1.0, mog2_feed=21.8, tracker_update=4.0, track=4.0, enhance=4.0  (FPS=19.6)
+[PerfSpike] total=35.7ms
+[PerfSpike] total=35.0ms
+[Budget] process_wall=33.5, yolo=11.7, preview_upload=2.5, preview_download=1.1, mog2_cvt=1.0, mog2_feed=21.2, tracker_update=3.0, track=3.0, enhance=4.0  (FPS=19.8)
+[PerfSpike] total=35.5ms
+[Budget] process_wall=26.8, yolo=12.1, preview_upload=2.5, extract_cpu_total=0.1, mog2_feed=15.1, tracker_update=3.0, track=3.0, enhance=4.0  (FPS=19.8)
+[PerfSpike] total=36.5ms
+[Budget] process_wall=31.8, yolo=12.8, preview_upload=3.0, preview_draw=1.0, preview_download=1.0, mog2_feed=21.9, tracker_update=1.0, track=1.0, enhance=5.0  (FPS=19.7)
+[PerfSpike] total=35.2ms
+[Budget] process_wall=30.5, yolo=12.4, preview_upload=2.5, preview_draw=1.5, preview_download=1.0, extract_cpu_total=0.1, mog2_feed=19.4, tracker_update=2.0, track=2.0, enhance=4.6  (FPS=19.5)
+[PerfSpike] total=35.5ms
+[PerfSpike] total=36.9ms
+[PerfSpike] total=35.0ms
+[Budget] process_wall=27.7, yolo=11.6, preview_upload=2.5, preview_draw=1.0, preview_download=1.2, mog2_cvt=1.0, mog2_feed=15.1, tracker_update=3.0, track=3.0, enhance=4.4  (FPS=19.7)
+[PerfSpike] total=35.0ms
+[Alert] Camera down for 257s - check USB3/power
+[Playback] Event 'loop' — queueing tracker reset
+[Playback] Event 'loop' — resetting tracker
+Tracker reset
+[Session] Could not create 'latest' symlink: [WinError 1314] Le client ne dispose pas d’un privilège nécessaire: '20260611_131818_slot4' -> 'C:\\WallDance\\WallDance\\projects\\3_TANGO_HANGAR-whitebg2\\sessions\\latest'
+[Session] C:\WallDance\WallDance\projects\3_TANGO_HANGAR-whitebg2\sessions\20260611_131818_slot4
+[PerfSpike] total=38.6ms
+[Budget] process_wall=25.5, yolo=10.5, preview_upload=3.5, preview_download=1.0, mog2_feed=15.0, tracker_update=2.0, track=2.0, enhance=4.0  (FPS=19.7)
+[PerfSpike] total=35.1ms
+[PerfSpike] total=35.4ms
+[Budget] process_wall=28.8, yolo=11.5, preview_upload=3.0, preview_download=1.5, extract_cpu_total=0.1, mog2_cvt=1.0, mog2_feed=18.0, tracker_update=2.0, track=2.0, enhance=4.0  (FPS=19.7)
+[PerfSpike] total=36.2ms
+[PerfSpike] total=37.2ms
+[PerfSpike] total=38.8ms
+[PerfSpike] total=36.1ms
+[Budget] process_wall=33.1, yolo=12.1, preview_upload=3.0, preview_download=1.0, mog2_feed=21.3, tracker_update=2.5, track=2.5, enhance=4.4  (FPS=19.7)
+[PerfSpike] total=36.1ms
+[PerfSpike] total=35.1ms
+[PerfSpike] total=35.8ms
+[Budget] process_wall=38.4, yolo=12.0, preview_upload=3.0, preview_download=1.1, mog2_feed=22.9, tracker_update=6.0, track=6.0, enhance=4.6  (FPS=19.9)
+[PerfSpike] total=38.6ms
+[PerfSpike] total=38.5ms
+[PerfSpike] total=36.1ms
+[PerfSpike] total=37.4ms
+[Budget] process_wall=31.9, yolo=12.6, preview_upload=2.0, preview_draw=0.5, preview_download=1.0, mog2_feed=21.1, tracker_update=2.0, track=2.0, enhance=4.7  (FPS=19.7)
+[PerfSpike] total=35.2ms
+[PerfSpike] total=36.0ms
+[Budget] process_wall=27.5, yolo=13.1, preview_upload=3.2, preview_download=1.0, mog2_feed=18.1, tracker_update=1.4, track=1.4, enhance=5.5  (FPS=20.1)
+[PerfSpike] total=35.8ms
+[PerfSpike] total=35.5ms
+[Budget] process_wall=28.0, yolo=11.4, preview_upload=2.0, preview_draw=1.0, preview_download=1.0, mog2_feed=15.7, tracker_update=3.0, track=3.0, enhance=5.0  (FPS=19.7)
+[PerfSpike] total=35.3ms
+[Budget] process_wall=28.9, yolo=10.5, preview_upload=2.0, preview_draw=1.5, preview_download=1.0, mog2_cvt=1.0, mog2_feed=14.5, tracker_update=4.5, track=4.5, enhance=4.5  (FPS=19.9)
+[PerfSpike] total=37.6ms
+[PerfSpike] total=39.6ms
+[PerfSpike] total=36.5ms
+[Budget] process_wall=29.5, yolo=11.0, preview_upload=3.5, preview_draw=1.0, preview_download=0.5, mog2_cvt=1.0, mog2_feed=15.2, tracker_update=4.4, track=4.4, enhance=5.7  (FPS=19.6)
+[PerfSpike] total=37.9ms
+[PerfSpike] total=35.6ms
+[Budget] process_wall=29.9, yolo=11.5, preview_upload=2.0, preview_draw=1.0, preview_download=1.0, mog2_cvt=1.0, mog2_feed=17.0, tracker_update=2.5, track=2.5, enhance=5.0  (FPS=19.5)
+[PerfSpike] total=38.3ms
+[PerfSpike] total=36.7ms
+[PerfSpike] total=35.8ms
+[Budget] process_wall=35.1, yolo=10.1, preview_upload=2.0, preview_draw=1.0, preview_download=1.2, extract_cpu_total=0.2, mog2_cvt=1.0, mog2_feed=22.7, tracker_update=3.0, track=3.0, enhance=5.0  (FPS=19.7)
+[PerfSpike] total=35.2ms
+[PerfSpike] total=35.5ms
+[PerfSpike] total=36.0ms
+[Budget] process_wall=27.7, yolo=10.6, preview_upload=2.5, extract_cpu_total=0.1, mog2_cvt=1.5, mog2_feed=16.2, tracker_update=2.0, track=2.0, enhance=5.5  (FPS=19.6)
+[Budget] process_wall=27.5, yolo=11.0, preview_upload=3.1, preview_download=1.0, extract_cpu_total=0.2, mog2_feed=18.5, tracker_update=2.0, track=2.0, enhance=4.0  (FPS=19.9)
+[PerfSpike] total=35.3ms
+[PerfSpike] total=35.7ms
+[PerfSpike] total=35.9ms
+[Budget] process_wall=28.1, yolo=11.5, preview_upload=2.0, preview_draw=1.0, preview_download=1.0, mog2_feed=15.5, tracker_update=4.5, track=4.5, enhance=4.0  (FPS=19.5)
+[PerfSpike] total=35.5ms
+[Budget] process_wall=32.2, yolo=10.5, preview_upload=2.0, preview_draw=1.0, preview_download=1.1, mog2_feed=22.0, tracker_update=2.0, track=2.0, enhance=4.6  (FPS=19.7)
+[PerfSpike] total=36.4ms
+[Budget] process_wall=32.3, yolo=12.4, preview_upload=2.0, preview_draw=1.0, preview_download=1.6, mog2_feed=22.8, tracker_update=1.2, track=1.2, enhance=4.8  (FPS=19.7)
+[Budget] process_wall=34.3, yolo=10.9, preview_upload=3.0, extract_cpu_total=0.4, mog2_cvt=1.6, mog2_feed=22.5, tracker_update=2.5, track=2.5, enhance=5.9  (FPS=19.6)
+[PerfSpike] total=36.0ms
+[PerfSpike] total=36.4ms
+[Budget] process_wall=28.2, yolo=11.5, preview_upload=2.0, preview_draw=1.0, preview_download=1.0, extract_cpu_total=0.2, mog2_feed=18.6, tracker_update=1.0, track=1.0, enhance=3.5  (FPS=19.9)
+[PerfSpike] total=35.1ms
+[PerfSpike] total=35.0ms
+[PerfSpike] total=36.9ms
+[Budget] process_wall=32.3, yolo=12.7, preview_upload=2.5, preview_draw=1.0, extract_cpu_total=0.2, mog2_cvt=1.0, mog2_feed=19.7, tracker_update=3.0, track=3.0, enhance=5.6  (FPS=19.7)
+[PerfSpike] total=35.9ms
+[PerfSpike] total=38.6ms
+[PerfSpike] total=35.3ms
+[PerfSpike] total=36.5ms
+[Budget] process_wall=34.5, yolo=13.2, preview_upload=3.5, mog2_cvt=1.5, mog2_feed=22.7, tracker_update=2.0, track=2.0, enhance=5.6  (FPS=19.7)
+[PerfSpike] total=36.0ms
+[PerfSpike] total=35.5ms
+[PerfSpike] total=37.8ms
+[Budget] process_wall=32.4, yolo=12.5, preview_upload=3.5, preview_draw=1.0, preview_download=1.5, mog2_feed=18.5, tracker_update=4.6, track=4.6, enhance=5.0  (FPS=20.0)
+[PerfSpike] total=36.5ms
+[PerfSpike] total=35.1ms
+[PerfSpike] total=35.3ms
+[Budget] process_wall=33.2, yolo=11.1, preview_upload=3.0, preview_download=1.1, extract_cpu_total=0.4, mog2_cvt=1.0, mog2_feed=18.2, tracker_update=5.0, track=5.0, enhance=4.7  (FPS=19.5)
+[PerfSpike] total=35.4ms
+[PerfSpike] total=35.6ms
+[Budget] process_wall=31.5, yolo=11.0, preview_upload=3.1, preview_download=1.0, mog2_cvt=0.5, mog2_feed=21.1, tracker_update=1.5, track=1.5, enhance=5.0  (FPS=19.6)

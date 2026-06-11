@@ -1,0 +1,100 @@
+[Enhancer] PyTorch CUDA available: NVIDIA GeForce RTX 5080 Laptop GPU
+[Pipeline] CUDA available - YOLO on GPU, Enhancement on CPU
+{
+  "video": "slot_3_20260403_121814.avi",
+  "model": "yolo11x-pose",
+  "imgsz": 960,
+  "start_frame": 0,
+  "frames_processed": 400,
+  "real_tracks": 1,
+  "marginal_tracks": 0,
+  "ghost_tracks": 5,
+  "total_tracks": 6,
+  "swap_count": 0,
+  "gate_rejections": 4,
+  "dormant_count": 4,
+  "resurrect_count": 0,
+  "zero_detection_frames": 363,
+  "avg_detections": 0.092,
+  "path": "cpu"
+}
+
+wrote tests\golden\decomp-phase0\white-walkers.summary.json
+wrote tests\golden\decomp-phase0\white-walkers.timeline.json
+
+=== SCORE ===
+{
+  "score": 1.00078,
+  "scenario": "white-walkers",
+  "weights": {
+    "drop": 1.0,
+    "ghost": 1.0,
+    "frag": 0.3,
+    "id": 0.1
+  },
+  "components": {
+    "drop_rate": 1.0,
+    "ghost_rate": 0.0,
+    "frag_rate": 0.0026,
+    "id_pen": 0.0,
+    "weighted": {
+      "drop": 1.0,
+      "ghost": 0.0,
+      "frag": 0.00078,
+      "id": 0.0
+    }
+  },
+  "raw": {
+    "scored_frames": 385,
+    "reported_frames": 0,
+    "warmup_excluded": 15,
+    "expected_dancer_frames": 1665,
+    "missed_dancer_frames": 1665,
+    "missed_dancer_seconds": 84.13,
+    "ghost_dancer_frames": 0,
+    "ghost_dancer_seconds": 0.0,
+    "mean_abs_count_error": 4.32468,
+    "drop_episodes": 1,
+    "ghost_episodes": 0,
+    "longest_drop_frames": 385,
+    "longest_drop_seconds": 19.45,
+    "distinct_ids": 0,
+    "excess_ids": 0,
+    "id_switches": 0,
+    "drop_episode_spans_rel": [
+      [
+        15,
+        399
+      ]
+    ],
+    "drop_episode_spans_abs": [
+      [
+        15,
+        399
+      ]
+    ]
+  }
+}
+
+=== PASS LINE ===
+{
+  "passed": false,
+  "class": "A",
+  "checks": {
+    "drop_rate": {
+      "value": 1.0,
+      "limit": 0.05,
+      "ok": false
+    },
+    "ghost_rate": {
+      "value": 0.0,
+      "limit": 0.05,
+      "ok": true
+    },
+    "longest_drop_s": {
+      "value": 19.45,
+      "limit": 1.0,
+      "ok": false
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "video": "slot_7_20260401_182034.avi",
+  "model": "yolo11x-pose",
+  "imgsz": 1280,
+  "start_frame": 200,
+  "frames_processed": 600,
+  "real_tracks": 2,
+  "marginal_tracks": 6,
+  "ghost_tracks": 4,
+  "total_tracks": 12,
+  "swap_count": 0,
+  "gate_rejections": 231,
+  "dormant_count": 4,
+  "resurrect_count": 1,
+  "zero_detection_frames": 14,
+  "avg_detections": 1.163,
+  "path": "cpu"
+}

@@ -1,0 +1,108 @@
+[Enhancer] PyTorch CUDA available: NVIDIA GeForce RTX 5080 Laptop GPU
+[Pipeline] CUDA available - YOLO on GPU, Enhancement on CPU
+{
+  "video": "slot_1_20260425_022328.avi",
+  "model": "yolo11x-pose",
+  "imgsz": 960,
+  "start_frame": 0,
+  "frames_processed": 330,
+  "real_tracks": 1,
+  "marginal_tracks": 0,
+  "ghost_tracks": 0,
+  "total_tracks": 1,
+  "swap_count": 0,
+  "gate_rejections": 1,
+  "dormant_count": 0,
+  "resurrect_count": 0,
+  "zero_detection_frames": 141,
+  "avg_detections": 0.573,
+  "path": "cpu"
+}
+
+wrote tests\golden\decomp-phase0\outdoor-night.summary.json
+wrote tests\golden\decomp-phase0\outdoor-night.timeline.json
+
+=== SCORE ===
+{
+  "score": 0.29079,
+  "scenario": "outdoor-night",
+  "weights": {
+    "drop": 1.0,
+    "ghost": 1.0,
+    "frag": 0.3,
+    "id": 0.1
+  },
+  "components": {
+    "drop_rate": 0.28889,
+    "ghost_rate": 0.0,
+    "frag_rate": 0.00635,
+    "id_pen": 0.0,
+    "weighted": {
+      "drop": 0.28889,
+      "ghost": 0.0,
+      "frag": 0.0019,
+      "id": 0.0
+    }
+  },
+  "raw": {
+    "scored_frames": 315,
+    "reported_frames": 224,
+    "warmup_excluded": 15,
+    "expected_dancer_frames": 315,
+    "missed_dancer_frames": 91,
+    "missed_dancer_seconds": 4.59,
+    "ghost_dancer_frames": 0,
+    "ghost_dancer_seconds": 0.0,
+    "mean_abs_count_error": 0.28889,
+    "drop_episodes": 2,
+    "ghost_episodes": 0,
+    "longest_drop_frames": 85,
+    "longest_drop_seconds": 4.29,
+    "distinct_ids": 1,
+    "excess_ids": 0,
+    "id_switches": 0,
+    "drop_episode_spans_rel": [
+      [
+        15,
+        20
+      ],
+      [
+        245,
+        329
+      ]
+    ],
+    "drop_episode_spans_abs": [
+      [
+        15,
+        20
+      ],
+      [
+        245,
+        329
+      ]
+    ]
+  }
+}
+
+=== PASS LINE ===
+{
+  "passed": false,
+  "class": "B",
+  "checks": {
+    "drop_rate": {
+      "value": 0.28889,
+      "limit": 0.1,
+      "ok": false
+    },
+    "ghost_rate": {
+      "value": 0.0,
+      "limit": 0.15,
+      "ok": true
+    },
+    "longest_drop_s": {
+      "value": 4.29,
+      "limit": 2.0,
+      "ok": false
+    }
+  }
+}
