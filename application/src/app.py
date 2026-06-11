@@ -4,8 +4,13 @@ This module keeps the runtime glue small by delegating to:
 - CameraManager (camera lifecycle)
 - FrameProcessor (enhance → YOLO → tracking → OSC)
 - ConfigStore (save/load presets)
-- WallDanceGUI (DearPyGui front-end)
+- DpgUiAdapter (the DearPyGui client behind the command/event seam)
 - ModelManager (model loading, TensorRT export)
+
+DECOMPOSITION_PLAN Phase 3: app.py is the composition root. It never touches
+dpg directly -- GUI pushes go out as events on the EventBus, GUI input comes
+back as commands drained once per main-loop tick (runtime/api.py); the only
+dpg-speaking module is ui/adapter.py.
 """
 
 from __future__ import annotations
@@ -22,7 +27,6 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 import cv2
-import dearpygui.dearpygui as dpg
 import numpy as np
 
 # Force unbuffered output so we see logs before crashes
@@ -83,7 +87,7 @@ from config_store import sanitize_project_name
 from osc_output import OSCSender
 from pipeline import FrameProcessor, ProcessingSettings, ScaledTrack
 from visualization import draw_dancer
-from gui import WallDanceGUI, get_display_scale, get_gpu_stats
+from gui import get_display_scale, get_gpu_stats
 from ops_monitor import (
     HealthMonitor,
     LoopWatchdog,
@@ -95,17 +99,19 @@ from ops_monitor import (
     check_osc,
     check_tensorrt,
 )
-from gui_builder import SystemState
 from enhancer import ImageEnhancer
 from tracker import DancerTracker
 from tracking_logger import _json_default
 from video_recorder import VideoRecorder
+from runtime import api
+from runtime.api import SystemState
 from runtime.recording_controller import RecordingController
 from runtime.model_controller import ModelController
 from runtime.camera_controller import CameraController
 from runtime.config_manager import ConfigManager
 from runtime.calibration_flows import CalibrationFlows
 from runtime.roi_state import RoiState
+from ui.adapter import DpgUiAdapter
 from ui.roi_mask_editor import RoiMaskEditor
 from web_monitor import WebMonitor
 from sensitivity_macro import macro_to_settings
@@ -165,162 +171,173 @@ class ReviewStartupOptions:
 
 
 class _CalibrationUiAdapter:
-    """CalibrationUiPort over the dpg GUI; available is False before the GUI exists."""
+    """CalibrationUiPort publishing seam events; available mirrors GUI existence."""
 
     def __init__(self, app: "WallDanceApp"):
         self._app = app
 
     @property
     def available(self) -> bool:
-        return self._app.gui is not None
+        return self._app.bus.ui_ready
 
     def set_calibrate_status(self, text):
-        self._app.gui.set_calibrate_status(text)
+        self._app.bus.publish(api.CalibProgress(text))
 
     def show_toast(self, message: str, duration: float, color):
-        self._app.gui.show_toast(message, duration=duration, color=color)
+        self._app.bus.publish(api.Toast(message, duration, color))
 
     def sync_slider(self, name: str, value):
-        self._app.gui.sync_slider(name, value)
+        self._app.bus.publish(api.ControlSync("slider", name, value))
 
     def sync_combo(self, name: str, value: str):
-        self._app.gui.sync_combo(name, value)
+        self._app.bus.publish(api.ControlSync("combo", name, value))
 
     def show_calibration_result_dialog(self, summary: str, on_save):
-        self._app.gui.show_calibration_result_dialog(summary, on_save=on_save)
+        # on_save is always configs._cb_save_config (both flows); the adapter
+        # wires the dialog's "Save to project" to a SaveConfig command, so the
+        # event stays pure data (tablet-transportable, §4).
+        self._app.bus.publish(api.CalibReportCard(summary))
 
     def show_calib2_dialog(self, rows, proposal: str):
-        self._app.gui.show_calib2_dialog(rows, proposal)
+        self._app.bus.publish(api.Calib2PoolChanged(rows, proposal))
 
 
 class _ConfigUiAdapter:
-    """ConfigUiPort over the dpg GUI; available is False before the GUI exists."""
+    """ConfigUiPort publishing seam events; available mirrors GUI existence."""
 
     def __init__(self, app: "WallDanceApp"):
         self._app = app
 
     @property
     def available(self) -> bool:
-        return self._app.gui is not None
+        return self._app.bus.ui_ready
 
     def update_project_list(self, projects, current):
-        self._app.gui.update_project_list(projects, current)
+        self._app.bus.publish(api.ProjectList(projects, current))
 
     def update_config_list(self, configs, current_display):
-        self._app.gui.update_config_list(configs, current_display)
+        self._app.bus.publish(api.ConfigList(configs, current_display))
 
     def set_current_config(self, display: str):
-        self._app.gui.set_current_config(display)
+        self._app.bus.publish(api.CurrentConfig(display))
 
     def show_save_config_dialog(self, project: str):
-        self._app.gui.show_save_config_dialog(project)
+        self._app.bus.publish(api.SaveConfigDialog(project))
 
     def show_load_config_dialog(self, config_dir: str, project: str):
-        self._app.gui.show_load_config_dialog(config_dir, project)
+        self._app.bus.publish(api.LoadConfigDialog(config_dir, project))
 
     def show_save_indicator(self, message: str):
-        self._app.gui.show_save_indicator(message)
+        self._app.bus.publish(api.ConfigSaved(message))
 
     def show_toast(self, message: str, duration: float, color):
-        self._app.gui.show_toast(message, duration=duration, color=color)
+        self._app.bus.publish(api.Toast(message, duration, color))
 
     def set_active_profile(self, name: str):
-        self._app.gui.set_active_profile(name)
+        self._app.bus.publish(api.ActiveProfile(name))
 
     def show_project_picker(self, rows, last_project: str):
-        self._app.gui.show_project_picker(rows, last_project=last_project)
+        self._app.bus.publish(api.ProjectPicker(rows, last_project))
 
     def sync_combo(self, name: str, value: str):
-        self._app.gui.sync_combo(name, value)
+        self._app.bus.publish(api.ControlSync("combo", name, value))
 
     def set_trt_checkbox(self, enabled: bool):
-        self._app.gui.set_trt_checkbox(enabled)
+        self._app.bus.publish(api.TrtCheckbox(enabled))
 
     def update_camera_sources(self, sources, current, unavailable):
-        self._app.gui.update_camera_sources(sources, current, unavailable)
+        self._app.bus.publish(api.CameraSources(sources, current, unavailable))
 
     def update_camera_status(self, is_open: bool, source: str, reconnecting: bool):
-        self._app.gui.update_camera_status(is_open, source, reconnecting=reconnecting)
+        self._app.bus.publish(api.CameraStatus(is_open, source, reconnecting))
 
     def set_camera_type(self, camera_type: str):
-        self._app.gui.config['camera_type'] = camera_type
+        # Runtime keeps the authoritative copy (StatsTick reads it back).
+        self._app._ui_camera_type = camera_type
+        self._app.bus.publish(api.CameraType(camera_type))
 
 
 class _CameraUiAdapter:
-    """CameraUiPort over the dpg GUI; available is False before the GUI exists."""
+    """CameraUiPort publishing seam events; available mirrors GUI existence."""
 
     def __init__(self, app: "WallDanceApp"):
         self._app = app
 
     @property
     def available(self) -> bool:
-        return self._app.gui is not None
+        return self._app.bus.ui_ready
 
     def update_camera_sources(self, sources, current, unavailable):
-        self._app.gui.update_camera_sources(sources, current, unavailable)
+        self._app.bus.publish(api.CameraSources(sources, current, unavailable))
 
     def update_camera_status(self, is_open: bool, source: str, reconnecting: bool):
-        self._app.gui.update_camera_status(is_open, source, reconnecting=reconnecting)
+        self._app.bus.publish(api.CameraStatus(is_open, source, reconnecting))
 
     def set_camera_type(self, camera_type: str):
-        self._app.gui.config['camera_type'] = camera_type
+        self._app._ui_camera_type = camera_type
+        self._app.bus.publish(api.CameraType(camera_type))
 
     def set_camera_dimensions(self, width: int, height: int):
-        self._app.gui.set_camera_dimensions(width, height)
+        self._app.bus.publish(api.CameraDimensions(width, height))
 
     def sync_checkbox(self, name: str, value: bool):
-        self._app.gui.sync_checkbox(name, value)
+        self._app.bus.publish(api.ControlSync("checkbox", name, value))
 
     def sync_slider(self, name: str, value: float):
-        self._app.gui.sync_slider(name, value)
+        self._app.bus.publish(api.ControlSync("slider", name, value))
 
 
 class _ModelUiAdapter:
-    """ModelUiPort over the dpg GUI; available is False before the GUI exists."""
+    """ModelUiPort publishing seam events; available mirrors GUI existence.
+
+    Two synchronous exceptions stay direct calls into the DPG adapter (see
+    runtime/api.py): the blocking TRT prompt and the render pump the model
+    controller spins while a load/modal is in flight.
+    """
 
     def __init__(self, app: "WallDanceApp"):
         self._app = app
 
     @property
     def available(self) -> bool:
-        return self._app.gui is not None
+        return self._app.bus.ui_ready
 
     def show_model_loading_modal(self, message: str):
-        self._app.gui.show_model_loading_modal(message)
+        self._app.bus.publish(api.ModelLoadModal(message))
 
     def update_model_loading_progress(self, message: str, progress: float,
                                       detail: str, animate: bool = False):
-        self._app.gui.update_model_loading_progress(message, progress, detail, animate=animate)
+        self._app.bus.publish(api.ModelLoadProgress(message, progress, detail, animate))
 
     def hide_model_loading_modal(self):
-        self._app.gui.hide_model_loading_modal()
+        self._app.bus.publish(api.ModelLoadModalHide())
 
     def update_engine_type_badge(self, is_trt: bool):
-        self._app.gui.update_engine_type_badge(is_trt)
+        self._app.bus.publish(api.EngineBadge(is_trt))
 
     def show_toast(self, message: str, duration: float, color):
-        self._app.gui.show_toast(message, duration=duration, color=color)
+        self._app.bus.publish(api.Toast(message, duration, color))
 
     def set_trt_checkbox(self, enabled: bool):
-        self._app.gui.set_trt_checkbox(enabled)
+        self._app.bus.publish(api.TrtCheckbox(enabled))
 
     def sync_model_combo(self, name: str):
-        self._app.gui.sync_combo("model", name)
+        self._app.bus.publish(api.ControlSync("combo", "model", name))
 
     def update_model_dropdown(self, name: str):
-        self._app.gui.update_model_dropdown(name)
+        self._app.bus.publish(api.ModelDropdown(name))
 
     def update_trt_banner(self, text, exporting: bool = False):
-        self._app.gui.update_trt_banner(text, exporting=exporting)
+        self._app.bus.publish(api.TrtBanner(text, exporting))
 
     def show_tensorrt_prompt(self, model_name: str, on_choice):
-        self._app.gui.show_tensorrt_prompt(model_name, on_choice)
+        self._app.ui.show_tensorrt_prompt(model_name, on_choice)
 
     def update_gpu_stats(self):
-        self._app.gui.update_gpu_stats()
+        self._app.bus.publish(api.GpuStats())
 
     def render_frame(self):
-        dpg.render_dearpygui_frame()
+        self._app.ui.render_frame_raw()
 
 
 class _ModelCameraAdapter:
@@ -347,29 +364,30 @@ class _ModelCameraAdapter:
 
 
 class _RecordingUiAdapter:
-    """RecordingUiPort over the dpg GUI; None-safe before the GUI exists."""
+    """RecordingUiPort publishing seam events (the adapter drops them
+    pre-GUI, preserving the old None-safety)."""
 
     def __init__(self, app: "WallDanceApp"):
         self._app = app
 
     @property
     def available(self) -> bool:
-        return self._app.gui is not None
+        return self._app.bus.ui_ready
 
     def update_recording_ui(self, **kwargs):
-        if self._app.gui:
-            self._app.gui.update_recording_ui(**kwargs)
+        self._app.bus.publish(api.RecordingUi(kwargs))
 
     def set_camera_dimensions(self, width: int, height: int):
-        if self._app.gui:
-            self._app.gui.set_camera_dimensions(width, height)
+        self._app.bus.publish(api.CameraDimensions(width, height))
 
     def show_toast(self, message: str, duration: float, color):
-        if self._app.gui:
-            self._app.gui.show_toast(message, duration=duration, color=color)
+        self._app.bus.publish(api.Toast(message, duration, color))
 
     def show_slot_history_menu(self, slot, recordings, on_pick):
-        self._app.gui.show_slot_history_menu(slot, recordings, on_pick)
+        # on_pick (a _play_recording closure) is intentionally unused: the
+        # menu answers with a PlaySlotRecording command, whose handler routes
+        # to the same controller method on the main loop.
+        self._app.bus.publish(api.SlotHistory(slot, recordings))
 
 
 class _RecordingCameraAdapter:
@@ -435,6 +453,17 @@ class WallDanceApp:
         print("=" * 60)
         print("WallDance 1080p - Multi-Person Pose Detection")
         print("=" * 60)
+
+        # The command/event seam (DECOMPOSITION_PLAN Phase 3): commands are
+        # queued by UI clients and drained once per main-loop tick; events
+        # fan out to subscribers (the DPG adapter is subscriber #1).
+        self.bus = api.EventBus()
+        self.api = api.RuntimeAPI()
+        self.ui = DpgUiAdapter(self.api, self.bus)
+        # Runtime-owned mirrors of state the GUI used to be queried for.
+        # The GUI starts in RUN (gui.py __init__) -- mirror that.
+        self.system_state = SystemState.RUN
+        self._ui_camera_type = ""
 
         # Model loading is deferred until after GUI is created
         # so we can show a progress modal
@@ -516,8 +545,6 @@ class WallDanceApp:
         if self.osc_enabled:
             self._init_osc()
 
-        self.gui: Optional[WallDanceGUI] = None
-
         # Video recording
         self.recorder = VideoRecorder()
 
@@ -548,7 +575,7 @@ class WallDanceApp:
             settings=self.settings,
             processor=self.processor,
             imgsz_presets=self._IMGSZ_PRESETS,
-            gui=lambda: self.gui,
+            gui=lambda: self.ui.gui,
             request_reprocess=self._request_reprocess,
         )
 
@@ -648,6 +675,9 @@ class WallDanceApp:
         # Rolling (t, raw det height px) samples for the staleness alarm (⑤d)
         self._height_samples: deque = deque()
 
+        # Wire the command vocabulary to its runtime handlers (Phase 3 seam).
+        self._register_command_handlers()
+
     # ------------------------------------------------------------------
     # OSC
     # ------------------------------------------------------------------
@@ -737,88 +767,186 @@ class WallDanceApp:
         """Show a QR code so a phone can open the web monitor URL."""
         mon = self._web_monitor
         if mon is None or not mon.running:
-            if self.gui:
-                self.gui.show_toast(
-                    "Web monitor is off (set WEB_MONITOR_ENABLED=True)",
-                    color=(255, 180, 80))
+            self.bus.publish(api.Toast(
+                "Web monitor is off (set WEB_MONITOR_ENABLED=True)",
+                color=(255, 180, 80)))
             return
-        if self.gui:
-            self.gui.show_qr_dialog(mon.url(), mon.qr_matrix())
+        self.bus.publish(api.QrDialog(mon.url(), mon.qr_matrix()))
 
-    def _get_gui_callbacks(self) -> Dict:
-        return {
-            "show_qr": self._show_qr,
-            "on_system_state_change": self._cb_system_state_change,
-            "on_enhance_toggle": self._cb_enhance_toggle,
-            "on_enhance_lite_toggle": self._cb_enhance_lite_toggle,
-            "on_enhance_force_toggle": self._cb_enhance_force_toggle,
-            "on_greyscale_toggle": self._cb_greyscale_toggle,
-            "on_brightness_threshold_change": self._cb_brightness_threshold_change,
-            "on_clahe_change": self._cb_clahe_change,
-            "on_gamma_change": self._cb_gamma_change,
-            "on_denoise_change": self._cb_denoise_change,
-            "on_bg_capture": self._cb_bg_capture,
-            "on_bg_enable_toggle": self._cb_bg_enable_toggle,
-            "on_bg_clear": self._cb_bg_clear,
-            "on_bg_sensitivity_change": self._cb_bg_sensitivity_change,
-            "on_confidence_change": self._cb_confidence_change,
-            "on_sensitivity_change": self._cb_sensitivity_change,
-            "on_motion_sensitivity_change": self._cb_motion_sensitivity_change,
-            "on_model_change": self.models._cb_model_change,
-            "on_trt_toggle": self.models._cb_trt_toggle,
-            "on_trt_rebuild": self.models._cb_trt_rebuild,
-            "on_ids_ratio_change": self.cameras._cb_ids_ratio_change,
-            "on_ids_gain_change": self.cameras._cb_ids_gain_change,
-            "on_ids_exposure_change": self.cameras._cb_ids_exposure_change,
-            "on_camera_change": self.cameras._cb_camera_change,
-            "on_camera_refresh": self.cameras._cb_camera_refresh,
-            "on_imgsz_change": self._cb_imgsz_change,
-            "on_person_height_change": self._cb_person_height_change,
-            "on_calibrate": self.calibration._cb_calibrate,
-            "on_calib2": self.calibration._cb_calib2,
-            "on_calib2_apply": self.calibration._cb_calib2_apply,
-            "on_calib2_clear": self.calibration._cb_calib2_clear,
-            "on_visualization_toggle": self._cb_visualization_toggle,
-            "on_tracker_age_change": self._cb_tracker_age_change,
-            "on_mog2_scale_change": self._cb_mog2_scale_change,
-            "on_tracker_reset": self._cb_tracker_reset,
-            "on_osc_toggle": self._cb_osc_toggle,
-            "on_osc_config": self._cb_osc_config,
-            "on_preview_toggle": self._cb_preview_toggle,
-            "on_input_fps_cap_toggle": self._cb_input_fps_cap_toggle,
-            "on_preview_cap_toggle": self._cb_preview_cap_toggle,
-            "on_preview_scale_change": self._cb_preview_scale_change,
-            "on_roi_toggle": self.roi._cb_roi_toggle,
-            "on_roi_reset": self.roi._cb_roi_reset,
-            "on_mask_edit_toggle": self.roi._cb_mask_edit_toggle,
-            "on_mask_clear": self.roi._cb_mask_clear,
-            "on_save_config": self.configs._cb_save_config,
-            "on_save_as_config": self.configs._cb_save_as_config,
-            "on_save_safe_defaults": self.configs._cb_save_safe_defaults,
-            "on_load_safe_defaults": self.configs._cb_load_safe_defaults,
-            "on_load_config": self.configs._cb_load_config,
-            "on_do_save_config": self.configs._cb_do_save_config,
-            "on_do_load_config": self.configs._cb_do_load_config,
-            "on_profile_switch": self.configs._cb_profile_switch,
-            "on_project_select": self.configs._cb_project_select,
-            "on_config_select": self.configs._cb_config_select,
-            "on_project_launch": self.configs._cb_project_launch,
-            "on_project_rename": self.configs._cb_project_rename,
-            "on_project_delete": self.configs._cb_project_delete,
-            "on_project_blank": self.configs._cb_project_blank,
-            "on_rec_live": self.recording._cb_rec_live,
-            "on_rec_toggle": self.recording._cb_rec_toggle,
-            "on_rec_slot_click": self.recording._cb_rec_slot_click,
-            "on_playback_speed_change": self.recording._cb_playback_speed_change,
-            "on_playback_pause": self.recording._cb_playback_pause,
-            "on_playback_force_pause": self.recording._cb_playback_force_pause,
-            "on_playback_next_frame": self.recording._cb_playback_next_frame,
-            "on_playback_prev_frame": self.recording._cb_playback_prev_frame,
-            "on_report_issue_request": self._cb_report_issue_request,
-            "on_issue_submit": self._cb_issue_submit,
-            "on_issue_dialog_closed": self._cb_issue_dialog_closed,
-            "on_quit": self._cb_quit,
-        }
+    def _register_command_handlers(self):
+        """Wire every seam command to its runtime handler (the former
+        callbacks-dict targets, unchanged). Executed by ``self.api.drain()``
+        at one point in the main loop tick -- never on a caller thread."""
+        reg = self.api.register
+        # state / lifecycle
+        reg(api.SetState, self._cmd_set_state)
+        reg(api.Quit, lambda c: self._cb_quit())
+        reg(api.ShowQr, lambda c: self._show_qr())
+        # detection / sensitivity
+        reg(api.SetSensitivity, lambda c: self._cb_sensitivity_change(c.value))
+        reg(api.SetConfidence, lambda c: self._cb_confidence_change(c.value))
+        reg(api.SetMotionSensitivity,
+            lambda c: self._cb_motion_sensitivity_change(c.value))
+        reg(api.SetPersonHeight, lambda c: self._cb_person_height_change(c.value))
+        reg(api.SetImgsz, lambda c: self._cb_imgsz_change(c.value))
+        reg(api.SetTrackerMaxAge, lambda c: self._cb_tracker_age_change(c.value))
+        reg(api.SetMog2Scale, lambda c: self._cb_mog2_scale_change(c.value))
+        reg(api.ResetTracker, lambda c: self._cb_tracker_reset())
+        # enhancement
+        reg(api.ToggleEnhance, self._cmd_toggle_enhance)
+        reg(api.ToggleEnhanceLite, lambda c: self._cb_enhance_lite_toggle(c.enabled))
+        reg(api.ToggleEnhanceForce, lambda c: self._cb_enhance_force_toggle(c.enabled))
+        reg(api.ToggleGreyscale, lambda c: self._cb_greyscale_toggle(c.enabled))
+        reg(api.SetEnhanceParam, self._cmd_set_enhance_param)
+        # background subtraction
+        reg(api.BgCapture, lambda c: self._cb_bg_capture())
+        reg(api.BgClear, lambda c: self._cb_bg_clear())
+        reg(api.ToggleBgSubtract, lambda c: self._cb_bg_enable_toggle(c.enabled))
+        reg(api.SetBgSensitivity, lambda c: self._cb_bg_sensitivity_change(c.value))
+        # overlays / preview
+        reg(api.ToggleOverlay, self._cmd_toggle_overlay)
+        reg(api.TogglePreview, self._cmd_toggle_preview)
+        reg(api.ToggleInputFpsCap, lambda c: self._cb_input_fps_cap_toggle(c.enabled))
+        reg(api.TogglePreviewCap, lambda c: self._cb_preview_cap_toggle(c.enabled))
+        reg(api.SetPreviewScale, lambda c: self._cb_preview_scale_change(c.value))
+        # ROI / mask (ui-side editor; commands route to its entry points)
+        reg(api.SetRoi, lambda c: self.roi._cb_roi_toggle(c.enabled))
+        reg(api.ResetRoi, lambda c: self.roi._cb_roi_reset())
+        reg(api.EditMask, lambda c: self.roi._cb_mask_edit_toggle())
+        reg(api.ClearMask, lambda c: self.roi._cb_mask_clear())
+        # model / TRT
+        reg(api.LoadModel, lambda c: self.models._cb_model_change(c.name))
+        reg(api.ToggleTrt, lambda c: self.models._cb_trt_toggle(c.enabled))
+        reg(api.RebuildTrt, lambda c: self.models._cb_trt_rebuild())
+        # camera
+        reg(api.SelectSource, lambda c: self.cameras._cb_camera_change(c.source))
+        reg(api.RefreshCameras, lambda c: self.cameras._cb_camera_refresh())
+        reg(api.SetIdsParam, self._cmd_set_ids_param)
+        # OSC
+        reg(api.ToggleOsc, lambda c: self._cb_osc_toggle(c.enabled))
+        reg(api.SetOscTarget, lambda c: self._cb_osc_config(c.ip, c.port))
+        # calibration
+        reg(api.StartCalibration, lambda c: self.calibration._cb_calibrate())
+        reg(api.StartDancersRun, lambda c: self.calibration._cb_calib2())
+        reg(api.ApplyCalib2, lambda c: self.calibration._cb_calib2_apply(c.selection))
+        reg(api.ClearCalib2Pool, lambda c: self.calibration._cb_calib2_clear())
+        # config / project
+        reg(api.SaveConfig, lambda c: (self.configs._cb_do_save_config(c.name)
+                                       if c.name else self.configs._cb_save_config()))
+        reg(api.SaveConfigAs, lambda c: self.configs._cb_save_as_config())
+        reg(api.RequestLoadConfigDialog, lambda c: self.configs._cb_load_config())
+        reg(api.LoadConfig, lambda c: self.configs._cb_do_load_config(c.filepath))
+        reg(api.SelectProject, lambda c: self.configs._cb_project_select(c.name))
+        reg(api.SelectConfigVersion,
+            lambda c: self.configs._cb_config_select(c.project, c.display))
+        reg(api.SwitchProfile, lambda c: self.configs._cb_profile_switch(c.name))
+        reg(api.SaveSafeDefaults, lambda c: self.configs._cb_save_safe_defaults())
+        reg(api.LoadSafeDefaults, lambda c: self.configs._cb_load_safe_defaults())
+        reg(api.LaunchProject, lambda c: self.configs._cb_project_launch(c.name))
+        reg(api.RenameProject, lambda c: self.configs._cb_project_rename(c.old, c.new))
+        reg(api.DeleteProject, lambda c: self.configs._cb_project_delete(c.name))
+        reg(api.StartBlankProject, lambda c: self.configs._cb_project_blank())
+        # recording / playback
+        reg(api.PlaybackControl, self._cmd_playback_control)
+        reg(api.SelectSlot,
+            lambda c: self.recording._cb_rec_slot_click(c.slot, c.history))
+        reg(api.PlaySlotRecording,
+            lambda c: self.recording._play_recording(c.slot, c.path))
+        # review / misc
+        reg(api.RequestIssueReport, lambda c: self._cmd_request_issue_report())
+        reg(api.SubmitIssue,
+            lambda c: self._cb_issue_submit(c.context, c.issue_type, c.note))
+        reg(api.IssueDialogClosed, lambda c: self._cb_issue_dialog_closed())
+
+    # --- command handlers that fan out / carry key-shortcut semantics ---
+
+    def _cmd_set_state(self, c: api.SetState):
+        """Runtime mirror of the GUI's STANDBY/RUN state (the GUI flips its
+        own visuals on click; the mirror gates processing + readiness)."""
+        old_state = self.system_state
+        self.system_state = SystemState[c.state.upper()]
+        self.bus.publish(api.StateChanged(c.state))
+        self._cb_system_state_change(self.system_state, old_state)
+
+    def _cmd_set_enhance_param(self, c: api.SetEnhanceParam):
+        {
+            "brightness_threshold": self._cb_brightness_threshold_change,
+            "clahe": self._cb_clahe_change,
+            "gamma": self._cb_gamma_change,
+            "denoise": self._cb_denoise_change,
+        }[c.name](c.value)
+
+    def _cmd_set_ids_param(self, c: api.SetIdsParam):
+        {
+            "ratio": self.cameras._cb_ids_ratio_change,
+            "gain_db": self.cameras._cb_ids_gain_change,
+            "exposure_us": self.cameras._cb_ids_exposure_change,
+        }[c.name](c.value)
+
+    def _cmd_playback_control(self, c: api.PlaybackControl):
+        rec = self.recording
+        if c.action == "live":
+            rec._cb_rec_live()
+        elif c.action == "record_toggle":
+            rec._cb_rec_toggle()
+        elif c.action == "speed":
+            rec._cb_playback_speed_change(c.value)
+        elif c.action == "pause_toggle":
+            rec._cb_playback_pause()
+        elif c.action == "force_pause":
+            rec._cb_playback_force_pause()
+        elif c.action == "next_frame":
+            rec._cb_playback_next_frame()
+        elif c.action == "prev_frame":
+            rec._cb_playback_prev_frame()
+
+    def _cmd_toggle_enhance(self, c: api.ToggleEnhance):
+        if c.enabled is None or c.quiet:
+            # Keyboard path (E): flip + checkbox sync only, no reprocess.
+            enabled = (not self.settings.enhance_enabled
+                       if c.enabled is None else c.enabled)
+            self.settings.enhance_enabled = enabled
+            self.bus.publish(api.ControlSync("checkbox", "enhance", enabled))
+            print(f"Enhancement: {'ON' if enabled else 'OFF'}")
+        else:
+            self._cb_enhance_toggle(c.enabled)
+
+    _OVERLAY_FLAGS = {
+        "skeleton": ("show_skeleton", "Skeleton"),
+        "keypoints": ("show_keypoints", "Keypoints"),
+        "bbox": ("show_bbox", "Bounding box"),
+        "trails": ("show_trails", "Trails"),
+        "ids": ("show_ids", "IDs"),
+    }
+
+    def _cmd_toggle_overlay(self, c: api.ToggleOverlay):
+        if c.enabled is None:
+            # Keyboard path (T/S/K/B/I): flip + checkbox sync.
+            attr, label = self._OVERLAY_FLAGS[c.name]
+            enabled = not getattr(self, attr)
+            setattr(self, attr, enabled)
+            self.bus.publish(api.ControlSync("checkbox", c.name, enabled))
+            print(f"{label}: {'ON' if enabled else 'OFF'}")
+        else:
+            self._cb_visualization_toggle(c.name, c.enabled)
+
+    def _cmd_toggle_preview(self, c: api.TogglePreview):
+        if c.enabled is None or c.quiet:
+            # Keyboard path (P): flip + checkbox sync, no toast/placeholder.
+            enabled = not self.preview_enabled if c.enabled is None else c.enabled
+            self.preview_enabled = enabled
+            self.bus.publish(api.ControlSync("checkbox", "preview", enabled))
+            print(f"Preview: {'ON' if enabled else 'OFF (measure raw FPS)'}")
+        else:
+            self._cb_preview_toggle(c.enabled)
+
+    def _cmd_request_issue_report(self):
+        """F8 / Report-issue button: pause (if playing), then open the dialog
+        via an IssueReportContext event built from runtime state."""
+        self.recording._cb_playback_force_pause()
+        context = self._cb_report_issue_request()
+        if context:
+            self.bus.publish(api.IssueReportContext(context))
 
     # ------------------------------------------------------------------
     # Config persistence
@@ -895,11 +1023,11 @@ class WallDanceApp:
         # YOLO settings (except imgsz which is handled separately)
         if "confidence" in config:
             self.settings.confidence = config["confidence"]
-            self.gui and self.gui.sync_slider("confidence", config["confidence"])
+            self._sync("slider","confidence", config["confidence"])
         if "person_height_px" in config:
             self.settings.person_height_px = config["person_height_px"]
             self.tracker.set_person_height(config["person_height_px"])
-            self.gui and self.gui.sync_slider("person_height", config["person_height_px"])
+            self._sync("slider","person_height", config["person_height_px"])
         # Calibrated height ratios + MOG2 varThreshold (set by Go-Live calibration).
         if "person_height_min_ratio" in config:
             self.settings.person_height_min_ratio = float(config["person_height_min_ratio"])
@@ -922,7 +1050,7 @@ class WallDanceApp:
             self.sensitivity = float(config["sensitivity"])
         elif "confidence" in config:
             self.sensitivity = 50.0
-        self.gui and self.gui.sync_slider('sensitivity', self.sensitivity)
+        self._sync("slider",'sensitivity', self.sensitivity)
         if "exclusion_cells" in config:
             grid = tuple(config.get("exclusion_grid") or AUTOCAL_EXCL_GRID)
             self.processor.set_exclusion(
@@ -932,52 +1060,52 @@ class WallDanceApp:
             self.roi._sync_mask_ui()
         if "yolo_imgsz" in config:
             # Just sync UI, don't trigger callback (imgsz already set)
-            self.gui and self.gui.sync_combo("imgsz", str(config["yolo_imgsz"]))
+            self._sync("combo","imgsz", str(config["yolo_imgsz"]))
 
         # Enhancement
         if "enhance_enabled" in config:
             self.settings.enhance_enabled = config["enhance_enabled"]
-            self.gui and self.gui.sync_checkbox("enhance", config["enhance_enabled"])
+            self._sync("checkbox","enhance", config["enhance_enabled"])
         if "enhance_lite" in config:
             self.settings.enhance_lite = config["enhance_lite"]
-            self.gui and self.gui.sync_checkbox("enhance_lite", config["enhance_lite"])
+            self._sync("checkbox","enhance_lite", config["enhance_lite"])
         if "enhance_force" in config:
             self.settings.enhance_force = config["enhance_force"]
-            self.gui and self.gui.sync_checkbox("enhance_force", config["enhance_force"])
+            self._sync("checkbox","enhance_force", config["enhance_force"])
         if "greyscale" in config:
             self.settings.greyscale = config["greyscale"]
-            self.gui and self.gui.sync_checkbox("greyscale", config["greyscale"])
+            self._sync("checkbox","greyscale", config["greyscale"])
         if "brightness_threshold" in config:
             self.settings.brightness_threshold = config["brightness_threshold"]
-            self.gui and self.gui.sync_slider("brightness_threshold", config["brightness_threshold"])
+            self._sync("slider","brightness_threshold", config["brightness_threshold"])
         if "denoise_strength" in config:
             self.settings.denoise_strength = config["denoise_strength"]
-            self.gui and self.gui.sync_slider("denoise", config["denoise_strength"])
+            self._sync("slider","denoise", config["denoise_strength"])
         if "clahe_clip" in config:
             self.enhancer.clahe_clip = config["clahe_clip"]
             self.enhancer._update_clahe()
-            self.gui and self.gui.sync_slider("clahe", config["clahe_clip"])
+            self._sync("slider","clahe", config["clahe_clip"])
         if "gamma" in config:
             self.enhancer.gamma = config["gamma"]
             self.enhancer._update_gamma_lut()
-            self.gui and self.gui.sync_slider("gamma", config["gamma"])
+            self._sync("slider","gamma", config["gamma"])
 
         # Visualization
         if "show_skeleton" in config:
             self.show_skeleton = config["show_skeleton"]
-            self.gui and self.gui.sync_checkbox("skeleton", config["show_skeleton"])
+            self._sync("checkbox","skeleton", config["show_skeleton"])
         if "show_keypoints" in config:
             self.show_keypoints = config["show_keypoints"]
-            self.gui and self.gui.sync_checkbox("keypoints", config["show_keypoints"])
+            self._sync("checkbox","keypoints", config["show_keypoints"])
         if "show_bbox" in config:
             self.show_bbox = config["show_bbox"]
-            self.gui and self.gui.sync_checkbox("bbox", config["show_bbox"])
+            self._sync("checkbox","bbox", config["show_bbox"])
         if "show_trails" in config:
             self.show_trails = config["show_trails"]
-            self.gui and self.gui.sync_checkbox("trails", config["show_trails"])
+            self._sync("checkbox","trails", config["show_trails"])
         if "show_ids" in config:
             self.show_ids = config["show_ids"]
-            self.gui and self.gui.sync_checkbox("ids", config["show_ids"])
+            self._sync("checkbox","ids", config["show_ids"])
 
         # Tracker
         if "tracker_distance" in config:
@@ -993,40 +1121,40 @@ class WallDanceApp:
         # Load tracker_max_age AFTER tracking_mode so user value wins
         if "tracker_max_age" in config:
             self.tracker.max_age = config["tracker_max_age"]
-            self.gui and self.gui.sync_slider("tracker_max_age", config["tracker_max_age"])
+            self._sync("slider","tracker_max_age", config["tracker_max_age"])
         if "tracker_smoothing" in config:
             self.tracker.smoothing_depth = config["tracker_smoothing"]
-            self.gui and self.gui.sync_slider("tracker_smoothing", config["tracker_smoothing"])
+            self._sync("slider","tracker_smoothing", config["tracker_smoothing"])
         if "max_persons" in config:
             self.tracker.max_persons = int(config["max_persons"])
         if "motion_sensitivity" in config:
             self.processor.set_motion_sensitivity(config["motion_sensitivity"])
-            self.gui and self.gui.sync_slider("motion_sensitivity", config["motion_sensitivity"])
+            self._sync("slider","motion_sensitivity", config["motion_sensitivity"])
 
         # OSC
         if "osc_enabled" in config:
             self.osc_enabled = config["osc_enabled"]
             self.settings.osc_enabled = config["osc_enabled"]
-            self.gui and self.gui.sync_checkbox("osc", config["osc_enabled"])
+            self._sync("checkbox","osc", config["osc_enabled"])
         if "osc_ip" in config:
             self.osc_ip = config["osc_ip"]
-            self.gui and self.gui.sync_input("osc_ip", config["osc_ip"])
+            self._sync("input","osc_ip", config["osc_ip"])
         if "osc_port" in config:
             self.osc_port = config["osc_port"]
-            self.gui and self.gui.sync_input("osc_port", config["osc_port"])
+            self._sync("input","osc_port", config["osc_port"])
         if self.osc_enabled and (config.get("osc_ip") or config.get("osc_port")):
             self._init_osc()
 
         # Preview
         if "preview_enabled" in config:
             self.preview_enabled = config["preview_enabled"]
-            self.gui and self.gui.sync_checkbox("preview", config["preview_enabled"])
+            self._sync("checkbox","preview", config["preview_enabled"])
         if "preview_fps_cap" in config:
             self._cb_preview_cap_toggle(config["preview_fps_cap"])
-            self.gui and self.gui.sync_checkbox("preview_cap", self.preview_fps_cap)
+            self._sync("checkbox","preview_cap", self.preview_fps_cap)
         if "input_fps_cap" in config:
             self.input_fps_cap = config["input_fps_cap"]
-            self.gui and self.gui.sync_checkbox("input_fps_cap", self.input_fps_cap)
+            self._sync("checkbox","input_fps_cap", self.input_fps_cap)
         if "preview_scale" in config:
             # Legacy config value – render scale is now auto-computed from layout.
             # Just store it; actual scale will be overridden by next layout recompute.
@@ -1060,39 +1188,45 @@ class WallDanceApp:
         if "ids_ratio" in config:
             ratio = max(0.5, min(2.0, float(config["ids_ratio"])))
             self.cameras._cb_ids_ratio_change(ratio)
-            self.gui and self.gui.sync_slider("ids_ratio", ratio)
+            self._sync("slider","ids_ratio", ratio)
 
         # IDS gain
         if "ids_gain_db" in config:
             self.cameras._cb_ids_gain_change(config["ids_gain_db"])
-            self.gui and self.gui.sync_slider("ids_gain_db", config["ids_gain_db"])
+            self._sync("slider","ids_gain_db", config["ids_gain_db"])
 
         # IDS exposure
         if "ids_exposure_us" in config:
             self.cameras._cb_ids_exposure_change(config["ids_exposure_us"])
-            self.gui and self.gui.sync_slider("ids_exposure_us", self.cameras.ids_exposure_us)
+            self._sync("slider","ids_exposure_us", self.cameras.ids_exposure_us)
 
         # Background subtraction
         if "bg_subtract_enabled" in config:
             self.settings.bg_subtract_enabled = config["bg_subtract_enabled"]
-            self.gui and self.gui.sync_checkbox("bg_enable", config["bg_subtract_enabled"])
+            self._sync("checkbox","bg_enable", config["bg_subtract_enabled"])
         if "bg_subtract_sensitivity" in config:
             self.settings.bg_subtract_sensitivity = config["bg_subtract_sensitivity"]
-            self.gui and self.gui.sync_slider("bg_sensitivity", config["bg_subtract_sensitivity"])
+            self._sync("slider","bg_sensitivity", config["bg_subtract_sensitivity"])
         if "blur_budget_ms" in config:
             self.calibration.blur_budget_ms = float(config["blur_budget_ms"])
         # MOG2 scale
         if "mog2_scale" in config and self.processor.motion_detector is not None:
             self.processor.set_motion_scale(config["mog2_scale"])
-            self.gui and self.gui.sync_slider("mog2_scale", config["mog2_scale"])
+            self._sync("slider","mog2_scale", config["mog2_scale"])
         # Update BG status display
-        if self.gui:
-            bg = self.processor.bg_subtractor
-            self.gui.update_bg_status(bg.has_reference, self.settings.bg_subtract_enabled)
+        bg = self.processor.bg_subtractor
+        self.bus.publish(api.BgStatus(bg.has_reference, self.settings.bg_subtract_enabled))
 
     # ------------------------------------------------------------------
     # GUI callbacks
     # ------------------------------------------------------------------
+    def _sync(self, kind: str, name: str, value):
+        """Push a control value to UI clients (no callback fired).
+
+        Replaces the old guarded ``self.gui and self.gui.sync_*`` pushes; the
+        adapter drops events while no GUI exists, preserving that guard."""
+        self.bus.publish(api.ControlSync(kind, name, value))
+
     def _request_reprocess(self):
         """When paused, re-mark the current frame so the pipeline reruns it."""
         self.processor.invalidate_preview_cache()
@@ -1151,9 +1285,8 @@ class WallDanceApp:
             # Auto-enable on capture
             self.settings.bg_subtract_enabled = True
             print(f"[BG] Background reference captured ({frame.shape[1]}x{frame.shape[0]}), auto-enabled")
-            if self.gui:
-                self.gui.sync_checkbox("bg_enable", True)
-                self.gui.update_bg_status(True, True)
+            self._sync("checkbox", "bg_enable", True)
+            self.bus.publish(api.BgStatus(True, True))
         else:
             print("[BG] No frame available for capture")
 
@@ -1163,16 +1296,14 @@ class WallDanceApp:
         if enabled and not bg.has_reference:
             print("[BG] Warning: enabled but no reference captured yet")
         print(f"[BG] Background subtraction: {'ON' if enabled else 'OFF'}")
-        if self.gui:
-            self.gui.update_bg_status(bg.has_reference, enabled)
+        self.bus.publish(api.BgStatus(bg.has_reference, enabled))
         self._request_reprocess()
 
     def _cb_bg_clear(self):
         self.processor.bg_subtractor.clear()
         self.settings.bg_subtract_enabled = False
-        if self.gui:
-            self.gui.sync_checkbox("bg_enable", False)
-            self.gui.update_bg_status(False, False)
+        self._sync("checkbox", "bg_enable", False)
+        self.bus.publish(api.BgStatus(False, False))
         print("[BG] Background reference cleared")
 
     def _cb_bg_sensitivity_change(self, value: int):
@@ -1214,7 +1345,7 @@ class WallDanceApp:
         # Dial 50 means "anchor values": undo any macro-lowered varThreshold
         # so the dial position and the applied state agree (ROADMAP bug #8).
         self.processor.set_motion_var_threshold(self._sensitivity_var_anchor)
-        self.gui and self.gui.sync_slider('sensitivity', 50.0)
+        self._sync("slider",'sensitivity', 50.0)
         print(f"Confidence: {value:.2f}")
         self._request_reprocess()
 
@@ -1225,7 +1356,7 @@ class WallDanceApp:
                               self._sensitivity_var_anchor)
         self.settings.confidence = m["confidence"]
         self.processor.set_motion_var_threshold(m["mog2_var_threshold"])
-        self.gui and self.gui.sync_slider('confidence', m["confidence"])
+        self._sync("slider",'confidence', m["confidence"])
         print(f"Sensitivity {value:.0f} -> confidence {m['confidence']:.2f}, "
               f"varThreshold {m['mog2_var_threshold']:.0f}")
         self._request_reprocess()
@@ -1238,7 +1369,7 @@ class WallDanceApp:
         if var_anchor is not None:
             self._sensitivity_var_anchor = float(var_anchor)
         self.sensitivity = 50.0
-        self.gui and self.gui.sync_slider('sensitivity', 50.0)
+        self._sync("slider",'sensitivity', 50.0)
 
     def _cb_motion_sensitivity_change(self, value: float):
         self.processor.set_motion_sensitivity(value)
@@ -1256,8 +1387,9 @@ class WallDanceApp:
         self.models.model_manager.set_imgsz(new_imgsz)
         self.roi._update_imgsz_roi_warning()
         roi_warning = self.roi._get_imgsz_roi_warning()
-        if roi_warning and self.gui:
-            self.gui.show_toast("Current imgsz is below the ROI suggestion", duration=3.0, color=(255, 180, 80))
+        if roi_warning:
+            self.bus.publish(api.Toast("Current imgsz is below the ROI suggestion",
+                                       3.0, (255, 180, 80)))
         
         max_cam_dim = max(self.camera.state.width, self.camera.state.height)
         if new_imgsz > max_cam_dim:
@@ -1281,13 +1413,14 @@ class WallDanceApp:
             else:
                 # No engine for new imgsz - fall back to PyTorch (don't prompt, just switch)
                 print(f"No TRT engine for {base_name}@{new_imgsz}, falling back to PyTorch")
-                self.gui.set_trt_checkbox(False)
+                self.bus.publish(api.TrtCheckbox(False))
                 self.models._pending_trt_switch = False
                 self.models._pending_model_switch = base_name
                 # Block processing until model is reloaded to prevent imgsz mismatch
                 self.models._model_loading = True
                 self.models._model_loaded = False
-                self.gui.show_toast(f"No TRT for {new_imgsz}px, using PyTorch", duration=3.0, color=(255, 200, 100))
+                self.bus.publish(api.Toast(f"No TRT for {new_imgsz}px, using PyTorch",
+                                           3.0, (255, 200, 100)))
 
     def _cb_person_height_change(self, value: int):
         self.settings.person_height_px = int(value)
@@ -1332,8 +1465,7 @@ class WallDanceApp:
         self.preview.height = int(height * self.preview.render_scale)
         if self.processor:
             self.processor.set_preview_size(self.preview.width, self.preview.height)
-        if self.gui:
-            self.gui.set_camera_dimensions(width, height)
+        self.bus.publish(api.CameraDimensions(width, height))
         self._pending_preview_resize = True
 
     def _repush_preview_size(self):
@@ -1354,12 +1486,9 @@ class WallDanceApp:
     def _cb_report_issue_request(self):
         """Build the current playback context for issue reporting."""
         if not self.recorder.is_playing:
-            if self.gui:
-                self.gui.show_toast(
-                    "Issue reporting is available during playback only",
-                    duration=2.5,
-                    color=(255, 180, 120),
-                )
+            self.bus.publish(api.Toast(
+                "Issue reporting is available during playback only",
+                2.5, (255, 180, 120)))
             return None
 
         self.tracker.logger.flush()
@@ -1375,7 +1504,7 @@ class WallDanceApp:
             "imgsz": self.settings.imgsz,
             "tracker_max_age": self.tracker.max_age,
             "person_height_px": self.settings.person_height_px,
-            "system_state": self.gui.get_system_state().name if self.gui else "UNKNOWN",
+            "system_state": self.system_state.name,
             "active_dancer_ids": sorted([t.track_id for t in self.last_tracked]),
         }
 
@@ -1446,12 +1575,9 @@ class WallDanceApp:
             fh.write(json.dumps(summary, default=_json_default) + "\n")
 
         print(f"[Review] Saved issue report: {json_path}")
-        if self.gui:
-            self.gui.show_toast(
-                f"Issue saved: slot {slot_num} frame {frame_num}",
-                duration=3.0,
-                color=(120, 220, 140),
-            )
+        self.bus.publish(api.Toast(
+            f"Issue saved: slot {slot_num} frame {frame_num}",
+            3.0, (120, 220, 140)))
 
     def _cb_osc_toggle(self, enabled: bool):
         self.osc_enabled = enabled
@@ -1481,15 +1607,10 @@ class WallDanceApp:
         self.preview_enabled = enabled
         if enabled:
             print("Preview: ON (video pushed to GUI)")
-            if self.gui:
-                self.gui.show_toast(
-                    "Preview ON",
-                    duration=2.0,
-                    color=(120, 220, 140),
-                )
+            self.bus.publish(api.Toast("Preview ON", 2.0, (120, 220, 140)))
         else:
             print("Preview: OFF (no video output - measure raw FPS)")
-            if self.gui:
+            if self.bus.ui_ready:
                 placeholder = np.zeros((max(1, self.preview.height),
                                         max(1, self.preview.width), 3),
                                        dtype=np.uint8)
@@ -1513,12 +1634,10 @@ class WallDanceApp:
                     1,
                     cv2.LINE_AA,
                 )
-                self.gui.update_frame(placeholder)
-                self.gui.show_toast(
+                self.bus.publish(api.PreviewFrame(placeholder))
+                self.bus.publish(api.Toast(
                     "Preview OFF: playback keeps running but the image will not update",
-                    duration=3.5,
-                    color=(255, 200, 120),
-                )
+                    3.5, (255, 200, 120)))
 
     def _cb_input_fps_cap_toggle(self, enabled: bool):
         self.input_fps_cap = enabled
@@ -1626,12 +1745,12 @@ class WallDanceApp:
 
     def _update_gpu_stats_if_due(self, now: Optional[float] = None, interval_s: float = 1.0):
         """Update top-bar GPU stats at a fixed cadence without affecting FPS timing."""
-        if self.gui is None:
+        if not self.bus.ui_ready:
             return
         t = now if now is not None else time.time()
         if t - self._last_gpu_stats_time >= interval_s:
             self._last_gpu_stats_time = t
-            self.gui.update_gpu_stats()
+            self.bus.publish(api.GpuStats())
 
     def _ops_heartbeat(self):
         """Watchdog beat + 1 Hz health tick.
@@ -1646,7 +1765,7 @@ class WallDanceApp:
         if now - self._last_ops_tick < 1.0:
             return
         self._last_ops_tick = now
-        in_run = bool(self.gui and self.gui.get_system_state() == SystemState.RUN)
+        in_run = bool(self.bus.ui_ready and self.system_state == SystemState.RUN)
         # Person-height staleness input (⑤d): 1 Hz sample of RAW detection
         # heights (pre-size-gate, original-space px) over a rolling window.
         for h in getattr(self.processor, "last_raw_det_heights", ()):
@@ -1683,9 +1802,7 @@ class WallDanceApp:
 
     def _emit_ops_alert(self, alert):
         print(f"[Alert] {alert.message}")
-        if self.gui:
-            self.gui.show_toast(f"/!\\ {alert.message}", duration=8.0,
-                                color=(255, 80, 80))
+        self.bus.publish(api.Alert(alert.kind, alert.message, alert.data))
         try:
             self.tracker.logger.log("OPS_ALERT", {"kind": alert.kind, **alert.data})
         except Exception:
@@ -1750,9 +1867,8 @@ class WallDanceApp:
             print(report.console_block(
                 f"(project={self.configs._current_project}, "
                 f"profile={self.configs._active_profile}) "))
-            if self.gui:
-                msg, color = report.toast_summary()
-                self.gui.show_toast(msg, duration=6.0, color=color)
+            msg, color = report.toast_summary()
+            self.bus.publish(api.Toast(msg, 6.0, color))
         except Exception as e:  # noqa: BLE001 - never disturb Go-Live
             print(f"[Readiness] check failed: {e}")
 
@@ -1874,72 +1990,9 @@ class WallDanceApp:
             f"preview_sync={float(timing.get('preview_download_sync', 0.0)):.1f}"
         )
 
-    def _handle_key(self, sender, app_data):
-        if dpg.does_item_exist("issue_report_dialog"):
-            return
+    # Keyboard shortcuts live in ui/adapter.py (_handle_key) since Phase 3:
+    # runtime effects arrive as commands, GUI-local toggles stay in the adapter.
 
-        key = app_data
-        # Project picker: suppress all shortcuts while it is open (so typing a
-        # project name into the inline rename field doesn't trigger them). Enter
-        # launches the highlighted project, except while an inline rename/delete
-        # prompt is active.
-        if self.gui and self.gui.project_picker_visible():
-            if (key == dpg.mvKey_Return
-                    and not self.gui.project_picker_inline_active()):
-                sel = self.gui.project_picker_selection()
-                if sel:
-                    self.gui.hide_project_picker()
-                    self.configs._cb_project_launch(sel)
-            return
-        ctrl_down = dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
-        shift_down = dpg.is_key_down(dpg.mvKey_LShift) or dpg.is_key_down(dpg.mvKey_RShift)
-        if key == dpg.mvKey_E and ctrl_down and shift_down:
-            if self.gui:
-                self.gui.set_expert_mode(not self.gui.expert_mode)
-                print(f"Expert mode: {'ON' if self.gui.expert_mode else 'OFF'}")
-        elif key == dpg.mvKey_E and not ctrl_down:
-            self.settings.enhance_enabled = not self.settings.enhance_enabled
-            self.gui and self.gui.sync_checkbox("enhance", self.settings.enhance_enabled)
-            print(f"Enhancement: {'ON' if self.settings.enhance_enabled else 'OFF'}")
-        elif key == dpg.mvKey_T:
-            self.show_trails = not self.show_trails
-            self.gui and self.gui.sync_checkbox("trails", self.show_trails)
-            print(f"Trails: {'ON' if self.show_trails else 'OFF'}")
-        elif key == dpg.mvKey_S and not (dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)):
-            self.show_skeleton = not self.show_skeleton
-            self.gui and self.gui.sync_checkbox("skeleton", self.show_skeleton)
-            print(f"Skeleton: {'ON' if self.show_skeleton else 'OFF'}")
-        elif key == dpg.mvKey_K:
-            self.show_keypoints = not self.show_keypoints
-            self.gui and self.gui.sync_checkbox("keypoints", self.show_keypoints)
-            print(f"Keypoints: {'ON' if self.show_keypoints else 'OFF'}")
-        elif key == dpg.mvKey_B:
-            self.show_bbox = not self.show_bbox
-            self.gui and self.gui.sync_checkbox("bbox", self.show_bbox)
-            print(f"Bounding box: {'ON' if self.show_bbox else 'OFF'}")
-        elif key == dpg.mvKey_I:
-            self.show_ids = not self.show_ids
-            self.gui and self.gui.sync_checkbox("ids", self.show_ids)
-            print(f"IDs: {'ON' if self.show_ids else 'OFF'}")
-        elif key == dpg.mvKey_P:
-            self.preview_enabled = not self.preview_enabled
-            self.gui and self.gui.sync_checkbox("preview", self.preview_enabled)
-            print(f"Preview: {'ON' if self.preview_enabled else 'OFF (measure raw FPS)'}")
-        elif key == dpg.mvKey_F8:
-            # Pause playback (only if playing, never resume)
-            if self.recorder.is_playing and not self.recorder.is_paused():
-                self.recorder.pause_playback()
-                self.tracker.logger.flush()
-                self.recording._update_recording_ui()
-            context = self._cb_report_issue_request()
-            if context and self.gui:
-                self.gui.show_issue_report_dialog(context)
-        if key == dpg.mvKey_S and (dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)):
-            self.configs._cb_save_config()
-
-    # ------------------------------------------------------------------
-    # Model Loading with Progress
-    # ------------------------------------------------------------------
     # ------------------------------------------------------------------
     # Main loop
     # ------------------------------------------------------------------
@@ -1952,22 +2005,8 @@ class WallDanceApp:
             print(f"Warning: Camera {self.camera.state.source} not available, app will start without camera")
 
         print("Initializing GUI...")
-        self.gui = WallDanceGUI(config=self._get_gui_config(), callbacks=self._get_gui_callbacks())
-        dpi_scale = get_display_scale()
-        # Fixed viewport size – layout engine fits the preview to whatever space is available
-        window_width = int(1340 * dpi_scale)
-        window_height = int(850 * dpi_scale)
-        self.gui.setup(width=window_width, height=window_height)
-        with dpg.handler_registry():
-            dpg.add_key_press_handler(callback=self._handle_key)
-            dpg.add_mouse_down_handler(callback=self.roi._handle_roi_mouse_down)
-            dpg.add_mouse_move_handler(callback=self.roi._handle_roi_mouse_move)
-            dpg.add_mouse_release_handler(callback=self.roi._handle_roi_mouse_up)
-            dpg.add_mouse_down_handler(callback=self.roi._handle_mask_mouse_down)
-            dpg.add_mouse_move_handler(callback=self.roi._handle_mask_mouse_move)
-            dpg.add_mouse_release_handler(callback=self.roi._handle_mask_mouse_up)
-            dpg.add_mouse_double_click_handler(callback=self.roi._handle_preview_double_click)
-        dpg.show_viewport()
+        self.ui.create_gui(self._get_gui_config())
+        self.ui.setup_viewport(self.roi)
         self.roi._sync_roi_ui()
         
         # Project startup (unified switch path). A deliberate picker (ROADMAP §7B)
@@ -2009,14 +2048,12 @@ class WallDanceApp:
         self.recording._apply_startup_review_mode()
 
         # Show CPU fallback badge immediately if GPU is not available
-        if self.gui and self.processor:
-            self.gui.update_compute_mode_badge(self.processor.gpu_fallback_reason or "")
+        if self.processor:
+            self.bus.publish(api.ComputeModeBadge(self.processor.gpu_fallback_reason or ""))
             if self.processor.gpu_fallback_reason:
-                self.gui.show_toast(
+                self.bus.publish(api.Toast(
                     "/!\\ Running on CPU - no GPU acceleration",
-                    duration=6.0,
-                    color=(255, 120, 120),
-                )
+                    6.0, (255, 120, 120)))
 
         # Smartphone monitor (focus + IR-lighting assist). Best-effort: a
         # failure here must never stop the app. See docs/ROADMAP.md (P0).
@@ -2038,8 +2075,11 @@ class WallDanceApp:
         self.running = True
         self._watchdog.start()
         rec_ui_update_counter = 0
-        while self.running and dpg.is_dearpygui_running():
+        while self.running and self.ui.is_running():
             self._ops_heartbeat()
+            # The single command execution point (Phase 3 seam): everything
+            # the UI queued since the last tick runs here, on this thread.
+            self.api.drain()
             # Handle pending project switch (deferred from callback)
             # This is the unified path for project/config switching
             if self.configs._pending_project_switch is not None:
@@ -2079,7 +2119,7 @@ class WallDanceApp:
             
             # Skip processing while model is loading/switching
             if self.models._model_loading or self.recording.source_transitioning:
-                dpg.render_dearpygui_frame()
+                self.ui.render_frame_raw()
                 time.sleep(0.016)  # ~60 FPS UI update
                 continue
 
@@ -2087,16 +2127,16 @@ class WallDanceApp:
             self.roi._update_roi_drag_from_mouse()
             self.roi._poll_mask_mouse_interaction()
                 
-            if self._pending_preview_resize and self.gui:
-                self.gui.resize_preview(self.preview.width, self.preview.height)
+            if self._pending_preview_resize and self.bus.ui_ready:
+                self.bus.publish(api.PreviewResize(self.preview.width, self.preview.height))
                 self._pending_preview_resize = False
 
             # Process layout changes (viewport resize or camera dimension change)
-            if self.gui and self.gui._layout_dirty:
-                self.gui._layout_dirty = False
-                new_scale = self.gui._fitted_render_scale
-                cam_w = self.gui._camera_width or CAMERA_WIDTH
-                cam_h = self.gui._camera_height or CAMERA_HEIGHT
+            layout = self.ui.consume_layout_change()
+            if layout is not None:
+                new_scale, cam_w, cam_h = layout
+                cam_w = cam_w or CAMERA_WIDTH
+                cam_h = cam_h or CAMERA_HEIGHT
                 self.preview.render_scale = new_scale
                 self.preview.width = max(1, int(cam_w * new_scale))
                 self.preview.height = max(1, int(cam_h * new_scale))
@@ -2120,8 +2160,7 @@ class WallDanceApp:
                     # wait briefly to avoid spinning and re-processing the
                     # same frame (which would speed up playback and waste GPU).
                     if self.recorder.is_playback_active:
-                        if self.gui:
-                            self.gui.render_frame()
+                        self.ui.render_frame()
                         time.sleep(0.005)
                         continue
                     # Decoder thread exited — playback truly ended
@@ -2130,7 +2169,8 @@ class WallDanceApp:
                     if self._use_unified_camera and self.unified_camera is not None:
                         self.unified_camera.start_acquisition()
                     if self.unified_camera and self.unified_camera.is_open:
-                        self.gui.set_camera_dimensions(self.unified_camera.width, self.unified_camera.height)
+                        self.bus.publish(api.CameraDimensions(
+                            self.unified_camera.width, self.unified_camera.height))
                     self.recording._update_recording_ui()
                     continue
             else:
@@ -2157,10 +2197,9 @@ class WallDanceApp:
                                                       close_active=True)
                         self.cameras._schedule_camera_retry(delay=0.5)
                         continue
-                    if self.gui:
-                        self.gui.render_frame()
-                        # Still update GPU stats periodically when waiting for camera
-                        self._update_gpu_stats_if_due()
+                    self.ui.render_frame()
+                    # Still update GPU stats periodically when waiting for camera
+                    self._update_gpu_stats_if_due()
                     time.sleep(0.033)
                     continue
 
@@ -2200,10 +2239,9 @@ class WallDanceApp:
                     print("Camera read failed, marking as unavailable")
                     self.cameras._mark_camera_unavailable(self.camera.state.source, close_active=True)
                     self.cameras._schedule_camera_retry(delay=0.5)
-                    if self.gui:
-                        self.gui.render_frame()
-                        # Update GPU stats
-                        self._update_gpu_stats_if_due()
+                    self.ui.render_frame()
+                    # Update GPU stats
+                    self._update_gpu_stats_if_due()
                     continue
                 
                 # Camera is open but no frame yet (still initializing) - skip this iteration
@@ -2216,10 +2254,9 @@ class WallDanceApp:
                         gpu_tensor_available=False,
                         camera_waiting=True,
                     )
-                    if self.gui:
-                        self.gui.render_frame()
-                        # Update GPU stats periodically
-                        self._update_gpu_stats_if_due()
+                    self.ui.render_frame()
+                    # Update GPU stats periodically
+                    self._update_gpu_stats_if_due()
                     time.sleep(0.01)
                     continue
 
@@ -2234,8 +2271,7 @@ class WallDanceApp:
                     elapsed = now - self._last_input_frame_time
                     if elapsed < self._input_fps_cap_interval:
                         remaining = self._input_fps_cap_interval - elapsed
-                        if self.gui:
-                            self.gui.render_frame()
+                        self.ui.render_frame()
                         time.sleep(remaining)
                     self._last_input_frame_time = time.perf_counter()
 
@@ -2269,7 +2305,7 @@ class WallDanceApp:
             # Skip YOLO inference if not in RUN state (Phase 3 gating).
             # Exception: a scene calibration forces YOLO on (even in Standby /
             # during playback) so it can measure detection heights.
-            if (self.gui and self.gui.get_system_state() != SystemState.RUN
+            if (self.system_state != SystemState.RUN
                     and not self.calibration._calibrating and not self.calibration._calibrating2):
                 should_process = False
 
@@ -2313,13 +2349,10 @@ class WallDanceApp:
                             self.models._pending_trt_switch = True
                         else:
                             self.models._pending_trt_switch = False
-                            if self.gui:
-                                self.gui.set_trt_checkbox(False)
-                                self.gui.show_toast(
-                                    f"No TRT for {self.settings.imgsz}px, using PyTorch",
-                                    duration=3.0,
-                                    color=(255, 200, 100),
-                                )
+                            self.bus.publish(api.TrtCheckbox(False))
+                            self.bus.publish(api.Toast(
+                                f"No TRT for {self.settings.imgsz}px, using PyTorch",
+                                3.0, (255, 200, 100)))
                         self.models._pending_model_switch = base_name
                         self.models._model_loading = True
                         self.models._model_loaded = False
@@ -2482,7 +2515,7 @@ class WallDanceApp:
                     self._last_review_frame = preview_frame.copy()
                     preview_draw_ms = (time.time() - preview_t0) * 1000
                     upload_t0 = time.time()
-                    self.gui.update_frame(preview_frame)
+                    self.bus.publish(api.PreviewFrame(preview_frame))
                     preview_upload_ms = (time.time() - upload_t0) * 1000
                     self._last_preview_upload_time = time.time()
                     timing["preview_draw"] = preview_draw_ms
@@ -2540,7 +2573,7 @@ class WallDanceApp:
                 and brightness >= self.settings.brightness_threshold
             )
             _stats_t0 = time.perf_counter()
-            self.gui.update_stats(
+            self.bus.publish(api.StatsTick(dict(
                 fps=self.fps,
                 num_dancers=len(tracked),
                 latency_ms=self.latency_ms,
@@ -2557,21 +2590,20 @@ class WallDanceApp:
                 osc_port=self.osc_port,
                 camera_running=self.camera.state.is_open,
                 camera_reconnecting=self.cameras._camera_reconnecting,
-                camera_type=self.gui.config.get('camera_type', ''),
+                camera_type=self._ui_camera_type,
                 enhance_bypassed=enhance_bypassed,
                 gpu_fallback_reason=self.processor.gpu_fallback_reason or "",
-            )
+            )))
             _gui_stats_ms = (time.perf_counter() - _stats_t0) * 1000.0
-            
+
             # Update BG subtraction status (piggyback on stats update cycle)
             bg = self.processor.bg_subtractor
             if bg.has_reference:
                 fg_ratio = self.timing.get("bg_fg_ratio", bg.foreground_ratio)
                 is_mismatched = self.timing.get("bg_mismatched", bg.is_mismatched)
-                self.gui.update_bg_status(
+                self.bus.publish(api.BgStatus(
                     True, self.settings.bg_subtract_enabled,
-                    fg_ratio, is_mismatched
-                )
+                    fg_ratio, is_mismatched))
             
             # Update recording UI periodically (every 10 frames to avoid overhead)
             rec_ui_update_counter += 1
@@ -2581,7 +2613,7 @@ class WallDanceApp:
             self.recording._maybe_pause_at_target_frame()
             
             _dpg_t0 = time.perf_counter()
-            dpg.render_dearpygui_frame()
+            self.ui.render_frame_raw()
             _dpg_render_ms = (time.perf_counter() - _dpg_t0) * 1000.0
 
             # Inject GUI overhead into timing dict for spike logging
@@ -2591,6 +2623,10 @@ class WallDanceApp:
                 if 'camera_read_ms' not in self.timing:
                     self.timing["camera_read"] = camera_read_ms if 'camera_read_ms' in dir() else 0.0
 
+        # Final drain: commands queued during the last frame (notably Quit,
+        # which flushes/closes the tracker logger) must still execute --
+        # gui.stop() ends the dpg loop before the next tick would drain them.
+        self.api.drain()
         self._watchdog.stop()
         if self._web_monitor is not None:
             self._web_monitor.stop()
@@ -2598,7 +2634,7 @@ class WallDanceApp:
         self.recorder.close()
         if self.camera.cap is not None:
             self.camera.cap.release()
-        dpg.destroy_context()
+        self.ui.destroy()
         print("WallDance stopped.")
 
 

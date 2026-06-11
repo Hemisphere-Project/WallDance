@@ -9,7 +9,6 @@ Phase 2 reorganization:
 """
 
 import os
-from enum import Enum, auto
 from typing import Any, Tuple
 
 import dearpygui.dearpygui as dpg
@@ -21,17 +20,10 @@ from gui_constants import (
     HEADING_GREEN, BRIGHT_GREEN, PALE_GREEN, WARN_ORANGE, ERROR_SOFT,
     CONTROL_PANEL_WIDTH,
 )
-
-
-class SystemState(Enum):
-    """System operational states for show control.
-    
-    Simplified 2-state system:
-    - STANDBY: Preview + enhancement, no YOLO, no OSC
-    - RUN: Full YOLO inference + OSC output
-    """
-    STANDBY = auto()  # Preview only, no YOLO processing, no OSC
-    RUN = auto()      # Full pipeline: YOLO + tracking + OSC
+# SystemState moved to runtime/api.py (DECOMPOSITION_PLAN Phase 3): the
+# runtime owns the authoritative state; re-exported here for the existing
+# `from gui_builder import SystemState` sites.
+from runtime.api import SystemState
 
 
 # State badge colors: (text_color, bg_color)
