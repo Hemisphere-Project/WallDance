@@ -8,7 +8,8 @@
 - Phase 0 ✅ `ee38cbd` — tag `decomp-phase0`; replay archive for all 12 scenarios in `tests/golden/decomp-phase0/` (determinism re-run byte-identical → gates compare bytes, not tolerances); 6.5-min playback timing baseline (FPS p50 19.7 source-capped, process_wall p50 31.7 ms / p95 38.4 ms).
 - Phase 1 ✅ `02837a5` — 19→`core/`, 2→`camera/`, 1→`services/`; sys.modules-aliasing shims at old paths (delete once in-flight branches land); launcher update cycle verified on a scratch clone.
 - Phase 2 (1) ✅ `e21218c` — `RecordingController` → `runtime/recording_controller.py` (19 methods, narrow-port Protocols). Operator manual smoke (§6.3) still owed for the Phase 2 commits.
-- Next: Phase 2 (2) `ModelController`.
+- Phase 2 (2) ✅ `1df82c3` — `ModelController` → `runtime/model_controller.py` (9 methods + the two run() drain blocks; controller owns model/TRT state; dpg pumping behind `ModelUiPort.render_frame`).
+- Next: Phase 2 (3) `CameraController`.
 
 ---
 
