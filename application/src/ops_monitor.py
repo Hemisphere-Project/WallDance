@@ -34,6 +34,7 @@ from config import (
     OPS_GPU_POLL_S,
     OPS_GPU_TEMP_ALERT_C,
     OPS_GPU_TEMP_SUSTAIN_S,
+    OPS_HEIGHT_STALE_S,
     OPS_NO_DETECTION_ALERT_S,
     OPS_OVER_CAP_ALERT_S,
     OPS_WATCHDOG_HANG_S,
@@ -240,6 +241,7 @@ class HealthMonitor:
                  fps_sustain_s: float = OPS_FPS_DROP_SUSTAIN_S,
                  no_detection_s: float = OPS_NO_DETECTION_ALERT_S,
                  over_cap_s: float = OPS_OVER_CAP_ALERT_S,
+                 height_stale_s: float = OPS_HEIGHT_STALE_S,
                  camera_down_s: float = OPS_CAMERA_DOWN_ALERT_S,
                  gpu_temp_c: float = OPS_GPU_TEMP_ALERT_C,
                  gpu_temp_sustain_s: float = OPS_GPU_TEMP_SUSTAIN_S,
@@ -252,6 +254,7 @@ class HealthMonitor:
         self.fps_sustain_s = fps_sustain_s
         self.no_detection_s = no_detection_s
         self.over_cap_s = over_cap_s
+        self.height_stale_s = height_stale_s
         self.camera_down_s = camera_down_s
         self.gpu_temp_c = gpu_temp_c
         self.gpu_temp_sustain_s = gpu_temp_sustain_s
@@ -265,6 +268,7 @@ class HealthMonitor:
         self._fps_low_since: Optional[float] = None
         self._no_det_since: Optional[float] = None
         self._over_cap_since: Optional[float] = None
+        self._height_stale_since: Optional[float] = None
         self._cam_down_since: Optional[float] = None
         self._gpu_hot_since: Optional[float] = None
         self._last_gpu_poll = 0.0
@@ -286,7 +290,9 @@ class HealthMonitor:
 
     def tick(self, now: float, *, fps: float, n_tracked: int, in_run: bool,
              model_ready: bool, camera_open: bool, camera_reconnecting: bool,
-             playback_active: bool, n_over_cap: int = 0) -> List[Alert]:
+             playback_active: bool, n_over_cap: int = 0,
+             height_median: Optional[float] = None,
+             height_gate: Optional[Tuple[float, float]] = None) -> List[Alert]:
         out: List[Alert] = []
         live = (in_run and camera_open and not camera_reconnecting
                 and not playback_active and model_ready)
@@ -298,6 +304,7 @@ class HealthMonitor:
             self._fps_low_since = None
             self._no_det_since = None
             self._over_cap_since = None
+            self._height_stale_since = None
         self._was_in_run = in_run
 
         # --- fps drop -----------------------------------------------------
@@ -353,6 +360,28 @@ class HealthMonitor:
                     {"n_over_cap": n_over_cap}), out)
         else:
             self._over_cap_since = None
+
+        # --- person-height staleness (⑤d) -------------------------------------
+        # Median of RAW detection heights (pre-size-gate) vs the configured
+        # gate — a stale person_height_px config silently drops every real
+        # dancer at the size filter, so the tracks themselves can't carry
+        # this signal.  Would have caught the bulk-copied h=56 configs.
+        out_of_gate = (height_median is not None and height_gate is not None
+                       and not (height_gate[0] <= height_median <= height_gate[1]))
+        if live and out_of_gate:
+            if self._height_stale_since is None:
+                self._height_stale_since = now
+            elif now - self._height_stale_since >= self.height_stale_s:
+                lo, hi = height_gate
+                self._fire(now, Alert(
+                    "height_stale",
+                    f"Person height calibration looks stale - live median "
+                    f"detection ~{height_median:.0f}px outside the gate "
+                    f"{lo:.0f}-{hi:.0f}px for "
+                    f"{now - self._height_stale_since:.0f}s - run Calib2",
+                    {"median": height_median, "lo": lo, "hi": hi}), out)
+        else:
+            self._height_stale_since = None
 
         # --- camera down ----------------------------------------------------
         if camera_reconnecting or not camera_open:

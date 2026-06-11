@@ -117,6 +117,9 @@ class ScaledTrack:
     velocity: np.ndarray
     smoothed_centroid: Optional[np.ndarray] = None  # EMA-smoothed, jitter-free
     is_bridged: bool = False  # True when track is in motion-bridge mode
+    box_conf: Optional[float] = None  # YOLO box conf of the detection that fed
+                                      # this track THIS frame (None when bridged
+                                      # or cold-blob fed) — calib2 seed (⑤a)
 
 
 class _LetterboxMotionProxy:
@@ -419,6 +422,11 @@ class FrameProcessor:
         self._motion_gamma_val: float = 0.0
         self._last_motion_gray: Optional[np.ndarray] = None  # enhanced gray fed to MOG2
         self._exclusion = ExclusionMaskBuilder()  # auto exclusion mask (P1.4)
+        # Per-frame YOLO box confidences keyed by bbox value (calib2 seed, ⑤a)
+        self._last_box_confs: Dict[tuple, float] = {}
+        # Raw detection heights (original-space px) BEFORE the size gate — the
+        # height-staleness alarm must see what the gate would reject (⑤d)
+        self.last_raw_det_heights: List[float] = []
 
         # GPU pipeline (zero-copy path)
         self._gpu_pipeline: Optional[GpuPipeline] = None
@@ -669,6 +677,10 @@ class FrameProcessor:
         # Extract detections
         t0 = time.time()
         detections = self._extract_detections(results)
+        # Raw det heights in ORIGINAL-space px, before the size gate — the
+        # height-staleness alarm must see what the gate would reject (⑤d).
+        inv_lb = 1.0 / lb_scale if lb_scale > 0 else 1.0
+        self.last_raw_det_heights = [float(d[2][3]) * inv_lb for d in detections]
         detections = self._filter_duplicate_detections(detections, effective_person_height=scaled_person_height)
         timing["extract"] = (time.time() - t0) * 1000
         timing.update(self._extract_transfer_timing)
@@ -770,6 +782,13 @@ class FrameProcessor:
         shifted = []
         for keypoints, confidence, bbox in detections:
             shifted.append((keypoints + offset_xy, confidence, bbox + offset_bbox))
+        # Keep the box-conf map keyed by the bboxes the tracker will see.
+        if self._last_box_confs:
+            self._last_box_confs = {
+                self._bbox_conf_key((k[0] + offset_x, k[1] + offset_y,
+                                     k[2], k[3])): v
+                for k, v in self._last_box_confs.items()
+            }
         return shifted
     
     def set_preview_size(self, width: int, height: int):
@@ -870,6 +889,16 @@ class FrameProcessor:
         timing["crossval_no_track_frames"] = self._crossval_no_track_frames
 
         scaled_tracks = [finalize(t) for t in tracked]
+
+        # Attach the YOLO box conf of the detection that fed each track this
+        # frame (calib2 sensitivity seed, ⑤a).  DancerTrack.update stores the
+        # matched bbox verbatim, so a value match recovers the pairing;
+        # bridged / cold-blob-fed tracks resolve to None by construction.
+        if self._last_box_confs:
+            for t, st in zip(tracked, scaled_tracks):
+                if t.time_since_update == 0:
+                    st.box_conf = self._last_box_confs.get(
+                        self._bbox_conf_key(t.bbox))
 
         # OSC output
         if self.osc and self.settings.osc_enabled:
@@ -1015,6 +1044,9 @@ class FrameProcessor:
         # 3. Extract detections
         t0 = time.time()
         detections = self._extract_detections(results)
+        # Raw det heights before the size gate (ROI crop is unscaled, so these
+        # are original-space px) — height-staleness alarm input (⑤d).
+        self.last_raw_det_heights = [float(d[2][3]) for d in detections]
         detections = self._filter_duplicate_detections(detections)
         detections = self._offset_detections(detections, roi_x, roi_y)
         timing["extract"] = (time.time() - t0) * 1000
@@ -1432,10 +1464,25 @@ class FrameProcessor:
     # ------------------------------------------------------------------
     # Detection helpers
     # ------------------------------------------------------------------
+    @staticmethod
+    def _bbox_conf_key(bbox) -> tuple:
+        """Value key for the per-frame bbox→box-conf map (Phase 2 ⑤a).
+
+        DancerTrack.update stores the matched detection bbox verbatim, so an
+        exact (rounded) value match recovers which YOLO box fed a track.
+        """
+        return tuple(round(float(v), 1) for v in bbox[:4])
+
     def _extract_detections(self, results) -> List[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
         detections = []
         kpts_cpu_ms = 0.0
         boxes_cpu_ms = 0.0
+        # Per-frame YOLO box confidences keyed by bbox value — calib2's
+        # sensitivity seed needs them in the SAME units settings.confidence
+        # thresholds (keypoint-conf units pin the seed; ROADMAP bug #11 /
+        # CORPUS_ANALYSIS §6.5a).  Duplicate filtering reuses the surviving
+        # bbox arrays, so survivors always resolve in this map.
+        self._last_box_confs = {}
         for result in results:
             if result.keypoints is None or len(result.keypoints) == 0:
                 continue
@@ -1446,9 +1493,11 @@ class FrameProcessor:
             if result.boxes is not None:
                 t0 = time.perf_counter()
                 boxes = result.boxes.xyxy.cpu().numpy()
+                box_confs = result.boxes.conf.cpu().numpy()
                 boxes_cpu_ms += (time.perf_counter() - t0) * 1000.0
             else:
                 boxes = None
+                box_confs = None
 
             for i, kpts in enumerate(keypoints_data):
                 keypoints = kpts[:, :2]
@@ -1456,6 +1505,9 @@ class FrameProcessor:
                 if boxes is not None and i < len(boxes):
                     x1, y1, x2, y2 = boxes[i]
                     bbox = (x1, y1, x2 - x1, y2 - y1)
+                    if box_confs is not None and i < len(box_confs):
+                        self._last_box_confs[self._bbox_conf_key(bbox)] = \
+                            float(box_confs[i])
                 else:
                     valid = confidence > KEYPOINT_CONFIDENCE
                     if np.any(valid):

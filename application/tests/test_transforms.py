@@ -183,3 +183,30 @@ def test_exclusion_norm_xy_roi_local_vs_global_differ_by_offset():
     # global subtracts roi before scaling to mask: offset = roi * mog_scale / mw
     np.testing.assert_allclose(nx_local - nx_glob, roi_x * mog_scale / mw, atol=1e-9)
     np.testing.assert_allclose(ny_local - ny_glob, roi_y * mog_scale / mh, atol=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Box-conf map (⑤a): the per-frame bbox→conf map must follow the bboxes
+# through the ROI offset, or the calib2 seed silently loses every sample
+# whenever an ROI is active on the CPU path.
+# ---------------------------------------------------------------------------
+def test_box_conf_map_survives_roi_offset():
+    key_fn = FrameProcessor._bbox_conf_key
+    stub = types.SimpleNamespace(
+        _last_box_confs={key_fn((10.0, 20.0, 50.0, 100.0)): 0.77},
+        _bbox_conf_key=key_fn,
+    )
+    dets = [(np.zeros((17, 2)), np.zeros(17),
+             np.array([10.0, 20.0, 50.0, 100.0]))]
+    out = FrameProcessor._offset_detections(stub, dets, 300, 150)
+    assert out[0][2][0] == 310.0 and out[0][2][1] == 170.0
+    assert stub._last_box_confs[key_fn(out[0][2])] == 0.77
+
+
+def test_box_conf_key_recovers_track_match():
+    # DancerTrack.update stores the matched bbox verbatim (np.array(bbox)),
+    # so the value key on the track side equals the detection-side key.
+    key_fn = FrameProcessor._bbox_conf_key
+    det_bbox = np.array([101.30001, 220.7, 55.2, 180.9], dtype=np.float32)
+    track_bbox = np.array(det_bbox)   # what update() stores
+    assert key_fn(det_bbox) == key_fn(track_bbox)

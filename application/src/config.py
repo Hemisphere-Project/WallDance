@@ -468,6 +468,14 @@ AUTOCAL_GAMMA_BOUNDS = (0.8, 2.2)
 AUTOCAL_CLAHE_DEFAULT = 2.5
 AUTOCAL_CLAHE_NOISY = 1.5
 AUTOCAL_CLAHE_NOISE_SIGMA = 4.0     # Noise σ above which the reduced clip is used
+AUTOCAL_GAMMA_NOISY_MAX = 1.8       # Gamma cap when the measured window noise σ
+                                    # exceeds AUTOCAL_CLAHE_NOISE_SIGMA (⑤b):
+                                    # on a verydark scene the mid-gray seed
+                                    # brightens aggressively and mostly
+                                    # amplifies noise → MOG2/frame-diff ghosts
+                                    # (the TOGO-night Phase 1 lesson). Applied
+                                    # after the window, so the var sweep saw
+                                    # the brighter gamma = conservative var
 
 # --- Calib2 subject pass (UX_PLAN.md U4) -------------------------------------
 # Dancer calibration: accumulative evidence pool across runs/situations
@@ -476,8 +484,16 @@ AUTOCAL_CLAHE_NOISE_SIGMA = 4.0     # Noise σ above which the reduced clip is u
 AUTOCAL2_WINDOW_FRAMES = 240        # Collection window per run (~10 s @ 24 fps)
 AUTOCAL2_MIN_SAMPLES = 40           # Min pooled height samples to trust the pool
 AUTOCAL2_NET_HEIGHT_TARGET = 110.0  # Dancer height in YOLO net-input px (pose needs ~>100)
-AUTOCAL2_CONF_MARGIN = 0.05         # Sensitivity seed: p05 keypoint-conf minus this
-AUTOCAL2_CONF_BOUNDS = (0.15, 0.50) # Clamp for the seeded confidence
+AUTOCAL2_CONF_MARGIN = 0.05         # Sensitivity seed: p05 BOX-conf minus this (⑤a)
+AUTOCAL2_CONF_BOUNDS = (0.15, 0.65) # Clamp for the seeded confidence — corpus-
+                                    # measured best-τ spans 0.15–0.65
+                                    # (CORPUS_ANALYSIS §6.5/§6.7); the old 0.50
+                                    # ceiling was where the kp-conf seed pinned
+AUTOCAL2_FPS_BUDGET = 20.0          # imgsz pick must keep predicted fps above
+                                    # this (bug 12e / P-6; cost ∝ imgsz² from
+                                    # the runs' measured fps). Above the
+                                    # OPS_MIN_SHOW_FPS=15 alarm floor on purpose:
+                                    # calibration should not aim AT the alarm
 AUTOCAL2_BLUR_FRACTION = 0.10       # Allowed motion blur as a fraction of person height
 AUTOCAL2_SPEED_PCTL = 95.0          # Speed percentile that sets the blur budget
 AUTOCAL2_BLUR_BOUNDS_MS = (5.0, 30.0)  # Clamp for the refined blur budget
@@ -799,6 +815,15 @@ OPS_NO_DETECTION_ALERT_S = 30.0     # Zero tracked dancers in RUN (live, model r
 OPS_OVER_CAP_ALERT_S = 10.0         # Reported tracks capped at MAX_PERSONS this long
                                     # = "more people than max_persons visible" (bug 12c);
                                     # transient ghost flashes stay quiet
+OPS_HEIGHT_STALE_S = 120.0          # Rolling-median RAW detection height outside the
+                                    # configured min/max gate this long = "person
+                                    # height calibration looks stale" (⑤d; would
+                                    # have caught the bulk-copied h=56 configs).
+                                    # Raw = pre-size-gate: out-of-gate dancers
+                                    # never become tracks, so track heights
+                                    # cannot carry this signal
+OPS_HEIGHT_WINDOW_S = 60.0          # Window for that rolling median
+OPS_HEIGHT_MIN_SAMPLES = 20         # Median needs at least this many height samples
 OPS_CAMERA_DOWN_ALERT_S = 15.0      # Reconnecting longer than this = loud alert
 OPS_GPU_TEMP_ALERT_C = 85           # Matches the GUI badge red threshold
 OPS_GPU_TEMP_SUSTAIN_S = 30.0

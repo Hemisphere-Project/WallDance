@@ -333,6 +333,28 @@ def test_cell_at_maps_points():
 
 
 # --------------------------------------------------------------------------
+# Gamma noise cap (⑤b — verydark regime)
+# --------------------------------------------------------------------------
+def test_gamma_cap_limits_brightening_on_noisy_scene():
+    from calibration import cap_gamma_for_noise
+    g, capped = cap_gamma_for_noise(2.6, noise_sigma=6.0,
+                                    sigma_threshold=4.0, cap=1.8)
+    assert capped and g == 1.8
+
+
+def test_gamma_cap_leaves_quiet_or_mild_scenes_alone():
+    from calibration import cap_gamma_for_noise
+    # Quiet scene: any gamma passes.
+    g, capped = cap_gamma_for_noise(2.6, noise_sigma=1.0,
+                                    sigma_threshold=4.0, cap=1.8)
+    assert not capped and g == 2.6
+    # Noisy scene but gamma already mild: untouched.
+    g, capped = cap_gamma_for_noise(1.4, noise_sigma=6.0,
+                                    sigma_threshold=4.0, cap=1.8)
+    assert not capped and g == 1.4
+
+
+# --------------------------------------------------------------------------
 # State machine
 # --------------------------------------------------------------------------
 def test_state_machine_guards():

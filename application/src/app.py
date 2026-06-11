@@ -79,6 +79,8 @@ from config import (
     OPS_CALIB_AGE_WARN_H,
     OPS_DISK_WARN_FREE_GB,
     OPS_DISK_FAIL_FREE_GB,
+    OPS_HEIGHT_WINDOW_S,
+    OPS_HEIGHT_MIN_SAMPLES,
 )
 import config_schema
 from config_store import ConfigStore, format_config_display, sanitize_project_name
@@ -106,7 +108,8 @@ from video_recorder import VideoRecorder, RecorderState
 from web_monitor import WebMonitor
 from calib2 import SubjectCollector, SubjectPool
 from calib2 import aggregate as calib2_aggregate
-from calibration import ExposureServo, SceneCalibrator, seed_gamma
+from calibration import (ExposureServo, SceneCalibrator, cap_gamma_for_noise,
+                         seed_gamma)
 from sensitivity_macro import macro_to_settings
 
 
@@ -352,6 +355,8 @@ class WallDanceApp:
         self._health = HealthMonitor(gpu_stats_fn=get_gpu_stats)
         self._watchdog = LoopWatchdog()
         self._last_ops_tick = 0.0
+        # Rolling (t, raw det height px) samples for the staleness alarm (⑤d)
+        self._height_samples: deque = deque()
 
     # ------------------------------------------------------------------
     # OSC
@@ -2186,6 +2191,18 @@ class WallDanceApp:
             self.enhancer.clahe_clip = float(result.clahe_value)
             self.enhancer._update_clahe()
             self.gui and self.gui.sync_slider("clahe", float(result.clahe_value))
+        # ⑤b: cap the seeded gamma when the window-measured noise σ is high —
+        # on a verydark scene aggressive brightening mostly amplifies noise
+        # (ghosts).  After the window on purpose: the var sweep saw the
+        # brighter gamma, so the picked varThreshold is conservative.
+        capped_gamma, gamma_capped = cap_gamma_for_noise(
+            self.enhancer.gamma, result.noise_sigma)
+        if gamma_capped:
+            self.enhancer.gamma = capped_gamma
+            self.enhancer._update_gamma_lut()
+            self.gui and self.gui.sync_slider('gamma', capped_gamma)
+            print(f"[Calibrate] gamma capped to {capped_gamma:.2f} "
+                  f"(noise sigma {result.noise_sigma:.2f})")
         # P1.4: build + activate the auto exclusion mask from the same window.
         # Manual overlays survive the rebuild (Phase 2 ④).
         excl = self.processor.finish_exclusion_calibration()
@@ -2197,7 +2214,9 @@ class WallDanceApp:
             self.gui.set_calibrate_status(None)
             servo_line = (self._servo_result.summary_line() + "\n"
                           if self._servo_result else "")
-            gamma_line = f"Gamma seeded: {self.enhancer.gamma:.2f}\n"
+            gamma_line = (f"Gamma seeded: {self.enhancer.gamma:.2f}"
+                          + ("  (capped: scene noise high)" if gamma_capped else "")
+                          + "\n")
             # "Save to project" must be a normal timestamped save (what startup
             # and the picker load) — safe-defaults stays a separate explicit
             # action (ROADMAP bug #6).
@@ -2243,7 +2262,8 @@ class WallDanceApp:
                   if self.recorder.is_playing else "live")
         frame_w, frame_h = self._roi_source_size
         roi = self._get_effective_roi(frame_w, frame_h)
-        self._calib2.start(source, self._active_profile, roi, (frame_w, frame_h))
+        self._calib2.start(source, self._active_profile, roi, (frame_w, frame_h),
+                           imgsz=int(self.settings.imgsz))
         self._calib2_saved_frames = 0
         self._calibrating2 = True
         if self.gui:
@@ -2263,11 +2283,13 @@ class WallDanceApp:
             b = getattr(t, 'bbox', None)
             if b is None or len(b) < 4 or b[3] <= 0:
                 continue
-            conf = getattr(t, 'confidence', None)
-            mean_conf = float(np.mean(conf)) if conf is not None else 0.0
+            # YOLO BOX conf — same units settings.confidence thresholds
+            # (kp-conf means pinned the seed at the clamp; bug #11 / ⑤a).
+            # None when the track was bridge/cold-blob fed this frame.
+            box_conf = getattr(t, 'box_conf', None)
             vel = getattr(t, 'velocity', None)
             speed = float(np.linalg.norm(vel)) if vel is not None else 0.0
-            samples.append((float(b[3]), mean_conf, speed))
+            samples.append((float(b[3]), box_conf, speed))
         fps_sample = (1000.0 / process_wall_ms) if process_wall_ms > 0 else 0.0
         col.feed(samples, fps_sample)
 
@@ -3509,6 +3531,20 @@ class WallDanceApp:
             return
         self._last_ops_tick = now
         in_run = bool(self.gui and self.gui.get_system_state() == SystemState.RUN)
+        # Person-height staleness input (⑤d): 1 Hz sample of RAW detection
+        # heights (pre-size-gate, original-space px) over a rolling window.
+        for h in getattr(self.processor, "last_raw_det_heights", ()):
+            self._height_samples.append((now, h))
+        cutoff = now - OPS_HEIGHT_WINDOW_S
+        while self._height_samples and self._height_samples[0][0] < cutoff:
+            self._height_samples.popleft()
+        height_median = None
+        height_gate = None
+        if len(self._height_samples) >= OPS_HEIGHT_MIN_SAMPLES:
+            ph = float(self.settings.person_height_px)
+            height_gate = (ph * float(self.settings.person_height_min_ratio),
+                           ph * float(self.settings.person_height_max_ratio))
+            height_median = float(np.median([h for _t, h in self._height_samples]))
         try:
             alerts = self._health.tick(
                 now,
@@ -3520,6 +3556,8 @@ class WallDanceApp:
                 camera_reconnecting=self._camera_reconnecting,
                 playback_active=self.recorder.is_playing,
                 n_over_cap=self.tracker.last_over_cap,
+                height_median=height_median,
+                height_gate=height_gate,
             )
         except Exception as e:  # noqa: BLE001 - monitoring must never kill the loop
             print(f"[Alert] health tick failed: {e}")

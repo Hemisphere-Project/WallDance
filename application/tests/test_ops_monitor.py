@@ -289,6 +289,51 @@ def test_over_cap_fires_after_sustain_and_in_playback():
     assert alerts[0].data["n_over_cap"] == 3
 
 
+def test_height_stale_fires_on_sustained_out_of_gate_median():
+    m = _mk(height_stale_s=5.0)
+    t = 0.0
+    alerts = []
+    gate = (100.0, 300.0)
+    # In-gate median -> quiet.
+    for _ in range(10):
+        t += 1.0
+        alerts += m.tick(t, **_live(), height_median=200.0, height_gate=gate)
+    assert alerts == []
+    # Median way below the gate (the bulk-copied h=56 regime, dancers ~300px
+    # configured as ~56px gates) -> fires after the sustain window.
+    for _ in range(7):
+        t += 1.0
+        alerts += m.tick(t, **_live(), height_median=350.0, height_gate=gate)
+    assert [a.kind for a in alerts] == ["height_stale"]
+    assert "run Calib2" in alerts[0].message
+    assert alerts[0].data["median"] == 350.0
+    # No data (None) resets the sustain instead of firing.
+    m2 = _mk(height_stale_s=5.0)
+    t = 0.0
+    alerts2 = []
+    for _ in range(4):
+        t += 1.0
+        alerts2 += m2.tick(t, **_live(), height_median=350.0, height_gate=gate)
+    t += 1.0
+    alerts2 += m2.tick(t, **_live())              # window emptied
+    for _ in range(4):
+        t += 1.0
+        alerts2 += m2.tick(t, **_live(), height_median=350.0, height_gate=gate)
+    assert alerts2 == []
+
+
+def test_height_stale_suppressed_during_playback():
+    # Rehearsal playback of an old recording must not nag about the config.
+    m = _mk(height_stale_s=3.0)
+    t = 0.0
+    alerts = []
+    for _ in range(10):
+        t += 1.0
+        alerts += m.tick(t, **_live(playback_active=True),
+                         height_median=350.0, height_gate=(100.0, 300.0))
+    assert alerts == []
+
+
 def test_camera_down_escalates_and_refires_each_cooldown():
     m = _mk(camera_down_s=15.0, cooldown_s=60.0)
     t = 0.0

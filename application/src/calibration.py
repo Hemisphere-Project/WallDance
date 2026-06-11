@@ -65,6 +65,7 @@ from config import (
     AUTOCAL_CLAHE_DEFAULT,
     AUTOCAL_CLAHE_NOISY,
     AUTOCAL_CLAHE_NOISE_SIGMA,
+    AUTOCAL_GAMMA_NOISY_MAX,
 )
 from ids_camera import IDS_EXPOSURE_MIN_FPS, max_exposure_for_fps
 
@@ -96,6 +97,25 @@ def seed_clahe(noise_sigma: float) -> float:
     """CLAHE clip seed: back off on noisy scenes (CLAHE amplifies noise)."""
     return (AUTOCAL_CLAHE_NOISY if noise_sigma > AUTOCAL_CLAHE_NOISE_SIGMA
             else AUTOCAL_CLAHE_DEFAULT)
+
+
+def cap_gamma_for_noise(gamma: float, noise_sigma: float,
+                        sigma_threshold: float = AUTOCAL_CLAHE_NOISE_SIGMA,
+                        cap: float = AUTOCAL_GAMMA_NOISY_MAX) -> Tuple[float, bool]:
+    """Limit the brightening gamma on noisy scenes (⑤b, verydark regime).
+
+    The mid-gray seed can ask for an aggressive gamma on a near-black scene,
+    where it mostly amplifies temporal noise — MOG2/frame-diff read that as
+    motion (ghosts), and on static facades brightening trades drops for
+    ghosts the motion mask can't catch (Phase 1, TOGO-night).  The cap is
+    applied AFTER the calibration window using the *measured* noise σ, so the
+    varThreshold sweep saw the brighter (noisier) gamma — a conservative var.
+
+    Returns (gamma, capped).
+    """
+    if noise_sigma > sigma_threshold and gamma > cap:
+        return cap, True
+    return gamma, False
 
 
 def scene_report_stats(gray: np.ndarray, grid: Tuple[int, int] = (8, 5),

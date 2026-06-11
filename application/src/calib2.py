@@ -39,6 +39,7 @@ from config import (
     AUTOCAL2_BLUR_FRACTION,
     AUTOCAL2_SPEED_PCTL,
     AUTOCAL2_BLUR_BOUNDS_MS,
+    AUTOCAL2_FPS_BUDGET,
     AUTOCAL2_STALE_TOL,
 )
 
@@ -59,11 +60,18 @@ class SubjectRun:
     profile: str = "show"
     frames: int = 0
     heights: List[float] = field(default_factory=list)
-    confs: List[float] = field(default_factory=list)     # mean keypoint conf per track-frame
+    confs: List[float] = field(default_factory=list)     # per track-frame; see conf_kind
     speeds: List[float] = field(default_factory=list)    # px/frame per track-frame
     fps: List[float] = field(default_factory=list)
     roi: Tuple[int, int, int, int] = (0, 0, 0, 0)        # x, y, w, h at capture
     roi_source: Tuple[int, int] = (0, 0)                 # full-frame size at capture
+    # "box" = YOLO box confidence (⑤a, the units settings.confidence uses);
+    # the dataclass default is the LEGACY kind so pre-⑤ runs loaded from disk
+    # (which lack the key) are correctly tagged — start() stamps new runs "box".
+    conf_kind: str = "kpt_mean"
+    # YOLO imgsz at capture; 0 = unknown (legacy run). Lets the pooled imgsz
+    # pick model inference cost from the measured fps (⑤c, fps ∝ imgsz⁻²).
+    imgsz: int = 0
 
     @property
     def samples(self) -> int:
@@ -105,12 +113,15 @@ class SubjectCollector:
         self._collecting = False
 
     def start(self, source: str, profile: str,
-              roi: Sequence[int], roi_source: Sequence[int]) -> None:
+              roi: Sequence[int], roi_source: Sequence[int],
+              imgsz: int = 0) -> None:
         self.run = SubjectRun(
             timestamp=time.strftime("%Y%m%d_%H%M%S"),
             source=source, profile=profile,
             roi=tuple(int(v) for v in roi),
             roi_source=tuple(int(v) for v in roi_source),
+            conf_kind="box",
+            imgsz=int(imgsz),
         )
         self._collecting = True
 
@@ -130,17 +141,19 @@ class SubjectCollector:
             return 1.0
         return min(1.0, self.run.frames / self.window_frames)
 
-    def feed(self, samples: Sequence[Tuple[float, float, float]],
+    def feed(self, samples: Sequence[Tuple[float, Optional[float], float]],
              fps_sample: float) -> None:
-        """Add one frame: ``samples`` = (height_px, mean_conf, speed_px_per_frame)
-        per confirmed track."""
+        """Add one frame: ``samples`` = (height_px, box_conf_or_None,
+        speed_px_per_frame) per confirmed track.  ``None`` conf (bridge /
+        cold-blob fed this frame) still contributes height + speed."""
         if not self._collecting:
             return
         for h, c, s in samples:
             if h and h > 0:
                 self.run.heights.append(float(h))
-                self.run.confs.append(float(c))
                 self.run.speeds.append(float(s))
+                if c is not None:
+                    self.run.confs.append(float(c))
         if fps_sample and fps_sample > 0:
             self.run.fps.append(float(fps_sample))
         self.run.frames += 1
@@ -160,7 +173,10 @@ class SubjectProposal:
     min_ratio: Optional[float] = None
     max_ratio: Optional[float] = None
     imgsz: Optional[int] = None
-    imgsz_satisfied: bool = False     # False if even the largest preset misses the target
+    imgsz_satisfied: bool = False     # False if the net-height target is unmet
+    imgsz_fps_limited: bool = False   # True if a bigger preset met the target
+                                      # but was rejected by the FPS budget (⑤c)
+    imgsz_pred_fps: Optional[float] = None  # predicted fps at the chosen imgsz
     net_height_px: float = 0.0        # dancer height in net-input px at the chosen imgsz
     confidence: Optional[float] = None
     blur_budget_ms: Optional[float] = None
@@ -176,9 +192,19 @@ class SubjectProposal:
             f"(ratios {self.min_ratio:.2f} / {self.max_ratio:.2f})",
         ]
         if self.imgsz:
-            sat = "" if self.imgsz_satisfied else "  (max preset - still below target)"
+            fps_part = (f" @ ~{self.imgsz_pred_fps:.0f} fps"
+                        if self.imgsz_pred_fps else "")
+            cap_part = "  (capped by FPS budget)" if self.imgsz_fps_limited else ""
             lines.append(f"Image size: {self.imgsz}  "
-                         f"(dancer ≈ {self.net_height_px:.0f} px in net input){sat}")
+                         f"(dancer ≈ {self.net_height_px:.0f} px in net input"
+                         f"{fps_part}){cap_part}")
+            if not self.imgsz_satisfied:
+                # Explicit rig advisory, not a silent fallback (bug 12e).
+                lines.append(
+                    f"RIG ADVISORY: dancer ≈ {self.net_height_px:.0f} px in the "
+                    f"net input, below the ~{AUTOCAL2_NET_HEIGHT_TARGET:.0f} px "
+                    "the pose model needs - move the camera closer or use a "
+                    "longer lens.")
         if self.confidence is not None:
             lines.append(f"Sensitivity seed (confidence): {self.confidence:.2f}")
         if self.blur_budget_ms is not None:
@@ -190,27 +216,56 @@ class SubjectProposal:
 
 def select_imgsz(person_height_px: float, roi_long_side: float,
                  target_net_px: float = AUTOCAL2_NET_HEIGHT_TARGET,
-                 presets: Sequence[int] = _IMGSZ_PRESETS) -> Tuple[int, bool, float]:
-    """Smallest imgsz whose net-input dancer height meets the target.
+                 presets: Sequence[int] = _IMGSZ_PRESETS,
+                 fps_model=None,
+                 fps_budget: Optional[float] = None
+                 ) -> Tuple[int, bool, float, bool]:
+    """Smallest imgsz whose net-input dancer height meets the target, within
+    the FPS budget (bug 12e / P-6).
 
     net_height = person_height_px * imgsz / roi_long_side (letterbox on the
-    long side).  Returns (imgsz, satisfied, net_height_at_choice).
+    long side).  ``fps_model(p)`` predicts achieved fps at preset ``p`` (built
+    by ``aggregate`` from measured fps, cost ∝ imgsz²); presets predicted
+    below ``fps_budget`` are rejected — the show FPS is never silently traded
+    for net height.  Returns (imgsz, satisfied, net_height, fps_limited).
     """
     roi_long_side = max(float(roi_long_side), 1.0)
     h = max(float(person_height_px), 1.0)
-    for p in presets:
-        net = h * p / roi_long_side
-        if net >= target_net_px:
-            return int(p), True, net
-    p = presets[-1]
-    return int(p), False, h * p / roi_long_side
+
+    def net(p: int) -> float:
+        return h * p / roi_long_side
+
+    allowed = list(presets)
+    fps_capped = False
+    if fps_model is not None and fps_budget:
+        in_budget = [p for p in presets if fps_model(p) >= fps_budget]
+        if not in_budget:
+            in_budget = [presets[0]]  # slowest rig: smallest preset, flagged
+        if len(in_budget) < len(list(presets)):
+            fps_capped = True
+        allowed = in_budget
+
+    for p in allowed:
+        if net(p) >= target_net_px:
+            return int(p), True, net(p), False
+
+    # Height target unmet within the budget: largest allowed preset; flag
+    # fps_limited when an out-of-budget preset would have met the target.
+    p = allowed[-1]
+    target_met_beyond_budget = fps_capped and any(
+        net(q) >= target_net_px for q in presets if q not in allowed)
+    return int(p), False, net(p), target_met_beyond_budget
 
 
 def aggregate(runs: Sequence[SubjectRun], roi_long_side: float) -> SubjectProposal:
     """Pool the included runs into a proposal (provisional rules, UX_PLAN §6)."""
     prop = SubjectProposal(runs=len(runs))
     heights = np.asarray([h for r in runs for h in r.heights], dtype=np.float64)
-    confs = np.asarray([c for r in runs for c in r.confs], dtype=np.float64)
+    # Confidence seed evidence: BOX-conf runs only (⑤a) — keypoint-conf
+    # means from legacy runs are a different unit and pinned the seed.
+    confs = np.asarray([c for r in runs if r.conf_kind == "box"
+                        for c in r.confs], dtype=np.float64)
+    legacy_conf_runs = sum(1 for r in runs if r.conf_kind != "box" and r.confs)
     speeds = np.asarray([s for r in runs for s in r.speeds], dtype=np.float64)
     fps = np.asarray([f for r in runs for f in r.fps], dtype=np.float64)
     prop.samples = int(heights.size)
@@ -227,8 +282,20 @@ def aggregate(runs: Sequence[SubjectRun], roi_long_side: float) -> SubjectPropos
     prop.min_ratio = round(_clamp(lo / median_h, *AUTOCAL_MIN_RATIO_BOUNDS), 3)
     prop.max_ratio = round(_clamp(hi / median_h, *AUTOCAL_MAX_RATIO_BOUNDS), 3)
 
-    prop.imgsz, prop.imgsz_satisfied, prop.net_height_px = select_imgsz(
-        median_h, roi_long_side)
+    # FPS budget for the imgsz pick (bug 12e / P-6): model inference cost
+    # ∝ imgsz² from each run's measured fps at its capture imgsz; legacy
+    # runs without a recorded imgsz contribute nothing (no cap = old behavior).
+    fps_base = [(float(np.median(np.asarray(r.fps, dtype=np.float64))), r.imgsz)
+                for r in runs if r.fps and r.imgsz > 0]
+    fps_model = None
+    if fps_base:
+        def fps_model(p: int) -> float:
+            return float(np.median([f * (i / p) ** 2 for f, i in fps_base]))
+    prop.imgsz, prop.imgsz_satisfied, prop.net_height_px, prop.imgsz_fps_limited = \
+        select_imgsz(median_h, roi_long_side,
+                     fps_model=fps_model, fps_budget=AUTOCAL2_FPS_BUDGET)
+    if fps_model is not None and prop.imgsz:
+        prop.imgsz_pred_fps = round(fps_model(prop.imgsz), 1)
 
     # Sensitivity seed: low enough to catch the weakest dancers actually seen,
     # with a small margin.  (KNOBS E2 wants ghost-rate-targeted seeding — that
@@ -237,6 +304,10 @@ def aggregate(runs: Sequence[SubjectRun], roi_long_side: float) -> SubjectPropos
         p05 = float(np.percentile(confs, 5.0))
         prop.confidence = round(_clamp(p05 - AUTOCAL2_CONF_MARGIN,
                                        *AUTOCAL2_CONF_BOUNDS), 2)
+    elif legacy_conf_runs:
+        prop.note = (f"No sensitivity seed: the {legacy_conf_runs} selected "
+                     "run(s) predate the box-confidence upgrade - record a "
+                     "new Calib2 run for a seed.")
 
     # Blur budget: exposure such that the p95-speed dancer blurs less than
     # AUTOCAL2_BLUR_FRACTION of their height during the exposure.
