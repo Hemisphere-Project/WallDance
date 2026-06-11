@@ -4,6 +4,12 @@
 **Companion:** [GUI_STACK_AUDIT.md](GUI_STACK_AUDIT.md) (the audit that motivated this), [ROADMAP.md](ROADMAP.md) ("`app.py` decomposition" maintainability item).
 **Decisions locked in (operator, 2026-06-11):** stay in Python; keep DearPyGui for now (targeted fixes shipped — toast thread race, centered-modal helper, preview texture path, `gui_constants.py`); GUI toolkit migration deferred; a **remote tablet client for the calibration phases + quality feedback** is wanted later, while main operation stays on the desktop.
 
+**Status (2026-06-11):**
+- Phase 0 ✅ `ee38cbd` — tag `decomp-phase0`; replay archive for all 12 scenarios in `tests/golden/decomp-phase0/` (determinism re-run byte-identical → gates compare bytes, not tolerances); 6.5-min playback timing baseline (FPS p50 19.7 source-capped, process_wall p50 31.7 ms / p95 38.4 ms).
+- Phase 1 ✅ `02837a5` — 19→`core/`, 2→`camera/`, 1→`services/`; sys.modules-aliasing shims at old paths (delete once in-flight branches land); launcher update cycle verified on a scratch clone.
+- Phase 2 (1) ✅ `e21218c` — `RecordingController` → `runtime/recording_controller.py` (19 methods, narrow-port Protocols). Operator manual smoke (§6.3) still owed for the Phase 2 commits.
+- Next: Phase 2 (2) `ModelController`.
+
 ---
 
 ## 1. Goal
