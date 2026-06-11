@@ -50,7 +50,7 @@ Core application is built and in production use — inventory, not active work (
 
 **UI / UX:**
 - ⬜ IDS crop ratio increment/decrement buttons
-- ⬜ Fix preview / window sizing issues
+- 🟡 Fix preview / window sizing issues — modal centering (client-area + re-center on resize), toast thread race, and preview-upload cost (~4.7×) fixed 2026-06-11; remaining DPI/window-sizing limits are upstream DearPyGui behavior (see [GUI_STACK_AUDIT.md](GUI_STACK_AUDIT.md))
 - ⬜ Check standard webcam path (OpenCV source auto-detection)
 - ⬜ Check for updates on startup
 

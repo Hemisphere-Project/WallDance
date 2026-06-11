@@ -153,7 +153,7 @@ Keyboard shortcuts: `Q` quit, `E` enhance, `S` skeleton, `K` keypoints, `B` bbox
 - `ids_camera.py` — IDS Peak SDK camera + `UnifiedCamera` (IDS/OpenCV transparent switching).
 - `config_store.py` — save/load configs per project, project rename/delete, remember last project.
 - `config_schema.py` — schema-v2 lighting profiles: migrate / flatten / structure / validate.
-- `gui.py` — GUI logic/callbacks; `gui_builder.py`/`gui_icons.py` hold layout/theme.
+- `gui.py` — GUI logic/callbacks; `gui_builder.py`/`gui_icons.py` hold layout/theme; `gui_constants.py` the shared color palette + layout constants.
 - `calibration.py` — CALIBRATE (scene) pass: exposure/gain servo, gamma/CLAHE seed, joint MOG2 var×scale sweep, exclusion mask, report card.
 - `calib2.py` — DANCERS (subject) pass: accumulative evidence pool, pooled person height + `imgsz` auto-select.
 - `sensitivity_macro.py` — maps the one operator sensitivity dial to confidence (+ varThreshold at the loose end).
