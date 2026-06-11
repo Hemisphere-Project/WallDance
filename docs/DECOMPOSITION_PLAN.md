@@ -10,7 +10,8 @@
 - Phase 2 (1) ✅ `e21218c` — `RecordingController` → `runtime/recording_controller.py` (19 methods, narrow-port Protocols). Operator manual smoke (§6.3) still owed for the Phase 2 commits.
 - Phase 2 (2) ✅ `1df82c3` — `ModelController` → `runtime/model_controller.py` (9 methods + the two run() drain blocks; controller owns model/TRT state; dpg pumping behind `ModelUiPort.render_frame`).
 - Phase 2 (3) ✅ `6f57e66` — `CameraController` → `runtime/camera_controller.py` (21 methods: retry/backoff, IDS↔OpenCV swap, refresh, ids_* parameter cache; camera objects stay app-owned/injected). Found: the IDS gain/exposure auto-toggle callbacks are dead (no GUI wiring).
-- Next: Phase 2 (4) `ConfigManager`.
+- Phase 2 (4) ✅ `4c63baf` — `ConfigManager` → `runtime/config_manager.py` (21 methods: project switch orchestration, save/load, profiles, picker, safe defaults; owns ConfigStore/current-project/profiles/pending-switch). `_get_saveable_config`/`_apply_config_without_model` stay app-side as injected callables — they dissolve into the Phase 3 seam.
+- Next: Phase 2 (5) `CalibrationFlows`.
 
 ---
 
