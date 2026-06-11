@@ -703,6 +703,8 @@ def build_control_panel(gui: Any):
         dpg.add_spacer(height=scaled(8))
         build_roi_section(gui)
         dpg.add_spacer(height=scaled(8))
+        build_exclusion_mask_section(gui)
+        dpg.add_spacer(height=scaled(8))
         build_background_section(gui)
         dpg.add_spacer(height=scaled(8))
         build_enhancement_section(gui)
@@ -1182,6 +1184,39 @@ def build_preview_section(gui: Any):
         with dpg.group(horizontal=True):
             dpg.add_text("Auto-fit scale:", color=(120, 120, 120))
             dpg.add_text("--", tag="preview_autofit_scale_text", color=(140, 180, 140))
+
+
+def build_exclusion_mask_section(gui: Any):
+    """Exclusion mask status + manual editor controls (ROADMAP §4.2 Phase 2 ④).
+
+    The mask itself is built automatically during Calib1; this section shows
+    the active cell count and opens the preview cell editor for operator
+    knowledge the auto pass cannot have (bystander zones, static ghosts).
+    """
+    with dpg.collapsing_header(label="Exclusion Mask", default_open=False,
+                               tag="section_exclusion_mask", closable=False):
+        with dpg.group(horizontal=True):
+            dpg.add_text("Masked:", color=(120, 120, 120))
+            dpg.add_text("0 cell(s)", tag="mask_cells_text", color=(150, 150, 150))
+        with dpg.group(horizontal=True):
+            dpg.add_button(
+                label="Edit",
+                tag="mask_edit_btn",
+                callback=gui._on_mask_edit_toggle,
+                width=scaled(60),
+            )
+            dpg.add_button(
+                label="Clear all",
+                tag="mask_clear_btn",
+                callback=gui._on_mask_clear,
+                width=scaled(80),
+            )
+        dpg.add_text(
+            "Auto-built on every Calibrate. Edit: click/drag preview cells to "
+            "mask (red) / unmask; manual cells survive recalibration.",
+            color=(120, 120, 120),
+            wrap=scaled(300),
+        )
 
 
 def build_roi_section(gui: Any):

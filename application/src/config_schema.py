@@ -38,6 +38,8 @@ PROFILE_KEYS = frozenset({
     "mog2_scale",
     "exclusion_grid",
     "exclusion_cells",
+    "exclusion_manual_add",
+    "exclusion_manual_remove",
     "confidence",
     "sensitivity",
     "sensitivity_conf_seed",
@@ -211,10 +213,24 @@ def _validate_cross_field(out: Dict, warnings: List[str]) -> None:
             out[key] = val
 
     # Exclusion mask: set_cells() indexes grid[0]/grid[1] and each cell's
-    # [0]/[1]; a malformed shape crashes the project load. Drop the pair
-    # whole rather than half-repairing it.
+    # [0]/[1]; a malformed shape crashes the project load. Drop the bundle
+    # whole (incl. the manual overlays) rather than half-repairing it.
+    def _cell_list_ok(cells):
+        if cells is None:
+            return True
+        if not isinstance(cells, (list, tuple)):
+            return False
+        for c in cells:
+            if not isinstance(c, (list, tuple)) or len(c) != 2:
+                return False
+            try:
+                int(c[0]), int(c[1])
+            except (TypeError, ValueError):
+                return False
+        return True
+
     def _mask_ok():
-        grid, cells = out.get("exclusion_grid"), out.get("exclusion_cells")
+        grid = out.get("exclusion_grid")
         if grid is not None:
             if not isinstance(grid, (list, tuple)) or len(grid) != 2:
                 return False
@@ -223,19 +239,12 @@ def _validate_cross_field(out: Dict, warnings: List[str]) -> None:
                     return False
             except (TypeError, ValueError):
                 return False
-        if cells is not None:
-            if not isinstance(cells, (list, tuple)):
-                return False
-            for c in cells:
-                if not isinstance(c, (list, tuple)) or len(c) != 2:
-                    return False
-                try:
-                    int(c[0]), int(c[1])
-                except (TypeError, ValueError):
-                    return False
-        return True
+        return all(_cell_list_ok(out.get(k)) for k in (
+            "exclusion_cells", "exclusion_manual_add", "exclusion_manual_remove"))
 
     if not _mask_ok():
         warnings.append("exclusion_grid/exclusion_cells: malformed mask dropped")
         out.pop("exclusion_grid", None)
         out.pop("exclusion_cells", None)
+        out.pop("exclusion_manual_add", None)
+        out.pop("exclusion_manual_remove", None)

@@ -93,6 +93,23 @@ def test_check_calibration_age():
     assert junk.status == "warn"
 
 
+def test_check_calibration_reports_mask_cells():
+    now = datetime(2026, 6, 11, 12, 0, 0)
+    with_mask = check_calibration(saved_at_iso="2026-06-11T09:00:00",
+                                  active_profile="show", warn_age_h=24.0,
+                                  mask_cells=7, now=now)
+    assert with_mask.status == "ok" and "exclusion mask 7 cell(s)" in with_mask.detail
+
+    zero = check_calibration(saved_at_iso="2026-06-11T09:00:00",
+                             active_profile="show", warn_age_h=24.0,
+                             mask_cells=0, now=now)
+    assert "exclusion mask 0 cell(s)" in zero.detail
+
+    legacy = check_calibration(saved_at_iso="2026-06-11T09:00:00",
+                               active_profile="show", warn_age_h=24.0, now=now)
+    assert "exclusion" not in legacy.detail
+
+
 Usage = namedtuple("usage", "total used free")
 
 

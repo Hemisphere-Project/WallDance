@@ -283,6 +283,13 @@ class WallDanceApp:
         self._roi_drag_start_rect: Optional[tuple[int, int, int, int]] = None
         self._roi_mouse_was_down = False
         self._roi_source_size = (CAMERA_WIDTH, CAMERA_HEIGHT)
+
+        # Exclusion-mask manual editor (ROADMAP §4.2 Phase 2 ④)
+        self.mask_edit_mode = False
+        self._mask_paint_active = False
+        self._mask_paint_value: Optional[bool] = None
+        self._mask_painted_cells: set = set()
+        self._mask_mouse_was_down = False
         self.settings.roi_x = 0
         self.settings.roi_y = 0
         self.settings.roi_w = CAMERA_WIDTH
@@ -488,6 +495,8 @@ class WallDanceApp:
             "on_preview_scale_change": self._cb_preview_scale_change,
             "on_roi_toggle": self._cb_roi_toggle,
             "on_roi_reset": self._cb_roi_reset,
+            "on_mask_edit_toggle": self._cb_mask_edit_toggle,
+            "on_mask_clear": self._cb_mask_clear,
             "on_save_config": self._cb_save_config,
             "on_save_as_config": self._cb_save_as_config,
             "on_save_safe_defaults": self._cb_save_safe_defaults,
@@ -970,10 +979,187 @@ class WallDanceApp:
             self._request_reprocess()
 
     # ------------------------------------------------------------------
+    # Exclusion-mask manual editor (ROADMAP §4.2 Phase 2 ④)
+    # ------------------------------------------------------------------
+    def _mask_space_rect(self, frame_w: int, frame_h: int) -> tuple[int, int, int, int]:
+        """The source-frame rect the exclusion grid is normalized over.
+
+        The mask lives in the motion model's input space: the ROI crop when
+        ROI is enabled, else the full frame (mirrors the pipeline's
+        ``_exclusion_norm_xy`` ROI-local normalization).
+        """
+        if self.settings.roi_enabled:
+            return self._get_effective_roi(frame_w, frame_h)
+        return 0, 0, frame_w, frame_h
+
+    def _mask_norm_point(self, frame_x: int, frame_y: int,
+                         frame_w: int, frame_h: int) -> Optional[tuple[float, float]]:
+        """Map a source-frame point into the mask's normalized [0,1) space."""
+        rx, ry, rw, rh = self._mask_space_rect(frame_w, frame_h)
+        if rw <= 0 or rh <= 0:
+            return None
+        nx = (frame_x - rx) / rw
+        ny = (frame_y - ry) / rh
+        if not (0.0 <= nx < 1.0 and 0.0 <= ny < 1.0):
+            return None
+        return nx, ny
+
+    def _handle_mask_mouse_down(self, sender=None, app_data=None):
+        if not self.mask_edit_mode or self._mask_paint_active:
+            return
+        if app_data != dpg.mvMouseButton_Left:
+            return
+        point = self._get_preview_mouse_point()
+        if point is None:
+            return
+        nxy = self._mask_norm_point(*point)
+        if nxy is None:
+            return
+        # The pressed cell's flip decides the paint value for the whole drag
+        # (classic paint semantics: press on a clear cell → masking drag).
+        result = self.processor.toggle_exclusion_cell(*nxy)
+        if result is None:
+            return
+        col, row, state = result
+        self._mask_paint_active = True
+        self._mask_paint_value = state
+        self._mask_painted_cells = {(col, row)}
+        self._sync_mask_ui()
+
+    def _handle_mask_mouse_move(self, sender=None, app_data=None):
+        if not self._mask_paint_active:
+            return
+        point = self._get_preview_mouse_point()
+        if point is None:
+            return
+        nxy = self._mask_norm_point(*point)
+        if nxy is None:
+            return
+        cell = self.processor.paint_exclusion_cell(*nxy, self._mask_paint_value)
+        if cell is not None and cell not in self._mask_painted_cells:
+            self._mask_painted_cells.add(cell)
+            self._sync_mask_ui()
+
+    def _handle_mask_mouse_up(self, sender=None, app_data=None):
+        if app_data != dpg.mvMouseButton_Left:
+            return
+        if self._mask_paint_active:
+            self._mask_paint_active = False
+            verb = "masked" if self._mask_paint_value else "unmasked"
+            print(f"[Mask] {verb} {len(self._mask_painted_cells)} cell(s) "
+                  f"manually")
+            self._mask_paint_value = None
+            self._mask_painted_cells = set()
+            self._request_reprocess()
+
+    def _poll_mask_mouse_interaction(self):
+        """Mirror of _poll_roi_mouse_interaction for the mask editor."""
+        if not self.mask_edit_mode:
+            self._mask_mouse_was_down = False
+            return
+        try:
+            is_down = dpg.is_mouse_button_down(dpg.mvMouseButton_Left)
+        except Exception:
+            return
+        if is_down and not self._mask_mouse_was_down:
+            self._handle_mask_mouse_down(app_data=dpg.mvMouseButton_Left)
+        elif is_down and self._mask_mouse_was_down:
+            self._handle_mask_mouse_move(app_data=dpg.mvMouseButton_Left)
+        elif (not is_down) and self._mask_mouse_was_down:
+            self._handle_mask_mouse_up(app_data=dpg.mvMouseButton_Left)
+        self._mask_mouse_was_down = is_down
+
+    def _draw_exclusion_overlay(self, frame: np.ndarray, source_w: int, source_h: int):
+        """Grid + cell overlay on the preview while the mask editor is active."""
+        if not self.mask_edit_mode:
+            return
+        grid, auto, manual_add, manual_remove = self.processor.get_exclusion_state()
+        gx, gy = grid
+        if gx <= 0 or gy <= 0:
+            return
+        frame_h, frame_w = frame.shape[:2]
+        rx, ry, rw, rh = self._mask_space_rect(source_w, source_h)
+        # Scale the mask-space rect into preview-frame coordinates.
+        sx = frame_w / max(source_w, 1)
+        sy = frame_h / max(source_h, 1)
+        rx, ry = rx * sx, ry * sy
+        rw, rh = rw * sx, rh * sy
+
+        def cell_rect(col: int, row: int) -> tuple[int, int, int, int]:
+            x0 = int(round(rx + col / gx * rw))
+            y0 = int(round(ry + row / gy * rh))
+            x1 = int(round(rx + (col + 1) / gx * rw))
+            y1 = int(round(ry + (row + 1) / gy * rh))
+            return x0, y0, x1, y1
+
+        effective = (set(map(tuple, auto)) | set(map(tuple, manual_add))) \
+            - set(map(tuple, manual_remove))
+        overlay = frame.copy()
+        for col, row in effective:
+            x0, y0, x1, y1 = cell_rect(col, row)
+            color = (60, 60, 230) if (col, row) in set(map(tuple, manual_add)) \
+                else (40, 40, 180)
+            cv2.rectangle(overlay, (x0, y0), (x1, y1), color, -1)
+        cv2.addWeighted(overlay, 0.4, frame, 0.6, 0, dst=frame)
+        # Manually unmasked auto cells: outline only (auto wanted them, the
+        # operator vetoed) so the veto stays visible and re-clickable.
+        for col, row in set(map(tuple, manual_remove)) & set(map(tuple, auto)):
+            x0, y0, x1, y1 = cell_rect(col, row)
+            cv2.rectangle(frame, (x0, y0), (x1, y1), (140, 140, 140), 1)
+        # Grid lines (thin) + status note.
+        grid_color = (90, 90, 90)
+        for col in range(gx + 1):
+            x = int(round(rx + col / gx * rw))
+            cv2.line(frame, (x, int(ry)), (x, int(ry + rh)), grid_color, 1)
+        for row in range(gy + 1):
+            y = int(round(ry + row / gy * rh))
+            cv2.line(frame, (int(rx), y), (int(rx + rw), y), grid_color, 1)
+        cv2.putText(frame, "MASK EDIT: click/drag cells to mask (red) / unmask",
+                    (int(rx) + 8, int(ry) + 22), cv2.FONT_HERSHEY_SIMPLEX,
+                    max(0.45, min(frame_w, frame_h) / 1400.0),
+                    (80, 220, 120), 1, cv2.LINE_AA)
+
+    def _cb_mask_edit_toggle(self):
+        """GUI button: toggle the exclusion-mask manual editor."""
+        self.mask_edit_mode = not self.mask_edit_mode
+        if self.mask_edit_mode and self.roi_edit_mode:
+            self._cb_roi_edit_toggle(False)  # one paint mode at a time
+        self._mask_paint_active = False
+        self._mask_paint_value = None
+        self._mask_painted_cells = set()
+        if self.gui:
+            self.gui.set_mask_edit_state(self.mask_edit_mode)
+            message = ("Mask edit: click/drag preview cells"
+                       if self.mask_edit_mode else "Mask edit: off")
+            self.gui.show_toast(message, duration=2.5, color=(160, 200, 255))
+        self._sync_mask_ui()
+
+    def _cb_mask_clear(self):
+        """GUI button: drop the whole mask (auto cells + manual overlays)."""
+        self.processor.clear_exclusion()
+        self._sync_mask_ui()
+        self._request_reprocess()
+        if self.gui:
+            self.gui.show_toast("Exclusion mask cleared (auto + manual)",
+                                duration=2.5, color=(255, 180, 80))
+        print("[Mask] cleared (auto + manual)")
+
+    def _sync_mask_ui(self):
+        """Push the current mask cell counts to the GUI label."""
+        if not self.gui:
+            return
+        _grid, auto, manual_add, manual_remove = self.processor.get_exclusion_state()
+        effective = (set(map(tuple, auto)) | set(map(tuple, manual_add))) \
+            - set(map(tuple, manual_remove))
+        self.gui.update_exclusion_mask_text(
+            len(effective), len(auto), len(manual_add), len(manual_remove))
+
+    # ------------------------------------------------------------------
     # Config persistence
     # ------------------------------------------------------------------
     def _get_saveable_config(self) -> Dict:
-        excl_grid, excl_cells = self.processor.get_exclusion()
+        excl_grid, excl_cells, excl_add, excl_remove = \
+            self.processor.get_exclusion_state()
         return {
             "camera_source": self.camera.state.source,
             "model": self.current_model_name,
@@ -989,6 +1175,8 @@ class WallDanceApp:
             "mog2_var_threshold": self.processor.get_motion_var_threshold(),
             "exclusion_grid": list(excl_grid),
             "exclusion_cells": [list(c) for c in excl_cells],
+            "exclusion_manual_add": [list(c) for c in excl_add],
+            "exclusion_manual_remove": [list(c) for c in excl_remove],
             "enhance_enabled": self.settings.enhance_enabled,
             "enhance_lite": self.settings.enhance_lite,
             "enhance_force": self.settings.enhance_force,
@@ -1267,7 +1455,11 @@ class WallDanceApp:
         self.gui and self.gui.sync_slider('sensitivity', self.sensitivity)
         if "exclusion_cells" in config:
             grid = tuple(config.get("exclusion_grid") or AUTOCAL_EXCL_GRID)
-            self.processor.set_exclusion(grid, config["exclusion_cells"])
+            self.processor.set_exclusion(
+                grid, config["exclusion_cells"],
+                config.get("exclusion_manual_add") or (),
+                config.get("exclusion_manual_remove") or ())
+            self._sync_mask_ui()
         if "yolo_imgsz" in config:
             # Just sync UI, don't trigger callback (imgsz already set)
             self.gui and self.gui.sync_combo("imgsz", str(config["yolo_imgsz"]))
@@ -1995,7 +2187,9 @@ class WallDanceApp:
             self.enhancer._update_clahe()
             self.gui and self.gui.sync_slider("clahe", float(result.clahe_value))
         # P1.4: build + activate the auto exclusion mask from the same window.
+        # Manual overlays survive the rebuild (Phase 2 ④).
         excl = self.processor.finish_exclusion_calibration()
+        self._sync_mask_ui()
         print(result.log_line())
         print(f"[Calibrate] {excl.summary_line()} cells={excl.cells}")
         self._request_reprocess()
@@ -3023,6 +3217,8 @@ class WallDanceApp:
     def _cb_roi_edit_toggle(self, enabled: bool):
         if enabled and not self.settings.roi_enabled:
             self.settings.roi_enabled = True
+        if enabled and self.mask_edit_mode:
+            self._cb_mask_edit_toggle()  # one paint mode at a time
         self.roi_edit_mode = bool(enabled) and self.settings.roi_enabled
         if not self.roi_edit_mode:
             self._roi_drag_active = False
@@ -3038,6 +3234,8 @@ class WallDanceApp:
         """Double-click on the preview toggles ROI edit mode."""
         if app_data != dpg.mvMouseButton_Left:
             return
+        if self.mask_edit_mode:
+            return  # mask editor owns preview clicks
         if self.gui and self.gui.project_picker_visible():
             return
         if self._get_preview_mouse_point() is None:
@@ -3381,9 +3579,13 @@ class WallDanceApp:
                         os.path.getmtime(latest)).isoformat()
             except Exception:
                 pass
+            try:
+                mask_cells = len(self.processor.get_exclusion()[1])
+            except Exception:
+                mask_cells = None
             results.append(check_calibration(
                 saved_at_iso=saved_at, active_profile=self._active_profile,
-                warn_age_h=OPS_CALIB_AGE_WARN_H))
+                warn_age_h=OPS_CALIB_AGE_WARN_H, mask_cells=mask_cells))
             results.append(check_disk(
                 recordings_dir=self.recorder.recordings_dir,
                 warn_free_gb=OPS_DISK_WARN_FREE_GB,
@@ -3886,6 +4088,9 @@ class WallDanceApp:
             dpg.add_mouse_down_handler(callback=self._handle_roi_mouse_down)
             dpg.add_mouse_move_handler(callback=self._handle_roi_mouse_move)
             dpg.add_mouse_release_handler(callback=self._handle_roi_mouse_up)
+            dpg.add_mouse_down_handler(callback=self._handle_mask_mouse_down)
+            dpg.add_mouse_move_handler(callback=self._handle_mask_mouse_move)
+            dpg.add_mouse_release_handler(callback=self._handle_mask_mouse_up)
             dpg.add_mouse_double_click_handler(callback=self._handle_preview_double_click)
         dpg.show_viewport()
         self._sync_roi_ui()
@@ -4073,6 +4278,7 @@ class WallDanceApp:
 
             self._poll_roi_mouse_interaction()
             self._update_roi_drag_from_mouse()
+            self._poll_mask_mouse_interaction()
                 
             if self._pending_preview_resize and self.gui:
                 self.gui.resize_preview(self.preview.width, self.preview.height)
@@ -4449,6 +4655,7 @@ class WallDanceApp:
                     preview_t0 = time.time()
                     if self.settings.roi_enabled:
                         self._draw_roi_mask(preview_frame, src_w, src_h)
+                    self._draw_exclusion_overlay(preview_frame, src_w, src_h)
                     for track in scaled_tracks:
                         draw_dancer(
                             preview_frame,

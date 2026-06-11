@@ -395,6 +395,32 @@ class WallDanceGUI:
         if 'on_roi_reset' in self.callbacks:
             self.callbacks['on_roi_reset']()
 
+    def _on_mask_edit_toggle(self, sender=None, value=None):
+        if 'on_mask_edit_toggle' in self.callbacks:
+            self.callbacks['on_mask_edit_toggle']()
+
+    def _on_mask_clear(self, sender=None, value=None):
+        if 'on_mask_clear' in self.callbacks:
+            self.callbacks['on_mask_clear']()
+
+    def set_mask_edit_state(self, editing: bool):
+        """Flip the mask Edit button label to reflect the editor state."""
+        if dpg.does_item_exist("mask_edit_btn"):
+            dpg.configure_item("mask_edit_btn",
+                               label="Done" if editing else "Edit")
+
+    def update_exclusion_mask_text(self, effective: int, auto: int,
+                                   manual_add: int, manual_remove: int):
+        """Update the exclusion-mask cell count line."""
+        if not dpg.does_item_exist("mask_cells_text"):
+            return
+        detail = f"{effective} cell(s)"
+        if manual_add or manual_remove:
+            detail += f"  (auto {auto}, +{manual_add}, -{manual_remove})"
+        dpg.set_value("mask_cells_text", detail)
+        dpg.configure_item("mask_cells_text",
+                           color=(80, 220, 120) if effective else (150, 150, 150))
+
     def update_roi_rect_text(self, x: int, y: int, w: int, h: int, edit_mode: bool = False):
         """Update the read-only ROI rect display (replaces the numeric inputs)."""
         if not dpg.does_item_exist("roi_rect_text"):

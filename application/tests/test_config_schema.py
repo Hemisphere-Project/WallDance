@@ -229,3 +229,35 @@ def test_validate_exclusion_cells_alone_ok():
     out, warnings = cs.validate_flat({"exclusion_cells": [[1, 2]]})
     assert out["exclusion_cells"] == [[1, 2]]
     assert warnings == []
+
+
+def test_validate_exclusion_manual_overlays_well_formed_silent():
+    out, warnings = cs.validate_flat({
+        "exclusion_grid": [16, 10], "exclusion_cells": [[3, 4]],
+        "exclusion_manual_add": [[5, 5]],
+        "exclusion_manual_remove": [[3, 4]],
+    })
+    assert out["exclusion_manual_add"] == [[5, 5]]
+    assert out["exclusion_manual_remove"] == [[3, 4]]
+    assert warnings == []
+
+
+def test_validate_exclusion_manual_overlays_malformed_drop_bundle():
+    # A malformed overlay drops the WHOLE mask bundle (overlays included) -
+    # half a mask is worse than none.
+    for key in ("exclusion_manual_add", "exclusion_manual_remove"):
+        out, warnings = cs.validate_flat({
+            "exclusion_grid": [16, 10], "exclusion_cells": [[3, 4]],
+            key: [[5]],
+        })
+        assert "exclusion_grid" not in out, key
+        assert "exclusion_cells" not in out, key
+        assert "exclusion_manual_add" not in out, key
+        assert "exclusion_manual_remove" not in out, key
+        assert len(warnings) == 1, key
+
+
+def test_manual_overlays_are_profile_scoped():
+    # Overlays ride the same per-profile bundle as the mask they modify.
+    assert "exclusion_manual_add" in cs.PROFILE_KEYS
+    assert "exclusion_manual_remove" in cs.PROFILE_KEYS

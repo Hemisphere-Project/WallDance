@@ -1309,11 +1309,38 @@ class FrameProcessor:
         """Build the mask from the collected window and return an ExclusionResult."""
         return self._exclusion.build()
 
-    def set_exclusion(self, grid, cells) -> None:
-        self._exclusion.set_cells(grid, cells)
+    def set_exclusion(self, grid, cells, manual_add=(), manual_remove=()) -> None:
+        self._exclusion.set_cells(grid, cells, manual_add, manual_remove)
 
     def get_exclusion(self) -> tuple:
+        """(grid, effective cells) — the mask as applied."""
         return self._exclusion.get_cells()
+
+    def get_exclusion_state(self) -> tuple:
+        """(grid, auto, manual_add, manual_remove) — the split, for persistence."""
+        return self._exclusion.get_state()
+
+    def toggle_exclusion_cell(self, nx: float, ny: float):
+        """Toggle the mask cell under a normalized [0,1] point (manual editor).
+
+        Returns (col, row, new_state) or None when outside the grid.
+        """
+        cell = self._exclusion.cell_at(nx, ny)
+        if cell is None:
+            return None
+        state = self._exclusion.toggle_cell(*cell)
+        return (*cell, state)
+
+    def paint_exclusion_cell(self, nx: float, ny: float, excluded: bool):
+        """Force the mask cell under a normalized point (paint-drag).
+
+        Returns (col, row) or None when outside the grid.
+        """
+        cell = self._exclusion.cell_at(nx, ny)
+        if cell is None:
+            return None
+        self._exclusion.set_cell(*cell, excluded)
+        return cell
 
     def clear_exclusion(self) -> None:
         self._exclusion.clear()

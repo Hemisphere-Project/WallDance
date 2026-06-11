@@ -165,10 +165,14 @@ def check_osc(*, enabled: bool, ip: str, port: int, timeout_s: float,
 
 def check_calibration(*, saved_at_iso: Optional[str], active_profile: str,
                       warn_age_h: float,
+                      mask_cells: Optional[int] = None,
                       now: Optional[datetime] = None) -> CheckResult:
+    mask_note = (f", exclusion mask {mask_cells} cell(s)"
+                 if mask_cells is not None else "")
     if not saved_at_iso:
         return CheckResult("calibration", "warn",
-                           f"no saved config found (profile: {active_profile})")
+                           f"no saved config found (profile: {active_profile})"
+                           + mask_note)
     try:
         saved = datetime.fromisoformat(saved_at_iso)
     except ValueError:
@@ -176,7 +180,7 @@ def check_calibration(*, saved_at_iso: Optional[str], active_profile: str,
                            f"unreadable save timestamp {saved_at_iso!r}")
     now = now or datetime.now()
     age_h = (now - saved).total_seconds() / 3600.0
-    detail = f"saved {age_h:.1f} h ago (profile: {active_profile})"
+    detail = f"saved {age_h:.1f} h ago (profile: {active_profile}){mask_note}"
     if age_h > warn_age_h:
         return CheckResult("calibration", "warn",
                            detail + " - consider recalibrating after a re-rig")

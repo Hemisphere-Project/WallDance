@@ -376,30 +376,49 @@ class CalibrationResult:
 class ExclusionResult:
     """Outcome of building the auto exclusion mask."""
     grid: tuple = (0, 0)
-    cells: list = field(default_factory=list)   # excluded (col, row) pairs
+    cells: list = field(default_factory=list)   # auto-excluded (col, row) pairs
     frames: int = 0
+    manual_add: int = 0      # operator-forced exclusions kept across the build
+    manual_remove: int = 0   # operator-forced un-exclusions kept across the build
 
     @property
     def count(self) -> int:
         return len(self.cells)
 
+    def _manual_suffix(self) -> str:
+        parts = []
+        if self.manual_add:
+            parts.append(f"+{self.manual_add} manual")
+        if self.manual_remove:
+            parts.append(f"-{self.manual_remove} unmasked")
+        return f"  ({', '.join(parts)})" if parts else ""
+
     def summary_line(self) -> str:
         gx, gy = self.grid
         if self.frames < AUTOCAL_EXCL_MIN_FRAMES:
-            return "Exclusion mask: not built (too few frames)"
+            return "Exclusion mask: not built (too few frames)" + self._manual_suffix()
         if not self.cells:
-            return f"Exclusion mask: none (no persistent ghost cells in {gx}x{gy} grid)"
-        return f"Exclusion mask: {self.count} ghost cell(s) masked ({gx}x{gy} grid)"
+            return (f"Exclusion mask: none (no persistent ghost cells in "
+                    f"{gx}x{gy} grid)" + self._manual_suffix())
+        return (f"Exclusion mask: {self.count} ghost cell(s) masked "
+                f"({gx}x{gy} grid)" + self._manual_suffix())
 
 
 class ExclusionMaskBuilder:
-    """Builds and holds the auto exclusion mask (P1.4).
+    """Builds and holds the auto exclusion mask (P1.4) + manual overlays (④).
 
     A normalized ``grid`` over the frame.  During calibration, ``observe`` is
     called once per processed frame with the MOG2 foreground mask and the
     normalized positions of the *kept* skeletons.  ``build`` then marks cells
     that move often but ~never hold a skeleton as excluded.  ``excluded`` is the
     runtime query used to reject ghost detections.
+
+    Manual overlays (ROADMAP §4.2 Phase 2 ④): the operator can force-mask
+    cells the auto pass cannot know about (bystander benches, *static* facade
+    ghosts that never move) and force-unmask false auto cells.  Overlays are
+    kept separate from the auto cells so a Calib1 re-run (``build``) replaces
+    only the auto mask — operator knowledge survives recalibration.  The
+    effective mask is ``(auto | manual_add) - manual_remove``.
 
     Pure grid logic (numpy + a cv2.resize) — no camera / tracker / transform
     knowledge; the caller supplies already-normalized [0,1] coordinates.
@@ -419,7 +438,13 @@ class ExclusionMaskBuilder:
         self._skel = np.zeros((self.gy, self.gx), dtype=np.float64)
         self._frames = 0
         self._collecting = False
-        self._cells: set = set()   # active excluded (col, row)
+        self._cells: set = set()          # auto-built excluded (col, row)
+        self._manual_add: set = set()     # operator-forced exclusions
+        self._manual_remove: set = set()  # operator-forced un-exclusions
+        self._effective: set = set()      # cache: (auto | add) - remove
+
+    def _recompute_effective(self) -> None:
+        self._effective = (self._cells | self._manual_add) - self._manual_remove
 
     @property
     def collecting(self) -> bool:
@@ -427,7 +452,14 @@ class ExclusionMaskBuilder:
 
     @property
     def active(self) -> bool:
-        return bool(self._cells)
+        return bool(self._effective)
+
+    def effective_cells(self) -> set:
+        """The mask actually applied: auto ∪ manual-add − manual-remove.
+
+        Returns the internal cache — treat as read-only.
+        """
+        return self._effective
 
     def start(self) -> None:
         self._motion[:] = 0.0
@@ -457,7 +489,10 @@ class ExclusionMaskBuilder:
         self._frames += 1
 
     def build(self) -> ExclusionResult:
-        """Finalise: cells with frequent motion but ~no skeleton → excluded."""
+        """Finalise: cells with frequent motion but ~no skeleton → excluded.
+
+        Replaces only the AUTO cells — manual overlays survive recalibration.
+        """
         self._collecting = False
         cells: set = set()
         if self._frames >= self.min_frames:
@@ -466,28 +501,75 @@ class ExclusionMaskBuilder:
             rows, cols = np.where((mfreq >= self.motion_freq) & (sfreq <= self.skel_freq))
             cells = {(int(c), int(r)) for c, r in zip(cols, rows)}
         self._cells = cells
+        self._recompute_effective()
         return ExclusionResult(grid=(self.gx, self.gy),
-                               cells=sorted(cells), frames=self._frames)
+                               cells=sorted(cells), frames=self._frames,
+                               manual_add=len(self._manual_add),
+                               manual_remove=len(self._manual_remove))
 
     def excluded(self, nx: float, ny: float) -> bool:
         """True if the normalized position lands in an excluded cell."""
-        if not self._cells or not (0.0 <= nx < 1.0 and 0.0 <= ny < 1.0):
+        if not self._effective or not (0.0 <= nx < 1.0 and 0.0 <= ny < 1.0):
             return False
-        return (int(nx * self.gx), int(ny * self.gy)) in self._cells
+        return (int(nx * self.gx), int(ny * self.gy)) in self._effective
 
-    def set_cells(self, grid, cells) -> None:
+    def cell_at(self, nx: float, ny: float):
+        """Grid cell (col, row) under a normalized point, or None if outside."""
+        if not (0.0 <= nx < 1.0 and 0.0 <= ny < 1.0):
+            return None
+        return (int(nx * self.gx), int(ny * self.gy))
+
+    def toggle_cell(self, col: int, row: int) -> bool:
+        """Flip a cell's *effective* state; returns the new state.
+
+        The flip is recorded relative to the auto mask, so it persists as an
+        operator override: un-masking an auto cell records a manual-remove
+        (the next Calib1 may re-detect the cell, the operator's word wins);
+        masking a clean cell records a manual-add.
+        """
+        cell = (int(col), int(row))
+        new_state = cell not in self.effective_cells()
+        self.set_cell(col, row, new_state)
+        return new_state
+
+    def set_cell(self, col: int, row: int, excluded: bool) -> None:
+        """Force a cell's effective state (paint-drag), recorded as an override."""
+        cell = (int(col), int(row))
+        if excluded:
+            self._manual_remove.discard(cell)
+            if cell not in self._cells:
+                self._manual_add.add(cell)
+        else:
+            self._manual_add.discard(cell)
+            if cell in self._cells:
+                self._manual_remove.add(cell)
+        self._recompute_effective()
+
+    def set_cells(self, grid, cells, manual_add=(), manual_remove=()) -> None:
         """Restore a persisted mask (e.g. on project load)."""
         self.gx, self.gy = int(grid[0]), int(grid[1])
         self._cells = {(int(c[0]), int(c[1])) for c in cells}
+        self._manual_add = {(int(c[0]), int(c[1])) for c in manual_add}
+        self._manual_remove = {(int(c[0]), int(c[1])) for c in manual_remove}
         self._collecting = False
+        self._recompute_effective()
 
     def get_cells(self) -> tuple:
-        """(grid, sorted cells) for persistence."""
-        return ((self.gx, self.gy), sorted(self._cells))
+        """(grid, sorted effective cells) — the mask as applied."""
+        return ((self.gx, self.gy), sorted(self.effective_cells()))
+
+    def get_state(self) -> tuple:
+        """(grid, auto, manual_add, manual_remove) — the split, for persistence."""
+        return ((self.gx, self.gy), sorted(self._cells),
+                sorted(self._manual_add), sorted(self._manual_remove))
 
     def clear(self) -> None:
+        """Drop everything — auto mask and operator overlays."""
         self._cells = set()
+        self._manual_add = set()
+        self._manual_remove = set()
         self._collecting = False
+        self._recompute_effective()
 
 
 class SceneCalibrator:

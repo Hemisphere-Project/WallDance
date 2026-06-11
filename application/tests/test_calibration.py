@@ -257,6 +257,82 @@ def test_exclusion_out_of_range_safe():
 
 
 # --------------------------------------------------------------------------
+# Manual overlays (ROADMAP §4.2 Phase 2 ④)
+# --------------------------------------------------------------------------
+def test_manual_toggle_masks_and_unmasks():
+    b = _excl()
+    # Toggle a clean cell ON (bystander zone) → manual-add, excluded.
+    assert b.toggle_cell(2, 2) is True
+    assert b.excluded((2 + 0.5) / 4, (2 + 0.5) / 4)
+    # Toggle it back OFF → override removed, not excluded.
+    assert b.toggle_cell(2, 2) is False
+    assert not b.excluded((2 + 0.5) / 4, (2 + 0.5) / 4)
+    _grid, _auto, add, rem = b.get_state()
+    assert add == [] and rem == []
+
+
+def test_manual_remove_vetoes_auto_cell():
+    b = _excl()
+    b.set_cells((4, 4), [(0, 0)])
+    assert b.excluded(0.1, 0.1)
+    assert b.toggle_cell(0, 0) is False     # operator veto of an auto cell
+    assert not b.excluded(0.1, 0.1)
+    _grid, auto, _add, rem = b.get_state()
+    assert auto == [(0, 0)] and rem == [(0, 0)]
+
+
+def test_manual_overlays_survive_rebuild():
+    # The whole point: operator zones must survive a Calib1 re-run.
+    b = _excl()
+    b.set_cells((4, 4), [(0, 0)])   # prior auto mask
+    b.set_cell(3, 3, True)          # bystander bench (auto can never find it)
+    b.toggle_cell(0, 0)             # operator veto of the auto cell
+
+    b.start()                       # Calib1 re-run
+    mask = _moving_mask()           # auto re-detects (0,0) as a ghost cell
+    for _ in range(10):
+        b.observe(mask, skel_points=[])
+    res = b.build()
+
+    assert (0, 0) in res.cells                       # auto re-found it...
+    assert not b.excluded(0.1, 0.1)                  # ...veto still wins
+    assert b.excluded((3 + 0.5) / 4, (3 + 0.5) / 4)  # bench still masked
+    assert res.manual_add == 1 and res.manual_remove == 1
+
+
+def test_paint_value_is_idempotent():
+    b = _excl()
+    b.set_cell(1, 1, True)
+    b.set_cell(1, 1, True)      # drag re-enters the cell: no flicker
+    assert b.excluded((1 + 0.5) / 4, (1 + 0.5) / 4)
+    _grid, _auto, add, _rem = b.get_state()
+    assert add == [(1, 1)]
+
+
+def test_overlay_persist_roundtrip():
+    b = ExclusionMaskBuilder(grid=(16, 10))
+    b.set_cells((16, 10), [[2, 3], [7, 1]],
+                manual_add=[[5, 5]], manual_remove=[[2, 3]])
+    grid, cells = b.get_cells()
+    assert grid == (16, 10)
+    assert cells == [(5, 5), (7, 1)]    # effective = auto ∪ add − remove
+    _grid, auto, add, rem = b.get_state()
+    assert auto == [(2, 3), (7, 1)] and add == [(5, 5)] and rem == [(2, 3)]
+    # Round-trip through persistence keeps the split intact.
+    b2 = ExclusionMaskBuilder(grid=(16, 10))
+    b2.set_cells(_grid, auto, add, rem)
+    assert b2.get_state() == b.get_state()
+    assert b2.get_cells() == b.get_cells()
+
+
+def test_cell_at_maps_points():
+    b = _excl()
+    assert b.cell_at(0.1, 0.1) == (0, 0)
+    assert b.cell_at(0.9, 0.6) == (3, 2)
+    assert b.cell_at(1.2, 0.5) is None
+
+
+# --------------------------------------------------------------------------
 # State machine
 # --------------------------------------------------------------------------
 def test_state_machine_guards():

@@ -248,9 +248,11 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
     if "motion_sensitivity" in config:
         proc.set_motion_sensitivity(config["motion_sensitivity"])
     cells = config.get("exclusion_cells")
-    if cells and hasattr(proc, "set_exclusion"):
+    manual_add = config.get("exclusion_manual_add") or ()
+    manual_remove = config.get("exclusion_manual_remove") or ()
+    if (cells or manual_add) and hasattr(proc, "set_exclusion"):
         grid = tuple(config.get("exclusion_grid") or AUTOCAL_EXCL_GRID)
-        proc.set_exclusion(grid, cells)
+        proc.set_exclusion(grid, cells or (), manual_add, manual_remove)
 
     return proc
 
