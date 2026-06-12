@@ -210,8 +210,9 @@ class SubjectProposal:
                 lines.append(
                     f"RIG ADVISORY: dancer ≈ {self.net_height_px:.0f} px in the "
                     f"net input, below the ~{self.net_target_px:.0f} px "
-                    "the pose model needs - move the camera closer or use a "
-                    "longer lens.")
+                    "the pose model needs - tighten the ROI to the stage area "
+                    "(net px scale with 1/ROI at zero fps cost), move the "
+                    "camera closer, or use a longer lens.")
         if self.model_advisory:
             lines.append(self.model_advisory)
         if self.confidence is not None:
