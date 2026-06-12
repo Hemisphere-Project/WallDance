@@ -172,9 +172,9 @@ Support files: `install.sh`/`install.bat` (uv sync), `run.sh`/`run.bat` (launch)
 ## Performance Tips
 
 - **Enable TensorRT** via the TRT checkbox for ~2× inference speedup (first build takes 2-5 minutes).
-- Switch to `yolo11n-pose` or `yolo11s-pose` for speed; `yolo11l`/`yolo11m` are accuracy-first (higher models don't hurt quality, only throughput).
+- Default model is `yolo11x-pose` (corpus-benchmarked, ROADMAP §4.2 Phase 2b: capacity is the reliable lever on hard small-far/dark scenes and never hurts elsewhere). `yolo11l`/`yolo11m` are the FPS-budget fallbacks — the DANCERS calibration report suggests the largest tier your rig sustains. `yolo11n/s` are last resorts under FPS starvation only (engines built on demand). yolo26 was benchmarked and removed (loses or ties every tier, incompatible confidence scale).
 - Enable FP16 when running on CUDA for ~20-30% speedup (applies to PyTorch mode).
-- Lower **imgsz** for faster inference at the cost of small-figure detection — but prefer letting **DANCERS** calibration pick it from the on-screen dancer size.
+- Let **DANCERS** calibration pick **imgsz** — the benchmark showed oversizing imgsz beyond the dancer-size target *worsens* quality (and on dark scenes smaller is strictly better), so "raise imgsz for quality" is not a thing.
 - Lower **preview scale** if the UI lags; it only affects display, not detection.
 
 ## TensorRT Acceleration

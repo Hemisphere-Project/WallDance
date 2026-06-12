@@ -55,8 +55,8 @@ Core application is built and in production use — inventory, not active work (
 - ⬜ Check for updates on startup
 
 **Processing:**
-- ⬜ Manual **scene-mask editor** — complements the *auto* exclusion mask ([ROADMAP.md](ROADMAP.md) P1.4); lets the operator hand-paint/edit dead zones
-- ⬜ Target 1920+ imgsz optimization
+- ✅ Manual **scene-mask editor** (2026-06-11, ROADMAP §4.2 Phase 2 ④) — paint-style cell editor on the preview; operator overlays survive Calib1 re-runs
+- ~~Target 1920+ imgsz optimization~~ — dropped 2026-06-12: the Phase 2b benchmark measured imgsz oversizing *worsening* quality past the dancer-size knee (and inverting on dark scenes); 1920 stays the top preset, the ROI is the lever for more net px (see [OPTICS.md](OPTICS.md))
 - ⬜ Tiling for 4K inference
 - ⬜ Rotate video playback support (90°) for testing
 

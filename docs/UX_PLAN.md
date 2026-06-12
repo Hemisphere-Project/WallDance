@@ -73,7 +73,7 @@ Derived on **Apply** (over all included runs):
 | Output | Rule | Written to |
 |--------|------|-----------|
 | `person_height_px` + min/max ratios | median + p05/p95 of pooled heights | project (shared) |
-| `yolo_imgsz` auto-select | smallest imgsz with `person_height_px × imgsz / max(roi_w, roi_h) ≥ ~110 px`, capped by FPS budget (model L/X assumed) | project (shared) |
+| `yolo_imgsz` auto-select | smallest imgsz with `person_height_px × imgsz / max(roi_w, roi_h) ≥ target`, capped by FPS budget. Target = 110 px (corpus-validated, Phase 2b) or 45 px in the high-noise/dark regime (the imgsz curve inverts there); fps predicted from the per-rig engine table (`models/fps_table.json`) when present, else imgsz⁻²; plus a report-only model advisory (largest yolo11 tier in budget) | project (shared) |
 | Gamma + CLAHE | offline sweep on the pooled sampled frames, maximize mean person-confidence (motion feed is gamma-only — Bug #1 fix — so this cannot poison MOG2) | active profile |
 | Sensitivity seed | confidence such that ghost-rate ≈ target on pooled frames (KNOBS E2) | active profile |
 | Blur budget refinement | px/ms speed estimate from pooled track velocities → tighter exposure cap for the next calib1 | project (shared) |
@@ -164,14 +164,19 @@ provisional constants and get re-fit when the annotated recordings arrive
 
 ## 6. Open items
 
-- Exact blur-budget default (25 ms) and net-input height target (~110 px) are
-  provisional — re-fit on annotated footage.
+- Exact blur-budget default (25 ms) is provisional — re-fit on annotated
+  footage. ~~Net-input height target (~110 px)~~ — **measured 2026-06-12**
+  (ROADMAP §4.2 Phase 2b): 110 validated (knee medians 83–102 px, flat across
+  model tiers); dark/noisy scenes invert the curve → `AUTOCAL2_NET_HEIGHT_TARGET_DARK=45`
+  behind the ⑤b noise-σ condition.
 - Expert-mode chord choice (single keys E/T/S/K/B/I/P are taken).
 - Whether calib2's gamma/CLAHE sweep needs GPU batching to stay snappy
   (~12 frames × ~9 combos).
 - ~~Merge timing of `p3-motion-simplification` into `main`~~ — done (2026-06-10).
-- `calib2.select_imgsz` lacks the FPS-budget cap §2 specifies — it can pick 1920
-  on a wide ROI and tank show FPS (ROADMAP bug #12e / §10 P-6).
-- Calib2's confidence-seed pooling averages all 17 keypoint confs incl.
-  invisible ones → pinned at the 0.15 clamp; switch to visible-only mean
-  (ROADMAP bug #11).
+- ~~`calib2.select_imgsz` lacks the FPS-budget cap §2 specifies~~ — done
+  2026-06-11 (ROADMAP §4.2 Phase 2 ⑤c); extended 2026-06-12 with the per-rig
+  engine fps table + model advisory (Phase 2b / P-6).
+- ~~Calib2's confidence-seed pooling averages keypoint confs~~ — done
+  2026-06-11 as the box-conf seed (ROADMAP §4.2 Phase 2 ⑤a). Phase 2b then
+  measured the seed rule weak grid-wide → per-scene τ moves to the known-N
+  search (ROADMAP §4.2 Phase 3).

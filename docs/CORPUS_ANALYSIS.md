@@ -109,6 +109,8 @@ Separability margin (p10 of real-det conf − p90 of ghost-det conf, raw pass): 
 - Aerial inverted/spread poses depress confidence ~2–4× vs standing even when large (whitebg2 s4 raw vs s3 raw) — pose, not size: best handled by enhancement + per-scene threshold, not by imgsz.
 - Heavy defocus (testflou s4): two *static* blurred people = 0 coverage; the same blur with *motion* (s5/s6) detects fine. Focus discipline (P0 monitor) matters most for static subjects.
 
+> **Update 2026-06-12 (Phase 2b benchmark, full curve measured — ROADMAP §4.2 2b, trail in tmp_analysis/phase2b/SUMMARY.md):** the 110 px target is validated as the *normal-scene* target (knee medians 83–102 px, flat across model tiers), but two §3.5 extrapolations did not survive measurement: (a) pushing imgsz *above* the knee actively worsens quality (median −0.10), and on dark/noisy scenes the curve fully inverts (downscale = denoise; dark-scene target is now 45 px behind the ⑤b noise-σ condition); (b) the pose observation holds — aerial does **not** shift the knee (93.8 vs 102.2 px floor), it costs confidence only, exactly as this section predicted.
+
 ---
 
 ## 4. Replay layer — current configs vs calibrated configs (full pipeline)

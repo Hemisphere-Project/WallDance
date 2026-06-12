@@ -4,6 +4,13 @@
 **Inputs:** `tests/sensitivity.py` (E1) over the Phase-A objective + Phase-B cache,
 on the two seed scenarios (`residence1-solo` slots 3 & 4).
 
+> **Scope note (2026-06-12):** this analysis predates the 12-scenario corpus.
+> Its per-knob verdicts were since re-measured where it matters — confidence
+> span + macro (Phase 2 ⑦), imgsz/model selection (Phase 2b: target 110
+> validated, dark-scene target 45, model = largest yolo11 tier in budget,
+> per-scene τ moves to Phase 3) — see ROADMAP §4.2. Treat the tables below as
+> the historical single-clip-era evidence, not current guidance.
+
 Serves the ROADMAP north star — *"rig the camera, aim the IR light, press one
 calibration button, get robust detection for the whole show, without tuning
 knobs per venue"* — by answering, with measurements: **which knobs does a user
