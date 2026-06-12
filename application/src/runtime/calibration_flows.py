@@ -24,12 +24,12 @@ from typing import Callable, Optional, Protocol
 import cv2
 import numpy as np
 
-from core.calib2 import SubjectCollector, SubjectPool
+from core.calib2 import SubjectCollector, SubjectPool, load_fps_table
 from core.calib2 import aggregate as calib2_aggregate
 from core.calibration import (ExposureServo, SceneCalibrator,
                               cap_gamma_for_noise, seed_gamma)
 from core.config import (AUTOCAL_BLUR_BUDGET_MS, AUTOCAL2_FRAME_SAMPLES,
-                         AUTOCAL2_WINDOW_FRAMES)
+                         AUTOCAL2_WINDOW_FRAMES, MODELS_DIR)
 
 try:
     from camera.ids_camera import CameraSource
@@ -406,6 +406,22 @@ class CalibrationFlows:
                 self.ui.set_calibrate_status(None)
             self._show_calib2_dialog()
 
+    def _calib2_aggregate(self, runs, roi_long_side):
+        """calib2.aggregate with the live calib-time context: MOG2-input noise
+        sigma (dark-target switch), the per-rig engine fps table and the
+        current model (P-6 cost curve + report-only model advisory)."""
+        noise = None
+        mm = getattr(self.processor, "motion_model", None)
+        if mm is not None:
+            try:
+                noise = float(mm.noise_sigma())
+            except Exception:
+                noise = None
+        table = load_fps_table(os.path.join(MODELS_DIR, "fps_table.json"))
+        current = getattr(self.models, "current_model_name", "") or ""
+        return calib2_aggregate(runs, roi_long_side, noise_sigma=noise,
+                                fps_table=table, current_model=current)
+
     def _show_calib2_dialog(self):
         """Open the evidence-pool dialog with all stored runs + a proposal preview."""
         if not self.ui.available:
@@ -422,7 +438,8 @@ class CalibrationFlows:
             }
             for path, run in entries
         ]
-        proposal = calib2_aggregate([r for _p, r in entries], max(roi[2], roi[3]))
+        proposal = self._calib2_aggregate([r for _p, r in entries],
+                                          max(roi[2], roi[3]))
         self.ui.show_calib2_dialog(rows, proposal.summary())
 
     def _cb_calib2_apply(self, selected_paths):
@@ -431,7 +448,7 @@ class CalibrationFlows:
         chosen = [run for path, run in pool.load_runs() if path in set(selected_paths)]
         frame_w, frame_h = self.roi_source_size()
         roi = self.get_effective_roi(frame_w, frame_h)
-        prop = calib2_aggregate(chosen, max(roi[2], roi[3]))
+        prop = self._calib2_aggregate(chosen, max(roi[2], roi[3]))
         if not prop.ok:
             if self.ui.available:
                 self.ui.show_toast(prop.summary(),

@@ -31,9 +31,11 @@ from core.config import (
     AUTOCAL_MAX_RATIO_BOUNDS,
     AUTOCAL_HEIGHT_PCTL_LO,
     AUTOCAL_HEIGHT_PCTL_HI,
+    AUTOCAL_CLAHE_NOISE_SIGMA,
     AUTOCAL2_WINDOW_FRAMES,
     AUTOCAL2_MIN_SAMPLES,
     AUTOCAL2_NET_HEIGHT_TARGET,
+    AUTOCAL2_NET_HEIGHT_TARGET_DARK,
     AUTOCAL2_CONF_MARGIN,
     AUTOCAL2_CONF_BOUNDS,
     AUTOCAL2_BLUR_FRACTION,
@@ -178,6 +180,9 @@ class SubjectProposal:
                                       # but was rejected by the FPS budget (⑤c)
     imgsz_pred_fps: Optional[float] = None  # predicted fps at the chosen imgsz
     net_height_px: float = 0.0        # dancer height in net-input px at the chosen imgsz
+    net_target_px: float = AUTOCAL2_NET_HEIGHT_TARGET  # target used for the pick
+    imgsz_dark_mode: bool = False     # True when the high-noise (dark) target applied
+    model_advisory: str = ""          # P-6 fps-table model suggestion (report-only)
     confidence: Optional[float] = None
     blur_budget_ms: Optional[float] = None
     note: str = ""
@@ -195,16 +200,20 @@ class SubjectProposal:
             fps_part = (f" @ ~{self.imgsz_pred_fps:.0f} fps"
                         if self.imgsz_pred_fps else "")
             cap_part = "  (capped by FPS budget)" if self.imgsz_fps_limited else ""
+            dark_part = ("  [dark scene: small-target mode]"
+                         if self.imgsz_dark_mode else "")
             lines.append(f"Image size: {self.imgsz}  "
                          f"(dancer ≈ {self.net_height_px:.0f} px in net input"
-                         f"{fps_part}){cap_part}")
+                         f"{fps_part}){cap_part}{dark_part}")
             if not self.imgsz_satisfied:
                 # Explicit rig advisory, not a silent fallback (bug 12e).
                 lines.append(
                     f"RIG ADVISORY: dancer ≈ {self.net_height_px:.0f} px in the "
-                    f"net input, below the ~{AUTOCAL2_NET_HEIGHT_TARGET:.0f} px "
+                    f"net input, below the ~{self.net_target_px:.0f} px "
                     "the pose model needs - move the camera closer or use a "
                     "longer lens.")
+        if self.model_advisory:
+            lines.append(self.model_advisory)
         if self.confidence is not None:
             lines.append(f"Sensitivity seed (confidence): {self.confidence:.2f}")
         if self.blur_budget_ms is not None:
@@ -257,8 +266,99 @@ def select_imgsz(person_height_px: float, roi_long_side: float,
     return int(p), False, net(p), target_met_beyond_budget
 
 
-def aggregate(runs: Sequence[SubjectRun], roi_long_side: float) -> SubjectProposal:
-    """Pool the included runs into a proposal (provisional rules, UX_PLAN §6)."""
+def load_fps_table(path: str) -> Optional[dict]:
+    """Load ``models/fps_table.json``: {model: {imgsz: fps}} measured per-rig
+    at engine-build time (P-6 / Phase 2b — the imgsz^-2 law breaks under ~960
+    where fixed overhead dominates, so the cost curve is measured, not
+    assumed). Returns {model: {int imgsz: float fps}} or None when missing
+    or unreadable."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except (OSError, ValueError):
+        return None
+    table = {}
+    for model, row in raw.items():
+        if model.startswith("_") or not isinstance(row, dict):
+            continue
+        try:
+            pts = {int(k): float(v) for k, v in row.items() if float(v) > 0}
+        except (TypeError, ValueError):
+            continue
+        if pts:
+            table[model] = pts
+    return table or None
+
+
+def _table_fps_model(fps_base: list, table_row: dict):
+    """Predict whole-loop fps at preset ``p`` by scaling each run's live fps
+    with the rig table's engine-fps ratio (candidate preset / capture imgsz);
+    per-run fallback to the imgsz^-2 law where the table lacks a point."""
+    def fps_model(p: int) -> float:
+        preds = []
+        for f, i in fps_base:
+            t_p, t_i = table_row.get(int(p)), table_row.get(int(i))
+            if t_p and t_i:
+                preds.append(f * t_p / t_i)
+            else:
+                preds.append(f * (i / p) ** 2)
+        return float(np.median(preds))
+    return fps_model
+
+
+# Largest-first; n/s are last resorts (Phase 2b: capacity is the only reliable
+# lever on hard small-far/dark scenes and never hurts elsewhere; yolo26 loses
+# tier-for-tier on this corpus and its conf scale would break seeded configs).
+_MODEL_TIERS_DESC = ("yolo11x-pose", "yolo11l-pose", "yolo11m-pose",
+                     "yolo11s-pose", "yolo11n-pose")
+
+
+def advise_model(fps_table: Optional[dict], current_model: str, imgsz: int,
+                 fps_base: list,
+                 fps_budget: float = AUTOCAL2_FPS_BUDGET
+                 ) -> Tuple[Optional[str], Optional[float]]:
+    """Largest yolo11 tier predicted to hold ``fps_budget`` at ``imgsz``.
+
+    Cross-model prediction scales each run's live fps by the rig table's
+    fps ratio candidate@imgsz / current@capture-imgsz — the same whole-loop
+    simplification as the ⑤c imgsz cap. Report-only; never auto-applied.
+    Returns (model, predicted_fps), or (None, None) when the table, the
+    current model's reference points, or live fps evidence are missing —
+    callers should treat that as "no advisory", except the explicit
+    nothing-fits case which returns (None, predicted_fps_of_smallest)."""
+    if not fps_table or not fps_base or not imgsz or not current_model:
+        return None, None
+    cur_row = fps_table.get(current_model)
+    if not cur_row:
+        return None, None
+    last_pred = None
+    for cand in _MODEL_TIERS_DESC:
+        row = fps_table.get(cand)
+        if not row or int(imgsz) not in row:
+            continue
+        preds = [f * row[int(imgsz)] / cur_row[int(i)]
+                 for f, i in fps_base if cur_row.get(int(i))]
+        if not preds:
+            continue
+        pred = float(np.median(preds))
+        last_pred = round(pred, 1)
+        if pred >= fps_budget:
+            return cand, round(pred, 1)
+    return None, last_pred
+
+
+def aggregate(runs: Sequence[SubjectRun], roi_long_side: float,
+              noise_sigma: Optional[float] = None,
+              fps_table: Optional[dict] = None,
+              current_model: str = "") -> SubjectProposal:
+    """Pool the included runs into a proposal (provisional rules, UX_PLAN §6).
+
+    ``noise_sigma`` (live MOG2-input temporal noise, same definition as
+    Calib1's) switches the net-height target to the dark-scene value when it
+    exceeds the ⑤b threshold — Phase 2b measured the imgsz curve INVERTING on
+    dark/noisy scenes (downscale acts as denoise; tmp_analysis/phase2b).
+    ``fps_table``/``current_model`` enable the per-rig measured cost curve and
+    the report-only model advisory (P-6)."""
     prop = SubjectProposal(runs=len(runs))
     heights = np.asarray([h for r in runs for h in r.heights], dtype=np.float64)
     # Confidence seed evidence: BOX-conf runs only (⑤a) — keypoint-conf
@@ -288,14 +388,43 @@ def aggregate(runs: Sequence[SubjectRun], roi_long_side: float) -> SubjectPropos
     fps_base = [(float(np.median(np.asarray(r.fps, dtype=np.float64))), r.imgsz)
                 for r in runs if r.fps and r.imgsz > 0]
     fps_model = None
-    if fps_base:
+    cur_row = (fps_table or {}).get(current_model)
+    if fps_base and cur_row:
+        # Per-rig measured cost curve (P-6); quadratic fallback per point.
+        fps_model = _table_fps_model(fps_base, cur_row)
+    elif fps_base:
         def fps_model(p: int) -> float:
             return float(np.median([f * (i / p) ** 2 for f, i in fps_base]))
+
+    # Dark/noisy regime: the imgsz quality curve inverts (Phase 2b) — aim at
+    # the small dark-scene target instead of the standard pose target.
+    dark = bool(noise_sigma is not None
+                and noise_sigma > AUTOCAL_CLAHE_NOISE_SIGMA)
+    target = AUTOCAL2_NET_HEIGHT_TARGET_DARK if dark else AUTOCAL2_NET_HEIGHT_TARGET
+    prop.imgsz_dark_mode = dark
+    prop.net_target_px = target
+
     prop.imgsz, prop.imgsz_satisfied, prop.net_height_px, prop.imgsz_fps_limited = \
-        select_imgsz(median_h, roi_long_side,
+        select_imgsz(median_h, roi_long_side, target_net_px=target,
                      fps_model=fps_model, fps_budget=AUTOCAL2_FPS_BUDGET)
     if fps_model is not None and prop.imgsz:
         prop.imgsz_pred_fps = round(fps_model(prop.imgsz), 1)
+
+    # Model advisory (P-6, report-only): largest yolo11 tier inside the FPS
+    # budget at the chosen imgsz, from the per-rig engine fps table.
+    if fps_table and current_model and prop.imgsz:
+        best, pred = advise_model(fps_table, current_model, prop.imgsz,
+                                  fps_base)
+        if best and best != current_model:
+            prop.model_advisory = (
+                f"Model advisory: {best} is the largest tier predicted to "
+                f"hold {AUTOCAL2_FPS_BUDGET:.0f} fps at {prop.imgsz} "
+                f"(~{pred:.0f} fps; current: {current_model}).")
+        elif best is None and pred is not None:
+            prop.model_advisory = (
+                f"Model advisory: no yolo11 tier is predicted to hold "
+                f"{AUTOCAL2_FPS_BUDGET:.0f} fps at {prop.imgsz} on this rig "
+                f"(smallest ~{pred:.0f} fps; current: {current_model}).")
 
     # Sensitivity seed: low enough to catch the weakest dancers actually seen,
     # with a small margin.  (KNOBS E2 wants ghost-rate-targeted seeding — that

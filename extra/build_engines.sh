@@ -112,3 +112,9 @@ model.export(format='engine', imgsz=$size, half=True, device=0)
 done
 
 echo "=== All engines built! ==="
+
+# Per-rig fps table (ROADMAP P-6 / Phase 2b): calib2 consumes
+# models/fps_table.json for the imgsz FPS budget + model advisory.
+echo "=== Measuring per-model fps -> models/fps_table.json ==="
+uv run --no-sync python "$ROOT_DIR/extra/measure_engine_fps.py" \
+    || echo "=== Warning: fps measurement failed (table not updated) ==="

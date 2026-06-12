@@ -216,3 +216,112 @@ def test_aggregate_legacy_runs_without_imgsz_skip_the_cap():
     assert prop.imgsz == 1280
     assert not prop.imgsz_fps_limited
     assert prop.imgsz_pred_fps is None
+
+
+# ------------------------------------------ Phase 2b: dark target (high noise)
+
+def test_aggregate_dark_noise_switches_to_small_target():
+    # 200 px dancer in 1920: normal target 110 → 1280; dark target 45 →
+    # need imgsz >= 45*1920/200 = 432 → 640. Quality measured INVERTING on
+    # dark scenes (tmp_analysis/phase2b: dark-crowd 0.19@640 vs 0.96@1536).
+    run = _make_run(n=60, height=200.0)
+    normal = aggregate([run], 1920.0, noise_sigma=2.0)
+    dark = aggregate([run], 1920.0, noise_sigma=6.0)
+    assert normal.imgsz == 1280 and not normal.imgsz_dark_mode
+    assert dark.imgsz == 640 and dark.imgsz_dark_mode
+    assert dark.imgsz_satisfied
+    assert dark.net_target_px == pytest.approx(45.0)
+    assert "dark scene" in dark.summary()
+    assert "dark scene" not in normal.summary()
+
+
+def test_aggregate_no_noise_evidence_keeps_normal_target():
+    run = _make_run(n=60, height=200.0)
+    prop = aggregate([run], 1920.0)            # noise_sigma omitted
+    assert prop.imgsz == 1280 and not prop.imgsz_dark_mode
+
+
+def test_dark_rig_advisory_uses_dark_target():
+    # Tiny dancer + dark: even the dark target can be unreachable; the
+    # advisory must quote the active (dark) target, not the 110 default.
+    run = _make_run(n=60, height=30.0)
+    prop = aggregate([run], 1920.0, noise_sigma=6.0)
+    assert not prop.imgsz_satisfied
+    assert "~45 px" in prop.summary()
+
+
+# -------------------------------- P-6: per-rig fps table + model advisory
+
+_TABLE = {
+    "yolo11x-pose": {640: 40.0, 960: 30.0, 1280: 18.0},
+    "yolo11l-pose": {640: 60.0, 960: 45.0, 1280: 27.0},
+    "yolo11m-pose": {640: 80.0, 960: 60.0, 1280: 36.0},
+}
+
+
+def test_load_fps_table_roundtrip_and_garbage(tmp_path):
+    p = tmp_path / "fps_table.json"
+    p.write_text('{"_meta": {"runs": 30}, "yolo11m-pose": {"960": 60.0},'
+                 ' "bad": "nope"}')
+    table = calib2.load_fps_table(str(p))
+    assert table == {"yolo11m-pose": {960: 60.0}}
+    assert calib2.load_fps_table(str(tmp_path / "missing.json")) is None
+    (tmp_path / "junk.json").write_text("{not json")
+    assert calib2.load_fps_table(str(tmp_path / "junk.json")) is None
+
+
+def test_aggregate_uses_table_cost_curve_over_quadratic():
+    # Live 12 fps at 1280; table says 1280→18 / 960→30 for the current model:
+    # predicted fps(960) = 12 * 30/18 = 20 — exactly meets the budget, so the
+    # height-target pick (1280→12 fps) is capped to 960. The quadratic law
+    # would have predicted 21.3 — same pick here, but the prediction must be
+    # the table's.
+    run = _make_run(n=60, height=200.0, fps=12.0, imgsz=1280)
+    prop = aggregate([run], 1920.0, fps_table=_TABLE,
+                     current_model="yolo11x-pose")
+    assert prop.imgsz == 960
+    assert prop.imgsz_pred_fps == pytest.approx(20.0, abs=0.1)
+
+
+def test_model_advisory_suggests_larger_tier_in_budget():
+    # Current 11m at 960 with live 40 fps; table ratios put 11x@960 at
+    # 40*30/60 = 20 fps — the largest tier inside the budget → advise 11x.
+    run = _make_run(n=60, height=400.0, fps=40.0, imgsz=960)
+    prop = aggregate([run], 1920.0, fps_table=_TABLE,
+                     current_model="yolo11m-pose")
+    assert prop.imgsz == 640                  # 400px dancer: 640 meets 110
+    best, pred = calib2.advise_model(_TABLE, "yolo11m-pose", 640,
+                                     [(40.0, 960)])
+    assert best == "yolo11x-pose"             # 40*40/60 = 26.7 >= 20
+    assert pred == pytest.approx(26.7, abs=0.1)
+    assert "yolo11x-pose" in prop.model_advisory
+
+
+def test_model_advisory_silent_when_current_is_best():
+    best, _ = calib2.advise_model(_TABLE, "yolo11x-pose", 640, [(40.0, 960)])
+    assert best == "yolo11x-pose"
+    run = _make_run(n=60, height=400.0, fps=40.0, imgsz=960)
+    prop = aggregate([run], 1920.0, fps_table=_TABLE,
+                     current_model="yolo11x-pose")
+    assert prop.model_advisory == ""
+
+
+def test_model_advisory_nothing_fits_reports_starvation():
+    # Live 4 fps: no tier reaches 20 fps at 1280.
+    best, pred = calib2.advise_model(_TABLE, "yolo11x-pose", 1280,
+                                     [(4.0, 1280)])
+    assert best is None and pred is not None
+    run = _make_run(n=60, height=200.0, fps=4.0, imgsz=1280)
+    prop = aggregate([run], 1920.0, fps_table=_TABLE,
+                     current_model="yolo11x-pose")
+    assert "no yolo11 tier" in prop.model_advisory
+
+
+def test_advisory_absent_without_table_or_model():
+    run = _make_run(n=60, height=200.0, fps=12.0, imgsz=1280)
+    assert aggregate([run], 1920.0).model_advisory == ""
+    assert aggregate([run], 1920.0, fps_table=_TABLE).model_advisory == ""
+    assert calib2.advise_model(None, "yolo11m-pose", 960, [(40.0, 960)]) \
+        == (None, None)
+    assert calib2.advise_model(_TABLE, "yolo26m-pose", 960, [(40.0, 960)]) \
+        == (None, None)

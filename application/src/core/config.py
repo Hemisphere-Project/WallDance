@@ -481,7 +481,17 @@ AUTOCAL_GAMMA_NOISY_MAX = 1.8       # Gamma cap when the measured window noise �
 # annotated-footage loop re-fits them (UX_PLAN §6).
 AUTOCAL2_WINDOW_FRAMES = 240        # Collection window per run (~10 s @ 24 fps)
 AUTOCAL2_MIN_SAMPLES = 40           # Min pooled height samples to trust the pool
-AUTOCAL2_NET_HEIGHT_TARGET = 110.0  # Dancer height in YOLO net-input px (pose needs ~>100)
+AUTOCAL2_NET_HEIGHT_TARGET = 110.0  # Dancer height in YOLO net-input px. Phase 2b
+                                    # benchmark (tmp_analysis/phase2b/SUMMARY.md):
+                                    # knee medians 83-102 px, p75 104-128 across
+                                    # all model tiers — 110 validated; oversizing
+                                    # past the knee WORSENS quality (median -0.10)
+AUTOCAL2_NET_HEIGHT_TARGET_DARK = 45.0  # High-noise regime target (noise σ above
+                                    # AUTOCAL_CLAHE_NOISE_SIGMA, the ⑤b condition):
+                                    # downscale acts as denoise — dark-crowd best
+                                    # at net 52 px (640), 0.76→0.19 vs the net≥110
+                                    # pick; outdoor-night U-curve optimum 38-65 px.
+                                    # Phase 2b, n=2 dark scenes; re-check on the rig
 AUTOCAL2_CONF_MARGIN = 0.05         # Sensitivity seed: p05 BOX-conf minus this (⑤a)
 AUTOCAL2_CONF_BOUNDS = (0.15, 0.65) # Clamp for the seeded confidence — corpus-
                                     # measured best-τ spans 0.15–0.65
