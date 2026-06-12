@@ -46,8 +46,11 @@ DENOISE_STRENGTH = 0.0              # 0.0 = Off, 0.9 = Strong smoothing
 # =============================================================================
 # YOLO MODEL
 # =============================================================================
-YOLO_MODEL = "yolo11m-pose.pt"      # Options: yolo11n/s/m/l/x-pose.pt
-                                    # n=fastest, x=most accurate
+YOLO_MODEL = "yolo11x-pose.pt"      # Options: yolo11n/s/m/l/x-pose.pt
+                                    # Phase 2b corpus benchmark: 11x >= 11m on
+                                    # 9/12 scenes (+0.45/+0.51 on small-far/dark,
+                                    # 11m's wins are noise); the FPS budget +
+                                    # per-rig fps table keep imgsz honest
 YOLO_CONFIDENCE = 0.25              # Detection confidence threshold (0.1-0.9)
 YOLO_IOU_THRESHOLD = 0.45           # NMS IoU threshold
 YOLO_IMGSZ = 800                    # YOLO input size (640, 800, 960, 1280, 1536, 1920, 2560)
