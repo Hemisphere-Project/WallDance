@@ -615,6 +615,18 @@ def build_bottom_bar(gui: Any):
                                  "collects one evidence run (sizes, confidences, speeds)\n"
                                  "into the project pool, then lets you apply the pooled\n"
                                  "result: person height, image size, sensitivity seed.")
+                calibrate_all_btn = dpg.add_button(
+                    label="ALL",
+                    tag="calibrate_all_btn",
+                    width=scaled(45),
+                    height=scaled(28),
+                    callback=gui._on_calibrate_all,
+                )
+                dpg.bind_item_theme(calibrate_all_btn, gui._btn_standby_theme)
+                with dpg.tooltip(calibrate_all_btn):
+                    dpg.add_text("Calibrate All - guided flow chaining both:\n"
+                                 "SCENE (clear stage) -> report card -> DANCERS\n"
+                                 "(1-4 moving) -> pool review -> apply -> save.")
                 dpg.add_text("", tag="calibrate_status", color=(160, 200, 255), show=False)
                 dpg.add_spacer(width=scaled(10))
                 standby_btn = dpg.add_button(

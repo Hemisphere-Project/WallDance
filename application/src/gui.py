@@ -590,6 +590,11 @@ class WallDanceGUI:
         if 'on_calibrate' in self.callbacks:
             self.callbacks['on_calibrate']()
 
+    def _on_calibrate_all(self):
+        """ALL button → open the guided Calibrate All wizard (GUI-local)."""
+        if 'on_calibrate_all' in self.callbacks:
+            self.callbacks['on_calibrate_all']()
+
     def set_calibrate_status(self, text: Optional[str]):
         """Show inline progress next to the Calibrate button (None = idle).
 

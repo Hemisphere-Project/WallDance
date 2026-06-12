@@ -28,6 +28,7 @@ import dearpygui.dearpygui as dpg
 
 from gui import WallDanceGUI, get_display_scale
 from runtime import api
+from ui.calibrate_all_wizard import CalibrateAllWizard
 
 
 class DpgUiAdapter:
@@ -37,6 +38,7 @@ class DpgUiAdapter:
         self.api = runtime_api
         self.bus = bus
         self.gui: Optional[WallDanceGUI] = None
+        self.wizard: Optional[CalibrateAllWizard] = None
         self._warned_events = set()
         self._event_handlers = self._build_event_handlers()
         bus.subscribe(self._on_event)
@@ -47,6 +49,10 @@ class DpgUiAdapter:
     def create_gui(self, config: Dict) -> None:
         """Build the GUI (creates the dpg context) and mark the bus ready."""
         self.gui = WallDanceGUI(config=config, callbacks=self._build_callbacks())
+        # Calibrate All wizard: a second, GUI-local client of the calibration
+        # command/event vocabulary (desktop precursor of the Phase 5 tablet
+        # wizard). Created with the GUI; opening it has no runtime effect.
+        self.wizard = CalibrateAllWizard(self.gui, self.api.submit)
         self.bus.ui_ready = True
 
     def setup_viewport(self, roi) -> None:
@@ -146,6 +152,7 @@ class DpgUiAdapter:
             "on_imgsz_change": lambda v: submit(api.SetImgsz(int(v))),
             "on_person_height_change": lambda v: submit(api.SetPersonHeight(int(v))),
             "on_calibrate": lambda: submit(api.StartCalibration()),
+            "on_calibrate_all": lambda: self.wizard and self.wizard.open(),
             "on_calib2": lambda: submit(api.StartDancersRun()),
             "on_calib2_apply": lambda sel: submit(api.ApplyCalib2(list(sel))),
             "on_calib2_clear": lambda: submit(api.ClearCalib2Pool()),
@@ -200,6 +207,8 @@ class DpgUiAdapter:
         """Keyboard shortcuts (moved from app.py; runtime effects -> commands)."""
         if dpg.does_item_exist("issue_report_dialog"):
             return
+        if self.wizard is not None and self.wizard.active:
+            return  # modal wizard open: suppress shortcuts (like the picker)
 
         key = app_data
         gui = self.gui
@@ -275,11 +284,19 @@ class DpgUiAdapter:
                 e.message, duration=e.duration, color=tuple(e.color)),
             api.Alert: lambda e: self.gui.show_toast(
                 f"/!\\ {e.message}", duration=8.0, color=(255, 80, 80)),
-            api.CalibProgress: lambda e: self.gui.set_calibrate_status(e.text),
-            api.CalibReportCard: lambda e: self.gui.show_calibration_result_dialog(
-                e.summary, on_save=lambda: submit(api.SaveConfig())),
-            api.Calib2PoolChanged: lambda e: self.gui.show_calib2_dialog(
-                e.rows, e.proposal),
+            # Calibration events route through the wizard first; when it is
+            # closed (or mid-intro) they fall back to the classic dialogs, so
+            # the plain CALIBRATE / DANCERS buttons behave exactly as before.
+            api.CalibProgress: lambda e: (
+                self.wizard.on_progress(e.text),
+                self.gui.set_calibrate_status(e.text)),
+            api.CalibReportCard: lambda e: (
+                None if self.wizard.on_report_card(e.summary)
+                else self.gui.show_calibration_result_dialog(
+                    e.summary, on_save=lambda: submit(api.SaveConfig()))),
+            api.Calib2PoolChanged: lambda e: (
+                None if self.wizard.on_pool_changed(e.rows, e.proposal)
+                else self.gui.show_calib2_dialog(e.rows, e.proposal)),
             api.ConfigSaved: lambda e: self.gui.show_save_indicator(e.message),
             api.ConfigList: lambda e: self.gui.update_config_list(
                 e.configs, e.current_display),
