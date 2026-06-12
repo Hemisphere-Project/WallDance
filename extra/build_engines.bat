@@ -24,11 +24,11 @@ rem Prevent ultralytics from auto-installing packages into the venv
 set "YOLO_AUTOINSTALL=0"
 
 rem ── Harvest weights already in application\ into models\ ───────────
-rem (e.g. yolo26*-pose.pt downloaded earlier) so they are not re-downloaded
+rem (downloaded earlier) so they are not re-downloaded
 rem and so the model manager — which reads from models\ — can find them.
+rem yolo11 family only: Phase 2b benchmark removed yolo26 (ROADMAP 4.2 2b).
 for %%N in (
     yolo11n-pose yolo11s-pose yolo11m-pose yolo11l-pose yolo11x-pose
-    yolo26n-pose yolo26s-pose yolo26m-pose yolo26l-pose yolo26x-pose
 ) do (
     if not exist "%MODELS_DIR%\%%N.pt" if exist "%%N.pt" (
         echo === Found %%N.pt in application\, moving to models\ ===
@@ -39,11 +39,10 @@ for %%N in (
 rem ── Offer to download missing pose models ──────────────────────────
 set "MISSING_LIST="
 set "MISSING_COUNT=0"
-set "TOTAL_MODELS=10"
+set "TOTAL_MODELS=5"
 
 for %%N in (
     yolo11n-pose yolo11s-pose yolo11m-pose yolo11l-pose yolo11x-pose
-    yolo26n-pose yolo26s-pose yolo26m-pose yolo26l-pose yolo26x-pose
 ) do (
     if not exist "%MODELS_DIR%\%%N.pt" (
         set "MISSING_LIST=!MISSING_LIST! %%N"

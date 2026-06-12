@@ -30,13 +30,15 @@ mkdir -p "$MODELS_DIR"
 export YOLO_AUTOINSTALL=0
 
 # ── Offer to download missing pose models ──────────────────────────
+# yolo11 family only: the Phase 2b corpus benchmark (ROADMAP 4.2 2b,
+# tmp_analysis/phase2b/SUMMARY.md) measured yolo26 losing or tying every
+# tier with an incompatible confidence scale — removed 2026-06-12.
 ALL_MODELS=(
     yolo11n-pose yolo11s-pose yolo11m-pose yolo11l-pose yolo11x-pose
-    yolo26n-pose yolo26s-pose yolo26m-pose yolo26l-pose yolo26x-pose
 )
 
-# Harvest any weights already present in application/ (e.g. yolo26*-pose.pt
-# downloaded earlier) into models/ so they are not re-downloaded and so the
+# Harvest any weights already present in application/ (downloaded earlier)
+# into models/ so they are not re-downloaded and so the
 # model manager — which reads from models/ — can find them.
 for m in "${ALL_MODELS[@]}"; do
     if [ ! -f "$MODELS_DIR/${m}.pt" ] && [ -f "${m}.pt" ]; then
