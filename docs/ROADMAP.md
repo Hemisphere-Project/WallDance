@@ -301,6 +301,7 @@ Measured answers in [CORPUS_ANALYSIS.md](CORPUS_ANALYSIS.md) §8:
 | [CORPUS_ANALYSIS.md](CORPUS_ANALYSIS.md) | 2026-06-10 corpus analysis — measured scene physics, settings/strategy evidence, re-founded regression corpus, §4.2 plan |
 | [UX_PLAN.md](UX_PLAN.md) | Production operator UX — two-calibration design, profiles, build phases U0–U5 |
 | [TODO.md](TODO.md) | Granular build / hardware checklist (live) |
+| [OPTICS.md](OPTICS.md) | Camera + lens working envelopes (distance/stage-size limits per optic, derived from the Phase 2b detection floors) |
 | [archives/ROBUSTNESS_PLAN.md](archives/ROBUSTNESS_PLAN.md) | Original detection north star (merged here) |
 | [archives/AUDIT.md](archives/AUDIT.md) | Full maintainability audit (condensed in §6) |
 | [archives/P3_FUSION_SIMPLIFICATION.md](archives/P3_FUSION_SIMPLIFICATION.md) | Full P3 fusion design (condensed in §5 P3) |
