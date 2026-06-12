@@ -1581,17 +1581,6 @@ class WallDanceGUI:
         else:
             dpg.configure_item(tag, show=False)
 
-    def update_imgsz_roi_warning(self, message: Optional[str]):
-        """Show or hide the ROI-aware imgsz warning line."""
-        tag = "adv_imgsz_roi_warning"
-        if not dpg.does_item_exist(tag):
-            return
-        if message:
-            dpg.set_value(tag, message)
-            dpg.configure_item(tag, color=WARN_ORANGE, show=True)
-        else:
-            dpg.configure_item(tag, show=False)
-    
     def sync_combo(self, name: str, value: str):
         """Sync combo box state."""
         tag_map = {

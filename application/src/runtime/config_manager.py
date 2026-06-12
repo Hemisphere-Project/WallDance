@@ -82,7 +82,6 @@ class ConfigManager:
         watchdog: Callable[[], object],
         apply_config: Callable[[Dict], None],
         saveable_config: Callable[[], Dict],
-        update_imgsz_roi_warning: Callable[[], None],
         request_reprocess: Callable[[], None],
     ) -> None:
         self.models = models
@@ -97,7 +96,6 @@ class ConfigManager:
         self.watchdog = watchdog
         self.apply_config = apply_config
         self.saveable_config = saveable_config
-        self.update_imgsz_roi_warning = update_imgsz_roi_warning
         self.request_reprocess = request_reprocess
 
         self.config_store = ConfigStore()
@@ -206,7 +204,6 @@ class ConfigManager:
         # 6. Update imgsz in model manager BEFORE loading model
         self.settings.imgsz = new_imgsz
         self.models.model_manager.set_imgsz(new_imgsz)
-        self.update_imgsz_roi_warning()
 
         # 7. Determine if we need to reload the model
         need_model_reload = (

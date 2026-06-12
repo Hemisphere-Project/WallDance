@@ -960,13 +960,6 @@ def build_model_section(gui: Any):
                 default_value=gui.config.get("use_tensorrt", False),
                 callback=gui._on_trt_toggle,
             )
-        dpg.add_text(
-            "",
-            tag="adv_imgsz_roi_warning",
-            color=WARN_ORANGE,
-            wrap=scaled(300),
-            show=False,
-        )
 
 
 def build_enhancement_section(gui: Any):

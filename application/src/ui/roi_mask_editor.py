@@ -31,14 +31,12 @@ class RoiMaskEditor:
         state: RoiState,
         settings,
         processor,
-        imgsz_presets: tuple,
         gui: Callable[[], object],
         request_reprocess: Callable[[], None],
     ) -> None:
         self.state = state
         self.settings = settings
         self.processor = processor
-        self.imgsz_presets = imgsz_presets
         self.gui = gui
         self.request_reprocess = request_reprocess
 
@@ -72,50 +70,6 @@ class RoiMaskEditor:
             self.settings.roi_h,
             edit_mode=self.roi_edit_mode,
         )
-        self._update_imgsz_roi_warning()
-
-    def _get_recommended_imgsz_for_roi(self) -> Optional[tuple]:
-        if not self.settings.roi_enabled:
-            return None
-
-        frame_w, frame_h = self.state.source_size
-        _, _, roi_w, roi_h = self.state.effective_roi(frame_w, frame_h)
-        long_edge = max(roi_w, roi_h)
-        min_target = long_edge * 1.5
-        max_target = long_edge * 2.0
-
-        low = self.imgsz_presets[-1]
-        for preset in self.imgsz_presets:
-            if preset >= min_target:
-                low = preset
-                break
-
-        in_range = [preset for preset in self.imgsz_presets if min_target <= preset <= max_target]
-        high = in_range[-1] if in_range else low
-        return low, high, roi_w, roi_h
-
-    def _get_imgsz_roi_warning(self) -> Optional[str]:
-        roi_info = self._get_recommended_imgsz_for_roi()
-        if roi_info is None:
-            return None
-
-        low, high, roi_w, roi_h = roi_info
-        current = int(self.settings.imgsz)
-        if current >= low:
-            return None
-
-        if low == high:
-            target = f"{low}px"
-        else:
-            target = f"{low}-{high}px"
-
-        return f"ROI {roi_w}x{roi_h}: consider {target} imgsz for better detection."
-
-    def _update_imgsz_roi_warning(self):
-        gui = self.gui()
-        if not gui:
-            return
-        gui.update_imgsz_roi_warning(self._get_imgsz_roi_warning())
 
     def _set_roi_rect(
         self,
@@ -367,15 +321,11 @@ class RoiMaskEditor:
         if not self.settings.roi_enabled:
             return
 
+        # No imgsz suggestion here: the ROI-ratio rule (1.5-2x long edge) was
+        # measured wrong by the Phase 2b benchmark (oversizing worsens quality;
+        # the dancer-height target in calib2.select_imgsz owns the pick).
         _, _, roi_w_src, roi_h_src = self.state.effective_roi(source_w, source_h)
         note_lines = [f"ROI {roi_w_src}x{roi_h_src} | imgsz {self.settings.imgsz}"]
-        roi_info = self._get_recommended_imgsz_for_roi()
-        if roi_info is not None:
-            low, high, _, _ = roi_info
-            if low == high:
-                note_lines.append(f"Suggested: {low}")
-            else:
-                note_lines.append(f"Suggested: {low}-{high}")
 
         frame_h, frame_w = frame.shape[:2]
         font = cv2.FONT_HERSHEY_SIMPLEX

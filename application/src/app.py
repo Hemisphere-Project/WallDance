@@ -436,8 +436,6 @@ class _RecordingSessionAdapter:
 class WallDanceApp:
     """Main application orchestrator."""
 
-    _IMGSZ_PRESETS = (640, 800, 960, 1280, 1536, 1920)
-
     def __init__(self, startup_review: Optional[ReviewStartupOptions] = None):
         print("=" * 60)
         print("WallDance 1080p - Multi-Person Pose Detection")
@@ -561,7 +559,6 @@ class WallDanceApp:
             state=RoiState(self.settings, (CAMERA_WIDTH, CAMERA_HEIGHT)),
             settings=self.settings,
             processor=self.processor,
-            imgsz_presets=self._IMGSZ_PRESETS,
             gui=lambda: self.ui.gui,
             request_reprocess=self._request_reprocess,
         )
@@ -619,7 +616,6 @@ class WallDanceApp:
             watchdog=lambda: self._watchdog,
             apply_config=self._apply_config_without_model,
             saveable_config=self._get_saveable_config,
-            update_imgsz_roi_warning=self.roi._update_imgsz_roi_warning,
             request_reprocess=self._request_reprocess,
         )
         # CALIBRATE / DANCERS orchestration (DECOMPOSITION_PLAN Phase 2
@@ -1363,12 +1359,7 @@ class WallDanceApp:
         
         self.settings.imgsz = new_imgsz
         self.models.model_manager.set_imgsz(new_imgsz)
-        self.roi._update_imgsz_roi_warning()
-        roi_warning = self.roi._get_imgsz_roi_warning()
-        if roi_warning:
-            self.bus.publish(api.Toast("Current imgsz is below the ROI suggestion",
-                                       3.0, (255, 180, 80)))
-        
+
         max_cam_dim = max(self.camera.state.width, self.camera.state.height)
         if new_imgsz > max_cam_dim:
             print(f"⚠️  YOLO imgsz {new_imgsz} > camera {max_cam_dim}px - may reduce accuracy (padding)")
