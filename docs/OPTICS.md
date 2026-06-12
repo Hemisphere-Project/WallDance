@@ -47,6 +47,30 @@ Minimum standoff for a stage of width W: **8 mm: D ≈ 1.28 W · 6 mm: D ≈ 0.9
 
 **Lens-independent identity:** standing at the minimum coverage distance, dancer px = `capture_width_px × 1.7 / W` ≈ **3674 / W(m)** (2.3 MP crop) — the lens only chooses *where you stand*, not how many pixels a dancer gets at full-width framing. → max stage width ≈ **33 m comfortable / 52 m workable** (full sensor: 41 m / 65 m). At a *fixed* distance the 8 mm gives 1.33× the pixels of the 6 mm.
 
+## Venue fit — the actionable procedure (standard 2.3 MP crop)
+
+> Tool: `python extra/venue_fit.py --stage WxH [--distance D]` computes everything below (verdict per lens, distance ranges to request from the organiser, dancer px at a given spot).
+
+Given a stage **W × H (m)**, the workable camera-distance window per lens is `D_min ≤ D ≤ D_max`:
+
+- **D_min (coverage)** = the largest of: `1.81·√(W·H)`, `1.81·H`, `1.28·W` → for the **8 mm**; `1.35·√(W·H)`, `1.35·H`, `0.96·W` → for the **6 mm**.
+- **D_max (dancer size)** = **42.6 m comfortable / 67 m workable (8 mm)** · **32 m / 50 m (6 mm)**.
+- If `D_min > D_max` for both lenses, the venue needs full-sensor capture (`--full-sensor`, costs fps), partial-stage framing, or a different camera position.
+
+Pre-computed windows for common stages (comfortable, i.e. dancer ≥ 110 px):
+
+| Stage W×H (m) | 8 mm window | 6 mm window |
+|---|---|---|
+| 8 × 6 | 12.5 – 43 m | 9.4 – 32 m |
+| 12 × 8 | 17.7 – 43 m | 13.3 – 32 m |
+| 16 × 10 | 22.8 – 43 m | 17.1 – 32 m |
+| 20 × 12 | 28.0 – 43 m | 21.0 – 32 m |
+| 25 × 14 | 33.8 – 43 m | 25.3 – 32 m |
+| 30 × 15 | 38.3 – 43 m (tight) | 28.7 – 32 m (tight) |
+| 35 × 16 | workable only (44.7 – 67 m) | workable only (33.5 – 50 m) |
+
+Reading the table: **got a fixed spot?** — the lens whose window contains your D fits; if both fit, take the 8 mm (1.33× the dancer pixels). **Negotiating with the organiser?** — ask for a position inside the 8 mm window; quote the 6 mm window as the short-throw fallback.
+
 ## Focus depth
 
 Hyperfocal (c = 5.8 µm): 8 mm — 7.9 m @ f/1.4, 4.0 m @ f/2.8 · 6 mm — 4.4 m @ f/1.4, 2.2 m @ f/2.8.

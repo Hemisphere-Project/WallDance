@@ -77,7 +77,9 @@ set "BUILT_VARIANTS=0"
 set "SKIPPED_VARIANTS=0"
 set "WARN_VARIANTS=0"
 
-for %%M in ("%MODELS_DIR%\*.pt") do (
+rem Engines for m/l/x only (Phase 2b: n/s never the right auto pick);
+rem n/s weights stay as last-resort insurance, engine built on demand.
+for %%M in ("%MODELS_DIR%\yolo11m-pose.pt" "%MODELS_DIR%\yolo11l-pose.pt" "%MODELS_DIR%\yolo11x-pose.pt") do (
     if exist "%%~fM" (
         set "FOUND_PT=1"
         set "BASE=%%~nM"

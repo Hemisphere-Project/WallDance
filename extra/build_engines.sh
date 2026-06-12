@@ -37,6 +37,14 @@ ALL_MODELS=(
     yolo11n-pose yolo11s-pose yolo11m-pose yolo11l-pose yolo11x-pose
 )
 
+# Engines are built for m/l/x only (the tiers calib2's advisory ranks;
+# Phase 2b: n/s are never the right auto pick — capacity is the reliable
+# lever on hard scenes). n/s weights stay downloadable as last-resort
+# insurance; the app prompts to build their engine on demand if selected.
+ENGINE_MODELS=(
+    yolo11m-pose yolo11l-pose yolo11x-pose
+)
+
 # Harvest any weights already present in application/ (downloaded earlier)
 # into models/ so they are not re-downloaded and so the
 # model manager — which reads from models/ — can find them.
@@ -83,9 +91,13 @@ fi
 
 SIZES=(640 800 960 1280 1536 1920)
 
-for model in $MODELS_DIR/*.pt; do
-    base=$(basename "$model" .pt)
-    
+for base in "${ENGINE_MODELS[@]}"; do
+    model="$MODELS_DIR/${base}.pt"
+    if [ ! -f "$model" ]; then
+        echo "=== Skipping ${base} (no weights) ==="
+        continue
+    fi
+
     for size in "${SIZES[@]}"; do
         engine="$MODELS_DIR/${base}_${size}.engine"
         
