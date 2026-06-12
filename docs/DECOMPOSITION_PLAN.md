@@ -133,7 +133,7 @@ Each extraction: move methods verbatim → rename `self.` references to injected
 ## 6. Verification protocol (every gated step)
 
 1. `pytest tests -q` (222 passing today; no new skips).
-2. `WD_RUN_REPLAY=1` golden scenarios — metrics identical to the Phase 0 archive.
+2. Replay sweep ([tests/replay_sweep.py](../application/tests/replay_sweep.py), byte-compare vs `tests/golden/decomp-phase0/`) — **tiered by what the diff can reach** (operator-agreed 2026-06-12): `ui/`/`gui*`/docs-only diffs **skip it** (replay imports none of that code — the suite's import lints + callback-coverage tests are the real gate); `runtime/`/`app.py` diffs run `--golden` (the 3-scenario trio, ~2 min import/wiring smoke); `core/` or config-default diffs and **phase boundaries** run the full 12 (~7 min) — the corpus exists exactly for those.
 3. Manual smoke checklist (~10 min): project picker → load project; STANDBY→RUN readiness toast; CALIBRATE on a recording + report card dialog; DANCERS → pool dialog → Apply; playback slot + speed + frame-step; ROI drag + mask paint; model switch + TRT prompt; save/load config; profile switch; toast expiry; window resize (modals re-center); quit.
 4. Launcher update cycle on a scratch clone (dirty-file check, force-sync, reinstall trigger).
 5. Phase 4 only: 30-min soak chunk, RSS/CUDA slope verdict from the existing harness.
