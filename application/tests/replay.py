@@ -463,6 +463,8 @@ def main():
                          "run the GPU show path (production-faithful; implies --gpu-path)")
     ap.add_argument("--details", action="store_true",
                     help="include per-track bbox/centroid in the --timeline rows")
+    ap.add_argument("--log-dir", default=None,
+                    help="keep the tracker JSONL event log in this dir (diagnostics)")
     ap.add_argument("--score", action="store_true",
                     help="score against --scenario's ground truth (prints breakdown)")
     ap.add_argument("--cache", action="store_true",
@@ -525,7 +527,7 @@ def main():
             str(video), config, model_name=model_name, imgsz=imgsz,
             start_frame=args.start, max_frames=args.frames,
             track_details=args.details, use_gpu_path=args.gpu_path or args.trt,
-            use_trt=args.trt,
+            use_trt=args.trt, log_dir=args.log_dir,
         )
 
     # Split the per-frame timeline out of the lean (golden-comparable) summary.
