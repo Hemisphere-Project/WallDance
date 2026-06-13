@@ -47,6 +47,9 @@
 | 3 | CLAHE+gamma sweep on verydark slot 5 + 2 contrast scenes — score curve | Replace binary CLAHE seed with a measured curve + lower floor; revisit gamma target/clamp so dark scenes aren't all pinned at 2.2. **Confirm with sample testing per operator** |
 | 4 | texturedbg slot 4 + whitebg2 floor f1500/2000/2100 | Diagnose which Calib2 knob over-tightens; likely ties to #1/#3 |
 
+### Deferred enhancement (operator, 2026-06-13)
+- **Reported/OSC box smoother** — an optional EMA on the reported box w/h to calm the *residual genuine* pose jitter (YOLO's own box varies ~1.4–3.7× frame-to-frame as the dancer changes shape). Best as a **tunable slider** (smoothness vs fidelity/lag, consumer-facing to TouchDesigner). Not a bug — the case-1 fix already brought bridge flips down to the YOLO-jitter floor. Build later.
+
 ### UX track (parallel, lower risk)
 - **U-a:** standalone Calib2 pool view — inspect/remove runs without re-calibrating.
 - **U-b:** surface the show/rehearsal profile toggle, label day/night, show which profile a calibration belongs to.

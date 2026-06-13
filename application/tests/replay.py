@@ -151,7 +151,8 @@ def check_fingerprint(manifest: dict, video: Path) -> None:
 
 
 def _build_processor(config: dict, model_name: str, imgsz: int,
-                     load_model: bool = True, use_gpu_path: bool = False):
+                     load_model: bool = True, use_gpu_path: bool = False,
+                     use_trt: bool = False):
     """Construct a FrameProcessor and apply the detection-relevant config
     subset exactly as app._apply_config_without_model does.
 
@@ -176,17 +177,26 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
 
     if load_model:
         from ultralytics import YOLO
-        model_path = MODELS_DIR / f"{model_name}.pt"
-        if not model_path.exists():
-            raise FileNotFoundError(f"model weights not found: {model_path}")
-        model = YOLO(str(model_path))
+        if use_trt:
+            # Production-faithful: the FP16 TensorRT engine on the GPU show path.
+            engine_path = MODELS_DIR / f"{model_name}_{imgsz}.engine"
+            if not engine_path.exists():
+                raise FileNotFoundError(
+                    f"TRT engine not found: {engine_path} "
+                    f"(build via extra/build_engines.sh)")
+            model = YOLO(str(engine_path), task="pose")
+        else:
+            model_path = MODELS_DIR / f"{model_name}.pt"
+            if not model_path.exists():
+                raise FileNotFoundError(f"model weights not found: {model_path}")
+            model = YOLO(str(model_path))
     else:
         model = None
 
     settings = ProcessingSettings(
         confidence=config.get("confidence", YOLO_CONFIDENCE),
         imgsz=imgsz,
-        use_fp16=False,            # determinism over speed
+        use_fp16=use_trt,          # TRT engine is FP16; .pt/CPU path stays FP32 (determinism)
         enhance_enabled=config.get("enhance_enabled", ENHANCE_ENABLED),
         enhance_lite=config.get("enhance_lite", False),
         enhance_force=config.get("enhance_force", False),
@@ -203,7 +213,7 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
         denoise_strength=config.get("denoise_strength", 0.0),
         greyscale=config.get("greyscale", False),
         osc_enabled=False,
-        use_gpu_path=use_gpu_path,  # default False: the CPU _process_cpu path
+        use_gpu_path=use_gpu_path or use_trt,  # TRT implies the GPU show path
     )
     settings.roi_enabled = bool(config.get("roi_enabled", False))
     settings.roi_x = int(config.get("roi_x", 0))
@@ -302,6 +312,7 @@ def replay_recording(
     log_dir: Optional[str] = None,
     track_details: bool = False,
     use_gpu_path: bool = False,
+    use_trt: bool = False,
 ) -> Dict:
     """Replay a recording and return a compact metric summary.
 
@@ -310,8 +321,8 @@ def replay_recording(
     swap count, zero-detection frames, average detections.
     """
     proc = _build_processor(config, model_name, imgsz,
-                            use_gpu_path=use_gpu_path)
-    if use_gpu_path and not proc.gpu_path_active:
+                            use_gpu_path=use_gpu_path, use_trt=use_trt)
+    if (use_gpu_path or use_trt) and not proc.gpu_path_active:
         raise RuntimeError("GPU path requested but unavailable "
                            "(kornia/CUDA missing?)")
     # Reset the global track-ID counter so IDs are deterministic when several
@@ -351,7 +362,7 @@ def replay_recording(
     summary = _summary_from_log(
         tmp, Path(video_path).name, model_name, imgsz, start_frame,
         processed, per_frame)
-    summary["path"] = "gpu" if use_gpu_path else "cpu"
+    summary["path"] = "trt" if use_trt else ("gpu" if use_gpu_path else "cpu")
     return summary
 
 
@@ -447,6 +458,9 @@ def main():
     ap.add_argument("--gpu-path", action="store_true",
                     help="route frames through the GPU pipeline (_process_gpu), "
                          "the show path -- for the CPU/GPU parity test (bug #10)")
+    ap.add_argument("--trt", action="store_true",
+                    help="load the <model>_<imgsz>.engine FP16 TensorRT engine and "
+                         "run the GPU show path (production-faithful; implies --gpu-path)")
     ap.add_argument("--details", action="store_true",
                     help="include per-track bbox/centroid in the --timeline rows")
     ap.add_argument("--score", action="store_true",
@@ -510,7 +524,8 @@ def main():
         summary = replay_recording(
             str(video), config, model_name=model_name, imgsz=imgsz,
             start_frame=args.start, max_frames=args.frames,
-            track_details=args.details, use_gpu_path=args.gpu_path,
+            track_details=args.details, use_gpu_path=args.gpu_path or args.trt,
+            use_trt=args.trt,
         )
 
     # Split the per-frame timeline out of the lean (golden-comparable) summary.
