@@ -2345,6 +2345,13 @@ class WallDanceGUI:
             no_collapse=True,
         ):
             dpg.add_spacer(height=scaled(6))
+            dpg.add_text(
+                "Each DANCERS run adds evidence to a pool. The proposal below is\n"
+                "computed from all CHECKED runs together - add more runs (other\n"
+                "costumes / positions / recordings) to make it more robust.\n"
+                "Apply writes the pooled result to the active lighting profile.",
+                color=TEXT_DIM, wrap=scaled(520))
+            dpg.add_spacer(height=scaled(8))
             dpg.add_text("Runs in the pool (uncheck to exclude):",
                          color=TEXT_NORMAL)
             with dpg.child_window(height=scaled(150), border=True):
