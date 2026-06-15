@@ -473,12 +473,23 @@ class RoiMaskEditor:
         self._mask_mouse_was_down = is_down
 
     def _draw_exclusion_overlay(self, frame: np.ndarray, source_w: int, source_h: int):
-        """Grid + cell overlay on the preview while the mask editor is active."""
-        if not self.mask_edit_mode:
-            return
+        """Draw the exclusion mask on the preview.
+
+        Masked cells stay visible **at all times** (dimmed), so the operator
+        always knows what's blinded (OPERATOR_V2 decision 5 / §2.5). The grid,
+        veto outlines and status note are editing aids, shown only while the
+        mask editor is active. Preview-cosmetic only — reads get_exclusion_state
+        and paints pixels; never mutates the mask data or the detection path.
+        """
         grid, auto, manual_add, manual_remove = self.processor.get_exclusion_state()
         gx, gy = grid
         if gx <= 0 or gy <= 0:
+            return
+        effective = (set(map(tuple, auto)) | set(map(tuple, manual_add))) \
+            - set(map(tuple, manual_remove))
+        # Outside edit mode only the masked cells are worth drawing; if nothing
+        # is masked there is nothing to show.
+        if not self.mask_edit_mode and not effective:
             return
         frame_h, frame_w = frame.shape[:2]
         rx, ry, rw, rh = self._mask_space_rect(source_w, source_h)
@@ -495,15 +506,20 @@ class RoiMaskEditor:
             y1 = int(round(ry + (row + 1) / gy * rh))
             return x0, y0, x1, y1
 
-        effective = (set(map(tuple, auto)) | set(map(tuple, manual_add))) \
-            - set(map(tuple, manual_remove))
+        manual_add_set = set(map(tuple, manual_add))
         overlay = frame.copy()
         for col, row in effective:
             x0, y0, x1, y1 = cell_rect(col, row)
-            color = (60, 60, 230) if (col, row) in set(map(tuple, manual_add)) \
+            color = (60, 60, 230) if (col, row) in manual_add_set \
                 else (40, 40, 180)
             cv2.rectangle(overlay, (x0, y0), (x1, y1), color, -1)
-        cv2.addWeighted(overlay, 0.4, frame, 0.6, 0, dst=frame)
+        # Bright while editing (interactive); dimmed always-on when monitoring.
+        alpha = 0.4 if self.mask_edit_mode else 0.18
+        cv2.addWeighted(overlay, alpha, frame, 1.0 - alpha, 0, dst=frame)
+
+        if not self.mask_edit_mode:
+            return  # editing aids (veto outlines / grid / status) are edit-only
+
         # Manually unmasked auto cells: outline only (auto wanted them, the
         # operator vetoed) so the veto stays visible and re-clickable.
         for col, row in set(map(tuple, manual_remove)) & set(map(tuple, auto)):
