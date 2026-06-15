@@ -117,6 +117,17 @@ class ProcessingSettings:
     # smoothed box lives on the lagged tap — no double-smoothing).  L=1 keeps the
     # frozen causal default (box-size EMA, no lagged tap).
     output_lagged_enabled: bool = False
+    # Case-2 flying-ghost suppression on the lagged tap (Track X §5.1).  When on,
+    # a released track that is bridged AND never re-acquires a solid skeleton in
+    # its look-ahead is dropped from /walldance/dancer_lagged/* (lagged ids =
+    # causal ids minus case-2).  OUTPUT-ONLY; only affects the lagged tap.
+    # Conservative (bias to KEEP real aerials); default ON, off-switch for shows.
+    output_lagged_suppress: bool = True
+    # Case-2 sustained-bridge gate (Track X §5.1): only a track bridged for >=
+    # this many frames is a suppression candidate — brief real-dancer drops are
+    # exempt.  Count-proxy tuned (hangar-aerial drop_rate ≈ 0).  Tunable here so a
+    # future labeled-clip pass can re-tune without code changes.
+    output_lagged_case2_min_bridge: int = 8
     use_gpu_path: bool = USE_GPU_PATH  # Enable GPU frame buffer
     bg_subtract_enabled: bool = BG_SUBTRACT_ENABLED  # Static BG subtraction
     bg_subtract_sensitivity: int = BG_SUBTRACT_SENSITIVITY  # Threshold 0-255
@@ -991,12 +1002,16 @@ class FrameProcessor:
         share keypoint/confidence arrays via ``replace``)."""
         if self._output_smoother is None:
             self._output_smoother = OutputSmoother(
-                lag=L, max_age=int(getattr(self.tracker, 'max_age', TRACKER_MAX_AGE)))
+                lag=L, max_age=int(getattr(self.tracker, 'max_age', TRACKER_MAX_AGE)),
+                case2_min_bridge=int(self.settings.output_lagged_case2_min_bridge))
         inputs: List[SmootherInput] = []
         for st in scaled_tracks:
             if st.centroid_raw is None or st.frames_since_skeleton is None:
                 continue  # missing the smoother signals — skip (non-DancerTrack)
             fss = int(st.frames_since_skeleton)
+            conf = st.confidence
+            max_conf = (float(np.max(conf))
+                        if conf is not None and len(conf) else 0.0)
             inputs.append(SmootherInput(
                 track_id=int(st.track_id),
                 centroid=np.asarray(st.centroid_raw, dtype=np.float64),
@@ -1004,10 +1019,12 @@ class FrameProcessor:
                             dtype=np.float64),
                 is_real_skeleton=(fss == 0),
                 frames_since_skeleton=fss,
+                max_kpt_conf=max_conf,
                 payload=st,
             ))
         lagged: List[ScaledTrack] = []
-        for o in self._output_smoother.process(inputs, lag=L):
+        suppress = bool(self.settings.output_lagged_suppress)
+        for o in self._output_smoother.process(inputs, lag=L, suppress=suppress):
             st0 = o.payload
             smoothed_c = np.array([float(o.centroid[0]), float(o.centroid[1])],
                                   dtype=np.float64)
@@ -1422,6 +1439,11 @@ class FrameProcessor:
         transition (in ``_post_yolo_chain``) so it never releases stale buffered
         frames after being off."""
         self.settings.output_lagged_enabled = bool(enabled)
+
+    def set_lagged_suppress(self, enabled: bool) -> None:
+        """Toggle case-2 flying-ghost suppression on the lagged tap (Track X
+        §5.1).  Output-only; only affects /walldance/dancer_lagged/*."""
+        self.settings.output_lagged_suppress = bool(enabled)
 
     def get_last_motion_gray(self) -> Optional[np.ndarray]:
         """The most recent enhanced gray fed to MOG2 (Go-Live noise calibration).

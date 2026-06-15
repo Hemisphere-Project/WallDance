@@ -105,16 +105,23 @@ def _best_delay(lagged, causal, max_d):
 
 def _jitter(series):
     """RMS of the centroid's discrete 2nd difference (acceleration) — a
-    look-ahead-agnostic smoothness metric.  Lower = smoother."""
+    look-ahead-agnostic smoothness metric.  Lower = smoother.  Measured only over
+    CONTIGUOUS frame-triples so case-2 suppression gaps don't inflate it (a gap
+    would otherwise read as a large spurious acceleration)."""
     frames = sorted(series)
-    if len(frames) < 5:
+    accs = []
+    for i in range(len(frames) - 2):
+        f0, f1, f2 = frames[i], frames[i + 1], frames[i + 2]
+        if f1 == f0 + 1 and f2 == f1 + 1:
+            p0, p1, p2 = (np.asarray(series[f]) for f in (f0, f1, f2))
+            accs.append(float(np.sum((p0 - 2 * p1 + p2) ** 2)))
+    if len(accs) < 3:
         return None
-    xy = np.array([series[f] for f in frames])
-    acc = np.diff(xy, n=2, axis=0)
-    return float(np.sqrt(np.mean(np.sum(acc ** 2, axis=1))))
+    return float(np.sqrt(np.mean(accs)))
 
 
-def run(scenario_path, L, frames=None, use_trt=False):
+def run(scenario_path, L, frames=None, use_trt=False, suppress=True,
+        min_bridge=None):
     scenario = scoring.load_scenario(scenario_path)
     config = replay.scenario_config(scenario)
     video = replay._find_recording(scenario["project"], scenario["slot"])
@@ -134,6 +141,9 @@ def run(scenario_path, L, frames=None, use_trt=False):
     proc.tracker.reset()
     proc.settings.output_smoothing_l = int(L)
     proc.settings.output_lagged_enabled = True
+    proc.settings.output_lagged_suppress = bool(suppress)
+    if min_bridge is not None:
+        proc.settings.output_lagged_case2_min_bridge = int(min_bridge)
     proc.settings.osc_enabled = True
     rec = _RecordingClient()
     proc.attach_osc(_capturing_sender(rec))
@@ -178,10 +188,16 @@ def main():
     ap.add_argument("--golden", default=None,
                     help="golden JSON to A/B the internal summary against "
                          "(default: golden/<scenario name>.json)")
+    ap.add_argument("--case2", action="store_true",
+                    help="also run a suppress=OFF pass to verify the real track "
+                         "is KEPT (no false-drop) + report the suppression delta")
+    ap.add_argument("--min-bridge", type=int, default=None,
+                    help="override the case-2 sustained-bridge gate (tuning sweep)")
     args = ap.parse_args()
 
     rec, summary, processed, raw = run(args.scenario, args.L, args.frames,
-                                       use_trt=args.trt)
+                                       use_trt=args.trt, suppress=True,
+                                       min_bridge=args.min_bridge)
     causal = _series_by_id(rec, "/walldance/dancer/centroid")
     lagged = _series_by_id(rec, "/walldance/dancer_lagged/centroid")
 
@@ -230,6 +246,27 @@ def main():
     else:
         print(f"\n(no golden at {gpath}; skipping A/B)")
 
+    # Case-2 A/B (§9.4 count-proxy): a suppress=OFF pass; the REAL track must be
+    # KEPT under suppression (no false-drop), while suppression may drop ghost
+    # frames.  No per-track ground truth exists, so we proxy: the dominant
+    # (longest) lagged track is the real dancer and must survive suppression.
+    case2_ok = None
+    if args.case2:
+        rec_off, _s2, _p2, _r2 = run(args.scenario, args.L, args.frames,
+                                     use_trt=args.trt, suppress=False,
+                                     min_bridge=args.min_bridge)
+        lagged_off = _series_by_id(rec_off, "/walldance/dancer_lagged/centroid")
+        total_on = sum(len(v) for v in lagged.values())
+        total_off = sum(len(v) for v in lagged_off.values())
+        dominant = max(lagged_off, key=lambda t: len(lagged_off[t])) if lagged_off else None
+        on_n = len(lagged.get(dominant, {})) if dominant is not None else 0
+        off_n = len(lagged_off.get(dominant, {})) if dominant is not None else 0
+        kept = (on_n / off_n) if off_n else 0.0
+        case2_ok = kept >= 0.95
+        print(f"\ncase-2 A/B (suppress on vs off): total lagged emissions "
+              f"{total_on} vs {total_off} (Δ={total_off - total_on} suppressed); "
+              f"dominant track {dominant} kept {on_n}/{off_n} frames ({kept:.2%})")
+
     ok_delay = bool(delays) and all(d == args.L for d in delays)
     ok_smooth = bool(smoother) and all(smoother)
     print("\nVERDICT:")
@@ -237,7 +274,10 @@ def main():
     print(f"  lagged smoother  : {'PASS' if ok_smooth else 'FAIL'}")
     if ab_ok is not None:
         print(f"  output-only A/B  : {'PASS' if ab_ok else 'FAIL'}")
-    passed = ok_delay and ok_smooth and (ab_ok is not False)
+    if case2_ok is not None:
+        print(f"  case-2 keeps real: {'PASS' if case2_ok else 'FAIL'}")
+    passed = (ok_delay and ok_smooth and (ab_ok is not False)
+              and (case2_ok is not False))
     print(f"\n{'ALL CHECKS PASS' if passed else 'CHECK FAILED'}")
     return 0 if passed else 1
 

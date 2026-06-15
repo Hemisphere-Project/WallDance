@@ -887,6 +887,18 @@ def build_phase_live(gui: Any):
                          "can trade latency for quality. Engages only at L>1; the\n"
                          "causal /walldance/dancer/* tap stays live. Opt-in (doubles\n"
                          "OSC traffic per dancer). Output-only.")
+        suppress_chk = dpg.add_checkbox(
+            label="  └ suppress flying ghosts (case-2)",
+            tag="lagged_suppress_checkbox",
+            default_value=bool(gui.config.get("output_lagged_suppress", True)),
+            callback=gui._on_lagged_suppress_toggle,
+        )
+        with dpg.tooltip(suppress_chk):
+            dpg.add_text("On the lagged tap only: drop a bridged track that never\n"
+                         "re-acquires a solid skeleton in its look-ahead (a moving\n"
+                         "ambient-motion 'flying ghost'). Conservative — real aerials\n"
+                         "that re-acquire are kept. Off = lagged ids match the causal\n"
+                         "tap. Output-only; default ON.")
         dpg.add_text("lagged tap: off", tag="lagged_latency_text", color=TEXT_DIM)
         dpg.add_spacer(height=scaled(12))
         build_visualization_toolbar(gui)    # promoted: View S/K/B/T/I

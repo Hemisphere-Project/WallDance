@@ -135,6 +135,13 @@ class ToggleLaggedTap(Command):
 
 
 @dataclass(frozen=True)
+class ToggleLaggedSuppress(Command):
+    """Case-2 flying-ghost suppression on the lagged tap (Track X §5.1); default
+    ON.  OFF → the lagged id set equals the causal id set (no drops)."""
+    value: bool
+
+
+@dataclass(frozen=True)
 class CheckReadiness(Command):
     """Phase-⑤: run the Go-Live readiness checks on demand (OPERATOR_V2 §6)."""
     pass

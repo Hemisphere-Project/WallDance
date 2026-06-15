@@ -282,8 +282,11 @@ def test_lagged_keypoints_stay_coherent_with_centroid():
     from pipeline import FrameProcessor, ScaledTrack
 
     L = 3
-    fake = SimpleNamespace(_output_smoother=None,
-                           tracker=SimpleNamespace(max_age=45))
+    fake = SimpleNamespace(
+        _output_smoother=None,
+        tracker=SimpleNamespace(max_age=45),
+        settings=SimpleNamespace(output_lagged_suppress=True,
+                                 output_lagged_case2_min_bridge=8))
     offset = np.array([5.0, -3.0])
     releases = []
     for s in range(14):
@@ -299,3 +302,111 @@ def test_lagged_keypoints_stay_coherent_with_centroid():
     for r in releases:
         rel_off = np.asarray(r.keypoints) - np.asarray(r.smoothed_centroid)
         np.testing.assert_allclose(rel_off, np.tile(offset, (17, 1)), atol=1e-6)
+
+
+# --------------------------------------------------------------------------- #
+# case-2 flying-ghost suppression (X-3, §5.1: K=2, conf floor 0.6, recency L/3)  #
+# --------------------------------------------------------------------------- #
+def _feed_case2(frames, L, suppress=True, min_bridge=1):
+    """frames = list of (is_real, max_conf) per frame for one track id; returns
+    the set of released frame indices that were EMITTED (not suppressed).
+
+    ``fss`` is a realistic running bridge counter (reset on a real frame, +1 on a
+    bridged one).  ``min_bridge=1`` isolates the K/recency/floor logic (any bridge
+    is a candidate); the production default (8) gates on a sustained bridge."""
+    sm = OutputSmoother(lag=L, case2_min_bridge=min_bridge)
+    emitted = set()
+    fss = 0
+    for s, (is_real, conf) in enumerate(frames):
+        fss = 0 if is_real else fss + 1
+        inp = SmootherInput(1, np.array([float(s), 0.0]), np.array([10.0, 20.0]),
+                            bool(is_real), fss, float(conf))
+        for o in sm.process([inp], lag=L, suppress=suppress):
+            emitted.add(o.step)
+    return emitted, len(frames)
+
+
+def test_case2_suppresses_never_reacquiring_ghost():
+    """A bridged track that never re-acquires a solid skeleton is dropped from
+    the lagged tap (only the genuine real frames survive)."""
+    L = 6
+    frames = [(True, 0.9)] * 3 + [(False, 0.0)] * 20
+    emitted, _ = _feed_case2(frames, L, suppress=True)
+    assert sorted(emitted) == [0, 1, 2], f"ghost not suppressed: kept {sorted(emitted)}"
+
+
+def test_case2_keeps_reacquiring_aerial():
+    """A 1-in-3 re-acquiring aerial (≥2 confident hits per window) is KEPT."""
+    L = 9
+    frames = [((s % 3 == 0), 0.9 if s % 3 == 0 else 0.0) for s in range(40)]
+    emitted, T = _feed_case2(frames, L, suppress=True)
+    assert emitted == set(range(0, T - L)), \
+        f"real aerial frames dropped: {sorted(set(range(0, T - L)) - emitted)}"
+
+
+def test_case2_disabled_keeps_id_for_id():
+    """suppress=False → lagged id set == causal id set (no drops)."""
+    L = 6
+    frames = [(True, 0.9)] * 3 + [(False, 0.0)] * 20
+    emitted, T = _feed_case2(frames, L, suppress=False)
+    assert emitted == set(range(0, T - L))
+
+
+def test_case2_only_solid_reacquisitions_count():
+    """A marginal flicker (conf below the 0.6 floor) is NOT 'confident' — a track
+    sustained only by sub-floor flickers is still suppressed."""
+    L = 6
+    # real warmup, then bridged with weak flickers (conf 0.4 < 0.6 floor)
+    frames = [(True, 0.9)] * 2 + [(False, 0.0), (True, 0.4)] * 12
+    emitted, _ = _feed_case2(frames, L, suppress=True)
+    # the genuine real warmup (0,1) survive; the weak-flicker bridged region is
+    # suppressed where the look-ahead lacks ≥2 SOLID (>0.6) hits.
+    assert 0 in emitted and 1 in emitted
+    assert len(emitted) < 2 + (len(frames) - L), "weak flickers wrongly rescued the ghost"
+
+
+def test_case2_recency_keeps_a_recent_solid_hit():
+    """Recency clause: a single SOLID re-acquisition in the last ⌈L/3⌉ steps
+    keeps the released frame even below K; a stale lone hit does not."""
+    L = 9  # recency window = max(1, 9//3) = 3
+
+    def r0_emitted(hit_step):
+        sm = OutputSmoother(lag=L, case2_min_bridge=1)  # isolate recency logic
+        out = set()
+        fss = 0
+        for s in range(10):  # R=0 releases at step 9 (N=9), look-ahead steps 1..9
+            is_real = (s == hit_step)
+            fss = 0 if is_real else fss + 1
+            conf = 0.9 if is_real else 0.0
+            for o in sm.process([SmootherInput(1, np.array([float(s), 0.0]),
+                                 np.array([10.0, 20.0]), is_real,
+                                 fss, conf)], lag=L, suppress=True):
+                out.add(o.step)
+        return out
+
+    assert 0 in r0_emitted(9), "recent solid hit (step 9) should keep R=0"
+    assert 0 in r0_emitted(7), "recent solid hit (step 7 > N-3) should keep R=0"
+    assert 0 not in r0_emitted(2), "stale lone hit (step 2) should NOT keep R=0"
+
+
+def test_case2_sustained_gate_exempts_brief_low_conf_drops():
+    """The hangar-aerial fix: a real aerial with BRIEF drops that re-acquire at
+    LOW conf (the IR regime, below the 0.6 'confident' floor) is fully KEPT — its
+    drops never reach the sustained-bridge depth, so suppression never fires."""
+    L = 6
+    # 3 real / 3 bridged repeating: drops are ≤3 frames (fss ≤ 3 < min_bridge=8),
+    # re-acquisitions are conf 0.4 (< 0.6 floor → NOT 'confident').
+    frames = [((s % 6) < 3, 0.4 if (s % 6) < 3 else 0.0) for s in range(48)]
+    emitted, T = _feed_case2(frames, L, suppress=True, min_bridge=8)
+    assert emitted == set(range(0, T - L)), \
+        f"brief real-dancer drops wrongly suppressed: {sorted(set(range(0, T-L)) - emitted)}"
+
+
+def test_case2_sustained_gate_still_suppresses_long_ghost():
+    """A never-re-acquiring ghost bridges for a long unbroken run (fss grows past
+    the gate) → still suppressed under the sustained-bridge gate."""
+    L = 6
+    frames = [(True, 0.9)] * 2 + [(False, 0.0)] * 30
+    emitted, T = _feed_case2(frames, L, suppress=True, min_bridge=8)
+    assert 0 in emitted and 1 in emitted          # genuine real frames kept
+    assert len(emitted) < (T - L), "sustained ghost not suppressed"

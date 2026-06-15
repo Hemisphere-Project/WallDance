@@ -129,7 +129,7 @@ At release time for frame `N-L`, suppress the track from the **LAGGED tap** iff:
 ```
 (1) is_real_skeleton(N-L) == False                       # the released frame is sustained
 (2) count of CONFIDENT real skeletons in (N-L … N] < K   # K = 2 (not just ">=1 exists")
-        confident := frames_since_skeleton==0 AND keypoint/box conf over a floor
+        confident := frames_since_skeleton==0 AND keypoint conf over a floor
 (3) (optional) the last confident skeleton is within the last ~L/3 frames  # recency
 ```
 
@@ -150,9 +150,75 @@ re-acquisitions + recency makes it graceful:
   `TRACKER_GHOST_FROZEN_SPEED_RATIO = 0.03`, verified in `tracker._collect_confirmed_tracks`),
   which already drops **stationary** stale tracks; case-2 catches the **moving** ghosts that
   gate spares. **Tap-id consistency:** lagged id set = causal id set **minus** case-2
-  suppressions (a track the causal tap dropped via the internal gate is already absent). →
-  remaining **open question #3** (the exact `K`, conf floor, recency window — joint w/ engine
-  agent; tune on a labeled clip).
+  suppressions (a track the causal tap dropped via the internal gate is already absent).
+
+### 5.1 ENGINE-AGENT DECISIONS (2026-06-15, code-grounded — for X-3)
+These resolve §9.2. They are tuned against the predicate logic + the frozen-ghost-gate
+reconciliation below; **the case-2 precision/recall (F1) is PROVISIONAL — no per-track-labeled
+flying-ghost clip exists in the corpus** (see §9.2). Values are deliberately conservative
+(bias toward KEEPING real aerials; a missed-suppression flyer is a softer failure than a
+dropped dancer).
+
+| Parameter | Value | Units / source | Justification |
+|-----------|-------|----------------|---------------|
+| **K** (confident re-acq count, predicate 2) | **2** | count over the window `(N-L … N]` | A single 1-frame YOLO flicker must not rescue a ghost (review #3). A real 1-in-3-frame aerial yields ≥2 confident hits for any `L ≥ 6`; below that the recency clause carries it. |
+| **conf floor** (defines "confident") | **`max(conf17) > 2 × KEYPOINT_CONFIDENCE = 0.6`** | per-keypoint units; `ScaledTrack.confidence` (the 17-kpt array), `KEYPOINT_CONFIDENCE = 0.3` (`config.py:125`) | A "confident" frame = `frames_since_skeleton == 0` **AND** the track's strongest keypoint clears **2×** the existing skeleton floor. `KEYPOINT_CONFIDENCE` (0.3) is already the floor that makes `frames_since_skeleton == 0` true (`tracker.py:447`), so "real skeleton" alone = conf > 0.3 on ≥1 kpt; doubling it to **0.6** demands a *solid* re-acquisition, not the marginal flicker that seeds a ghost. **Do NOT use `box_conf`** for the floor: it is `None` on every bridged/cold-blob frame *and* can be `None` even on a real-skeleton frame when the bbox-key lookup misses post-duplicate-filtering (`pipeline.py:938-942`), so a `box_conf`-based floor would silently under-count confident frames. The per-kpt `confidence` array is always present and is the same unit as the existing gate. |
+| **recency window** (predicate 3, enabled) | **`max(1, L // 3)` frames** | frames, relative to release frame `N-L` | The last confident skeleton must fall within the most-recent `⌈L/3⌉` ingested frames of the window. Spec's ~L/3; the `max(1,…)` keeps it well-defined at small `L`. Bridges a brief mid-window gap (real dancer) but rejects a track whose only confident hits are stale at the window's leading edge (a flyer that flickered early then died). |
+| **post-hoc un-suppression** | **NO (X-3); deferred to X-4** | — | Keep X-3 fixed-latency and simple. Re-emitting a suppressed segment needs extra buffering/latency beyond `L` and a second release path — out of scope for the first suppression cut. A genuinely re-acquiring track already satisfies K≥2 + recency *at its own release time* and is never suppressed in the first place; un-suppression only helps the `> L`-occlusion edge, which is explicitly the latency/coverage tradeoff (raise `L`). Revisit with X-4 if a show needs it. |
+
+**Predicate, fully specified (for the X-3 implementer in `output_smoother.py`):** at the moment
+`_release_oldest()` would emit the node for released frame `R = N-L`, suppress iff **all** hold —
+1. the released node is deep in a **SUSTAINED bridge**: `frames_since_skeleton >= min_bridge`
+   (see §5.2 — the count-proxy refinement; brief real-dancer drops are exempt);
+2. across the buffered window nodes with `step ∈ (R … N]` (i.e. every node *after* the released
+   one, the look-ahead), the count of nodes that are `is_real == True` **AND** carried a
+   per-kpt `max(confidence) > 0.6` is **< K (=2)**;
+3. **AND** no such *confident* node has `step` within the last `max(1, L//3)` steps of `N`.
+
+### 5.2 SUSTAINED-BRIDGE GATE (2026-06-15, count-proxy tuned on real footage — operator lane)
+The §5.1 predicate as first drafted used predicate-1 = `is_real == False` (any bridged frame is a
+suppression candidate).  **Empirically (the §9.4 count-proxy on the CPU FP32 path,
+`tests/verify_lagged_tap.py --case2`) this over-suppressed the REAL aerial on `hangar-aerial`:**
+~5–10 % of the single real dancer's frames were dropped from the lagged tap (drop_rate ≠ 0,
+violating §9.4), and the gaps wrecked the lagged stream's smoothness. **Root cause (matches the G1
+corpus finding):** real IR aerials re-acquire at **low confidence (~0.2–0.5)**, *below* the `0.6`
+"confident" floor — so a real aerial's re-acquisitions don't count toward K, and its brief
+detection drops get suppressed.  **Fix:** predicate-1 becomes a **sustained-bridge gate** — only a
+track bridged for `frames_since_skeleton >= min_bridge` (default **8**) is a suppression
+candidate.  A real aerial's drops are *brief* (`fss` resets to 0 on every re-acquisition, *incl.*
+the low-conf ones at the 0.3 skeleton floor), so they never reach the gate; a true flying ghost is
+bridged for a long unbroken run, so its `fss` grows past it.  This is the same `fss` axis the
+internal frozen-ghost gate uses, one tier deeper.  **Verified:** `hangar-aerial` real aerial now
+**100 % kept** (Δ=0, drop_rate=0, lagged 5.5× smoother); `texture-aerial` real tracks kept 99.3 %
+(the 0.7 % are genuine `> min_bridge` occlusions — the documented latency/coverage tradeoff) and
+stay smoother. `min_bridge` is `ProcessingSettings.output_lagged_case2_min_bridge` (tunable; a
+future labeled-clip pass should re-confirm it jointly with K/floor).  **Still PROVISIONAL on
+per-track F1** (no labeled flying-ghost clip), but the drop_rate=0 gate now holds.
+
+Suppress ⇒ the smoother does **not** append that release to its output list for this frame
+(the id is simply absent from the lagged tap that frame). It is **never** removed from the
+forward filter / node buffer — suppression is on the *emit*, so a later frame whose window then
+satisfies K≥2 + recency emits normally (natural, latency-free "un-suppression" of a track that
+re-acquires *within* the lag — distinct from the deferred `>L` post-hoc kind).
+
+**Frozen-ghost-gate reconciliation (the two must never fight).** The internal gate
+(`tracker._collect_confirmed_tracks`, `tracker.py:3175-3184`) removes a track from
+`scaled_tracks` *entirely* (causal AND therefore the smoother input) when **both**
+`_frames_since_skeleton > TRACKER_GHOST_SKELETON_AGE (3)` **and**
+`speed < TRACKER_GHOST_FROZEN_SPEED_RATIO (0.03) × person_height_px`. So a track that **reaches
+the smoother at all** is either skeleton-recent **or MOVING** (speed above the frozen floor) —
+the gate has already culled the *stationary* stale ghosts. Case-2 is therefore the **disjoint
+complement**: it targets the **moving** stale tracks the speed test deliberately spares (a flyer
+that drifts across the wall is fast enough to pass the gate but never re-acquires a real
+skeleton). The two cannot double-suppress the same track (the gate's victims never enter the
+smoother) and cannot leave a gap (a moving stale ghost the gate spares is exactly what K≥2 +
+recency catches). **No speed term is needed in case-2** — speed is already the gate's axis;
+case-2's axis is *re-acquisition density*, which is orthogonal and is the right discriminator for
+moving ghosts (a moving real dancer re-acquires; a moving ambient-motion blob does not).
+
+**Tap-id consistency:** lagged id set = causal id set (`scaled_tracks`) **minus** the case-2
+suppressions. A track the internal gate dropped is already absent from `scaled_tracks` (hence
+from the smoother), so it is absent from both taps with no extra work.
 
 ## 6. Feature 4 — steady high-rate OSC (optional, phase X-4)
 Resample the smoothed trajectory to a fixed output rate (e.g. 60 Hz) independent of YOLO
@@ -191,22 +257,99 @@ Adds an output timer/thread; decoupled from `L`. Ship last, only if a consumer n
 - **GUI**: the `output_smoothing_slider` (phase ⑥) already exists; its `L>1` meaning
   upgrades. Add a "lagged tap" enable checkbox + show the published latency.
 
-## 9. What needs the engine agent (open questions — joint design)
+## 9. Engine-agent answers (RESOLVED 2026-06-15 — DECISIONS for X-3)
 *Resolved by the 2026-06-15 review (now spec decisions):* **(R1) independent output CV Kalman
 on the raw centroid** — not the tracker's KF, not the EMA'd centroid (output-only, no cascade);
-**(R4) mirror `MOTION_BRIDGE_NOISE_STAGES`** for bridged-frame `R`. Remaining:
-1. **Identity across the lag.** A track born at `N-L` but only warmup-confirmed at `N`: the
-   lagged tap sees the confirmation in its window — emit retroactively from birth (cleaner
-   entrances, **proposed default**) or only from confirmation? Interaction with
-   `warmup_confirmed` and the slow intermittent path (bug #14). *(Proposal: lagged emits from
-   the first buffered frame regardless of which path confirmed it — it has hindsight.)*
-2. **Case-2 tuning** — the `K` (≥2), the confidence floor, and the recency window in §5, plus
-   whether to add post-hoc un-suppression. Tune on a labeled clip; reconcile with the internal
-   frozen-ghost gate so the two never fight.
-3. **Read-only kinematic snapshot?** R1 uses an independent Kalman. *Optional upgrade:* the
-   engine agent exposes a read-only per-frame `(x, P)` from `DancerTrack.kf` for higher
-   fidelity. Only if R1's independent filter proves insufficient — keep output-only by default.
-4. **Replay-gating the lagged tap** — jointly design the `replay.py` extension + metrics (§10).
+**(R4) mirror `MOTION_BRIDGE_NOISE_STAGES`** for bridged-frame `R`. The four open questions are
+now resolved (engine agent, code-grounded against `tracker.py` / `pipeline.py` /
+`output_smoother.py`):
+
+### 9.1 Identity across the lag — DECISION: **emit from the first buffered frame (birth)**.
+The lagged tap should emit a track from its **first buffered frame** regardless of which path
+warmup-confirmed it. Justification, grounded in what is *actually visible at the output boundary*:
+- The smoother is fed **only the confirmed reported tracks** — `_run_output_smoother` consumes
+  `scaled_tracks`, which is `tracker._collect_confirmed_tracks()` output (`pipeline.py`,
+  `OSC_CONTRACT §A.4`). A track does **not** enter the smoother's buffer until the frame it is
+  first *confirmed and reported*. So "emit from birth" here means **emit from the first frame the
+  track is reported**, i.e. the smoother's own buffer head — it does **not** reach behind
+  confirmation to a pre-confirmation tracker birth it never saw. There is no extra hindsight to
+  exploit beyond the buffer, so the cleanest rule is also the only well-defined one: release the
+  oldest buffered node `L`-late, no special first-frame handling. This is exactly what
+  `OutputSmoother` does today (birth-silence `L` frames, then steady release) — **no change**.
+- **Warmup interaction (`warmup_confirmed`, bug #14 slow path):** both confirmation paths
+  (integral `_warmup_score ≥ TRACK_WARMUP_THRESHOLD` and the slow intermittent
+  `sum(_warmup_history) ≥ TRACK_WARMUP_SLOW_CREDITS + travel`, `tracker.py:307-324`) only affect
+  *whether/when* a track appears in `scaled_tracks`. Once it appears, the smoother treats every
+  reported frame identically. A track that flips confirmed→unconfirmed→confirmed (the slow path
+  self-revokes when its credit window drains) reappears in `scaled_tracks` after a reporting gap;
+  the smoother's **non-contiguous-step guard** (`output_smoother.py:295`, `step - last_step > 1`)
+  already starts a **fresh window** for it (no dt=1 stitch across the gap). So the warmup machinery
+  needs **no** special case in X-3 — the existing guard handles intermittent reporting correctly.
+- The *causal* tap still respects warmup exactly as today (it emits live; it cannot see ahead).
+- **Net for X-3:** no identity/warmup work is required. Do not add pre-confirmation back-emit
+  (the smoother never buffered those frames) and do not couple case-2 to warmup state.
+
+### 9.2 Case-2 tuning — DECISIONS in §5.1 (K=2, conf floor 0.6, recency `max(1,L//3)`, no post-hoc).
+See the **§5.1 parameter table** and fully-specified predicate. Reconciliation with the internal
+frozen-ghost gate is in §5.1 ("the two must never fight"): the gate culls *stationary* stale
+tracks before they reach the smoother; case-2 catches the *moving* stale tracks it spares —
+disjoint axes (speed vs re-acquisition density), so no double-suppress and no gap.
+
+**Ground-truth inventory (why F1 is PROVISIONAL, not invented).** The corpus ground truth is
+**per-frame expected COUNT only** — `scenario["expected_count"]` (a const or `from/to/n` ranges),
+scored by `tests/scoring.py` as `drop_rate`/`ghost_rate` against `N`; range boundaries are
+operator-verified only to **±20 frames** (`scenarios/*.json` `ground_truth.method`). **No file
+anywhere carries per-track labels** ("track id 7 is a flying ghost", "track id 3 is a real
+aerial"). The goldens (`tests/golden/*.json`) are scalar tracker-summary counts (`real_tracks`,
+`ghost_tracks`, …), not per-track truth. **Therefore a true per-track suppression
+precision/recall/F1 cannot be computed from the existing corpus**, and none is fabricated here.
+- Candidate clips inventoried: **`texture-aerial`** (N=1, tags `aerial`+`fast_motion`+
+  `ghost_pressure`, TRT config) and **`hangar-aerial`** (N=1, tags `aerial`+`drops`, the X-2
+  verification clip) are the re-acquiring aerials that case-2 must **KEEP**; **`texture-duo`**
+  (N=2, `ghost_pressure`, with *known fixed* ghost spots ~(413,1024)/(1124,856)) and
+  **`dark-crowd`** (enter/leave, DRAFT labels) carry ghost pressure. But texture-duo's named
+  ghosts are **stationary** (the *frozen-ghost gate's* job, not case-2), and none of these clips
+  label which *moving* track is a flyer. A purpose-labeled moving-flying-ghost clip does **not**
+  exist.
+- **Status: case-2 F1 is PROVISIONAL — PENDING a labeled clip.** The §5.1 defaults are derived
+  from the predicate logic + the gate reconciliation and are deliberately conservative (bias to
+  keep aerials). When a clip with per-track flyer/aerial labels exists, tune K/floor/recency to
+  maximize F1 (flyers→SUPPRESSED, aerials→KEPT) per §9.4.
+
+### 9.3 Read-only kinematic snapshot — DECISION: **NO; keep the independent output Kalman (R1)**.
+The X-2 unit suite already shows R1 is sufficient at the output boundary: jitter −58% vs raw,
+phase RMS 0.27px, gap `≤L` reconstructs to 1.21px (`test_output_smoother.py`; memory
+[[operator-v2-batch3-x2-shipped]]), and on real footage the lagged centroid is ~5× smoother than
+causal with frame-delay exactly `L`. Exposing `DancerTrack.kf`'s `(x, P)` would (a) re-introduce
+a coupling to tracker internals the output-only invariant exists to avoid, (b) feed the *6-state*
+constant-accel tracker covariance (`kf` is `dim_x=6`, `tracker.py:255`) into the smoother's
+*4-state* CV model — an impedance mismatch with no demonstrated need. **Keep output-only.** Revisit
+only if a future metric shows the independent filter is the limiting factor (it is not today).
+
+### 9.4 Replay-gating the lagged tap — EXTEND `tests/verify_lagged_tap.py` (do NOT duplicate).
+The harness already captures **both** taps via a fake OSC client, measures **frame-delay vs RAW**
+(`centroid_raw` from `process()` — correctly *not* the EMA causal tap, which reads `L−1`),
+per-track **jitter** (RMS of the 2nd centroid difference), and the **output-only A/B** vs the CPU
+golden. Reuse all of that. To gate **case-2 F1**, add an opt-in mode that:
+1. Runs **twice on the same CPU FP32 path** with `output_lagged_enabled=True` — once with case-2
+   OFF, once ON (an env flag / settings toggle the operator lane wires when it implements the
+   predicate). Diff the two **lagged** id sets per frame → the **suppressed-id set** `S` (the
+   smoother's only behavioral change; the causal tap and tracker summary stay byte-identical, so
+   the existing A/B still proves output-only with case-2 ON).
+2. **Until a per-track-labeled clip exists**, report the **count-proxy**, NOT a fabricated F1:
+   on an N=1 aerial clip (`hangar-aerial`/`texture-aerial`), the lagged **ghost_rate** (excess
+   reported beyond `N` from `scoring.score_timeline` over the *lagged* per-frame counts) must
+   **drop** with case-2 ON while **drop_rate stays 0** (the real aerial must survive every
+   release). Surface `len(S)`, the suppressed ids, and lagged-vs-causal `ghost_rate` delta. Assert
+   **drop_rate unchanged** (KEEP invariant) and **ghost_rate non-increasing**.
+3. **When a labeled clip lands**, add the true metric: map each suppressed id in `S` and each
+   surviving lagged id to its flyer/aerial label → suppression **precision = |S ∩ flyers| / |S|**,
+   **recall = |S ∩ flyers| / |flyers|**, **F1**. Pass line (proposed): flyers→SUPPRESSED recall
+   ≥ 0.8, aerials→KEPT (precision penalises any aerial in `S`). This is a *new metric branch* in
+   the same harness — it does not duplicate the delay/jitter/A/B machinery.
+- **Determinism caveat (carry over from X-2):** the count-proxy and any golden A/B must run the
+  **CPU FP32** path (`use_trt=False`); the N=1 aerial scenarios are authored with `use_tensorrt:
+  true`, so for gating override to CPU — never A/B a TRT FP16 run against the CPU golden.
 
 ## 10. Verification plan
 - **Output-only** → replay goldens **byte-identical** (same A/B method as box-clamp:
@@ -217,10 +360,14 @@ on the raw centroid** — not the tracker's KF, not the EMA'd centroid (output-o
     means the EMA leaked into the lagged path; this catches the §3 cascade regression).
   - RTS reduces jitter vs raw (RMS residual ↓); retroactive correction reconstructs a known
     `gap ≤ L` to < ~2 px RMS; case-2 drops a never-re-acquiring blob, keeps a 1-in-3 aerial.
-- **New replay metric** (open Q#4) on `hangar-aerial` (re-acquiring aerials → kept, smoothed)
-  and a texture-ghost clip (flyers → suppressed). **Metric defs:** *smoothness* = RMS residual
-  of the lagged centroid vs its RTS fit (lower better); *latency* = frame delay causal→lagged
-  (must equal `L`); *case-2* = precision/recall (F1) of suppression vs labeled ground truth.
+- **New replay metric** (resolved in §9.4 — extend `tests/verify_lagged_tap.py`) on
+  `hangar-aerial` (re-acquiring aerials → kept, smoothed) and a texture-ghost clip (flyers →
+  suppressed). **Metric defs:** *smoothness* = RMS residual of the lagged centroid vs its RTS fit
+  (lower better); *latency* = frame delay lagged→RAW (must equal `L`; **not** vs the causal EMA
+  tap, which reads `L−1` — X-2 lesson); *case-2* = precision/recall (F1) of suppression vs labeled
+  ground truth **when a per-track-labeled clip exists**; until then, the count-proxy (lagged
+  `ghost_rate` ↓ with `drop_rate` held at 0 on an N=1 aerial), per §9.4. **F1 is PROVISIONAL** —
+  no per-track-labeled flying-ghost clip is in the corpus (§9.2); do not report a fabricated F1.
 - `L = 1` default unchanged; lagged tap strictly opt-in (`output_lagged_enabled=False`).
 
 ## 11. Phasing
@@ -234,10 +381,45 @@ on the raw centroid** — not the tracker's KF, not the EMA'd centroid (output-o
   (measured extra lag = 0 → total latency = `L`, no EMA leak); and on `hangar-aerial` (CPU+TRT)
   the lagged centroid is ~5× smoother than causal with frame delay = `L` vs the raw centroid
   (`tests/verify_lagged_tap.py`). `output_lagged_enabled` default **False** (opt-in).
-- **X-3 (GATED — needs the §9 engine-agent answers):** case-2 flying-ghost *suppression* (the
-  hardened ≥2-confident-reacquisitions + recency predicate, §5) + tap-id consistency (lagged ids =
-  causal minus case-2). The RTS retroactive correction is already in X-2.
-- **X-4:** steady-rate resample (optional).
+- **X-3 — SHIPPED (branch operator-v2-batch3, 2026-06-15):** case-2 flying-ghost *suppression*
+  (the §5/§5.1 predicate + the §5.2 sustained-bridge gate) + tap-id consistency (lagged ids =
+  causal minus case-2), opt-in via `output_lagged_suppress` (default ON) with a phase-⑥ checkbox.
+  The RTS retroactive correction was already in X-2. **Verified:** goldens byte-identical (output-
+  only); unit predicate tests (suppress sustained ghost, keep brief low-conf real-aerial drops,
+  K/recency/floor, id-for-id when off); and `tests/verify_lagged_tap.py --case2` on
+  `hangar-aerial` (real aerial **100 % kept**, drop_rate=0, lagged 5.5× smoother, delay=L) +
+  `texture-aerial` (tracks kept 99.3 %, smoother, delay=L). **F1 remains PROVISIONAL** pending a
+  per-track-labeled flying-ghost clip; the count-proxy drop_rate=0 gate holds. The engine agent's
+  §5.1 values were applied as-is; the operator lane added the §5.2 sustained-bridge gate
+  (`min_bridge`) after the count-proxy exposed a real-aerial over-suppression — flagged for the
+  engine agent's review on a labeled clip.
+
+  **X-3 values (engine agent → operator-surface lane, as implemented):**
+  - **Identity from birth:** YES — emit from the smoother's first buffered (first reported) frame,
+    no warmup special-case; the existing non-contiguous-step guard handles intermittent reporting
+    (§9.1). No identity work needed in X-3.
+  - **K (confident re-acq count):** **2** over the look-ahead window `(N-L … N]`.
+  - **Confidence floor:** a frame is *confident* iff `frames_since_skeleton == 0` **AND**
+    `max(ScaledTrack.confidence[17]) > 0.6` (= **2 × `KEYPOINT_CONFIDENCE`**, per-keypoint units).
+    Use the per-kpt `confidence` array, **not** `box_conf` (often `None` even on real frames).
+  - **Recency window:** `max(1, L // 3)` frames — the last confident skeleton must fall within the
+    most-recent `⌈L/3⌉` window steps.
+  - **Post-hoc un-suppression:** **NO** in X-3 (deferred to X-4). In-lag re-acquisition is already
+    handled (a window that later satisfies K≥2+recency emits — suppression is emit-time only).
+  - **Frozen-ghost-gate reconciliation:** the internal gate (`frames_since_skeleton > 3` AND
+    `speed < 0.03 × person_height_px`) already culls *stationary* stale tracks before the smoother;
+    case-2 targets only the **moving** stale tracks it spares. Disjoint axes (speed vs
+    re-acquisition density) → no double-suppress, no gap, **no speed term in case-2**.
+  - **Case-2 F1:** **PROVISIONAL — pending a per-track-labeled flying-ghost clip** (corpus GT is
+    per-frame COUNT only; no per-track flyer/aerial labels exist — §9.2). Defaults are conservative
+    (bias to KEEP aerials). Gate via the count-proxy (lagged `ghost_rate` ↓, `drop_rate` = 0) on
+    `hangar-aerial`/`texture-aerial` CPU FP32 until a labeled clip lands (§9.4).
+  - **Implementation locus:** the predicate in `core/output_smoother.py` (release-time, in/around
+    `_release_oldest`/`drain_overdue`), suppressing the *emit* only; the buffer/forward-filter and
+    `pipeline._run_output_smoother` flow are unchanged except dropping suppressed releases. **Never**
+    delete the tracker's track; goldens stay byte-identical (the causal tap + tracker summary do not
+    change). Operator-surface lane implements; engine agent does not write X-3 code.
+- **X-4:** steady-rate resample (optional) + (revisit) post-hoc un-suppression.
 
 Owner split: operator-surface lane = `output_smoother.py` scaffold + controls + OSC
 integration + replay metric; engine agent = the kinematics/identity calls in §9.

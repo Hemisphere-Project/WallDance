@@ -609,6 +609,10 @@ class WallDanceGUI:
         if 'on_lagged_tap_toggle' in self.callbacks:
             self.callbacks['on_lagged_tap_toggle'](bool(value))
 
+    def _on_lagged_suppress_toggle(self, sender, value):
+        if 'on_lagged_suppress_toggle' in self.callbacks:
+            self.callbacks['on_lagged_suppress_toggle'](bool(value))
+
     def _on_check_readiness(self, *args):
         if 'on_check_readiness' in self.callbacks:
             self.callbacks['on_check_readiness']()

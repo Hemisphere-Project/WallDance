@@ -188,8 +188,14 @@ the optional steady-rate resample (X-4).
   **`/walldance/meta/latency_ms` `[ms]`** (= `L / fps · 1000`, re-emitted when `L` or fps changes;
   `0` when the tap is inactive) so TouchDesigner can time-align the two taps. **Opt-in** via
   `output_lagged_enabled` (default **False** — a second full stream doubles OSC traffic per
-  dancer); engages only at `L > 1`. Lagged `track_id`s equal the causal id set (case-2
-  flying-ghost *suppression* is X-3, deferred). **Per-message coherence:** within one lagged
+  dancer); engages only at `L > 1`. **Lagged `track_id`s = the causal id set minus case-2
+  flying-ghost suppression** (Track X X-3, `TRACK_X_SMOOTHER.md` §5.1): a released track that is
+  bridged AND never re-acquires a *solid* skeleton (≥2 hits over `2×KEYPOINT_CONFIDENCE`, none
+  within the last `⌈L/3⌉` frames) in its look-ahead is dropped from the lagged tap only — the
+  causal tap and the tracker are untouched. Opt-in via `output_lagged_suppress` (default **ON**;
+  off → lagged ids match the causal tap). Conservative (bias to KEEP real aerials); the
+  suppression precision/recall is **provisional** pending a per-track-labeled flying-ghost clip.
+  **Per-message coherence:** within one lagged
   frame the keypoints are rigidly translated by the same centroid correction (so the skeleton
   stays aligned with the corrected centroid/box, incl. through corrected gaps) and `velocity` is
   the RTS-smoothed velocity — `centroid`, `bbox`, `keypoints`, `velocity` are mutually consistent.
