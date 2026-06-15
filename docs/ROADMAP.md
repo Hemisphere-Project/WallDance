@@ -4,6 +4,12 @@
 **Status:** Single source of truth. Merges and supersedes `ROBUSTNESS_PLAN.md` (detection/setup north star), `AUDIT.md` (maintainability), `P3_FUSION_SIMPLIFICATION.md` (P3 design), and the tracker history in `TRACKING_PLAN.md` — all now under [archives/](archives/).
 **Companion:** [TODO.md](TODO.md) — the granular build / hardware checklist (a different altitude; not duplicated here).
 
+> **▶ Forward work now lives in [OPERATOR_V2.md](OPERATOR_V2.md)** — the authoritative entry
+> point for the next operations (operator UX = linear phase rail, calibration v2 / signal-axis
+> merge, settings governance, the output/OSC layer, and the cross-parameter test). This roadmap
+> stays the **strategic source of truth + the record of the shipped detection algorithm**
+> (P0–P4, §4.2 Phase 2/2b). When the two disagree on forward plan, OPERATOR_V2 wins.
+
 Two parallel tracks run through this roadmap: **Detection & Setup** (make it robust and set-and-forget) and **Maintainability** (make it safe to evolve). They are sequenced together in §4.
 
 ---
@@ -297,9 +303,10 @@ Measured answers in [CORPUS_ANALYSIS.md](CORPUS_ANALYSIS.md) §8:
 
 | Doc | Role |
 |-----|------|
-| **ROADMAP.md** (this) | Single source of truth — strategy, status, plan |
+| **[OPERATOR_V2.md](OPERATOR_V2.md)** | **▶ Authoritative forward plan** — operator UX (phase rail), calibration v2 (signal-axis merge), settings governance, output/OSC layer, cross-parameter test, autonomy map for implementation |
+| **ROADMAP.md** (this) | Strategic source of truth + shipped-detection-algorithm record (forward work → OPERATOR_V2) |
 | [CORPUS_ANALYSIS.md](CORPUS_ANALYSIS.md) | 2026-06-10 corpus analysis — measured scene physics, settings/strategy evidence, re-founded regression corpus, §4.2 plan |
-| [UX_PLAN.md](UX_PLAN.md) | Production operator UX — two-calibration design, profiles, build phases U0–U5 |
+| [UX_PLAN.md](UX_PLAN.md) | **Historical** — U0–U5 shipped record + calib design rationale; forward UX superseded by OPERATOR_V2 |
 | [TODO.md](TODO.md) | Granular build / hardware checklist (live) |
 | [OPTICS.md](OPTICS.md) | Camera + lens working envelopes (distance/stage-size limits per optic, derived from the Phase 2b detection floors) |
 | [archives/ROBUSTNESS_PLAN.md](archives/ROBUSTNESS_PLAN.md) | Original detection north star (merged here) |

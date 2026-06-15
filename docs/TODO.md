@@ -1,6 +1,6 @@
 # WallDance Production TODO
 
-> Granular build / hardware checklist. For strategy, status, and the detection/maintainability roadmap, see **[ROADMAP.md](ROADMAP.md)** (the source of truth).
+> Granular build / hardware checklist. For strategy + the shipped-detection record see **[ROADMAP.md](ROADMAP.md)**; for the **forward operator/calibration/UX plan** see **[OPERATOR_V2.md](OPERATOR_V2.md)** (authoritative for upcoming work).
 
 Last reviewed 2026-06-10 (full code review). Phases 1–6 are shipped (inventory below); active work is **Phases 7–9 + hardware**, sequenced by **[ROADMAP.md §4.1](ROADMAP.md)**: ① labeled-footage **corpus** on the IDS rig ② calibration-persistence bug fixes (✅ done 2026-06-10) ③ signal fixes (✅ done 2026-06-10) ④ GPU/CPU path unification (✅ done 2026-06-10) ⑤ **Phase 7 ops cluster (elevated)** ⑥ performance backlog.
 

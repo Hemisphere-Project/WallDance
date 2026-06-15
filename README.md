@@ -107,7 +107,7 @@ This note is informational and not legal advice.
 
 ## Setup & Calibration Workflow
 
-WallDance is built around a **rig → calibrate → monitor** flow so a new venue does not require hand-tuning knobs. See [docs/UX_PLAN.md](docs/UX_PLAN.md) for the full design.
+WallDance is built around a **rig → calibrate → monitor** flow so a new venue does not require hand-tuning knobs. The steps below describe the **shipped** flow; the planned evolution (linear phase rail, unified signal-axis calibration, output smoothing) is in [docs/OPERATOR_V2.md](docs/OPERATOR_V2.md). See [docs/UX_PLAN.md](docs/UX_PLAN.md) for the shipped design rationale.
 
 1. **Rig the camera + IR.** Aim and focus from the stage using the **phone monitor**: tap the QR button in the top bar to open a browser view (`web_monitor.py`) with a live focus score (variance-of-Laplacian) and a lighting readout (brightness, clipping, uniformity with the darkest tile marked, so you know where to add IR).
 2. **CALIBRATE (scene).** On the empty stage, press **CALIBRATE**. On a live IDS camera it servos exposure (up to a motion-blur budget, never below ~15 fps) then gain to hit a brightness target, seeds gamma/CLAHE, sweeps MOG2 `varThreshold`×`scale` for the lowest background false-positive rate, and builds the auto **exclusion mask**. A report card scores focus, uniformity, and clipping. Re-press after each focus/IR adjustment — it is idempotent.

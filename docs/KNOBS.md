@@ -10,6 +10,11 @@ on the two seed scenarios (`residence1-solo` slots 3 & 4).
 > validated, dark-scene target 45, model = largest yolo11 tier in budget,
 > per-scene τ moves to Phase 3) — see ROADMAP §4.2. Treat the tables below as
 > the historical single-clip-era evidence, not current guidance.
+>
+> **Forward knob governance + data-fit ranges now live in [OPERATOR_V2.md](OPERATOR_V2.md)
+> Track S (governance table) + Track G (the 12-corpus cross-parameter test that re-validates
+> these tiers).** This doc stays the historical evidence + the `KNOBS E1/E2/finding #2`
+> rationale referenced by code comments.
 
 Serves the ROADMAP north star — *"rig the camera, aim the IR light, press one
 calibration button, get robust detection for the whole show, without tuning

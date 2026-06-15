@@ -1,5 +1,12 @@
 # WallDance — Production UX plan (operator track)
 
+> **⚠ HISTORICAL (U0–U5 shipped).** This records the shipped section-panel UX + the two-pass
+> calibration design, and remains the target of `UX_PLAN U2/U3/U4/U5` code-comment references.
+> **The forward UX/calibration plan is [OPERATOR_V2.md](OPERATOR_V2.md)** — it supersedes the
+> section-panel model with a linear *phase rail* and the *signal-axis* calibration merge (Aim
+> servo + one Calibrate-with-dancers pass). Do not plan new work from this doc; read it for the
+> shipped state and the design rationale only.
+
 **Date:** 2026-06-10 · **Status:** U0–U5 **merged to `main`** (built on branch
 `ux-track`: U0 0d7382c, U2 c034956, U3 2234d67, U4 9ab4f09, U5 e1d4831; U1 picker
 pre-existed at f2e5e8c). Numeric rules ship provisional — re-fit on annotated
