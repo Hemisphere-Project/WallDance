@@ -355,15 +355,7 @@ def build_top_bar(gui: Any):
                     width=scaled(150),
                     callback=gui._on_topbar_project_change,
                 )
-                dpg.add_spacer(width=scaled(15))
-                dpg.add_text("Version:", color=HEADING_GREEN)
-                dpg.add_combo(
-                    items=[],
-                    tag="topbar_config_combo",
-                    default_value="",
-                    width=scaled(180),
-                    callback=gui._on_topbar_config_change,
-                )
+                dpg.add_spacer(width=scaled(8))
                 save_btn = dpg.add_button(
                     label=Icons.FLOPPY_DISK,
                     tag="topbar_save_btn",
@@ -375,30 +367,6 @@ def build_top_bar(gui: Any):
                     dpg.bind_item_font(save_btn, gui._icon_font)
                 with dpg.tooltip(save_btn):
                     dpg.add_text("Save config (Ctrl+S)")
-                
-                safe_btn = dpg.add_button(
-                    label=Icons.ROTATE,
-                    tag="topbar_safe_btn",
-                    width=scaled(20),
-                    height=scaled(20),
-                    callback=gui._on_safe_defaults,
-                )
-                if gui._icon_font:
-                    dpg.bind_item_font(safe_btn, gui._icon_font)
-                with dpg.tooltip(safe_btn):
-                    dpg.add_text("Click: Load safe defaults\nCtrl+click: Save as safe defaults")
-
-                qr_btn = dpg.add_button(
-                    label=Icons.QRCODE,
-                    tag="topbar_qr_btn",
-                    width=scaled(20),
-                    height=scaled(20),
-                    callback=gui._on_show_qr,
-                )
-                if gui._icon_font:
-                    dpg.bind_item_font(qr_btn, gui._icon_font)
-                with dpg.tooltip(qr_btn):
-                    dpg.add_text("Phone monitor: show a QR code to open the web UI")
 
                 dpg.add_spacer(width=scaled(12))
                 dpg.add_text("Lighting:", color=TEXT_DIM)
@@ -425,9 +393,7 @@ def build_top_bar(gui: Any):
                 dpg.bind_item_theme(state_badge, gui._state_live_theme)
                 with dpg.tooltip(state_badge):
                     dpg.add_text("System state:\n• STANDBY: Preview only, no YOLO\n• RUN: Full YOLO + OSC output")
-                dpg.add_spacer(width=scaled(12))
-                dpg.add_text("|", color=TEXT_FAINT)
-                dpg.add_spacer(width=scaled(8))
+                dpg.add_spacer(width=scaled(10))
                 dpg.add_text("CAM:", color=TEXT_NORMAL)
                 cam_badge = dpg.add_text("OFF", tag="badge_cam", color=ERROR_SOFT)
                 with dpg.tooltip(cam_badge):
@@ -449,7 +415,6 @@ def build_top_bar(gui: Any):
                 with dpg.tooltip(osc_badge):
                     dpg.add_text("OSC output status: ON (green) or OFF (red)")
                 dpg.add_spacer(width=scaled(6))
-                dpg.add_text("Model:", color=TEXT_NORMAL)
                 dpg.add_text("--", tag="badge_model", color=(150, 200, 255))
                 dpg.add_spacer(width=scaled(3))
                 engine_badge = dpg.add_text("[PT]", tag="badge_engine_type", color=(255, 220, 100))  # Yellow for PyTorch
@@ -656,10 +621,44 @@ def build_phase_profile(gui: Any):
     """② Profile — Show/Rehearsal lives in the top bar; OSC output target here."""
     with dpg.group(tag="phase_panel_profile", show=False):
         dpg.add_text("2 - Profile", color=HEADING_GREEN)
-        dpg.add_text("Pick Show (night) / Rehearsal (day) in the top bar. The OSC "
-                     "output target is set here.",
+        dpg.add_text("Pick Show (night) / Rehearsal (day) in the top bar. Project "
+                     "config version, safe defaults, the phone-monitor QR and the "
+                     "OSC target live here.",
                      color=TEXT_MUTED, wrap=scaled(_PHASE_WRAP))
         dpg.add_spacer(height=scaled(8))
+        # Project / config management (relocated off the cluttered top bar).
+        dpg.add_text("Config version", color=TEXT_NORMAL)
+        with dpg.group(horizontal=True):
+            dpg.add_combo(
+                items=[],
+                tag="topbar_config_combo",
+                default_value="",
+                width=scaled(200),
+                callback=gui._on_topbar_config_change,
+            )
+            safe_btn = dpg.add_button(
+                label=Icons.ROTATE,
+                tag="topbar_safe_btn",
+                width=scaled(26),
+                height=scaled(26),
+                callback=gui._on_safe_defaults,
+            )
+            if gui._icon_font:
+                dpg.bind_item_font(safe_btn, gui._icon_font)
+            with dpg.tooltip(safe_btn):
+                dpg.add_text("Click: Load safe defaults\nCtrl+click: Save as safe defaults")
+            qr_btn = dpg.add_button(
+                label=Icons.QRCODE,
+                tag="topbar_qr_btn",
+                width=scaled(26),
+                height=scaled(26),
+                callback=gui._on_show_qr,
+            )
+            if gui._icon_font:
+                dpg.bind_item_font(qr_btn, gui._icon_font)
+            with dpg.tooltip(qr_btn):
+                dpg.add_text("Phone monitor: show a QR code to open the web UI")
+        dpg.add_spacer(height=scaled(10))
         build_osc_section(gui)              # promoted from the control stack
 
 
