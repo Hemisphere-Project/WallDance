@@ -257,6 +257,7 @@ unbuilt enhancement sweep.**
 | **imgsz reload silent-fails** | TRT export failure leaves config≠engine, no feedback | Surface success/failure; offer fallback imgsz |
 | **noise-σ window mismatch** | Calib1 window σ vs live `motion_model.noise_sigma()` drive the dark-target (110 vs 45 px) differently | Record `noise_sigma_live` in Calib1 result; Calib2 reuses it if Calib1 just ran |
 | **`tracker_intermittent_confirm` unwired** | Per-scene switch documented but `tracker.py:792` reads the global constant, not project config | Plumb the project key → tracker (and add to `PROFILE_KEYS`/schema) so bug-#14's aerial/dark win is reachable per-scene |
+| **Calib2 pool: selection ↔ proposal/apply** | The phase-④ inline pool's "Pooled proposal" aggregates **all** pooled runs, not the checkbox selection, and Apply is a manual button (operator UI feedback 2026-06-15) | Add a `calibration_flows` path to recompute the proposal for the **checked subset** and publish it (live preview on toggle), plus a **quiet apply** (no result-modal) so a selection change auto-applies. *Operator-surface hooks already shipped:* the inline pool renders `Calib2PoolChanged`, so the calib side only needs the subset-preview + quiet-apply |
 
 ### 3.3 The unified-calibration merge (phased) — owns the gamma/CLAHE gap
 
@@ -444,18 +445,25 @@ Calib1 / Calib2 / User) · **default** · **data-fit range** · **where surfaced
 produces the data; this table is the deliverable.
 
 ### 4.1 Proposed governance (★ = re-confirm/range-fit in Track G)
+**G5 — finalized 2026-06-15 from G1 (dials) + G2 (CLAHE) + G4 (tier re-validation).** ✅ = measured.
+
 | Tier | Knobs | Owner | Surfaced |
 |------|-------|-------|----------|
-| **User (live)** | Dial A confidence ★range; **Dial B bridge ★(exists only if validated)**; **output box-clamp toggle + smoothing slider** (Track X); ROI/stage; **manual exclusion paint** (decision 5); profile switch | User | Phase ⑥ + ① |
+| **User (live)** | Dial A confidence ✅(G1: cardinal, per-scene, spans 0.15–0.65, inverts); Dial B gap-bridging ✅(G1: monotonic "fewer drops", calibrated-seeded); **output box-clamp toggle + smoothing slider** (Track X); ROI/stage; **manual exclusion paint** (decision 5); profile switch | User | Phase ⑥ + ① |
 | **Aim / servo** (live, early) | exposure, gain | servo | Aim report card |
-| **Calibrate / scene-signal** (no dancers needed) | gamma (brightness, clamp relaxed), mog2 var×scale, clean-plate, brightness_threshold | calibrate | report card |
-| **Calibrate / dancer-signal** | CLAHE ★(detection sweep, unbuilt), person_height + min/max ratios ★, imgsz (+model advisory), confidence seed ★, blur budget | calibrate | pool dialog |
-| **Fixed (internal)** | the ~50 tracker/bridge/warmup constants, θ_s/θ_m ★(re-test inertness on 12-corpus), Kalman Q/R, swap correctors (off); NMS/IoU + keypoint-conf floor ★(Track-D candidates to surface) | Fixed | Advanced drawer (read-mostly) |
-| **Drop / retire** | **auto-exclusion builder (decision 5)**; `motion_sensitivity` slider (unless promoted to Dial B); `tracking_mode` UI (P3 merged paths); `bg_subtract` → clean-plate path (Track D); duplicated `tracker_max_age` defaults | — | removed |
+| **Calibrate / scene-signal** (no dancers needed) | gamma ✅(G2: stays brightness formula, clamp relaxed), mog2 var×scale, clean-plate, brightness_threshold | calibrate | report card |
+| **Calibrate / dancer-signal** | CLAHE ✅(G2: per-scene sweep {1.0…6.0}, **no formula**, pick by detection — unbuilt), person_height + ratios, imgsz (+model advisory), confidence seed ✅, blur budget | calibrate | pool dialog |
+| **Calibrate / per-scene (known-N, Phase 3)** ✅(G4) | `tracker_max_age`, `crossval_skel_min_kpts` (θ_s), `crossval_motion_min_ratio` (θ_m) — scene-dependent (0.03–0.07 on multi-dancer/occlusion + static-sitter; inert on easy scenes). Set by the Phase-3 joint search, **never a user surface**. θ_m motion-coupled → TRT-confirm | known-N calib | none (internal) |
+| **Fixed (internal)** ✅(G4: inert all-corpus) | `crossval_skel_min_conf`, `tracker_smoothing`; + the ~50 tracker/bridge/warmup constants, Kalman Q/R, swap correctors (off); NMS/IoU + keypoint-conf floor (Track-D candidates) | Fixed | Advanced drawer (read-mostly) |
+| **Drop / retire** | **auto-exclusion builder** (decision 5); `tracking_mode` UI (P3 merged); `bg_subtract` → clean-plate path (Track D); duplicated `tracker_max_age` defaults. *(`motion_sensitivity` is **not** dropped — it's now Dial B.)* | — | removed |
 
 ### 4.2 Structural fixes
 - **`calibration_state` metadata** in config: which value came from which phase + when → drives
-  "stale, re-calibrate?" prompts and the readiness config-vs-scene line.
+  "stale, re-calibrate?" prompts, the readiness config-vs-scene line, **and the ③ Aim panel's
+  "Last calibrated: …" line + applied-parameter influence** (operator UI feedback 2026-06-15). *The
+  Aim panel already shows a `aim_last_calib_text` placeholder + the static influence list
+  (exposure/gain → gamma → MOG2 → clean-plate), awaiting this metadata to fill the timestamp + the
+  actual per-parameter values.*
 - **Module-import constants → per-project where a knob earns it** (only the ones Track G shows
   matter; the rest stay compile-time). Avoids restart-to-retune.
 - **Do NOT split display vs motion gamma.** Verified: the motion feed uses `enhancer.gamma`
@@ -532,10 +540,16 @@ range?"* — which directly de-risks decision 3.
   pick by detection (`avg_det`/count×conf); **gamma-stays-formula confirmed** (held pinned, CLAHE
   alone gave the full spread). Run direct on GPU+TRT — CLAHE is the cv2↔kornia divergent knob
   (CPU cache would mislead). Record: `tmp_analysis/g2/SUMMARY.md`.
-- **G3 — Geometry axis** (T2): person_height × imgsz net-height curve re-confirm per scene class.
-- **G4 — Tier re-validation** (T5): re-run KNOBS OAT + a joint pass on the 12-corpus to confirm
-  which "Fixed" knobs are truly inert (the tiers were fit on 2 slots).
-- **G5 — Governance table** finalize (§4.1) from G1–G4 measurements.
+- **G3 — Geometry axis** (T2): **covered by Phase 2b** (the 710-cell imgsz×model×scene grid
+  validated the net-height knee 110/45 per scene-class + TRT transfer). Optional narrow re-confirm
+  (current post-Phase-2 code, TRT path, 5-slot subset, ~10 min) deferred unless wanted.
+- **G4 ✅ done (2026-06-15)** — candidate-Fixed knob OAT on the 5-slot subset **splits the Fixed
+  tier**: `crossval_skel_min_conf` + `tracker_smoothing` inert on all 5 (truly Fixed); but
+  `tracker_max_age`, θ_s-kpts, θ_m carry **0.03–0.07 on multi-dancer/occlusion + static-sitter**
+  (inert on easy scenes) → **per-scene "known-N (Phase 3)" class**, not user dials, not deletable.
+  Confirms KNOBS' own "FIXED = hide-not-delete" caveat. θ_m motion-coupled → TRT-confirm in Phase 3.
+  Record: `tmp_analysis/g4/SUMMARY.md`.
+- **G5 ✅ done (2026-06-15)** — governance table finalized in §4.1 from G1/G2/G4.
 - **G6 — Clean-plate recovery** (de-risks the C-next merge): on slots with a dancer-free opening,
   compare var/exclusion derived from the **empty-stage** window vs from a **dancers-present**
   window (robust median + skeleton-sparing). Quantify the gap → tells the unified engine whether
