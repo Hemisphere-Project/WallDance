@@ -168,13 +168,19 @@ class RoiMaskEditor:
         roi_x, roi_y, roi_w, roi_h = self.state.effective_roi(frame_w, frame_h)
         roi_x2 = roi_x + roi_w
         roi_y2 = roi_y + roi_h
-        edge_margin = max(6, int(min(frame_w, frame_h) * 0.01))
+        # Generous grab band so a click *just outside* an edge still resizes it
+        # (the operator's "I clicked slightly outside while resizing" case).
+        edge_margin = max(12, int(min(frame_w, frame_h) * 0.025))
 
         near_left = abs(frame_x - roi_x) <= edge_margin
         near_right = abs(frame_x - roi_x2) <= edge_margin
         near_top = abs(frame_y - roi_y) <= edge_margin
         near_bottom = abs(frame_y - roi_y2) <= edge_margin
         inside = roi_x <= frame_x <= roi_x2 and roi_y <= frame_y <= roi_y2
+        # Edge resize triggers when within the edge's perpendicular span (± the
+        # grab band), so the click does NOT have to be strictly inside the rect.
+        within_x = (roi_x - edge_margin) <= frame_x <= (roi_x2 + edge_margin)
+        within_y = (roi_y - edge_margin) <= frame_y <= (roi_y2 + edge_margin)
 
         if near_left and near_top:
             return "resize_tl"
@@ -184,13 +190,13 @@ class RoiMaskEditor:
             return "resize_bl"
         if near_right and near_bottom:
             return "resize_br"
-        if near_left and inside:
+        if near_left and within_y:
             return "resize_l"
-        if near_right and inside:
+        if near_right and within_y:
             return "resize_r"
-        if near_top and inside:
+        if near_top and within_x:
             return "resize_t"
-        if near_bottom and inside:
+        if near_bottom and within_x:
             return "resize_b"
         if inside:
             return "move"
@@ -213,6 +219,11 @@ class RoiMaskEditor:
             top = min(start_y, frame_y)
             right = max(start_x, frame_x)
             bottom = max(start_y, frame_y)
+            # Don't nuke the existing ROI on a stray click / tiny drag outside it:
+            # only commit a brand-new box once it's a deliberate, sizeable drag.
+            min_new = max(min_size, int(min(frame_w, frame_h) * 0.05))
+            if (right - left) < min_new or (bottom - top) < min_new:
+                return
         elif self._roi_drag_mode == "move":
             left = roi_x + dx
             top = roi_y + dy
@@ -606,6 +617,18 @@ class RoiMaskEditor:
         if gui:
             message = "ROI edit mode: drag on preview" if self.roi_edit_mode else "ROI edit mode: off"
             gui.show_toast(message, duration=2.0, color=(120, 200, 255))
+
+    def exit_edit_modes(self):
+        """Leave both ROI-drag and mask-paint edit modes.
+
+        Called when the operator navigates away from the Rig phase so a later
+        stray preview click cannot mutate the ROI/mask from another phase.
+        Idempotent — safe to call when neither mode is active.
+        """
+        if self.roi_edit_mode:
+            self._cb_roi_edit_toggle(False)
+        if self.mask_edit_mode:
+            self._cb_mask_edit_toggle()
 
     def _handle_preview_double_click(self, sender=None, app_data=None):
         """Double-click on the preview toggles ROI edit mode."""

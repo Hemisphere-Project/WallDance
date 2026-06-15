@@ -76,6 +76,8 @@ class DpgUiAdapter:
             dpg.add_mouse_move_handler(callback=roi._handle_mask_mouse_move)
             dpg.add_mouse_release_handler(callback=roi._handle_mask_mouse_up)
             dpg.add_mouse_double_click_handler(callback=roi._handle_preview_double_click)
+        # Let the phase rail drop ROI/mask edit modes when leaving the Rig phase.
+        self.gui._exit_edit_modes = roi.exit_edit_modes
         dpg.show_viewport()
 
     def is_running(self) -> bool:

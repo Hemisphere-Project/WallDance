@@ -309,6 +309,7 @@ class WallDanceGUI:
         # time; the rail drives existing commands via the phase panels.
         self._phases = ["rig", "profile", "aim", "calibrate", "verify", "live"]
         self._active_phase = "rig"
+        self._exit_edit_modes = None  # wired by the adapter to roi.exit_edit_modes
         self._on_phase_select(self._active_phase)  # initial panel + rail highlight
 
         # Alerts strip (OPERATOR_V2 §2.3c): named warnings render in one strip.
@@ -475,6 +476,14 @@ class WallDanceGUI:
         (calibrate / dancers / pool / all / standby / run), which still submit
         the same commands. No pipeline or command path changes here.
         """
+        prev = getattr(self, "_active_phase", None)
+        # Leaving Rig: drop any ROI/mask edit mode so a later stray preview
+        # click can't mutate the ROI/mask while another phase is showing.
+        if prev == "rig" and phase_id != "rig" and self._exit_edit_modes:
+            try:
+                self._exit_edit_modes()
+            except Exception:
+                pass
         self._active_phase = phase_id
         for pid in self._phases:
             panel = f"phase_panel_{pid}"
