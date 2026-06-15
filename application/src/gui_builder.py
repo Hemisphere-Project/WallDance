@@ -688,54 +688,36 @@ def build_phase_aim(gui: Any):
 
 
 def build_phase_calibrate(gui: Any):
-    """④ Calibrate dancers — Calib2 evidence pool (DANCERS / POOL / ALL)."""
+    """④ Calibrate dancers — run a pass, then review/apply the evidence pool
+    inline (the pool used to be a separate POOL modal; the rail panel has room
+    so it lives here, populated on entry + after each run)."""
     with dpg.group(tag="phase_panel_calibrate", show=False):
         dpg.add_text("4 - Calibrate Dancers", color=HEADING_GREEN)
-        dpg.add_text("Record rehearsal run(s) -> review pool -> Apply (preferred), "
-                     "or run live on show-open as dancers enter (fallback).",
+        dpg.add_text("Run a pass on 1-4 dancers (live or playback) to add evidence, "
+                     "then review the pool below and Apply. Add more runs (costumes "
+                     "/ positions) for a more robust result.",
                      color=TEXT_MUTED, wrap=scaled(_PHASE_WRAP))
         dpg.add_spacer(height=scaled(10))
-        with dpg.group(horizontal=True):
-            dancers_btn = dpg.add_button(
-                label="DANCERS",
-                tag="calib2_btn",
-                width=scaled(90),
-                height=scaled(30),
-                callback=gui._on_calib2,
-            )
-            dpg.bind_item_theme(dancers_btn, gui._btn_standby_theme)
-            with dpg.tooltip(dancers_btn):
-                dpg.add_text("Calib 2 - DANCERS (1-4 people, live or playback):\n"
-                             "collects one evidence run (sizes, confidences, speeds)\n"
-                             "into the project pool, then lets you apply the pooled\n"
-                             "result: person height, image size, sensitivity seed.")
-            pool_btn = dpg.add_button(
-                label="POOL",
-                tag="view_calib2_pool_btn",
-                width=scaled(60),
-                height=scaled(30),
-                callback=gui._on_view_calib2_pool,
-            )
-            dpg.bind_item_theme(pool_btn, gui._btn_standby_theme)
-            with dpg.tooltip(pool_btn):
-                dpg.add_text("Calib 2 POOL - open the evidence-pool dialog WITHOUT\n"
-                             "running a new DANCERS pass: review / apply / clear the\n"
-                             "saved runs for the active project + profile.")
-            all_btn = dpg.add_button(
-                label="ALL",
-                tag="calibrate_all_btn",
-                width=scaled(50),
-                height=scaled(30),
-                callback=gui._on_calibrate_all,
-            )
-            dpg.bind_item_theme(all_btn, gui._btn_standby_theme)
-            with dpg.tooltip(all_btn):
-                dpg.add_text("Calibrate All - guided flow chaining both:\n"
-                             "SCENE (clear stage) -> report card -> DANCERS\n"
-                             "(1-4 moving) -> pool review -> apply -> save.")
+        dancers_btn = dpg.add_button(
+            label="Calibrate with Dancers",
+            tag="calib2_btn",
+            width=scaled(200),
+            height=scaled(30),
+            callback=gui._on_calib2,
+        )
+        dpg.bind_item_theme(dancers_btn, gui._btn_standby_theme)
+        with dpg.tooltip(dancers_btn):
+            dpg.add_text("Calib 2 - DANCERS (1-4 people, live or playback):\n"
+                         "collects one evidence run (sizes, confidences, speeds)\n"
+                         "into the project pool below; review + Apply the pooled\n"
+                         "result: person height, image size, sensitivity seed.")
         dpg.add_spacer(height=scaled(8))
         # Shared calibration status line (Calib1 + Calib2 messages).
         dpg.add_text("", tag="calibrate_status", color=(160, 200, 255), show=False)
+        dpg.add_spacer(height=scaled(6))
+        # Evidence pool, rendered inline by gui.show_calib2_dialog (populated on
+        # entering this phase and after each run via Calib2PoolChanged).
+        dpg.add_group(tag="calib2_pool_inline")
 
 
 def build_phase_verify(gui: Any):

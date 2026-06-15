@@ -494,6 +494,10 @@ class WallDanceGUI:
                 theme = (self._btn_run_active_theme if pid == phase_id
                          else self._btn_standby_theme)
                 dpg.bind_item_theme(btn, theme)
+        # Entering Calibrate: populate the inline evidence pool (same read-only
+        # fetch the old POOL button did; renders via show_calib2_dialog).
+        if phase_id == "calibrate" and 'on_view_calib2_pool' in self.callbacks:
+            self.callbacks['on_view_calib2_pool']()
 
     def _toggle_window(self, tag: str):
         """Flip a floating drawer window's visibility."""
@@ -2406,85 +2410,57 @@ class WallDanceGUI:
             self.callbacks['on_view_calib2_pool']()
 
     def show_calib2_dialog(self, rows, proposal: str):
-        """Dancer-calibration evidence pool: run list with include-checkboxes,
-        the pooled proposal preview, and Apply / Clear pool / Close."""
-        if dpg.does_item_exist("calib2_modal"):
-            dpg.delete_item("calib2_modal")
-
-        modal_width = scaled(560)
-        modal_height = scaled(420)
+        """Render the dancer-calibration evidence pool INLINE in phase 4
+        (Calibrate): run list with include-checkboxes, the pooled proposal, and
+        Apply / Clear. Replaces the old modal -- the phase panel has room
+        (OPERATOR_V2 Track O). Driven by Calib2PoolChanged + the on-entry fetch.
+        """
+        container = "calib2_pool_inline"
+        if not dpg.does_item_exist(container):
+            return
+        dpg.delete_item(container, children_only=True)  # re-render from scratch
+        wrap = scaled(CONTROL_PANEL_WIDTH - 50)
         checkbox_tags = []
-
-        def close():
-            if dpg.does_item_exist("calib2_modal"):
-                dpg.delete_item("calib2_modal")
 
         def on_apply():
             selected = [path for tag, path in checkbox_tags
                         if dpg.does_item_exist(tag) and dpg.get_value(tag)]
-            close()
             if 'on_calib2_apply' in self.callbacks:
                 self.callbacks['on_calib2_apply'](selected)
 
         def on_clear():
-            close()
             if 'on_calib2_clear' in self.callbacks:
                 self.callbacks['on_calib2_clear']()
+            # Re-fetch so the inline view reflects the now-empty pool (the clear
+            # command drains before this view command).
+            if 'on_view_calib2_pool' in self.callbacks:
+                self.callbacks['on_view_calib2_pool']()
 
-        with dpg.window(
-            label="Dancer Calibration - Evidence Pool",
-            modal=True,
-            autosize=True,
-            tag="calib2_modal",
-            width=modal_width,
-            height=modal_height,
-            pos=self._center_modal("calib2_modal", modal_width, modal_height),
-            no_resize=True,
-            no_move=True,
-            no_close=True,
-            no_collapse=True,
-        ):
-            dpg.add_spacer(height=scaled(6))
-            dpg.add_text(
-                "Each DANCERS run adds evidence to a pool. The proposal below is\n"
-                "computed from all CHECKED runs together - add more runs (other\n"
-                "costumes / positions / recordings) to make it more robust.\n"
-                "Apply writes the pooled result to the active lighting profile.",
-                color=TEXT_DIM, wrap=scaled(520))
-            dpg.add_spacer(height=scaled(8))
-            dpg.add_text("Runs in the pool (uncheck to exclude):",
-                         color=TEXT_NORMAL)
-            with dpg.child_window(height=scaled(150), border=True):
-                for i, row in enumerate(rows):
-                    tag = f"calib2_run_chk_{i}"
-                    with dpg.group(horizontal=True):
-                        dpg.add_checkbox(tag=tag, default_value=not row.get("stale", False))
-                        label = row["label"]
-                        if row.get("stale"):
-                            dpg.add_text(label + "  [STALE - framing changed]",
-                                         color=WARN_ORANGE)
-                        else:
-                            dpg.add_text(label)
-                    checkbox_tags.append((tag, row["path"]))
-                if not rows:
-                    dpg.add_text("(empty - run DANCERS to add evidence)",
-                                 color=TEXT_DIM)
-            dpg.add_spacer(height=scaled(8))
-            dpg.add_text("Pooled proposal (all runs):", color=TEXT_NORMAL)
-            dpg.add_text(proposal, wrap=scaled(520))
-            dpg.add_spacer(height=scaled(10))
-            dpg.add_text("Add more runs (other costumes / positions / recordings)\n"
-                         "for a more robust pool, or Apply now.",
-                         color=TEXT_DIM)
-            dpg.add_spacer(height=scaled(8))
-            with dpg.group(horizontal=True):
-                dpg.add_button(label="Apply selected", callback=on_apply,
-                               width=scaled(140))
-                dpg.add_spacer(width=scaled(12))
-                dpg.add_button(label="Clear pool", callback=on_clear,
-                               width=scaled(110))
-                dpg.add_spacer(width=scaled(12))
-                dpg.add_button(label="Close", callback=close, width=scaled(90))
+        dpg.add_text("Runs in the pool (uncheck to exclude):",
+                     color=TEXT_NORMAL, parent=container)
+        with dpg.child_window(height=scaled(140), border=True, parent=container):
+            for i, row in enumerate(rows):
+                tag = f"calib2_run_chk_{i}"
+                with dpg.group(horizontal=True):
+                    dpg.add_checkbox(tag=tag, default_value=not row.get("stale", False))
+                    label = row["label"]
+                    if row.get("stale"):
+                        dpg.add_text(label + "  [STALE - framing changed]",
+                                     color=WARN_ORANGE)
+                    else:
+                        dpg.add_text(label)
+                checkbox_tags.append((tag, row["path"]))
+            if not rows:
+                dpg.add_text("(empty - run 'Calibrate with Dancers' to add evidence)",
+                             color=TEXT_DIM)
+        dpg.add_spacer(height=scaled(6), parent=container)
+        dpg.add_text("Pooled proposal (checked runs):", color=TEXT_NORMAL, parent=container)
+        dpg.add_text(proposal, wrap=wrap, color=TEXT_MUTED, parent=container)
+        dpg.add_spacer(height=scaled(8), parent=container)
+        with dpg.group(horizontal=True, parent=container):
+            dpg.add_button(label="Apply selected", callback=on_apply, width=scaled(130))
+            dpg.add_spacer(width=scaled(10))
+            dpg.add_button(label="Clear pool", callback=on_clear, width=scaled(100))
 
     def show_calibration_result_dialog(self, summary: str, on_save):
         """Show the measured Go-Live calibration and offer to save it.
