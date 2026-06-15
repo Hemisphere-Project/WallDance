@@ -110,6 +110,18 @@ class SetMotionSensitivity(Command):
 
 
 @dataclass(frozen=True)
+class SetOutputSmoothing(Command):
+    """Output box-size smoothing depth L (Track X §B.2); L>=1, default 1."""
+    value: int
+
+
+@dataclass(frozen=True)
+class ToggleBoxClamp(Command):
+    """Output box-clamp toggle (Track X §B.1); default ON."""
+    value: bool
+
+
+@dataclass(frozen=True)
 class SetPersonHeight(Command):
     value: int
 

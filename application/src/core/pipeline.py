@@ -31,6 +31,7 @@ from core.config import (
     MOTION_BRIDGE_MOG2_LEARN_RATE,
     MOTION_BRIDGE_MOG2_VAR_THRESHOLD,
     MOTION_BRIDGE_SENSITIVITY,
+    BOX_SIZE_OUTPUT_SMOOTHING,
     TrackingMode,
     MOTION_FIRST_BLOB_OVERLAP_RATIO,
     MOTION_FIRST_ASPECT_RANGE,
@@ -102,6 +103,11 @@ class ProcessingSettings:
     # the smoothed centroid.  OUTPUT-ONLY — applied at the ScaledTrack/OSC/preview
     # boundary; never mutates DancerTrack.bbox.  Locked default ON.
     box_clamp_enabled: bool = True
+    # Output box-size smoothing depth (Track X, OSC_CONTRACT §B.2).  L=1 = light
+    # causal de-jitter (default, minimal latency); higher L = smoother box at the
+    # cost of causal group-delay.  OUTPUT-ONLY.  The acausal fixed-lag/RTS upgrade
+    # (look-ahead L>1) is deferred (joint w/ engine agent).
+    output_smoothing_l: int = 1
     use_gpu_path: bool = USE_GPU_PATH  # Enable GPU frame buffer
     bg_subtract_enabled: bool = BG_SUBTRACT_ENABLED  # Static BG subtraction
     bg_subtract_sensitivity: int = BG_SUBTRACT_SENSITIVITY  # Threshold 0-255
@@ -429,6 +435,9 @@ class FrameProcessor:
         self._exclusion = ExclusionMaskBuilder()  # auto exclusion mask (P1.4)
         # Per-frame YOLO box confidences keyed by bbox value (calib2 seed, ⑤a)
         self._last_box_confs: Dict[tuple, float] = {}
+        # Output box-SIZE EMA state (Track X §B.2): track_id -> (w, h) smoothed
+        # in original space; pruned to the reported set each frame.
+        self._box_size_ema: Dict[int, tuple] = {}
         # Raw detection heights (original-space px) BEFORE the size gate — the
         # height-staleness alarm must see what the gate would reject (⑤d)
         self.last_raw_det_heights: List[float] = []
@@ -908,11 +917,51 @@ class FrameProcessor:
                     st.box_conf = self._last_box_confs.get(
                         self._bbox_conf_key(t.bbox))
 
+        # Output box-size smoothing (Track X §B.2) — causal, output-only, runs
+        # for both preview and OSC so they stay coherent.
+        self._smooth_output_box_sizes(scaled_tracks)
+
         # OSC output
         if self.osc and self.settings.osc_enabled:
             self.osc.send_frame(scaled_tracks, original_w, original_h)
 
         return scaled_tracks
+
+    def _smooth_output_box_sizes(self, scaled_tracks):
+        """Causal box-SIZE EMA on the reported boxes (Track X, OSC_CONTRACT §B.2).
+
+        OUTPUT-ONLY 'smoothness vs latency' stage.  EMA the reported bbox SIZE
+        around its own center (position/centroid are already EMA-smoothed); never
+        touches DancerTrack.  alpha = BOX_SIZE_OUTPUT_SMOOTHING / L, so L=1 is the
+        light de-jitter floor (~1 frame group delay) and higher L = smoother box
+        at the cost of more causal group-delay latency.  The ACAUSAL fixed-lag /
+        RTS smoother (look-ahead buffer, retroactive bridge correction, case-2
+        suppression) is deferred (joint w/ the engine agent) and will supersede
+        this for L>1.  State is keyed by track_id and pruned to the reported set
+        each frame (ids are unbounded over a show)."""
+        L = max(1, int(self.settings.output_smoothing_l))
+        alpha = max(0.05, min(1.0, BOX_SIZE_OUTPUT_SMOOTHING / L))
+        ema = self._box_size_ema
+        seen = set()
+        for st in scaled_tracks:
+            tid = int(st.track_id)
+            seen.add(tid)
+            w = float(st.bbox[2])
+            h = float(st.bbox[3])
+            prev = ema.get(tid)
+            if prev is None:
+                sw, sh = w, h
+            else:
+                sw = alpha * w + (1.0 - alpha) * prev[0]
+                sh = alpha * h + (1.0 - alpha) * prev[1]
+            ema[tid] = (sw, sh)
+            cx = float(st.bbox[0]) + w / 2.0
+            cy = float(st.bbox[1]) + h / 2.0
+            st.bbox = np.array([cx - sw / 2.0, cy - sh / 2.0, sw, sh],
+                               dtype=np.float64)
+        if len(ema) != len(seen):
+            for tid in [t for t in ema if t not in seen]:
+                del ema[tid]
 
     @staticmethod
     def _identity_scaled_track(t: DancerTrack,
@@ -1251,6 +1300,14 @@ class FrameProcessor:
         value = max(0.0, min(1.0, float(sensitivity)))
         self.settings.motion_sensitivity = value
         self.tracker.set_motion_bridge_sensitivity(value)
+
+    def set_box_clamp_enabled(self, enabled: bool) -> None:
+        """Toggle the output box-clamp (Track X §B.1).  Output-only."""
+        self.settings.box_clamp_enabled = bool(enabled)
+
+    def set_output_smoothing(self, depth: int) -> None:
+        """Set the output box-size smoothing depth L (Track X §B.2).  L>=1."""
+        self.settings.output_smoothing_l = max(1, int(depth))
 
     def get_last_motion_gray(self) -> Optional[np.ndarray]:
         """The most recent enhanced gray fed to MOG2 (Go-Live noise calibration).

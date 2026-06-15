@@ -790,6 +790,37 @@ def build_phase_live(gui: Any):
         with dpg.tooltip(sens_slider):
             dpg.add_text("The one live dial. 50 = calibrated.\nLosing the dancer? Raise it (catches more,\nmay add ghosts). Too many ghosts? Lower it\n(stricter). Calibration re-centers it at 50.")
         dpg.add_spacer(height=scaled(12))
+        # --- Output controls (Track X) — OUTPUT-domain, distinct from the
+        # detection dial above.  These shape what OSC/preview reports; they do
+        # NOT change detection.  See docs/OSC_CONTRACT.md.
+        dpg.add_text("Output", color=TEXT_NORMAL)
+        clamp_chk = dpg.add_checkbox(
+            label="Box-clamp (stable box during gaps)",
+            tag="box_clamp_checkbox",
+            default_value=bool(gui.config.get("box_clamp_enabled", True)),
+            callback=gui._on_box_clamp_toggle,
+        )
+        with dpg.tooltip(clamp_chk):
+            dpg.add_text("Report a last-known-YOLO-size box at the smoothed\n"
+                         "centroid while a dancer is motion-bridged, so the\n"
+                         "OSC/preview box stops flickering in detection gaps.\n"
+                         "Output-only; does not affect tracking. Default ON.")
+        with dpg.group(horizontal=True):
+            smooth_slider = dpg.add_slider_int(
+                tag="output_smoothing_slider",
+                label="smooth L",
+                default_value=int(gui.config.get("output_smoothing_l", 1)),
+                min_value=1,
+                max_value=6,
+                width=scaled(-120),
+                callback=gui._on_output_smoothing_change,
+            )
+        with dpg.tooltip(smooth_slider):
+            dpg.add_text("Output box-size smoothness vs latency.\n"
+                         "L=1 = light de-jitter, minimal latency (default).\n"
+                         "Higher = smoother box, more lag. Causal; the\n"
+                         "centroid is already smoothed.")
+        dpg.add_spacer(height=scaled(12))
         build_visualization_toolbar(gui)    # promoted: View S/K/B/T/I
 
 

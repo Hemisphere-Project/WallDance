@@ -278,6 +278,11 @@ TRACKER_CENTER_EXIT_RESURRECT_BOOST = 2.0  # Gate multiplier for dormant
 CENTROID_OUTPUT_SMOOTHING = 0.5         # EMA alpha (0 = max smooth, 1 = raw)
                                          # 0.3-0.5 is good for generative video
 
+# Output box-SIZE smoothing base (Track X, OSC_CONTRACT §B.2).  Causal EMA alpha
+# at output_smoothing_l = 1 (the light de-jitter floor); the slider divides this
+# by L, so higher L = smoother box at the cost of causal group-delay latency.
+BOX_SIZE_OUTPUT_SMOOTHING = 0.5         # EMA alpha at L=1 (~1 frame group delay)
+
 # =============================================================================
 # TRACKING EVENT LOG (Phase 0 — diagnostics)
 # =============================================================================

@@ -590,6 +590,14 @@ class WallDanceGUI:
         if 'on_motion_sensitivity_change' in self.callbacks:
             self.callbacks['on_motion_sensitivity_change'](float(value))
 
+    def _on_output_smoothing_change(self, sender, value):
+        if 'on_output_smoothing_change' in self.callbacks:
+            self.callbacks['on_output_smoothing_change'](int(value))
+
+    def _on_box_clamp_toggle(self, sender, value):
+        if 'on_box_clamp_toggle' in self.callbacks:
+            self.callbacks['on_box_clamp_toggle'](bool(value))
+
     def _on_max_persons_change(self, sender, value):
         if 'on_max_persons_change' in self.callbacks:
             self.callbacks['on_max_persons_change'](value)

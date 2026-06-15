@@ -138,31 +138,43 @@ replay goldens unaffected.
 - Minor, inherent: at a gap→skeleton transition the box may step from the clamped size to the
   fresh YOLO size; the box-size EMA (§B.2) softens this.
 
-### B.2 Output-smoothing depth `L` — default **L = 1** (causal)
+### B.2 Output-smoothing depth `L` — default **L = 1** (causal). IMPLEMENTED (batch-2).
 
-A consumer-facing **"smoothness vs latency"** slider. **Batch-2 ships only L = 1.**
+A consumer-facing **"smoothness vs latency"** slider (phase ⑥; `output_smoothing_l`, range
+1–6, default 1). **Output-only; causal.** Smooths only the reported box **size** around its own
+center — position/centroid are already EMA-smoothed via `CENTROID_OUTPUT_SMOOTHING`. No frame
+buffering, no look-ahead. Implemented at `FrameProcessor._smooth_output_box_sizes`
+(`core/pipeline.py`), state keyed by `track_id`, pruned to the reported set each frame.
 
-**At L = 1 (the only shipped behavior):** a **causal box-size EMA** on the *reported* box `w/h`
-(position/centroid is already EMA-smoothed via `CENTROID_OUTPUT_SMOOTHING`). No frame buffering,
-no look-ahead.
+**What ships in batch-2 (causal EMA, all `L`):**
+`size ← α·size_new + (1−α)·size_prev`, with `α = BOX_SIZE_OUTPUT_SMOOTHING / L`
+(`BOX_SIZE_OUTPUT_SMOOTHING = 0.5`, `α` floored at 0.05). So **`L` is a smoothness depth**:
+`L = 1 → α = 0.5` (light de-jitter); larger `L → smaller α →` smoother box, more lag.
 
-**Latency model.**
-- The stream stays **causal** — zero look-ahead, so **no added algorithmic delay** from
-  buffering at L = 1.
-- A causal EMA has a small **group delay** of ≈ `(1−α)/α` frames. The box-size EMA reuses the
-  same α convention as the centroid (`α = 0.5` ⇒ ≈ 1 frame ≈ ~50 ms @ 20 fps group delay on the
-  box *size* only). This is the cost paid for size stability; it is the floor, not a per-`L`
-  buffer.
-- **The per-`L` look-ahead buffer (L > 1) is NOT built in batch-2.** Its model, documented here
-  so the slider's meaning is fixed: each look-ahead frame adds ≈ `1/fps` of latency
-  (~50 ms/frame @ 20 fps). The operator trades that budget for fixed-lag de-jitter, retroactive
-  bridge correction, and case-2 flying-ghost suppression — all **🔴 deferred** (OPERATOR_V2 Track
-  X items 2–4; joint design with the engine agent).
+**Latency model (causal group delay).** A causal EMA adds **no buffering / look-ahead delay**, only
+a **group delay ≈ `(1−α)/α` frames** on the box *size*:
+
+| L | α | group delay (frames) | ≈ ms @ 20 fps |
+|---|------|----------------------|----------------|
+| 1 | 0.50 | ~1.0 | ~50 |
+| 2 | 0.25 | ~3.0 | ~150 |
+| 3 | 0.167| ~5.0 | ~250 |
+| 6 | 0.083| ~11.0 | ~550 |
+
+The dancer **position** stream is unaffected by `L` (only the box size lags). `L = 1` is the
+minimal-latency default.
+
+**Deferred (🔴, NOT in batch-2 — joint design with the engine agent).** The **acausal fixed-lag /
+RTS smoother** (a genuine look-ahead buffer of `L` frames) with **retroactive bridge correction**
+and **case-2 flying-ghost suppression**. When it lands it **supersedes the causal EMA above for
+`L > 1`**, trading the same `~1/fps`-per-frame latency budget for better-than-causal smoothing.
+The slider's operator-facing meaning ("more L = smoother + more latency") is forward-stable across
+that upgrade; only the internal mechanism changes.
 
 ### B.3 Causal vs lagged — the dual tap
 
 - **Causal tap (zero look-ahead) — the only tap in batch-2.** All `/walldance/dancer/*` messages
-  above, plus box-clamp (§B.1) and the L = 1 box-size EMA (§B.2). For latency-sensitive
+  above, plus box-clamp (§B.1) and the causal box-size EMA (§B.2). For latency-sensitive
   consumers.
 - **Lagged / smoothed tap (L > 1) — reserved, not shipped.** When the fixed-lag smoother lands it
   publishes a *second*, look-ahead-smoothed stream. To keep this contract forward-stable, the

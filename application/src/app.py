@@ -761,6 +761,9 @@ class WallDanceApp:
         reg(api.SetConfidence, lambda c: self._cb_confidence_change(c.value))
         reg(api.SetMotionSensitivity,
             lambda c: self._cb_motion_sensitivity_change(c.value))
+        reg(api.SetOutputSmoothing,
+            lambda c: self._cb_output_smoothing_change(c.value))
+        reg(api.ToggleBoxClamp, lambda c: self._cb_box_clamp_toggle(c.value))
         reg(api.SetPersonHeight, lambda c: self._cb_person_height_change(c.value))
         reg(api.SetImgsz, lambda c: self._cb_imgsz_change(c.value))
         reg(api.SetTrackerMaxAge, lambda c: self._cb_tracker_age_change(c.value))
@@ -1349,6 +1352,19 @@ class WallDanceApp:
     def _cb_motion_sensitivity_change(self, value: float):
         self.processor.set_motion_sensitivity(value)
         print(f"Motion bridge sensitivity: {value:.2f}")
+        self._request_reprocess()
+
+    def _cb_output_smoothing_change(self, value: int):
+        """Output box-size smoothing depth L (Track X §B.2).  Output-only."""
+        L = max(1, int(value))
+        self.processor.set_output_smoothing(L)
+        print(f"Output smoothing L = {L}")
+        self._request_reprocess()
+
+    def _cb_box_clamp_toggle(self, enabled: bool):
+        """Output box-clamp toggle (Track X §B.1).  Output-only."""
+        self.processor.set_box_clamp_enabled(bool(enabled))
+        print(f"Box-clamp: {'ON' if enabled else 'OFF'}")
         self._request_reprocess()
 
     def _cb_imgsz_change(self, value: int):
