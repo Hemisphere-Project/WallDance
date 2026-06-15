@@ -313,6 +313,7 @@ def replay_recording(
     track_details: bool = False,
     use_gpu_path: bool = False,
     use_trt: bool = False,
+    frame_skip: int = 1,
 ) -> Dict:
     """Replay a recording and return a compact metric summary.
 
@@ -342,10 +343,12 @@ def replay_recording(
     # process() (len(tracks) == what OSCSender.send_frame emits).  This is the
     # signal scoring.py compares against the scenario's ground-truth N.
     per_frame = []
-    processed = 0
+    processed = 0      # frames actually fed to the pipeline
+    consumed = 0       # source frames advanced past (read + grabbed)
+    stride = max(1, int(frame_skip))
     try:
         while True:
-            if max_frames is not None and processed >= max_frames:
+            if max_frames is not None and consumed >= max_frames:
                 break
             ok, frame = cap.read()
             if not ok:
@@ -353,8 +356,20 @@ def replay_recording(
             tracks, _enh, _timing, _lat = proc.process(
                 frame, need_preview=False, frame_number=processed)
             per_frame.append(per_frame_record(
-                processed, start_frame + processed, tracks, track_details))
+                processed, start_frame + consumed, tracks, track_details))
             processed += 1
+            consumed += 1
+            # Frame-skip (stride): advance past the next stride-1 source frames
+            # without decoding -- cheap exploration / Track-G frame-skip safety
+            # pre-check.  stride==1 leaves this a no-op (consumed == processed),
+            # so a default run is byte-identical to before.
+            if stride > 1:
+                for _ in range(stride - 1):
+                    if max_frames is not None and consumed >= max_frames:
+                        break
+                    if not cap.grab():
+                        break
+                    consumed += 1
     finally:
         cap.release()
         proc.tracker.logger.close()
@@ -472,6 +487,11 @@ def main():
                          "it on first use, then replay from it skipping YOLO")
     ap.add_argument("--rebuild-cache", action="store_true",
                     help="force-rebuild the detect-pass cache before replaying")
+    ap.add_argument("--frame-skip", type=int, default=1, metavar="N",
+                    help="process every Nth frame (stride; default 1 = all frames). "
+                         "Cheap exploration / Track-G frame-skip safety pre-check; "
+                         "N=1 is byte-identical to a full run. With --cache the cache "
+                         "is still built full and the stride is applied at replay.")
     args = ap.parse_args()
 
     scenario = None
@@ -518,16 +538,19 @@ def main():
             model_name, imgsz)
         cpath = detect_cache.cache_path_for(key)
         if args.rebuild_cache or not cpath.exists():
+            # Cache is built full (stride-independent, reusable); the stride is
+            # applied at replay time below.
             detect_cache.build_cache(
                 str(video), config, model_name=model_name, imgsz=imgsz,
                 start_frame=args.start, max_frames=args.frames, out_path=cpath)
-        summary = detect_cache.replay_from_cache(detect_cache.load_cache(cpath), config)
+        summary = detect_cache.replay_from_cache(
+            detect_cache.load_cache(cpath), config, frame_skip=args.frame_skip)
     else:
         summary = replay_recording(
             str(video), config, model_name=model_name, imgsz=imgsz,
             start_frame=args.start, max_frames=args.frames,
             track_details=args.details, use_gpu_path=args.gpu_path or args.trt,
-            use_trt=args.trt, log_dir=args.log_dir,
+            use_trt=args.trt, log_dir=args.log_dir, frame_skip=args.frame_skip,
         )
 
     # Split the per-frame timeline out of the lean (golden-comparable) summary.

@@ -82,21 +82,23 @@ class ScenarioEnv:
             self._registry[cpath] = detect_cache.load_cache(cpath)
         return self._registry[cpath]
 
-    def timeline(self, overrides: dict) -> Tuple[dict, List[dict]]:
+    def timeline(self, overrides: dict, frame_skip: int = 1) -> Tuple[dict, List[dict]]:
         config = {**self.base_config, **overrides}
-        cache = self._cache_for(config)
-        summary = detect_cache.replay_from_cache(cache, config, reuse_grays=True)
+        cache = self._cache_for(config)   # cache built full; stride applied at replay
+        summary = detect_cache.replay_from_cache(
+            cache, config, reuse_grays=True, frame_skip=frame_skip)
         return self.manifest, summary["per_frame"]
 
 
 class Tuner:
-    def __init__(self, scenarios: List[ScenarioEnv], weights=None):
+    def __init__(self, scenarios: List[ScenarioEnv], weights=None, frame_skip: int = 1):
         self.scenarios = scenarios
         self.weights = weights
+        self.frame_skip = frame_skip
         self.n_evals = 0
 
     def evaluate(self, overrides: dict) -> dict:
-        pairs = [s.timeline(overrides) for s in self.scenarios]
+        pairs = [s.timeline(overrides, self.frame_skip) for s in self.scenarios]
         self.n_evals += 1
         return scoring.score_multi(pairs, self.weights)
 
@@ -196,6 +198,11 @@ def main():
     ap.add_argument("--top", type=int, default=8, help="how many ranked configs to print")
     ap.add_argument("--out", default=None,
                     help="write the best merged config here (default: tests/tuned_<ts>.json)")
+    ap.add_argument("--frame-skip", type=int, default=1, metavar="N",
+                    help="evaluate every Nth frame (stride; default 1 = all). Caches "
+                         "are built full and reused; the stride is applied at replay, "
+                         "so N>1 speeds a search at some scoring fidelity (Track-G). "
+                         "N=1 is byte-identical to a full search.")
     args = ap.parse_args()
 
     space = json.loads(Path(args.space).read_text()) if args.space else dict(DEFAULT_SPACE)
@@ -203,7 +210,7 @@ def main():
     start = replay.apply_overrides({}, args.sets)   # fixed params from --set
 
     scenarios = [ScenarioEnv(s) for s in args.scenarios]
-    tuner = Tuner(scenarios, weights)
+    tuner = Tuner(scenarios, weights, frame_skip=args.frame_skip)
 
     t0 = time.time()
     if args.strategy == "coord":

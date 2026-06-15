@@ -190,6 +190,7 @@ def replay_from_cache(
     log_dir: Optional[str] = None,
     reuse_grays: bool = False,
     track_details: bool = False,
+    frame_skip: int = 1,
 ) -> Dict:
     """Re-run gate + motion + tracker from a cache, skipping YOLO.
 
@@ -200,6 +201,11 @@ def replay_from_cache(
     ``reuse_grays``: memoise the PNG-decoded motion grays on the cache dict
     (``cache["_decoded"]``) so a search re-using one cache across many evals pays
     the ~12 ms/frame imdecode once.  Costs ~one extra decoded gray set in RAM.
+
+    ``frame_skip``: stride N -- replay every Nth cached frame (the cache itself
+    is built full, so the stride is applied here, skipping entries).  N=1 is
+    byte-identical to a full cache replay; N>1 mirrors ``replay_recording``'s
+    frame-skip for cheap Track-G exploration.
     """
     import replay
     meta = cache["meta"]
@@ -219,22 +225,29 @@ def replay_from_cache(
                                   cv2.IMREAD_GRAYSCALE) for fr in cache["frames"]]
             cache["_decoded"] = grays
 
+    stride = max(1, int(frame_skip))
     per_frame = []
+    kept = 0           # logical index of frames actually replayed (contiguous)
     for i, fr in enumerate(cache["frames"]):
+        # Frame-skip: drop the cache entries between strides.  stride==1 keeps
+        # every frame (kept == i throughout) -> byte-identical to a full replay.
+        if stride > 1 and (i % stride) != 0:
+            continue
         gray = grays[i] if grays is not None else cv2.imdecode(
             np.frombuffer(fr["gray_png"], np.uint8), cv2.IMREAD_GRAYSCALE)
         proc._feed_motion_detectors(gray)
         dets = [(k, c, b) for (k, c, b) in fr["dets"]]
         timing: Dict[str, float] = {}
         tracks = proc._track_detections(
-            dets, fr["roi_x"], fr["roi_y"], fr["ow"], fr["oh"], i, timing)
+            dets, fr["roi_x"], fr["roi_y"], fr["ow"], fr["oh"], kept, timing)
         per_frame.append(replay.per_frame_record(
-            i, meta["start_frame"] + i, tracks, track_details))
+            kept, meta["start_frame"] + i, tracks, track_details))
+        kept += 1
     proc.tracker.logger.close()
 
     return replay._summary_from_log(
         tmp, meta["video"], meta["model"], meta["imgsz"],
-        meta["start_frame"], len(cache["frames"]), per_frame)
+        meta["start_frame"], kept, per_frame)
 
 
 # --------------------------------------------------------------------------- #
