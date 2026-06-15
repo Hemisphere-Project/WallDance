@@ -672,6 +672,31 @@ the calib engine, nor the OSC contract → runs end-to-end without stopping.
   reports pre/post box-clamp, the latency model, and whether the consumer wants the causal tap,
   the lagged tap, or both (today: bbox raw, centroid EMA-smoothed). A short `docs/OSC_CONTRACT.md`.
 
+**Suggested autonomous batch 2 (output & live-control surface) — unblocked by G1/G2 (2026-06-15).**
+Operator-surface lane (the calib agent owns `calibration.py`/`calib2.py` + Track C/D in parallel —
+don't touch those). Build in order, **checkpoint after the first two**:
+1. **`docs/OSC_CONTRACT.md`** (prerequisite) — current + planned `/walldance/dancer/*` semantics,
+   box-clamp effect on bbox, latency model, causal-vs-lagged dual tap. Locked defaults: smoothing
+   **L=1**, box-clamp **ON**. STOP for confirmation before changing anything OSC emits.
+2. **Track X box-clamp toggle (default on)** — *output-only*: add a per-track last-YOLO w/h field
+   (set when source==YOLO), clamp ONLY at the `ScaledTrack`/OSC/preview boundary, **never mutate
+   `DancerTrack.bbox`** (tracker.py:2894 sets it during bridge → feeds gate + MAX_VELOCITY, the
+   case-1 trap). Verify: replay goldens byte-identical + reported bbox stable on a bridged clip
+   (`replay.py --trt`, hangar-aerial). **→ checkpoint here** (show OSC contract + box-clamp plan +
+   goldens before continuing).
+3. **Output smoothing slider (causal, default L=1)** — box-size EMA on the reported box; record
+   latency in OSC_CONTRACT. The deep **fixed-lag/RTS smoother + retroactive correction + case-2
+   suppression stay 🔴** (joint design w/ the engine agent) — OUT of batch-2.
+4. **Two-dial live surface (phase ⑥)** — Dial A confidence ✅(G1: per-scene 0.15–0.65, inverts) +
+   Dial B gap-bridging ✅(G1: monotonic "fewer drops", calibrated-seeded); split
+   `sensitivity_macro` into two legible dials; raw-knob change must NOT silently de-anchor (toast +
+   visible re-anchor). Output controls (2)/(3) on the same surface, separated from the detection dials.
+
+DoD: UI items = app smoke; box-clamp = goldens byte-identical + bridged-clip check. Branch
+`operator-v2-batch2`, per-item commits. **Still gated after batch-2:** fixed-lag/RTS smoother (🔴
+joint w/ engine agent); Track-C fixes + unified C-next engine (calib agent); Track P (3→2 collapse);
+Track D (research-first).
+
 ---
 
 ## 7. Open items / to confirm
