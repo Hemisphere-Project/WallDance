@@ -65,7 +65,7 @@ class DpgUiAdapter:
         # Fixed viewport size - layout engine fits the preview to whatever
         # space is available
         window_width = int(1340 * dpi_scale)
-        window_height = int(850 * dpi_scale)
+        window_height = int(900 * dpi_scale)
         self.gui.setup(width=window_width, height=window_height)
         with dpg.handler_registry():
             dpg.add_key_press_handler(callback=self._handle_key)

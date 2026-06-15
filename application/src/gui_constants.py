@@ -43,5 +43,9 @@ TOAST_POS = (15, 38)
 # (bars + paddings) — margin once bars are measured, fallback before
 # the first frame has rendered them.
 LAYOUT_H_PAD = 28
-LAYOUT_V_MARGIN = 95
-LAYOUT_V_FALLBACK = 220
+# Vertical overhead beyond the measured bars: window padding + inter-row item
+# spacing for the stacked rows (top bar, phase rail, alerts strip, drawer bar,
+# bottom bar). Bumped when the rail/alerts/drawer rows were added so the middle
+# shrinks enough to keep the whole window inside the viewport (no scrollbar).
+LAYOUT_V_MARGIN = 120
+LAYOUT_V_FALLBACK = 240

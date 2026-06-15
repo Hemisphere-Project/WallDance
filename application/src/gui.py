@@ -1051,6 +1051,7 @@ class WallDanceGUI:
         with dpg.window(
             label="Report Issue",
             modal=True,
+            autosize=True,
             tag="issue_report_dialog",
             width=dlg_w,
             height=dlg_h,
@@ -1885,6 +1886,7 @@ class WallDanceGUI:
         with dpg.window(
             label="Save Configuration",
             modal=True,
+            autosize=True,
             tag="save_config_dialog",
             width=dlg_w,
             height=dlg_h,
@@ -2277,6 +2279,7 @@ class WallDanceGUI:
         with dpg.window(
             label="Model Loading",
             modal=True,
+            autosize=True,
             tag="model_loading_modal",
             width=modal_width,
             height=modal_height,
@@ -2356,6 +2359,7 @@ class WallDanceGUI:
         with dpg.window(
             label="TensorRT Engine",
             modal=True,
+            autosize=True,
             tag="tensorrt_prompt_modal",
             width=modal_width,
             height=modal_height,
@@ -2430,6 +2434,7 @@ class WallDanceGUI:
         with dpg.window(
             label="Dancer Calibration - Evidence Pool",
             modal=True,
+            autosize=True,
             tag="calib2_modal",
             width=modal_width,
             height=modal_height,
@@ -2507,6 +2512,7 @@ class WallDanceGUI:
         with dpg.window(
             label="Scene Calibration",
             modal=True,
+            autosize=True,
             tag="calibration_result_modal",
             width=modal_width,
             height=modal_height,
@@ -2568,6 +2574,7 @@ class WallDanceGUI:
         with dpg.window(
             label="Phone Monitor",
             modal=True,
+            autosize=True,
             tag="qr_modal",
             width=modal_w,
             height=modal_h,

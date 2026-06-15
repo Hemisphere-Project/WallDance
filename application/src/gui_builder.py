@@ -634,7 +634,9 @@ def build_phase_panel(gui: Any):
         build_phase_live(gui)
 
 
-_PHASE_WRAP = CONTROL_PANEL_WIDTH - 16
+# Leave room for the phase panel's vertical scrollbar so wrapped text isn't
+# clipped on the right.
+_PHASE_WRAP = CONTROL_PANEL_WIDTH - 34
 
 
 def build_phase_rig(gui: Any):
@@ -779,6 +781,23 @@ def build_phase_live(gui: Any):
             dpg.bind_item_theme(run_btn, gui._btn_run_active_theme)
             with dpg.tooltip(run_btn):
                 dpg.add_text("RUN: Full YOLO inference + OSC output")
+        dpg.add_spacer(height=scaled(12))
+        # The one operator live dial (KNOBS.md E2 macro), on the live surface
+        # where the operator actually nudges it.
+        dpg.add_text("Detection Sensitivity", color=TEXT_NORMAL)
+        with dpg.group(horizontal=True):
+            sens_slider = dpg.add_slider_float(
+                tag="sensitivity_slider",
+                default_value=gui.config.get("sensitivity", 50.0),
+                min_value=0.0,
+                max_value=100.0,
+                format="%.0f",
+                width=scaled(-90),
+                callback=gui._on_sensitivity_change,
+            )
+            _add_slider_row("sensitivity_slider", 5.0, 0.0, 100.0, gui._on_sensitivity_change)
+        with dpg.tooltip(sens_slider):
+            dpg.add_text("The one live dial. 50 = calibrated.\nLosing the dancer? Raise it (catches more,\nmay add ghosts). Too many ghosts? Lower it\n(stricter). Calibration re-centers it at 50.")
         dpg.add_spacer(height=scaled(12))
         build_visualization_toolbar(gui)    # promoted: View S/K/B/T/I
 
@@ -934,21 +953,8 @@ def build_detection_section(gui: Any):
 
         dpg.add_spacer(height=scaled(6))
 
-        # Detection Sensitivity — the one operator dial (KNOBS.md E2 macro)
-        dpg.add_text("Detection Sensitivity", color=TEXT_NORMAL)
-        with dpg.group(horizontal=True):
-            sens_slider = dpg.add_slider_float(
-                tag="sensitivity_slider",
-                default_value=gui.config.get("sensitivity", 50.0),
-                min_value=0.0,
-                max_value=100.0,
-                format="%.0f",
-                width=scaled(-90),
-                callback=gui._on_sensitivity_change,
-            )
-            _add_slider_row("sensitivity_slider", 5.0, 0.0, 100.0, gui._on_sensitivity_change)
-        with dpg.tooltip(sens_slider):
-            dpg.add_text("The one live dial. 50 = calibrated.\nLosing the dancer? Raise it (catches more,\nmay add ghosts). Too many ghosts? Lower it\n(stricter). Calibration re-centers it at 50.")
+        # Detection Sensitivity (the one operator live dial) is surfaced on the
+        # live surface -- phase 6 LIVE -- not here in the Advanced drawer.
 
         # Expert-only: the raw knobs behind the macro + tier-3 tracker params.
         with dpg.group(tag="detection_expert_group", show=gui.expert_mode):
