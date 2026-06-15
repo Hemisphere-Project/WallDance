@@ -309,13 +309,25 @@ def build_ui(gui: Any):
         with dpg.group(tag="top_bar_wrapper"):
             build_top_bar(gui)
         dpg.add_spacer(height=scaled(2))
+        # Linear phase rail (OPERATOR_V2 Track O) — the primary control surface.
+        with dpg.group(tag="phase_rail_wrapper"):
+            build_phase_rail(gui)
+        dpg.add_spacer(height=scaled(2))
         with dpg.group(horizontal=True, tag="middle_group"):
             dpg.add_spacer(width=scaled(6))  # Left padding
             build_video_panel(gui)
-            build_control_panel(gui)
+            build_phase_panel(gui)           # right column = selected phase only
             dpg.add_spacer(width=scaled(6))  # Right padding
+        dpg.add_spacer(height=scaled(2))
+        with dpg.group(tag="drawer_bar_wrapper"):
+            build_drawer_bar(gui)
         with dpg.group(tag="bottom_bar_wrapper"):
             build_bottom_bar(gui)
+    # Floating drawers (top-level windows, hidden until disclosed). The Advanced
+    # drawer holds today's numeric sections verbatim; Recordings holds the
+    # LIVE/REC + slots + transport, off the live surface (decision 2).
+    build_advanced_drawer(gui)
+    build_recordings_drawer(gui)
 
 
 def build_top_bar(gui: Any):
@@ -490,181 +502,13 @@ def build_video_panel(gui: Any):
 
 
 def build_bottom_bar(gui: Any):
-    """Bottom bar: SOURCE/playback controls, state buttons, and performance stats.
+    """Bottom bar: performance stats only.
 
-    Always at the bottom of the window, fixed height.
+    SOURCE/recording controls moved to the Recordings drawer; CALIBRATE/DANCERS/
+    POOL/ALL to phases 3-4; STANDBY/RUN to phase 6 (OPERATOR_V2 Track O). Always
+    at the bottom of the window, fixed height.
     """
     dpg.add_separator()
-
-    # SOURCE + STANDBY/RUN in a single row
-    with dpg.table(
-        header_row=False,
-        policy=dpg.mvTable_SizingStretchProp,
-        borders_innerH=True,
-        borders_innerV=True,
-        borders_outerH=True,
-        borders_outerV=True,
-        pad_outerX=True,
-        row_background=True,
-        tag="bottom_source_table",
-    ):
-        dpg.add_table_column(init_width_or_weight=0.4)   # SOURCE label
-        dpg.add_table_column(init_width_or_weight=2.8)   # LIVE/REC + slots
-        dpg.add_table_column(init_width_or_weight=2.0)   # Status/controls
-        dpg.add_table_column(init_width_or_weight=0.0, width_fixed=True, width_stretch=False)  # STANDBY/RUN
-        with dpg.table_row():
-            dpg.add_text("SOURCE", color=HEADING_GREEN)
-
-            # LIVE/REC buttons + slot buttons
-            with dpg.group(horizontal=True):
-                live_btn = dpg.add_button(
-                    label="LIVE",
-                    tag="rec_live_btn",
-                    width=scaled(45),
-                    callback=gui._on_rec_live,
-                )
-                dpg.bind_item_theme(live_btn, gui._rec_live_active_theme)
-                rec_btn = dpg.add_button(
-                    label="REC",
-                    tag="rec_rec_btn",
-                    width=scaled(45),
-                    callback=gui._on_rec_toggle,
-                )
-                dpg.bind_item_theme(rec_btn, gui._rec_btn_theme)
-                dpg.add_spacer(width=scaled(4))
-                for slot in range(1, 11):
-                    slot_btn = dpg.add_button(
-                        label=str(slot),
-                        tag=f"rec_slot_{slot}_btn",
-                        width=scaled(23),
-                        callback=lambda s, a, u: gui._on_rec_slot_click(u),
-                        user_data=slot,
-                    )
-                    dpg.bind_item_theme(slot_btn, gui._slot_empty_theme)
-
-            # Dynamic status / playback controls
-            with dpg.group(horizontal=False):
-                with dpg.group(horizontal=True, tag="source_status_group"):
-                    dpg.add_text("", tag="rec_status_text", color=(80, 200, 80))
-                    dpg.add_text("", tag="rec_frame_counter", color=(255, 100, 100))
-                with dpg.group(horizontal=True, tag="source_playback_group", show=False):
-                    dpg.add_text("", tag="rec_playback_progress", color=(100, 180, 220))
-                    dpg.add_combo(
-                        items=["x0.1", "x0.25", "x0.5", "x0.75", "x1.0", "x1.5", "x2.0", "x4.0"],
-                        tag="rec_speed_combo",
-                        default_value="x1.0",
-                        width=scaled(65),
-                        callback=gui._on_playback_speed_change,
-                    )
-                    pause_btn = dpg.add_button(
-                        label=Icons.PAUSE,
-                        tag="rec_pause_btn",
-                        width=scaled(24),
-                        callback=gui._on_playback_pause,
-                    )
-                    if gui._icon_font:
-                        dpg.bind_item_font(pause_btn, gui._icon_font)
-                    prev_btn = dpg.add_button(
-                        label=Icons.STEP_BACKWARD,
-                        tag="rec_prev_frame_btn",
-                        width=scaled(24),
-                        callback=gui._on_playback_prev_frame,
-                    )
-                    if gui._icon_font:
-                        dpg.bind_item_font(prev_btn, gui._icon_font)
-                    next_btn = dpg.add_button(
-                        label=Icons.STEP_FORWARD,
-                        tag="rec_next_frame_btn",
-                        width=scaled(24),
-                        callback=gui._on_playback_next_frame,
-                    )
-                    if gui._icon_font:
-                        dpg.bind_item_font(next_btn, gui._icon_font)
-                    dpg.add_button(
-                        label="ISSUE",
-                        tag="rec_report_issue_btn",
-                        width=scaled(52),
-                        callback=gui._on_report_issue,
-                    )
-
-            # CALIBRATE + STANDBY / RUN buttons
-            with dpg.group(horizontal=True):
-                # Go-Live scene calibration (P2) — prominent, next to go-live.
-                calib_btn = dpg.add_button(
-                    label="CALIBRATE",
-                    tag="calibrate_btn",
-                    width=scaled(90),
-                    height=scaled(28),
-                    callback=gui._on_calibrate,
-                )
-                dpg.bind_item_theme(calib_btn, gui._btn_standby_theme)
-                with dpg.tooltip(calib_btn):
-                    dpg.add_text("Calib 1 - SCENE (empty stage, during rigging):\n"
-                                 "drives IDS exposure/gain to the blur budget, seeds\n"
-                                 "gamma/CLAHE, sweeps MOG2 var+scale, builds the\n"
-                                 "exclusion mask. Re-click after each focus/IR change.")
-                dancers_btn = dpg.add_button(
-                    label="DANCERS",
-                    tag="calib2_btn",
-                    width=scaled(80),
-                    height=scaled(28),
-                    callback=gui._on_calib2,
-                )
-                dpg.bind_item_theme(dancers_btn, gui._btn_standby_theme)
-                with dpg.tooltip(dancers_btn):
-                    dpg.add_text("Calib 2 - DANCERS (1-4 people, live or playback):\n"
-                                 "collects one evidence run (sizes, confidences, speeds)\n"
-                                 "into the project pool, then lets you apply the pooled\n"
-                                 "result: person height, image size, sensitivity seed.")
-                pool_btn = dpg.add_button(
-                    label="POOL",
-                    tag="view_calib2_pool_btn",
-                    width=scaled(55),
-                    height=scaled(28),
-                    callback=gui._on_view_calib2_pool,
-                )
-                dpg.bind_item_theme(pool_btn, gui._btn_standby_theme)
-                with dpg.tooltip(pool_btn):
-                    dpg.add_text("Calib 2 POOL - open the evidence-pool dialog WITHOUT\n"
-                                 "running a new DANCERS pass: review / apply / clear the\n"
-                                 "saved runs for the active project + profile.")
-                calibrate_all_btn = dpg.add_button(
-                    label="ALL",
-                    tag="calibrate_all_btn",
-                    width=scaled(45),
-                    height=scaled(28),
-                    callback=gui._on_calibrate_all,
-                )
-                dpg.bind_item_theme(calibrate_all_btn, gui._btn_standby_theme)
-                with dpg.tooltip(calibrate_all_btn):
-                    dpg.add_text("Calibrate All - guided flow chaining both:\n"
-                                 "SCENE (clear stage) -> report card -> DANCERS\n"
-                                 "(1-4 moving) -> pool review -> apply -> save.")
-                dpg.add_text("", tag="calibrate_status", color=(160, 200, 255), show=False)
-                dpg.add_spacer(width=scaled(10))
-                standby_btn = dpg.add_button(
-                    label="STANDBY",
-                    tag="state_standby_btn",
-                    width=scaled(85),
-                    height=scaled(28),
-                    callback=gui._on_state_standby,
-                )
-                dpg.bind_item_theme(standby_btn, gui._btn_standby_theme)
-                with dpg.tooltip(standby_btn):
-                    dpg.add_text("STANDBY: Preview + enhancement, no YOLO, no OSC")
-                dpg.add_spacer(width=scaled(6))
-                run_btn = dpg.add_button(
-                    label="RUN",
-                    tag="state_run_btn",
-                    width=scaled(85),
-                    height=scaled(28),
-                    callback=gui._on_state_run,
-                )
-                dpg.bind_item_theme(run_btn, gui._btn_run_active_theme)
-                with dpg.tooltip(run_btn):
-                    dpg.add_text("RUN: Full YOLO inference + OSC output")
-
-    dpg.add_spacer(height=scaled(3))
 
     # Performance stats row
     with dpg.group(horizontal=True, tag="bottom_stats_group"):
@@ -708,24 +552,21 @@ def build_bottom_bar(gui: Any):
 
 
 def build_control_panel(gui: Any):
-    """Right-side control stack - mutually exclusive dropdowns.
-    
-    Structure:
+    """Advanced-drawer control stack — today's numeric sections, verbatim, behind
+    one disclosure (OPERATOR_V2 Track O §2.1). Mutually-exclusive accordion.
+
+    ROI + Exclusion are promoted to phase ① Rig, OSC to phase ② Profile, and the
+    View toolbar to phase ⑥ Live; what remains here is the developer/power-user
+    set:
     1. Input
-    2. Background
+    2. Background (expert)
     3. Enhancement
     4. Model
-    5. Detection (person height, confidence, max dancers, tracker max age)
+    5. Detection (person height, sensitivity, + expert tracker params)
     6. Preview
-    7. OSC
-    8. View toolbar (S/K/B/T/I toggles)
     """
     with dpg.child_window(width=scaled(CONTROL_PANEL_WIDTH), height=gui._middle_height, border=False, tag="control_panel"):
         build_input_section(gui)
-        dpg.add_spacer(height=scaled(8))
-        build_roi_section(gui)
-        dpg.add_spacer(height=scaled(8))
-        build_exclusion_mask_section(gui)
         dpg.add_spacer(height=scaled(8))
         build_background_section(gui)
         dpg.add_spacer(height=scaled(8))
@@ -736,10 +577,323 @@ def build_control_panel(gui: Any):
         build_detection_section(gui)
         dpg.add_spacer(height=scaled(8))
         build_preview_section(gui)
+
+
+# --------------------------------------------------------------------------- #
+# Phase rail + per-phase right panel (OPERATOR_V2 Track O §2.1)
+# --------------------------------------------------------------------------- #
+# (id, rail label) — the canonical operator spine.
+PHASES = [
+    ("rig", "1 Rig"),
+    ("profile", "2 Profile"),
+    ("aim", "3 Aim"),
+    ("calibrate", "4 Calib"),
+    ("verify", "5 Verify"),
+    ("live", "6 Live"),
+]
+
+
+def build_phase_rail(gui: Any):
+    """Horizontal phase rail — clicking a phase opens its panel on the right.
+
+    Drives the existing commands via gui._on_phase_select (pure UI nav). State
+    chips (done/pending/count) are refreshed by gui._update_phase_rail()."""
+    with dpg.group(horizontal=True):
+        dpg.add_text("PHASE", color=HEADING_GREEN)
+        dpg.add_spacer(width=scaled(6))
+        for pid, label in PHASES:
+            btn = dpg.add_button(
+                label=label,
+                tag=f"phase_btn_{pid}",
+                width=scaled(92),
+                height=scaled(26),
+                callback=lambda s, a, u: gui._on_phase_select(u),
+                user_data=pid,
+            )
+            dpg.bind_item_theme(btn, gui._btn_standby_theme)
+            # Per-phase status chip (done/pending/count) — set by _update_phase_rail.
+            dpg.add_text("", tag=f"phase_chip_{pid}", color=TEXT_HINT)
+            dpg.add_spacer(width=scaled(6))
+
+
+def build_phase_panel(gui: Any):
+    """Right-of-video column — only the selected phase's sub-panel is shown."""
+    with dpg.child_window(width=scaled(CONTROL_PANEL_WIDTH), height=gui._middle_height,
+                          border=False, tag="phase_panel"):
+        build_phase_rig(gui)
+        build_phase_profile(gui)
+        build_phase_aim(gui)
+        build_phase_calibrate(gui)
+        build_phase_verify(gui)
+        build_phase_live(gui)
+
+
+_PHASE_WRAP = CONTROL_PANEL_WIDTH - 16
+
+
+def build_phase_rig(gui: Any):
+    """① Rig & Frame — stage ROI + manual exclusion paint (decision 5)."""
+    with dpg.group(tag="phase_panel_rig", show=True):
+        dpg.add_text("1 - Rig & Frame", color=HEADING_GREEN)
+        dpg.add_text("Mount + manual focus, draw the stage ROI, paint known dead "
+                     "zones. Masked cells stay dimmed on the preview at all times.",
+                     color=TEXT_MUTED, wrap=scaled(_PHASE_WRAP))
         dpg.add_spacer(height=scaled(8))
-        build_osc_section(gui)
+        build_roi_section(gui)              # promoted from the control stack
+        dpg.add_spacer(height=scaled(8))
+        build_exclusion_mask_section(gui)   # promoted (manual paint, decision 5)
+
+
+def build_phase_profile(gui: Any):
+    """② Profile — Show/Rehearsal lives in the top bar; OSC output target here."""
+    with dpg.group(tag="phase_panel_profile", show=False):
+        dpg.add_text("2 - Profile", color=HEADING_GREEN)
+        dpg.add_text("Pick Show (night) / Rehearsal (day) in the top bar. The OSC "
+                     "output target is set here.",
+                     color=TEXT_MUTED, wrap=scaled(_PHASE_WRAP))
+        dpg.add_spacer(height=scaled(8))
+        build_osc_section(gui)              # promoted from the control stack
+
+
+def build_phase_aim(gui: Any):
+    """③ Aim & empty scene — scene calibration (Calib1)."""
+    with dpg.group(tag="phase_panel_aim", show=False):
+        dpg.add_text("3 - Aim & Empty Scene", color=HEADING_GREEN)
+        dpg.add_text("Clear stage. Drives IDS exposure/gain to the blur budget, "
+                     "seeds gamma/CLAHE, sweeps MOG2, captures the clean plate. "
+                     "Re-run after each focus/IR change.",
+                     color=TEXT_MUTED, wrap=scaled(_PHASE_WRAP))
+        dpg.add_spacer(height=scaled(10))
+        calib_btn = dpg.add_button(
+            label="CALIBRATE",
+            tag="calibrate_btn",
+            width=scaled(120),
+            height=scaled(30),
+            callback=gui._on_calibrate,
+        )
+        dpg.bind_item_theme(calib_btn, gui._btn_standby_theme)
+        with dpg.tooltip(calib_btn):
+            dpg.add_text("Calib 1 - SCENE (empty stage, during rigging):\n"
+                         "drives IDS exposure/gain to the blur budget, seeds\n"
+                         "gamma/CLAHE, sweeps MOG2 var+scale, builds the\n"
+                         "exclusion mask. Re-click after each focus/IR change.")
+
+
+def build_phase_calibrate(gui: Any):
+    """④ Calibrate dancers — Calib2 evidence pool (DANCERS / POOL / ALL)."""
+    with dpg.group(tag="phase_panel_calibrate", show=False):
+        dpg.add_text("4 - Calibrate Dancers", color=HEADING_GREEN)
+        dpg.add_text("Record rehearsal run(s) -> review pool -> Apply (preferred), "
+                     "or run live on show-open as dancers enter (fallback).",
+                     color=TEXT_MUTED, wrap=scaled(_PHASE_WRAP))
+        dpg.add_spacer(height=scaled(10))
+        with dpg.group(horizontal=True):
+            dancers_btn = dpg.add_button(
+                label="DANCERS",
+                tag="calib2_btn",
+                width=scaled(90),
+                height=scaled(30),
+                callback=gui._on_calib2,
+            )
+            dpg.bind_item_theme(dancers_btn, gui._btn_standby_theme)
+            with dpg.tooltip(dancers_btn):
+                dpg.add_text("Calib 2 - DANCERS (1-4 people, live or playback):\n"
+                             "collects one evidence run (sizes, confidences, speeds)\n"
+                             "into the project pool, then lets you apply the pooled\n"
+                             "result: person height, image size, sensitivity seed.")
+            pool_btn = dpg.add_button(
+                label="POOL",
+                tag="view_calib2_pool_btn",
+                width=scaled(60),
+                height=scaled(30),
+                callback=gui._on_view_calib2_pool,
+            )
+            dpg.bind_item_theme(pool_btn, gui._btn_standby_theme)
+            with dpg.tooltip(pool_btn):
+                dpg.add_text("Calib 2 POOL - open the evidence-pool dialog WITHOUT\n"
+                             "running a new DANCERS pass: review / apply / clear the\n"
+                             "saved runs for the active project + profile.")
+            all_btn = dpg.add_button(
+                label="ALL",
+                tag="calibrate_all_btn",
+                width=scaled(50),
+                height=scaled(30),
+                callback=gui._on_calibrate_all,
+            )
+            dpg.bind_item_theme(all_btn, gui._btn_standby_theme)
+            with dpg.tooltip(all_btn):
+                dpg.add_text("Calibrate All - guided flow chaining both:\n"
+                             "SCENE (clear stage) -> report card -> DANCERS\n"
+                             "(1-4 moving) -> pool review -> apply -> save.")
+        dpg.add_spacer(height=scaled(8))
+        # Shared calibration status line (Calib1 + Calib2 messages).
+        dpg.add_text("", tag="calibrate_status", color=(160, 200, 255), show=False)
+
+
+def build_phase_verify(gui: Any):
+    """⑤ Verify — readiness check + dry-run replay (wired in a later batch)."""
+    with dpg.group(tag="phase_panel_verify", show=False):
+        dpg.add_text("5 - Verify", color=HEADING_GREEN)
+        dpg.add_text("Glance at readiness (FPS / TRT / OSC / calib-age / disk / "
+                     "config-vs-scene) and optionally dry-run on the last recording.",
+                     color=TEXT_MUTED, wrap=scaled(_PHASE_WRAP))
+        dpg.add_spacer(height=scaled(8))
+        dpg.add_text("Readiness check + dry-run land in a later batch (gated).",
+                     color=TEXT_HINT, wrap=scaled(_PHASE_WRAP))
+
+
+def build_phase_live(gui: Any):
+    """⑥ Go Live — STANDBY/RUN + the live view toggles."""
+    with dpg.group(tag="phase_panel_live", show=False):
+        dpg.add_text("6 - Go Live", color=HEADING_GREEN)
+        dpg.add_text("STANDBY = preview + enhancement only. RUN turns on full "
+                     "YOLO inference + OSC output. Live, nudge a dial or two - "
+                     "nothing more.",
+                     color=TEXT_MUTED, wrap=scaled(_PHASE_WRAP))
+        dpg.add_spacer(height=scaled(10))
+        with dpg.group(horizontal=True):
+            standby_btn = dpg.add_button(
+                label="STANDBY",
+                tag="state_standby_btn",
+                width=scaled(110),
+                height=scaled(30),
+                callback=gui._on_state_standby,
+            )
+            dpg.bind_item_theme(standby_btn, gui._btn_standby_theme)
+            with dpg.tooltip(standby_btn):
+                dpg.add_text("STANDBY: Preview + enhancement, no YOLO, no OSC")
+            dpg.add_spacer(width=scaled(6))
+            run_btn = dpg.add_button(
+                label="RUN",
+                tag="state_run_btn",
+                width=scaled(110),
+                height=scaled(30),
+                callback=gui._on_state_run,
+            )
+            dpg.bind_item_theme(run_btn, gui._btn_run_active_theme)
+            with dpg.tooltip(run_btn):
+                dpg.add_text("RUN: Full YOLO inference + OSC output")
         dpg.add_spacer(height=scaled(12))
-        build_visualization_toolbar(gui)
+        build_visualization_toolbar(gui)    # promoted: View S/K/B/T/I
+
+
+# --------------------------------------------------------------------------- #
+# Drawer bar + floating drawers (Advanced / Recordings)
+# --------------------------------------------------------------------------- #
+def build_drawer_bar(gui: Any):
+    """Bottom disclosure bar — opens the Advanced / Recordings floating panels."""
+    dpg.add_separator()
+    with dpg.group(horizontal=True):
+        dpg.add_button(
+            label="Advanced",
+            tag="advanced_drawer_btn",
+            width=scaled(110),
+            height=scaled(24),
+            callback=lambda: gui._toggle_advanced_drawer(),
+        )
+        with dpg.tooltip("advanced_drawer_btn"):
+            dpg.add_text("Today's numeric sections (Input, Background, Enhancement,\n"
+                         "Model, Detection, Preview) — developer / power-user knobs.")
+        dpg.add_spacer(width=scaled(12))
+        dpg.add_button(
+            label="Recordings",
+            tag="recordings_drawer_btn",
+            width=scaled(110),
+            height=scaled(24),
+            callback=lambda: gui._toggle_recordings_drawer(),
+        )
+        with dpg.tooltip("recordings_drawer_btn"):
+            dpg.add_text("LIVE / REC + 10 slots + playback transport - the\n"
+                         "setup/rehearsal tool, off the live surface (decision 2).")
+
+
+def build_advanced_drawer(gui: Any):
+    """Floating Advanced panel: today's numeric section stack, verbatim."""
+    with dpg.window(label="Advanced  (numeric knobs)", tag="advanced_drawer_window",
+                    show=False, no_collapse=True,
+                    width=scaled(CONTROL_PANEL_WIDTH + 26), height=scaled(680),
+                    pos=(scaled(40), scaled(90))):
+        build_control_panel(gui)
+
+
+def build_recordings_drawer(gui: Any):
+    """Floating Recordings panel (decision 2): LIVE/REC + slots + transport."""
+    with dpg.window(label="Recordings", tag="recordings_drawer_window",
+                    show=False, no_collapse=True,
+                    width=scaled(580), height=scaled(150),
+                    pos=(scaled(40), scaled(560))):
+        # LIVE/REC buttons + slot buttons
+        with dpg.group(horizontal=True):
+            live_btn = dpg.add_button(
+                label="LIVE",
+                tag="rec_live_btn",
+                width=scaled(45),
+                callback=gui._on_rec_live,
+            )
+            dpg.bind_item_theme(live_btn, gui._rec_live_active_theme)
+            rec_btn = dpg.add_button(
+                label="REC",
+                tag="rec_rec_btn",
+                width=scaled(45),
+                callback=gui._on_rec_toggle,
+            )
+            dpg.bind_item_theme(rec_btn, gui._rec_btn_theme)
+            dpg.add_spacer(width=scaled(4))
+            for slot in range(1, 11):
+                slot_btn = dpg.add_button(
+                    label=str(slot),
+                    tag=f"rec_slot_{slot}_btn",
+                    width=scaled(23),
+                    callback=lambda s, a, u: gui._on_rec_slot_click(u),
+                    user_data=slot,
+                )
+                dpg.bind_item_theme(slot_btn, gui._slot_empty_theme)
+
+        dpg.add_spacer(height=scaled(6))
+
+        # Dynamic status / playback transport
+        with dpg.group(horizontal=True, tag="source_status_group"):
+            dpg.add_text("", tag="rec_status_text", color=(80, 200, 80))
+            dpg.add_text("", tag="rec_frame_counter", color=(255, 100, 100))
+        with dpg.group(horizontal=True, tag="source_playback_group", show=False):
+            dpg.add_text("", tag="rec_playback_progress", color=(100, 180, 220))
+            dpg.add_combo(
+                items=["x0.1", "x0.25", "x0.5", "x0.75", "x1.0", "x1.5", "x2.0", "x4.0"],
+                tag="rec_speed_combo",
+                default_value="x1.0",
+                width=scaled(65),
+                callback=gui._on_playback_speed_change,
+            )
+            pause_btn = dpg.add_button(
+                label=Icons.PAUSE,
+                tag="rec_pause_btn",
+                width=scaled(24),
+                callback=gui._on_playback_pause,
+            )
+            if gui._icon_font:
+                dpg.bind_item_font(pause_btn, gui._icon_font)
+            prev_btn = dpg.add_button(
+                label=Icons.STEP_BACKWARD,
+                tag="rec_prev_frame_btn",
+                width=scaled(24),
+                callback=gui._on_playback_prev_frame,
+            )
+            if gui._icon_font:
+                dpg.bind_item_font(prev_btn, gui._icon_font)
+            next_btn = dpg.add_button(
+                label=Icons.STEP_FORWARD,
+                tag="rec_next_frame_btn",
+                width=scaled(24),
+                callback=gui._on_playback_next_frame,
+            )
+            if gui._icon_font:
+                dpg.bind_item_font(next_btn, gui._icon_font)
+            dpg.add_button(
+                label="ISSUE",
+                tag="rec_report_issue_btn",
+                width=scaled(52),
+                callback=gui._on_report_issue,
+            )
 
 
 def build_detection_section(gui: Any):
@@ -909,7 +1063,7 @@ def build_visualization_toolbar(gui: Any):
 
 def build_osc_section(gui: Any):
     """OSC output settings - open by default."""
-    with dpg.collapsing_header(label="OSC", default_open=False, tag="section_osc", closable=False):
+    with dpg.collapsing_header(label="OSC", default_open=True, tag="section_osc", closable=False):
         with dpg.group(horizontal=True):
             osc_chk = dpg.add_checkbox(
                 label="Enable OSC",
@@ -1208,7 +1362,7 @@ def build_exclusion_mask_section(gui: Any):
     the active cell count and opens the preview cell editor for operator
     knowledge the auto pass cannot have (bystander zones, static ghosts).
     """
-    with dpg.collapsing_header(label="Exclusion Mask", default_open=False,
+    with dpg.collapsing_header(label="Exclusion Mask", default_open=True,
                                tag="section_exclusion_mask", closable=False):
         with dpg.group(horizontal=True):
             dpg.add_text("Masked:", color=TEXT_DIM)
@@ -1236,7 +1390,7 @@ def build_exclusion_mask_section(gui: Any):
 
 def build_roi_section(gui: Any):
     """Region of interest settings."""
-    with dpg.collapsing_header(label="Region of Interest", default_open=False, tag="section_roi", closable=False):
+    with dpg.collapsing_header(label="Region of Interest", default_open=True, tag="section_roi", closable=False):
         with dpg.group(horizontal=True):
             dpg.add_checkbox(
                 label="Enable ROI",

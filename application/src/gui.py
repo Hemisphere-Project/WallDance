@@ -296,13 +296,20 @@ class WallDanceGUI:
         self._create_texture()
         self._build_ui()
         
-        # Section headers for mutual exclusion
+        # Advanced-drawer section accordion (mutual exclusion). ROI -> phase 1 and
+        # OSC -> phase 2 are promoted to the phase panels, so they leave the
+        # accordion; the exclusion-mask editor was never in it.
         self._section_headers = [
-            "section_input", "section_roi", "section_background", "section_enhancement",
-            "section_model", "section_detection",
-            "section_preview", "section_osc"
+            "section_input", "section_background", "section_enhancement",
+            "section_model", "section_detection", "section_preview",
         ]
         self._last_open_section = "section_input"  # Input section starts open
+
+        # Phase rail (OPERATOR_V2 Track O): the right panel shows one phase at a
+        # time; the rail drives existing commands via the phase panels.
+        self._phases = ["rig", "profile", "aim", "calibrate", "verify", "live"]
+        self._active_phase = "rig"
+        self._on_phase_select(self._active_phase)  # initial panel + rail highlight
         
         # Set initial grey state for disabled rows
         self._update_preview_row_state(self.config.get('preview_enabled', True))
@@ -457,6 +464,38 @@ class WallDanceGUI:
             color=WARN_AMBER if self.expert_mode else TEXT_MUTED,
         )
 
+    # --- Phase rail + drawers (OPERATOR_V2 Track O) ----------------------------
+    def _on_phase_select(self, phase_id: str):
+        """Show the selected phase's right-panel; highlight its rail button.
+
+        Pure UI navigation -- the phase panels host the existing action buttons
+        (calibrate / dancers / pool / all / standby / run), which still submit
+        the same commands. No pipeline or command path changes here.
+        """
+        self._active_phase = phase_id
+        for pid in self._phases:
+            panel = f"phase_panel_{pid}"
+            if dpg.does_item_exist(panel):
+                dpg.configure_item(panel, show=(pid == phase_id))
+            btn = f"phase_btn_{pid}"
+            if dpg.does_item_exist(btn):
+                theme = (self._btn_run_active_theme if pid == phase_id
+                         else self._btn_standby_theme)
+                dpg.bind_item_theme(btn, theme)
+
+    def _toggle_window(self, tag: str):
+        """Flip a floating drawer window's visibility."""
+        if dpg.does_item_exist(tag):
+            shown = dpg.get_item_configuration(tag).get("show", False)
+            dpg.configure_item(tag, show=not shown)
+
+    def _toggle_advanced_drawer(self):
+        """Show/hide the floating Advanced (numeric knobs) panel."""
+        self._toggle_window("advanced_drawer_window")
+
+    def _toggle_recordings_drawer(self):
+        """Show/hide the floating Recordings panel (off the live surface)."""
+        self._toggle_window("recordings_drawer_window")
 
     def _update_preview_row_state(self, enabled: bool):
         """Grey out PREVIEW row controls when disabled."""
@@ -1190,18 +1229,25 @@ class WallDanceGUI:
         # otherwise fall back to a safe estimate.
         top_h = 0
         bot_h = 0
+        rail_h = 0
+        drawer_h = 0
         try:
             if dpg.does_item_exist("top_bar_wrapper"):
                 top_h = dpg.get_item_rect_size("top_bar_wrapper")[1]
             if dpg.does_item_exist("bottom_bar_wrapper"):
                 bot_h = dpg.get_item_rect_size("bottom_bar_wrapper")[1]
+            if dpg.does_item_exist("phase_rail_wrapper"):
+                rail_h = dpg.get_item_rect_size("phase_rail_wrapper")[1]
+            if dpg.does_item_exist("drawer_bar_wrapper"):
+                drawer_h = dpg.get_item_rect_size("drawer_bar_wrapper")[1]
         except Exception:
             pass
 
         if top_h > 0 and bot_h > 0:
-            # Measured bars + DPG window padding (2×8) + spacer(2) + item spacing gaps
-            # Use generous padding to guarantee bottom bar stays visible
-            v_overhead = int(top_h + bot_h) + scaled(LAYOUT_V_MARGIN)
+            # Measured bars + phase rail + drawer bar + DPG window padding (2×8) +
+            # spacers + item spacing gaps. Generous margin keeps the bottom bar
+            # visible.
+            v_overhead = int(top_h + bot_h + rail_h + drawer_h) + scaled(LAYOUT_V_MARGIN)
         else:
             # First frame fallback (items not rendered yet)
             v_overhead = scaled(LAYOUT_V_FALLBACK)
@@ -1230,6 +1276,8 @@ class WallDanceGUI:
             dpg.configure_item("video_panel", width=vid_w, height=mid_h)
         if dpg.does_item_exist("control_panel"):
             dpg.configure_item("control_panel", height=mid_h)
+        if dpg.does_item_exist("phase_panel"):
+            dpg.configure_item("phase_panel", height=mid_h)
         if dpg.does_item_exist("video_image"):
             dpg.configure_item("video_image", width=img_w, height=img_h)
 
