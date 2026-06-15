@@ -310,6 +310,9 @@ class WallDanceGUI:
         self._phases = ["rig", "profile", "aim", "calibrate", "verify", "live"]
         self._active_phase = "rig"
         self._on_phase_select(self._active_phase)  # initial panel + rail highlight
+
+        # Alerts strip (OPERATOR_V2 §2.3c): named warnings render in one strip.
+        self._alerts: Dict[str, str] = {}
         
         # Set initial grey state for disabled rows
         self._update_preview_row_state(self.config.get('preview_enabled', True))
@@ -496,6 +499,33 @@ class WallDanceGUI:
     def _toggle_recordings_drawer(self):
         """Show/hide the floating Recordings panel (off the live surface)."""
         self._toggle_window("recordings_drawer_window")
+
+    # --- Alerts strip (OPERATOR_V2 §2.3c) -------------------------------------
+    def push_alert(self, key: str, message: str):
+        """Add or replace a named alert; rendered in the alerts strip.
+
+        Keyed so a recurring condition (e.g. 'trt_fallback') updates in place
+        rather than stacking. The Track-C feeders (imgsz-fail / TRT / health)
+        that call this are gated; the API + strip exist now so they have a home.
+        """
+        self._alerts[key] = message
+        self._refresh_alerts()
+
+    def clear_alert(self, key: str):
+        """Remove a named alert (no-op if absent)."""
+        if self._alerts.pop(key, None) is not None:
+            self._refresh_alerts()
+
+    def _refresh_alerts(self):
+        """Render the current alert set into the strip."""
+        if not dpg.does_item_exist("alerts_text"):
+            return
+        if self._alerts:
+            dpg.set_value("alerts_text", "   ".join(self._alerts.values()))
+            dpg.configure_item("alerts_text", color=WARN_ORANGE)
+        else:
+            dpg.set_value("alerts_text", "(none)")
+            dpg.configure_item("alerts_text", color=TEXT_HINT)
 
     def _update_preview_row_state(self, enabled: bool):
         """Grey out PREVIEW row controls when disabled."""
@@ -1231,6 +1261,7 @@ class WallDanceGUI:
         bot_h = 0
         rail_h = 0
         drawer_h = 0
+        alerts_h = 0
         try:
             if dpg.does_item_exist("top_bar_wrapper"):
                 top_h = dpg.get_item_rect_size("top_bar_wrapper")[1]
@@ -1240,14 +1271,17 @@ class WallDanceGUI:
                 rail_h = dpg.get_item_rect_size("phase_rail_wrapper")[1]
             if dpg.does_item_exist("drawer_bar_wrapper"):
                 drawer_h = dpg.get_item_rect_size("drawer_bar_wrapper")[1]
+            if dpg.does_item_exist("alerts_strip_wrapper"):
+                alerts_h = dpg.get_item_rect_size("alerts_strip_wrapper")[1]
         except Exception:
             pass
 
         if top_h > 0 and bot_h > 0:
-            # Measured bars + phase rail + drawer bar + DPG window padding (2×8) +
-            # spacers + item spacing gaps. Generous margin keeps the bottom bar
-            # visible.
-            v_overhead = int(top_h + bot_h + rail_h + drawer_h) + scaled(LAYOUT_V_MARGIN)
+            # Measured bars + phase rail + alerts strip + drawer bar + DPG window
+            # padding (2×8) + spacers + item spacing gaps. Generous margin keeps
+            # the bottom bar visible.
+            v_overhead = (int(top_h + bot_h + rail_h + drawer_h + alerts_h)
+                          + scaled(LAYOUT_V_MARGIN))
         else:
             # First frame fallback (items not rendered yet)
             v_overhead = scaled(LAYOUT_V_FALLBACK)

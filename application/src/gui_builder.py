@@ -319,6 +319,8 @@ def build_ui(gui: Any):
             build_phase_panel(gui)           # right column = selected phase only
             dpg.add_spacer(width=scaled(6))  # Right padding
         dpg.add_spacer(height=scaled(2))
+        with dpg.group(tag="alerts_strip_wrapper"):
+            build_alerts_strip(gui)
         with dpg.group(tag="drawer_bar_wrapper"):
             build_drawer_bar(gui)
         with dpg.group(tag="bottom_bar_wrapper"):
@@ -413,7 +415,11 @@ def build_top_bar(gui: Any):
                 save_ind = dpg.add_text(Icons.CHECK, tag="save_indicator", color=BRIGHT_GREEN, show=False)
                 if gui._icon_font:
                     dpg.bind_item_font(save_ind, gui._icon_font)
-            with dpg.group(horizontal=True):
+            with dpg.group(horizontal=True, tag="status_chip_group"):
+                # Unified status chip group (OPERATOR_V2 §2.3a): one row, plain
+                # meanings, fallback states explicit (Cam / OSC / FPS / Engine /
+                # state). Every badge keeps its tag so the stats updaters are
+                # unaffected.
                 # System state badge (prominent)
                 state_badge = dpg.add_text("RUN", tag="state_badge", color=(100, 255, 100, 255))
                 dpg.bind_item_theme(state_badge, gui._state_live_theme)
@@ -780,6 +786,17 @@ def build_phase_live(gui: Any):
 # --------------------------------------------------------------------------- #
 # Drawer bar + floating drawers (Advanced / Recordings)
 # --------------------------------------------------------------------------- #
+def build_alerts_strip(gui: Any):
+    """One-line alerts strip (OPERATOR_V2 §2.3c) — warnings surface here:
+    GPU temp, TRT fallback, OSC down, config-vs-scene mismatch, height-stale.
+
+    The Track-C feeders that push these are gated (not batch 1); the strip + the
+    gui.push_alert/clear_alert API exist now so those fixes have a home."""
+    with dpg.group(horizontal=True):
+        dpg.add_text("Alerts:", color=TEXT_DIM)
+        dpg.add_text("(none)", tag="alerts_text", color=TEXT_HINT)
+
+
 def build_drawer_bar(gui: Any):
     """Bottom disclosure bar — opens the Advanced / Recordings floating panels."""
     dpg.add_separator()
