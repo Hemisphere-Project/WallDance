@@ -369,16 +369,7 @@ def build_top_bar(gui: Any):
                     dpg.add_text("Save config (Ctrl+S)")
 
                 dpg.add_spacer(width=scaled(12))
-                dpg.add_text("Lighting:", color=TEXT_DIM)
-                profile_radio = dpg.add_radio_button(
-                    items=["Show", "Rehearsal"],
-                    tag="profile_switch_radio",
-                    default_value=str(gui.config.get("active_profile", "show")).capitalize(),
-                    horizontal=True,
-                    callback=gui._on_profile_switch,
-                )
-                with dpg.tooltip(profile_radio):
-                    dpg.add_text("Lighting profile (day vs night): separate calibrated\nsettings (exposure/gain, gamma/CLAHE, MOG2, exclusion\nmask, sensitivity) per lighting condition.\nShow = live-performance / night lighting;\nRehearsal = day / setup lighting.\nCalibrate once per profile, then switch freely.")
+                # Show/Rehearsal (Lighting) toggle moved to the phase 2 Profile panel.
 
                 save_ind = dpg.add_text(Icons.CHECK, tag="save_indicator", color=BRIGHT_GREEN, show=False)
                 if gui._icon_font:
@@ -526,19 +517,17 @@ def build_control_panel(gui: Any):
     """Advanced-drawer control stack — today's numeric sections, verbatim, behind
     one disclosure (OPERATOR_V2 Track O §2.1). Mutually-exclusive accordion.
 
-    ROI + Exclusion are promoted to phase ① Rig, OSC to phase ② Profile, and the
-    View toolbar to phase ⑥ Live; what remains here is the developer/power-user
-    set:
-    1. Input
-    2. Background (expert)
-    3. Enhancement
-    4. Model
-    5. Detection (person height, sensitivity, + expert tracker params)
-    6. Preview
+    Input (camera) is promoted to phase ① Rig, ROI + Exclusion to ① Rig, the
+    Show/Rehearsal toggle to ② Profile, and the View toolbar to ⑥ Live; what
+    remains here is the developer/power-user set:
+    1. Background (expert)
+    2. Enhancement
+    3. Model
+    4. Detection (person height, sensitivity, + expert tracker params)
+    5. Preview
+    6. OSC
     """
     with dpg.child_window(width=scaled(CONTROL_PANEL_WIDTH), height=gui._middle_height, border=False, tag="control_panel"):
-        build_input_section(gui)
-        dpg.add_spacer(height=scaled(8))
         build_background_section(gui)
         dpg.add_spacer(height=scaled(8))
         build_enhancement_section(gui)
@@ -548,6 +537,8 @@ def build_control_panel(gui: Any):
         build_detection_section(gui)
         dpg.add_spacer(height=scaled(8))
         build_preview_section(gui)
+        dpg.add_spacer(height=scaled(8))
+        build_osc_section(gui)              # moved back from phase 2 Profile
 
 
 # --------------------------------------------------------------------------- #
@@ -605,12 +596,15 @@ _PHASE_WRAP = CONTROL_PANEL_WIDTH - 34
 
 
 def build_phase_rig(gui: Any):
-    """① Rig & Frame — stage ROI + manual exclusion paint (decision 5)."""
+    """① Rig & Frame — camera source + stage ROI + manual exclusion paint."""
     with dpg.group(tag="phase_panel_rig", show=True):
         dpg.add_text("1 - Rig & Frame", color=HEADING_GREEN)
-        dpg.add_text("Mount + manual focus, draw the stage ROI, paint known dead "
-                     "zones. Masked cells stay dimmed on the preview at all times.",
+        dpg.add_text("Pick the camera source, mount + manual focus, draw the stage "
+                     "ROI, paint known dead zones. Masked cells stay dimmed on the "
+                     "preview at all times.",
                      color=TEXT_MUTED, wrap=scaled(_PHASE_WRAP))
+        dpg.add_spacer(height=scaled(8))
+        build_input_section(gui)            # camera selector + input (rig setup)
         dpg.add_spacer(height=scaled(8))
         build_roi_section(gui)              # promoted from the control stack
         dpg.add_spacer(height=scaled(8))
@@ -618,14 +612,25 @@ def build_phase_rig(gui: Any):
 
 
 def build_phase_profile(gui: Any):
-    """② Profile — Show/Rehearsal lives in the top bar; OSC output target here."""
+    """② Profile — Show/Rehearsal lighting toggle + project/config management."""
     with dpg.group(tag="phase_panel_profile", show=False):
         dpg.add_text("2 - Profile", color=HEADING_GREEN)
-        dpg.add_text("Pick Show (night) / Rehearsal (day) in the top bar. Project "
-                     "config version, safe defaults, the phone-monitor QR and the "
-                     "OSC target live here.",
+        dpg.add_text("Pick the lighting profile (Show = night / Rehearsal = day) and "
+                     "manage the project config. Each profile keeps its own "
+                     "calibrated settings.",
                      color=TEXT_MUTED, wrap=scaled(_PHASE_WRAP))
         dpg.add_spacer(height=scaled(8))
+        dpg.add_text("Lighting profile", color=TEXT_NORMAL)
+        profile_radio = dpg.add_radio_button(
+            items=["Show", "Rehearsal"],
+            tag="profile_switch_radio",
+            default_value=str(gui.config.get("active_profile", "show")).capitalize(),
+            horizontal=True,
+            callback=gui._on_profile_switch,
+        )
+        with dpg.tooltip(profile_radio):
+            dpg.add_text("Lighting profile (day vs night): separate calibrated\nsettings (exposure/gain, gamma/CLAHE, MOG2, exclusion\nmask, sensitivity) per lighting condition.\nShow = live-performance / night lighting;\nRehearsal = day / setup lighting.\nCalibrate once per profile, then switch freely.")
+        dpg.add_spacer(height=scaled(10))
         # Project / config management (relocated off the cluttered top bar).
         dpg.add_text("Config version", color=TEXT_NORMAL)
         with dpg.group(horizontal=True):
@@ -658,8 +663,6 @@ def build_phase_profile(gui: Any):
                 dpg.bind_item_font(qr_btn, gui._icon_font)
             with dpg.tooltip(qr_btn):
                 dpg.add_text("Phone monitor: show a QR code to open the web UI")
-        dpg.add_spacer(height=scaled(10))
-        build_osc_section(gui)              # promoted from the control stack
 
 
 def build_phase_aim(gui: Any):
@@ -684,6 +687,13 @@ def build_phase_aim(gui: Any):
                          "drives IDS exposure/gain to the blur budget, seeds\n"
                          "gamma/CLAHE, sweeps MOG2 var+scale, builds the\n"
                          "exclusion mask. Re-click after each focus/IR change.")
+        dpg.add_spacer(height=scaled(10))
+        # Last-calibration line: a real per-run timestamp + the exact applied
+        # values need the gated calibration_state metadata (Track S); until then
+        # this shows the deterministic influence + a placeholder for the time.
+        dpg.add_text("Last calibrated: --", tag="aim_last_calib_text", color=TEXT_HINT)
+        dpg.add_text("Aim sets: exposure / gain -> gamma -> MOG2 var+scale -> "
+                     "clean-plate.", color=TEXT_DIM, wrap=scaled(_PHASE_WRAP))
 
 
 def build_phase_calibrate(gui: Any):
@@ -1067,7 +1077,7 @@ def build_visualization_toolbar(gui: Any):
 
 def build_osc_section(gui: Any):
     """OSC output settings - open by default."""
-    with dpg.collapsing_header(label="OSC", default_open=True, tag="section_osc", closable=False):
+    with dpg.collapsing_header(label="OSC", default_open=False, tag="section_osc", closable=False):
         with dpg.group(horizontal=True):
             osc_chk = dpg.add_checkbox(
                 label="Enable OSC",

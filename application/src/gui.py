@@ -300,8 +300,8 @@ class WallDanceGUI:
         # OSC -> phase 2 are promoted to the phase panels, so they leave the
         # accordion; the exclusion-mask editor was never in it.
         self._section_headers = [
-            "section_input", "section_background", "section_enhancement",
-            "section_model", "section_detection", "section_preview",
+            "section_background", "section_enhancement", "section_model",
+            "section_detection", "section_preview", "section_osc",
         ]
         self._last_open_section = "section_input"  # Input section starts open
 
@@ -2454,7 +2454,10 @@ class WallDanceGUI:
                 dpg.add_text("(empty - run 'Calibrate with Dancers' to add evidence)",
                              color=TEXT_DIM)
         dpg.add_spacer(height=scaled(6), parent=container)
-        dpg.add_text("Pooled proposal (checked runs):", color=TEXT_NORMAL, parent=container)
+        # NOTE: this proposal is aggregated over ALL pooled runs, not the current
+        # checkbox selection -- a live per-selection recompute + auto-apply needs
+        # a calib-flow preview path (flagged for the calib agent).
+        dpg.add_text("Pooled proposal (all pooled runs):", color=TEXT_NORMAL, parent=container)
         dpg.add_text(proposal, wrap=wrap, color=TEXT_MUTED, parent=container)
         dpg.add_spacer(height=scaled(8), parent=container)
         with dpg.group(horizontal=True, parent=container):
