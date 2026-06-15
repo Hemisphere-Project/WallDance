@@ -146,6 +146,7 @@ class DpgUiAdapter:
             "on_gap_bridging_change": lambda v: submit(api.SetGapBridging(float(v))),
             "on_output_smoothing_change": lambda v: submit(api.SetOutputSmoothing(int(v))),
             "on_box_clamp_toggle": lambda v: submit(api.ToggleBoxClamp(bool(v))),
+            "on_lagged_tap_toggle": lambda v: submit(api.ToggleLaggedTap(bool(v))),
             "on_check_readiness": lambda: submit(api.CheckReadiness()),
             "on_dryrun": lambda: submit(api.RunDryRunReplay()),
             "on_model_change": lambda name: submit(api.LoadModel(name)),
@@ -345,6 +346,8 @@ class DpgUiAdapter:
             api.BgStatus: lambda e: self.gui.update_bg_status(
                 e.has_reference, e.enabled, e.fg_ratio, e.mismatched),
             api.StatsTick: lambda e: self.gui.update_stats(**e.payload),
+            api.OutputLatency: lambda e: self.gui.show_output_latency(
+                e.latency_ms, e.enabled),
             api.GpuStats: lambda e: self.gui.update_gpu_stats(),
             api.IssueReportContext: lambda e: self.gui.show_issue_report_dialog(
                 e.context),

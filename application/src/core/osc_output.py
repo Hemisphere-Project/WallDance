@@ -27,19 +27,24 @@ class OSCSender:
                 print(f"OSC: Failed to initialize - {e}")
                 self.enabled = False
     
-    def send_dancer(self, track, frame_width, frame_height):
+    def send_dancer(self, track, frame_width, frame_height,
+                    prefix="/walldance/dancer"):
         """
-        Send single dancer data.
-        
+        Send single dancer data under ``prefix`` (default ``/walldance/dancer``).
+
+        ``prefix`` selects the tap: the causal tap uses the default; the lagged
+        tap (Track X §7) passes ``/walldance/dancer_lagged`` for an
+        RTS-smoothed, L-frames-late copy with the same message shapes.
+
         Messages sent (id is prepended to each argument list):
-        - /walldance/dancer/centroid [id, x, y]
-        - /walldance/dancer/bbox [id, x, y, w, h]
-        - /walldance/dancer/keypoints [id, x0, y0, c0, x1, y1, c1, ...]
-        - /walldance/dancer/velocity [id, vx, vy]
+        - {prefix}/centroid [id, x, y]
+        - {prefix}/bbox [id, x, y, w, h]
+        - {prefix}/keypoints [id, x0, y0, c0, x1, y1, c1, ...]
+        - {prefix}/velocity [id, vx, vy]
         """
         if not self.enabled or not self.client:
             return
-        
+
         dancer_id = track.track_id
         
         # Normalize coordinates to 0-1
@@ -59,11 +64,11 @@ class OSCSender:
         else:
             centroid_x = bbox[0] + bbox[2] / 2
             centroid_y = bbox[1] + bbox[3] / 2
-        self.client.send_message("/walldance/dancer/centroid", 
+        self.client.send_message(f"{prefix}/centroid",
                                   [dancer_id, norm_x(centroid_x), norm_y(centroid_y)])
-        
+
         # Bounding box (normalized)
-        self.client.send_message("/walldance/dancer/bbox", [
+        self.client.send_message(f"{prefix}/bbox", [
             dancer_id,
             norm_x(bbox[0]),
             norm_y(bbox[1]),
@@ -78,36 +83,54 @@ class OSCSender:
         vel_y = float(np.clip(vel[1], -1e6, 1e6))
         if not (np.isfinite(vel_x) and np.isfinite(vel_y)):
             vel_x, vel_y = 0.0, 0.0
-        self.client.send_message("/walldance/dancer/velocity",
+        self.client.send_message(f"{prefix}/velocity",
                                   [dancer_id, norm_x(vel_x), norm_y(vel_y)])
-        
+
         # All keypoints as flat list: [id, x0, y0, c0, x1, y1, c1, ...]
         keypoints_flat = [dancer_id]
         for i in range(17):
             x, y = track.keypoints[i]
             c = float(track.confidence[i])
             keypoints_flat.extend([norm_x(x), norm_y(y), c])
-        
-        self.client.send_message("/walldance/dancer/keypoints", keypoints_flat)
-    
-    def send_count(self, count, track_ids):
+
+        self.client.send_message(f"{prefix}/keypoints", keypoints_flat)
+
+    def send_count(self, count, track_ids, address="/walldance/count"):
         """Send total dancer count followed by active track IDs."""
         if not self.enabled or not self.client:
             return
-        
-        self.client.send_message("/walldance/count", [count] + list(track_ids))
-    
-    def send_frame(self, tracks, frame_width, frame_height):
-        """Send all tracking data for current frame."""
+
+        self.client.send_message(address, [count] + list(track_ids))
+
+    def send_latency_ms(self, latency_ms):
+        """Publish the active lagged-tap output latency (Track X §7).
+
+        ``/walldance/meta/latency_ms [ms]`` — re-emitted whenever L or fps
+        changes so TouchDesigner can time-align the causal and lagged taps.
+        0 ms means the lagged tap is inactive (causal-only)."""
+        if not self.enabled or not self.client:
+            return
+
+        self.client.send_message("/walldance/meta/latency_ms",
+                                 [float(latency_ms)])
+
+    def send_frame(self, tracks, frame_width, frame_height,
+                   prefix="/walldance/dancer", count_address="/walldance/count"):
+        """Send all tracking data for current frame under ``prefix``.
+
+        The causal tap uses the defaults; the lagged tap (Track X §7) passes
+        ``prefix='/walldance/dancer_lagged'`` and
+        ``count_address='/walldance/dancer_lagged/count'`` for a parallel,
+        L-frames-late stream with the same message shapes."""
         if not self.enabled:
             return
-        
+
         track_ids = [t.track_id for t in tracks]
-        self.send_count(len(tracks), track_ids)
-        
+        self.send_count(len(tracks), track_ids, address=count_address)
+
         for track in tracks:
-            self.send_dancer(track, frame_width, frame_height)
-    
+            self.send_dancer(track, frame_width, frame_height, prefix=prefix)
+
     def send_clear(self):
         """Send clear message (e.g., when resetting)."""
         if not self.enabled or not self.client:

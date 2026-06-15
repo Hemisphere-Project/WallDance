@@ -605,6 +605,10 @@ class WallDanceGUI:
         if 'on_box_clamp_toggle' in self.callbacks:
             self.callbacks['on_box_clamp_toggle'](bool(value))
 
+    def _on_lagged_tap_toggle(self, sender, value):
+        if 'on_lagged_tap_toggle' in self.callbacks:
+            self.callbacks['on_lagged_tap_toggle'](bool(value))
+
     def _on_check_readiness(self, *args):
         if 'on_check_readiness' in self.callbacks:
             self.callbacks['on_check_readiness']()
@@ -2693,6 +2697,23 @@ class WallDanceGUI:
         )
         dpg.set_value(tag, text)
         dpg.configure_item(tag, color=TEXT_NORMAL)
+
+    def show_output_latency(self, latency_ms, enabled=False):
+        """Render the phase-⑥ lagged-tap latency readout (Track X §7).
+
+        Uses ``dpg.set_value`` only (the loop posts this from the runtime tick),
+        the batch-2 cross-thread DPG rule (see ``show_dryrun_result``)."""
+        tag = "lagged_latency_text"
+        if not dpg.does_item_exist(tag):
+            return
+        if enabled and latency_ms > 0:
+            text = f"lagged tap: {latency_ms:.0f} ms ({latency_ms / 1000.0:.2f} s)"
+            color = TEXT_NORMAL
+        else:
+            text = "lagged tap: off"
+            color = TEXT_DIM
+        dpg.set_value(tag, text)
+        dpg.configure_item(tag, color=color)
 
     def setup(self, width: int = VIEWPORT_BASE_W, height: int = VIEWPORT_BASE_H):
         """Setup viewport and prepare for rendering.

@@ -164,25 +164,32 @@ a **group delay ≈ `(1−α)/α` frames** on the box *size*:
 The dancer **position** stream is unaffected by `L` (only the box size lags). `L = 1` is the
 minimal-latency default.
 
-**Deferred (🔴, NOT in batch-2 — joint design with the engine agent).** The **acausal fixed-lag /
-RTS smoother** (a genuine look-ahead buffer of `L` frames) with **retroactive bridge correction**
-and **case-2 flying-ghost suppression**. When it lands it **supersedes the causal EMA above for
-`L > 1`**, trading the same `~1/fps`-per-frame latency budget for better-than-causal smoothing.
-The slider's operator-facing meaning ("more L = smoother + more latency") is forward-stable across
-that upgrade; only the internal mechanism changes.
+**Acausal fixed-lag / RTS smoother — core shipped (batch-3, Track X X-2).** A genuine look-ahead
+buffer of `L` frames feeds an RTS (acausal) smoother on the lagged tap (§B.3). For **`L > 1` the
+causal box reverts to raw** (no causal box EMA) and the smoothed box + RTS centroid live on the
+lagged tap — **no double-smoothing**; **`L = 1` keeps the causal box-size EMA above unchanged**
+(back-compat). The slider's operator-facing meaning ("more L = smoother + more latency") is
+forward-stable across the upgrade; only the internal mechanism changes. **Retroactive bridge
+correction** falls out of the RTS pass automatically (a bridged gap `≤ L` re-anchored inside the
+window is corrected in hindsight). **Still deferred to X-3** (joint w/ the engine agent):
+**case-2 flying-ghost *suppression*** (the lagged id set currently equals the causal id set) and
+the optional steady-rate resample (X-4).
 
 ### B.3 Causal vs lagged — the dual tap
 
 - **Causal tap (zero look-ahead) — the only tap in batch-2.** All `/walldance/dancer/*` messages
   above, plus box-clamp (§B.1) and the causal box-size EMA (§B.2). For latency-sensitive
   consumers.
-- **Lagged / smoothed tap (L > 1) — reserved, not shipped.** When the fixed-lag smoother lands it
-  publishes a *second*, look-ahead-smoothed stream. To keep this contract forward-stable, the
-  lagged stream is reserved under the **`/walldance/dancer_lagged/*`** namespace (same message
-  shapes as §A.3), and the active output latency will be published on
-  **`/walldance/meta/latency_ms` `[ms]`** so TouchDesigner can time-align the two taps.
-  **Neither `dancer_lagged/*` nor `meta/latency_ms` is emitted in batch-2** — documented now only
-  to fix the names.
+- **Lagged / smoothed tap (L > 1) — IMPLEMENTED (batch-3, Track X X-2).** A *second*,
+  look-ahead-smoothed stream under the **`/walldance/dancer_lagged/*`** namespace (same message
+  shapes as §A.3, plus `/walldance/dancer_lagged/count`), released `L` frames late. The centroid
+  is an **RTS (acausal) smoothed** estimate over the raw KF centroid (not the causal EMA — no
+  cascade); the box is smoothed the same way. The active output latency is published on
+  **`/walldance/meta/latency_ms` `[ms]`** (= `L / fps · 1000`, re-emitted when `L` or fps changes;
+  `0` when the tap is inactive) so TouchDesigner can time-align the two taps. **Opt-in** via
+  `output_lagged_enabled` (default **False** — a second full stream doubles OSC traffic per
+  dancer); engages only at `L > 1`. Lagged `track_id`s equal the causal id set (case-2
+  flying-ghost *suppression* is X-3, deferred). See `TRACK_X_SMOOTHER.md`.
 
 ### B.4 Not changing in batch-2 (explicit)
 - Message **shapes, addresses, types, normalization, and cadence** of every §A message are

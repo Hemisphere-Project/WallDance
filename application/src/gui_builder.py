@@ -872,8 +872,22 @@ def build_phase_live(gui: Any):
         with dpg.tooltip(smooth_slider):
             dpg.add_text("Output box-size smoothness vs latency.\n"
                          "L=1 = light de-jitter, minimal latency (default).\n"
-                         "Higher = smoother box, more lag. Causal; the\n"
-                         "centroid is already smoothed.")
+                         "Higher = smoother box, more lag. At L>1 the smoothed\n"
+                         "(acausal) stream is on the lagged tap below.")
+        lagged_chk = dpg.add_checkbox(
+            label="Lagged tap (acausal RTS, L>1)",
+            tag="lagged_tap_checkbox",
+            default_value=bool(gui.config.get("output_lagged_enabled", False)),
+            callback=gui._on_lagged_tap_toggle,
+        )
+        with dpg.tooltip(lagged_chk):
+            dpg.add_text("Publish a second, RTS-smoothed /walldance/dancer_lagged/*\n"
+                         "stream, L frames late, plus /walldance/meta/latency_ms.\n"
+                         "Smoother + retroactively gap-corrected, for consumers that\n"
+                         "can trade latency for quality. Engages only at L>1; the\n"
+                         "causal /walldance/dancer/* tap stays live. Opt-in (doubles\n"
+                         "OSC traffic per dancer). Output-only.")
+        dpg.add_text("lagged tap: off", tag="lagged_latency_text", color=TEXT_DIM)
         dpg.add_spacer(height=scaled(12))
         build_visualization_toolbar(gui)    # promoted: View S/K/B/T/I
 

@@ -148,6 +148,7 @@ def test_member_validation(bad):
 EVENT_SAMPLES = {
     api.StateChanged: dict(state="run"),
     api.StatsTick: dict(payload={"fps": 19.7, "timing": {"yolo": 31.0}}),
+    api.OutputLatency: dict(latency_ms=150.0, enabled=True),
     api.GpuStats: {},
     api.CameraStatus: dict(is_open=True, source="ids"),
     api.CameraSources: dict(sources=["ids", "0"], current="ids", unavailable=["1"]),

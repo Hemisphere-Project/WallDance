@@ -128,6 +128,13 @@ class ToggleBoxClamp(Command):
 
 
 @dataclass(frozen=True)
+class ToggleLaggedTap(Command):
+    """Lagged / RTS output tap toggle (Track X §7); opt-in, default OFF.
+    Engages only for L>1 (a second /walldance/dancer_lagged/* stream)."""
+    value: bool
+
+
+@dataclass(frozen=True)
 class CheckReadiness(Command):
     """Phase-⑤: run the Go-Live readiness checks on demand (OPERATOR_V2 §6)."""
     pass
@@ -517,6 +524,15 @@ class DryRunResult(Event):
 class StatsTick(Event):
     """Per-tick stats blob; payload mirrors WallDanceGUI.update_stats kwargs."""
     payload: Dict[str, Any]
+
+
+@dataclass(frozen=True)
+class OutputLatency(Event):
+    """Phase-⑥ lagged-tap status (Track X §7): the published output latency in
+    ms (0 when the lagged tap is inactive).  Drives the latency readout next to
+    the output-smoothing slider."""
+    latency_ms: float
+    enabled: bool = False
 
 
 @dataclass(frozen=True)

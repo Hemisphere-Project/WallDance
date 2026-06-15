@@ -224,9 +224,19 @@ on the raw centroid** — not the tracker's KF, not the EMA'd centroid (output-o
 - `L = 1` default unchanged; lagged tap strictly opt-in (`output_lagged_enabled=False`).
 
 ## 11. Phasing
-- **X-1 (this doc):** design + namespace reserved (done in OSC_CONTRACT §B.3).
-- **X-2:** RTS de-jitter + dual tap + latency publish (the core). Joint build.
-- **X-3:** retroactive correction (falls out of RTS) + case-2 suppression.
+- **X-1 (this doc):** design + namespace reserved (done in OSC_CONTRACT §B.3). ✅
+- **X-2 — SHIPPED (branch operator-v2-batch3):** the prerequisite finalize fields (§2),
+  `core/output_smoother.py` (CV-forward Kalman + RTS-backward over `centroid_raw`, R-inflation
+  mirroring `MOTION_BRIDGE_NOISE_STAGES`), the dual tap (`/walldance/dancer_lagged/*`) +
+  `meta/latency_ms`, and the phase-⑥ lagged-enable toggle + latency readout. Retroactive bridge
+  correction already falls out of the RTS pass. **Verified:** goldens 3/3 byte-identical; the
+  output-only A/B (lagged tap ON → identical internal summary vs golden); the cascaded-lag guard
+  (measured extra lag = 0 → total latency = `L`, no EMA leak); and on `hangar-aerial` (CPU+TRT)
+  the lagged centroid is ~5× smoother than causal with frame delay = `L` vs the raw centroid
+  (`tests/verify_lagged_tap.py`). `output_lagged_enabled` default **False** (opt-in).
+- **X-3 (GATED — needs the §9 engine-agent answers):** case-2 flying-ghost *suppression* (the
+  hardened ≥2-confident-reacquisitions + recency predicate, §5) + tap-id consistency (lagged ids =
+  causal minus case-2). The RTS retroactive correction is already in X-2.
 - **X-4:** steady-rate resample (optional).
 
 Owner split: operator-surface lane = `output_smoother.py` scaffold + controls + OSC
