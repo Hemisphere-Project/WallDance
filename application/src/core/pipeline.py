@@ -131,6 +131,16 @@ class ScaledTrack:
     box_conf: Optional[float] = None  # YOLO box conf of the detection that fed
                                       # this track THIS frame (None when bridged
                                       # or cold-blob fed) — calib2 seed (⑤a)
+    # Output-only signals for the fixed-lag/RTS output smoother (Track X §2).
+    # Copied from read-only tracker scalars at finalize — copying them never
+    # touches tracker state, so replay goldens stay byte-identical.
+    #   frames_since_skeleton == 0  ⟺  a real skeleton fed this track this frame
+    #                                   (is_real_skeleton); grows on bridge/miss.
+    #   centroid_raw = the tracker KF estimate kf.x[:2] (the RAW, non-EMA centroid,
+    #                  distinct from the EMA smoothed_centroid), in ORIGINAL space
+    #                  — the de-jitter input that avoids cascaded filtering.
+    frames_since_skeleton: Optional[int] = None
+    centroid_raw: Optional[np.ndarray] = None
 
 
 class _LetterboxMotionProxy:
@@ -971,6 +981,10 @@ class FrameProcessor:
         ``clamp_to_yolo_size`` routes the bbox through the output box-clamp
         (Track X) — output-only, never touches ``t.bbox``."""
         bbox = (t.reported_bbox(True) if clamp_to_yolo_size else t.bbox.copy())
+        # Output-only smoother signals (Track X §2).  Guarded so non-DancerTrack
+        # stubs (e.g. transform unit tests) still finalize cleanly.
+        get_raw = getattr(t, 'get_centroid', None)
+        centroid_raw = get_raw().copy() if callable(get_raw) else None
         return ScaledTrack(
             track_id=t.track_id,
             keypoints=t.keypoints.copy(),
@@ -980,6 +994,8 @@ class FrameProcessor:
             velocity=t.get_velocity().copy(),
             smoothed_centroid=t.get_smoothed_centroid().copy(),
             is_bridged=getattr(t, 'is_bridged', False),
+            frames_since_skeleton=getattr(t, '_frames_since_skeleton', None),
+            centroid_raw=centroid_raw,
         )
 
     def _track_detections(
@@ -1528,7 +1544,17 @@ class FrameProcessor:
 
         # Smoothed centroid (same unscale transform)
         sm_centroid = (track.get_smoothed_centroid() - pad_xy) * inv_scale + roi_offset
-        
+
+        # Raw KF centroid (Track X §2) — output-only de-jitter input; gets the
+        # SAME unscale transform as the smoothed centroid.  Guarded so the
+        # transform unit tests (self=None, stub track without get_centroid) keep
+        # exercising the raw path.
+        get_raw = getattr(track, 'get_centroid', None)
+        if callable(get_raw):
+            centroid_raw = (get_raw() - pad_xy) * inv_scale + roi_offset
+        else:
+            centroid_raw = None
+
         return ScaledTrack(
             track_id=track.track_id,
             keypoints=keypoints,
@@ -1538,6 +1564,8 @@ class FrameProcessor:
             velocity=velocity,
             smoothed_centroid=sm_centroid,
             is_bridged=getattr(track, 'is_bridged', False),
+            frames_since_skeleton=getattr(track, '_frames_since_skeleton', None),
+            centroid_raw=centroid_raw,
         )
 
     # ------------------------------------------------------------------
