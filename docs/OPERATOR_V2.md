@@ -725,6 +725,34 @@ Track D (research-first).
 > - **`docs/NEW_SHOW.md`** — operator field checklist from the spine (closes ROADMAP §4.2 Phase 4).
 > Verify: unit 329 passed / 7 skipped (+ headless DPG phase-⑤ build smoke + runtime-api meta-tests).
 
+### 6.1 Cross-agent handoff (2026-06-15) — the 🔴 / cross-lane items, design-staged
+
+Operator-surface lane has taken these as far as it can **without** crossing a lane boundary
+(design + coordination; **no code, no calib-file edits, no golden re-baseline**). Each needs
+the named agent / an explicit operator go before any build.
+
+- **Track X fixed-lag / RTS smoother (🔴 joint w/ engine agent) → SPEC WRITTEN.** Full design
+  in [TRACK_X_SMOOTHER.md](TRACK_X_SMOOTHER.md): RTS de-jitter, retroactive bridge correction,
+  case-2 suppression, dual tap + latency, code integration points, and **5 open questions for
+  the engine agent** (independent vs tracker Kalman; identity across the lag; case-2 vs the
+  internal frozen-ghost gate; bridged measurement noise; the lagged-tap replay metric). Output-
+  only by design (goldens stay green). *Next:* engine agent answers §9, then joint build X-2/X-3.
+- **Track-C correctness fixes + C-next unified engine → calib agent's lane (do NOT edit
+  `calibration.py`/`calib2.py`).** Operator-surface seam **already shipped**: the inline pool
+  renders `Calib2PoolChanged`; the two dials seed off `reset_sensitivity_anchor`
+  (`conf_seed`/`var_anchor`) and Dial B already accepts a future motion-sensitivity seed
+  (`_bridge_sens_seed`, default today). *Calib agent owns:* the §3.2 fixes (height ownership,
+  apply gates, stale-flag, imgsz-fail feedback, noise-σ unify, `tracker_intermittent_confirm`
+  wiring) + the subset-preview/quiet-apply + the C-next derivation engine. Each is replay-gated
+  and **re-baselines goldens on purpose** → separate noted commits, heads-up to this lane.
+- **Track P (3→2 GPU-only collapse) → PLAN in §"Track P"; needs operator go + calib heads-up
+  (touches the cache/golden assumptions).** Bounded one-time migration: re-baseline the 12
+  goldens on the TRT cache, repoint `detect_cache`/`tune`/`sensitivity` to GPU/TRT, delete the
+  CPU-path code + parity test, harden the engine gate, update `replay.py`/README/TUNING. **Not
+  unilateral** — it changes how goldens are produced (byte-identical cv2-CPU → TRT-engine-locked),
+  so it's an explicit, operator-approved migration, ideally sequenced *after* the calib agent's
+  Track-C golden re-baselines land (do one re-baseline, not two).
+
 ---
 
 ## 7. Open items / to confirm
