@@ -540,9 +540,11 @@ range?"* — which directly de-risks decision 3.
   pick by detection (`avg_det`/count×conf); **gamma-stays-formula confirmed** (held pinned, CLAHE
   alone gave the full spread). Run direct on GPU+TRT — CLAHE is the cv2↔kornia divergent knob
   (CPU cache would mislead). Record: `tmp_analysis/g2/SUMMARY.md`.
-- **G3 — Geometry axis** (T2): **covered by Phase 2b** (the 710-cell imgsz×model×scene grid
-  validated the net-height knee 110/45 per scene-class + TRT transfer). Optional narrow re-confirm
-  (current post-Phase-2 code, TRT path, 5-slot subset, ~10 min) deferred unless wanted.
+- **G3 ✅ done (2026-06-15, narrow re-confirm on current code + TRT)** — dark-scene inversion holds
+  on the live path: low imgsz wins on dark IR (dark-crowd→640, hangar-aerial→640, outdoor-night→960
+  U-shaped); re-validates Phase-2b's dark-target (net-height 45 / low imgsz), no drift. **Bonus:**
+  hangar-aerial's *pinned* imgsz 1280 is too high (640 → drop .19→.03) → its calib imgsz should drop.
+  Bright-scene knee = trust Phase-2b (corpus is overwhelmingly dark). `tmp_analysis/g3/SUMMARY.md`.
 - **G4 ✅ done (2026-06-15)** — candidate-Fixed knob OAT on the 5-slot subset **splits the Fixed
   tier**: `crossval_skel_min_conf` + `tracker_smoothing` inert on all 5 (truly Fixed); but
   `tracker_max_age`, θ_s-kpts, θ_m carry **0.03–0.07 on multi-dancer/occlusion + static-sitter**
@@ -550,11 +552,13 @@ range?"* — which directly de-risks decision 3.
   Confirms KNOBS' own "FIXED = hide-not-delete" caveat. θ_m motion-coupled → TRT-confirm in Phase 3.
   Record: `tmp_analysis/g4/SUMMARY.md`.
 - **G5 ✅ done (2026-06-15)** — governance table finalized in §4.1 from G1/G2/G4.
-- **G6 — Clean-plate recovery** (de-risks the C-next merge): on slots with a dancer-free opening,
-  compare var/exclusion derived from the **empty-stage** window vs from a **dancers-present**
-  window (robust median + skeleton-sparing). Quantify the gap → tells the unified engine whether
-  one dancers pass can safely replace the empty-stage scene pass, or whether Aim must also grab a
-  clean-plate. Cheap-ish (post-YOLO motion signal); run before C-next engine work.
+- **G6 ✅ done (2026-06-15)** — var/scene-stats recovery: the MOG2 var-sweep is
+  **window/dancer-invariant** (var 8@0.7 identical at an early window vs the dancers-present window
+  on all 4 recordings; FP ~0 both) → **C-next's one dancers pass can derive `var` directly; no
+  empty-stage pass needed** for the var/scene-signal half. **Scope:** the clean-plate *pixel*
+  recovery (skeleton-sparing robust median) needs the **unbuilt** C-next mechanism (background.py
+  only snapshots) → handed to the calib agent to validate when building, not faked here.
+  `tmp_analysis/g6/SUMMARY.md`.
 
 ### 5.5 Harness gaps to close (small, enables the above)
 - A `--frame-skip` flag on `replay.py`/`tune.py` (cheap exploration).
