@@ -169,6 +169,13 @@ class DancerTrack:
         self.keypoints = keypoints.copy()
         self.confidence = confidence.copy()
         self.bbox = np.array(bbox)
+        # Output-only memory of the last real-YOLO box size (w, h).  Fed to the
+        # box-clamp output stage so a motion-bridged track can report a stable
+        # dancer-sized rectangle WITHOUT mutating self.bbox (which drives the
+        # bridge gate + MAX_VELOCITY — the case-1 trap).  Refreshed in update()
+        # whenever a real skeleton arrives.
+        self._last_yolo_wh = np.array([float(bbox[2]), float(bbox[3])],
+                                      dtype=np.float64)
         self.hits = 1
         self.age = 0
         self.time_since_update = 0
@@ -439,6 +446,9 @@ class DancerTrack:
         self.confidence = confidence.copy()
         if np.any(confidence > KEYPOINT_CONFIDENCE):
             self._frames_since_skeleton = 0  # real pose, not a cold-blob synthetic
+            # Refresh the box-clamp output stage's size memory from this YOLO box.
+            self._last_yolo_wh = np.array([float(bbox[2]), float(bbox[3])],
+                                          dtype=np.float64)
         self.bbox = np.array(bbox)
         self.bbox_area_history.append(float(bbox[2] * bbox[3]))
         self.hits += 1
@@ -618,7 +628,32 @@ class DancerTrack:
     def get_smoothed_centroid(self):
         """Get EMA-smoothed centroid for jitter-free output."""
         return self._smoothed_centroid.copy()
-    
+
+    def reported_bbox(self, clamp_to_yolo_size: bool) -> np.ndarray:
+        """Output-only bbox for OSC/preview — NEVER feeds tracking or gating.
+
+        When ``clamp_to_yolo_size`` and this track is NOT being fed by a fresh
+        YOLO skeleton this frame (``_frames_since_skeleton > 0`` — i.e.
+        motion-bridged, cold-blob-sustained, or coasting through a miss),
+        report a box of the last-known YOLO size centered on the smoothed
+        centroid (position-from-motion, size-from-YOLO-memory).  This is the
+        case-1 size-flicker fix.  Otherwise (fresh YOLO this frame, or clamp
+        off) return the raw bbox unchanged.
+
+        ``self.bbox`` is never mutated; it drives the bridge gate (``bbox[3]``)
+        and ``MAX_VELOCITY``, so shrinking it regressed drops (the case-1 trap).
+        Both inputs (``_last_yolo_wh`` and the smoothed centroid) are in tracker
+        space, so the finalize unscale transform applies to the clamped box
+        exactly as it does to the raw one.
+        """
+        if clamp_to_yolo_size and self._frames_since_skeleton > 0:
+            w = float(self._last_yolo_wh[0])
+            h = float(self._last_yolo_wh[1])
+            cx, cy = self.get_smoothed_centroid()
+            return np.array([cx - w / 2.0, cy - h / 2.0, w, h],
+                            dtype=np.float64)
+        return self.bbox.copy()
+
     def get_last_known_position(self):
         """Get last measured position (not predicted)."""
         if len(self.history) > 0:

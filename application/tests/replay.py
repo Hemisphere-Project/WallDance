@@ -213,6 +213,9 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
         denoise_strength=config.get("denoise_strength", 0.0),
         greyscale=config.get("greyscale", False),
         osc_enabled=False,
+        # Output box-clamp (Track X) defaults ON (matches the shipped default);
+        # overridable via --set box_clamp_enabled=false for the A/B bbox check.
+        box_clamp_enabled=bool(config.get("box_clamp_enabled", True)),
         use_gpu_path=use_gpu_path or use_trt,  # TRT implies the GPU show path
     )
     settings.roi_enabled = bool(config.get("roi_enabled", False))

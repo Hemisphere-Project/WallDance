@@ -97,6 +97,11 @@ class ProcessingSettings:
     denoise_strength: float = 0.0   # Temporal denoising (0.0-1.0)
     greyscale: bool = False         # Convert to greyscale (mono camera simulation)
     osc_enabled: bool = True
+    # Output box-clamp (Track X, OSC_CONTRACT §B.1): while a track is sustained
+    # without a fresh YOLO skeleton, report a box of the last-known YOLO size at
+    # the smoothed centroid.  OUTPUT-ONLY — applied at the ScaledTrack/OSC/preview
+    # boundary; never mutates DancerTrack.bbox.  Locked default ON.
+    box_clamp_enabled: bool = True
     use_gpu_path: bool = USE_GPU_PATH  # Enable GPU frame buffer
     bg_subtract_enabled: bool = BG_SUBTRACT_ENABLED  # Static BG subtraction
     bg_subtract_sensitivity: int = BG_SUBTRACT_SENSITIVITY  # Threshold 0-255
@@ -710,10 +715,13 @@ class FrameProcessor:
             self._motion_pad_y = pad_y
         lb_motion = self._get_letterbox_motion_detector()
 
+        clamp = self.settings.box_clamp_enabled
+
         def finalize(track):
             # Unscale from letterboxed YOLO space to original camera space
             return self._unscale_letterbox(
-                track, lb_scale, pad_x, pad_y, roi_x=roi_x, roi_y=roi_y)
+                track, lb_scale, pad_x, pad_y, roi_x=roi_x, roi_y=roi_y,
+                clamp_to_yolo_size=clamp)
 
         return self._post_yolo_chain(
             detections, space, lb_motion, finalize,
@@ -907,13 +915,18 @@ class FrameProcessor:
         return scaled_tracks
 
     @staticmethod
-    def _identity_scaled_track(t: DancerTrack) -> ScaledTrack:
-        """CPU-path finalize: tracker space == original space, copy verbatim."""
+    def _identity_scaled_track(t: DancerTrack,
+                              clamp_to_yolo_size: bool = False) -> ScaledTrack:
+        """CPU-path finalize: tracker space == original space, copy verbatim.
+
+        ``clamp_to_yolo_size`` routes the bbox through the output box-clamp
+        (Track X) — output-only, never touches ``t.bbox``."""
+        bbox = (t.reported_bbox(True) if clamp_to_yolo_size else t.bbox.copy())
         return ScaledTrack(
             track_id=t.track_id,
             keypoints=t.keypoints.copy(),
             confidence=t.confidence.copy(),
-            bbox=t.bbox.copy(),
+            bbox=bbox,
             history=[pt.copy() for pt in t.history],
             velocity=t.get_velocity().copy(),
             smoothed_centroid=t.get_smoothed_centroid().copy(),
@@ -948,8 +961,10 @@ class FrameProcessor:
         motion_detector = self.bridge_motion_detector
         if motion_detector is not None and (roi_x or roi_y):
             motion_detector = _OffsetMotionProxy(motion_detector, roi_x, roi_y)
+        clamp = self.settings.box_clamp_enabled
         return self._post_yolo_chain(
-            detections, space, motion_detector, self._identity_scaled_track,
+            detections, space, motion_detector,
+            lambda t: self._identity_scaled_track(t, clamp),
             original_w, original_h, frame_number, timing)
 
     def _process_cpu(self, frame: np.ndarray, frame_number: int | None = None) -> Tuple[List[ScaledTrack], np.ndarray, Dict[str, float], float]:
@@ -1413,6 +1428,7 @@ class FrameProcessor:
         pad_y: int,
         roi_x: int = 0,
         roi_y: int = 0,
+        clamp_to_yolo_size: bool = False,
     ) -> ScaledTrack:
         """
         Unscale track from letterboxed YOLO space to original camera space.
@@ -1434,8 +1450,14 @@ class FrameProcessor:
         # Keypoints: (x, y) -> subtract pad -> divide by scale
         keypoints = (track.keypoints - pad_xy) * inv_scale + roi_offset
         
-        # Bbox: (x, y, w, h) -> x,y subtract pad and scale; w,h just scale
-        bbox = track.bbox.copy()
+        # Bbox: (x, y, w, h) -> x,y subtract pad and scale; w,h just scale.
+        # Output box-clamp (Track X): while motion-bridged, substitute a
+        # last-YOLO-size box at the smoothed centroid — output-only, never
+        # mutates track.bbox.  clamp_to_yolo_size defaults False so the
+        # transform unit tests (self=None, stub track w/o reported_bbox) keep
+        # exercising the raw path.
+        bbox = (track.reported_bbox(True) if clamp_to_yolo_size
+                else track.bbox.copy())
         bbox[0] = (bbox[0] - pad_x) * inv_scale + roi_x  # x
         bbox[1] = (bbox[1] - pad_y) * inv_scale + roi_y  # y
         bbox[2] = bbox[2] * inv_scale  # w
