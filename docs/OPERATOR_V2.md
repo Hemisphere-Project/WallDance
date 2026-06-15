@@ -714,6 +714,17 @@ Track D (research-first).
 > **Deferred (NOT built):** Dial B *gap-derived* calib seeding (engine/calib lane — ships with a
 > default seed today); fixed-lag/RTS smoother + retroactive correction + case-2 (🔴 joint).
 
+> **✅ Phase ⑤ Verify + `docs/NEW_SHOW.md` SHIPPED 2026-06-15 (same branch; §6 item 9).**
+> - **Readiness panel** — reuses `ops_monitor` checks via the extracted
+>   `app._build_readiness_report()`; `Check readiness` button (+ auto-run on entering ⑤) renders
+>   colored ok/warn/fail/skip rows. Runs synchronously on the command/main-loop seam (~0.3 s, DPG-safe).
+> - **Dry-run** — `Dry-run last recording` button (STANDBY-gated) runs `tests/replay.py` in a
+>   **subprocess** (isolated CUDA context) on a daemon thread, bounded to 600 frames, on the
+>   project's current saved config; posts tracks/swaps/drops via `dpg.set_value` (cross-thread-safe).
+>   No pass/fail without a ground-truth manifest. Verified on a real recording (slot 4, 600 frames).
+> - **`docs/NEW_SHOW.md`** — operator field checklist from the spine (closes ROADMAP §4.2 Phase 4).
+> Verify: unit 329 passed / 7 skipped (+ headless DPG phase-⑤ build smoke + runtime-api meta-tests).
+
 ---
 
 ## 7. Open items / to confirm
