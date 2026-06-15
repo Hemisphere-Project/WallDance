@@ -498,6 +498,9 @@ class WallDanceGUI:
         # fetch the old POOL button did; renders via show_calib2_dialog).
         if phase_id == "calibrate" and 'on_view_calib2_pool' in self.callbacks:
             self.callbacks['on_view_calib2_pool']()
+        # Entering Verify: auto-run the readiness glance (cheap, off-thread).
+        if phase_id == "verify" and 'on_check_readiness' in self.callbacks:
+            self.callbacks['on_check_readiness']()
 
     def _toggle_window(self, tag: str):
         """Flip a floating drawer window's visibility."""
@@ -601,6 +604,14 @@ class WallDanceGUI:
     def _on_box_clamp_toggle(self, sender, value):
         if 'on_box_clamp_toggle' in self.callbacks:
             self.callbacks['on_box_clamp_toggle'](bool(value))
+
+    def _on_check_readiness(self, *args):
+        if 'on_check_readiness' in self.callbacks:
+            self.callbacks['on_check_readiness']()
+
+    def _on_dryrun(self, *args):
+        if 'on_dryrun' in self.callbacks:
+            self.callbacks['on_dryrun']()
 
     def _on_max_persons_change(self, sender, value):
         if 'on_max_persons_change' in self.callbacks:
@@ -2636,6 +2647,52 @@ class WallDanceGUI:
         # Expired by render_frame() on the main thread; deleting from a
         # background thread races the render loop (DPG is not thread-safe).
         self._toast_deadline = time.monotonic() + duration
+
+    def show_readiness_rows(self, rows):
+        """Render Go-Live readiness rows into the phase-⑤ Verify panel.
+
+        Called on the main-loop/command thread (DPG-safe).  ``rows`` is a list
+        of {name, status, detail}; each line colored by ok/warn/fail/skip."""
+        container = "readiness_rows_container"
+        if not dpg.does_item_exist(container):
+            return
+        dpg.delete_item(container, children_only=True)
+        palette = {"ok": OK_GREEN, "warn": WARN_AMBER,
+                   "fail": ALERT_RED, "skip": TEXT_HINT}
+        if not rows:
+            dpg.add_text("No readiness results.", parent=container, color=TEXT_HINT)
+            return
+        for row in rows:
+            status = str(row.get("status", "")).lower()
+            color = palette.get(status, TEXT_NORMAL)
+            line = (f"[{status.upper()}] {row.get('name', '')}: "
+                    f"{row.get('detail', '')}")
+            dpg.add_text(line, parent=container, color=color, wrap=scaled(340))
+
+    def show_dryrun_result(self, summary, error=""):
+        """Render the phase-⑤ dry-run replay summary into a single text widget.
+
+        Uses ``dpg.set_value`` (not add/delete) because the dry-run posts from a
+        background thread; set_value is the safe cross-thread DPG op."""
+        tag = "dryrun_result_text"
+        if not dpg.does_item_exist(tag):
+            return
+        if error:
+            dpg.set_value(tag, f"Dry-run failed: {error}")
+            dpg.configure_item(tag, color=ALERT_RED)
+            return
+        s = summary or {}
+        text = (
+            f"{s.get('video', '?')} - {s.get('frames_processed', '?')} frames\n"
+            f"tracks: {s.get('real_tracks', '?')} real / "
+            f"{s.get('marginal_tracks', '?')} marginal / "
+            f"{s.get('ghost_tracks', '?')} ghost\n"
+            f"swaps: {s.get('swap_count', '?')}   "
+            f"zero-detection frames: {s.get('zero_detection_frames', '?')}\n"
+            f"avg detections/frame: {s.get('avg_detections', '?')}"
+        )
+        dpg.set_value(tag, text)
+        dpg.configure_item(tag, color=TEXT_NORMAL)
 
     def setup(self, width: int = VIEWPORT_BASE_W, height: int = VIEWPORT_BASE_H):
         """Setup viewport and prepare for rendering.

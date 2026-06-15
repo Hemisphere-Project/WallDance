@@ -179,6 +179,9 @@ EVENT_SAMPLES = {
     api.BgStatus: dict(has_reference=True, enabled=True),
     api.ControlSync: dict(kind="slider", name="confidence", value=0.35),
     api.Toast: dict(message="hello"),
+    api.ReadinessResult: dict(rows=[
+        {"name": "osc", "status": "warn", "detail": "probe sent (UDP)"}]),
+    api.DryRunResult: dict(summary={"frames_processed": 300, "real_tracks": 1}),
     api.Alert: dict(kind="fps_low", message="FPS 9.8", data={"fps": 9.8}),
     api.IssueReportContext: dict(context={"frame": 12, "slot": 3}),
     api.QrDialog: dict(url="http://x", matrix=[[True, False]]),

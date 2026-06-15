@@ -730,15 +730,54 @@ def build_phase_calibrate(gui: Any):
 
 
 def build_phase_verify(gui: Any):
-    """⑤ Verify — readiness check + dry-run replay (wired in a later batch)."""
+    """⑤ Verify — Go-Live readiness glance (+ dry-run on the last recording)."""
     with dpg.group(tag="phase_panel_verify", show=False):
         dpg.add_text("5 - Verify", color=HEADING_GREEN)
-        dpg.add_text("Glance at readiness (FPS / TRT / OSC / calib-age / disk / "
-                     "config-vs-scene) and optionally dry-run on the last recording.",
+        dpg.add_text("Glance at readiness (camera / FPS / TensorRT / OSC / "
+                     "calib-age / disk / GPU) before the room fills. Nothing here "
+                     "blocks Go-Live - it's a pre-flight glance.",
                      color=TEXT_MUTED, wrap=scaled(_PHASE_WRAP))
         dpg.add_spacer(height=scaled(8))
-        dpg.add_text("Readiness check + dry-run land in a later batch (gated).",
-                     color=TEXT_HINT, wrap=scaled(_PHASE_WRAP))
+        check_btn = dpg.add_button(
+            label="Check readiness",
+            tag="check_readiness_btn",
+            width=scaled(160),
+            height=scaled(30),
+            callback=gui._on_check_readiness,
+        )
+        dpg.bind_item_theme(check_btn, gui._btn_standby_theme)
+        with dpg.tooltip(check_btn):
+            dpg.add_text("Run the Go-Live checks now (camera/FPS, TensorRT, OSC,\n"
+                         "calibration age, disk, GPU temp). ~0.3 s; never blocks RUN.\n"
+                         "Also runs automatically when you open this phase.")
+        dpg.add_spacer(height=scaled(8))
+        # Readiness rows render here on demand (gui.show_readiness_rows).
+        with dpg.group(tag="readiness_rows_container"):
+            dpg.add_text("Press 'Check readiness' (or open this phase) to run "
+                         "the checks.", color=TEXT_HINT, wrap=scaled(_PHASE_WRAP))
+        dpg.add_spacer(height=scaled(14))
+        dpg.add_separator()
+        dpg.add_spacer(height=scaled(6))
+        dpg.add_text("Dry-run (optional)", color=TEXT_NORMAL)
+        dpg.add_text("Replay the last recording through the current settings "
+                     "for a quick track/drop sanity check. STANDBY only.",
+                     color=TEXT_MUTED, wrap=scaled(_PHASE_WRAP))
+        dpg.add_spacer(height=scaled(6))
+        dryrun_btn = dpg.add_button(
+            label="Dry-run last recording",
+            tag="dryrun_btn",
+            width=scaled(200),
+            height=scaled(30),
+            callback=gui._on_dryrun,
+        )
+        dpg.bind_item_theme(dryrun_btn, gui._btn_standby_theme)
+        with dpg.tooltip(dryrun_btn):
+            dpg.add_text("Offline replay of the newest recording with the saved\n"
+                         "config (separate process - no effect on the live\n"
+                         "pipeline/OSC). Shows tracks / swaps / drops. STANDBY only.")
+        dpg.add_spacer(height=scaled(6))
+        dpg.add_text("", tag="dryrun_result_text", color=TEXT_MUTED,
+                     wrap=scaled(_PHASE_WRAP))
 
 
 def build_phase_live(gui: Any):

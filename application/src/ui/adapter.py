@@ -146,6 +146,8 @@ class DpgUiAdapter:
             "on_gap_bridging_change": lambda v: submit(api.SetGapBridging(float(v))),
             "on_output_smoothing_change": lambda v: submit(api.SetOutputSmoothing(int(v))),
             "on_box_clamp_toggle": lambda v: submit(api.ToggleBoxClamp(bool(v))),
+            "on_check_readiness": lambda: submit(api.CheckReadiness()),
+            "on_dryrun": lambda: submit(api.RunDryRunReplay()),
             "on_model_change": lambda name: submit(api.LoadModel(name)),
             "on_trt_toggle": lambda v: submit(api.ToggleTrt(bool(v))),
             "on_trt_rebuild": lambda: submit(api.RebuildTrt()),
@@ -288,6 +290,9 @@ class DpgUiAdapter:
             api.ControlSync: self._sync_control,
             api.Toast: lambda e: self.gui.show_toast(
                 e.message, duration=e.duration, color=tuple(e.color)),
+            api.ReadinessResult: lambda e: self.gui.show_readiness_rows(e.rows),
+            api.DryRunResult: lambda e: self.gui.show_dryrun_result(
+                e.summary, e.error),
             api.Alert: lambda e: self.gui.show_toast(
                 f"/!\\ {e.message}", duration=8.0, color=(255, 80, 80)),
             # Calibration events route through the wizard first; when it is

@@ -128,6 +128,18 @@ class ToggleBoxClamp(Command):
 
 
 @dataclass(frozen=True)
+class CheckReadiness(Command):
+    """Phase-⑤: run the Go-Live readiness checks on demand (OPERATOR_V2 §6)."""
+    pass
+
+
+@dataclass(frozen=True)
+class RunDryRunReplay(Command):
+    """Phase-⑤: replay the last recording with the current config, offline."""
+    pass
+
+
+@dataclass(frozen=True)
 class SetPersonHeight(Command):
     value: int
 
@@ -486,6 +498,19 @@ class Event(_Payload):
 @dataclass(frozen=True)
 class StateChanged(Event):
     state: str  # 'standby' | 'run'
+
+
+@dataclass(frozen=True)
+class ReadinessResult(Event):
+    """Phase-⑤ readiness rows for the Verify panel: [{name, status, detail}]."""
+    rows: List[Dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class DryRunResult(Event):
+    """Phase-⑤ dry-run replay summary (lean replay metrics) or an error."""
+    summary: Dict[str, Any]
+    error: str = ""
 
 
 @dataclass(frozen=True)

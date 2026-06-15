@@ -105,6 +105,9 @@ from ui.roi_mask_editor import RoiMaskEditor
 from web_monitor import WebMonitor
 from sensitivity_macro import macro_to_settings, bridge_macro_to_settings
 
+# Phase-⑤ dry-run: bound the offline replay to a quick glance, not a full pass.
+_DRYRUN_FRAMES = 600
+
 
 # IDS Camera support (optional, falls back to OpenCV)
 try:
@@ -759,6 +762,8 @@ class WallDanceApp:
         reg(api.SetState, self._cmd_set_state)
         reg(api.Quit, lambda c: self._cb_quit())
         reg(api.ShowQr, lambda c: self._show_qr())
+        reg(api.CheckReadiness, lambda c: self._cb_check_readiness())
+        reg(api.RunDryRunReplay, lambda c: self._cb_run_dry_run())
         # detection / sensitivity
         reg(api.SetSensitivity, lambda c: self._cb_sensitivity_change(c.value))
         reg(api.SetConfidence, lambda c: self._cb_confidence_change(c.value))
@@ -1716,55 +1721,64 @@ class WallDanceApp:
             threading.Thread(target=self._run_readiness_check,
                              name="OpsReadiness", daemon=True).start()
 
+    def _build_readiness_report(self):
+        """Run the Go-Live readiness checks (~0.3 s) and return the report.
+
+        Best-effort hardware/probe reads (the risky ones guard themselves);
+        a bad result is a CheckResult, not an exception.  Shared by the Go-Live
+        path and the phase-⑤ on-demand check.  May raise on an unexpected
+        attribute error — callers wrap it so readiness never disturbs RUN."""
+        results = []
+        ids_frames = ids_dropped = 0
+        try:
+            if self._use_unified_camera and self.unified_camera is not None:
+                ids_frames, ids_dropped = self.unified_camera.get_ids_counters()
+        except Exception:
+            pass
+        results.append(check_camera(
+            is_open=self.camera.state.is_open,
+            reconnecting=self.cameras._camera_reconnecting,
+            source=str(self.camera.state.source),
+            fps=self.fps, min_fps=OPS_MIN_SHOW_FPS,
+            ids_frames=ids_frames, ids_dropped=ids_dropped))
+        results.append(check_tensorrt(
+            trt_requested=bool(self.models._trt_requested),
+            trt_active=self.models.model_manager.is_using_tensorrt(),
+            fallback_reason=self.models.model_manager.get_tensorrt_fallback_reason(),
+            gpu_fallback_reason=self.processor.gpu_fallback_reason or ""))
+        results.append(check_osc(
+            enabled=self.osc_enabled, ip=self.osc_ip, port=self.osc_port,
+            timeout_s=OPS_OSC_PROBE_TIMEOUT_S))
+        saved_at = None
+        try:
+            latest = self.configs.config_store.latest_for_project(self.configs._current_project)
+            if latest:
+                saved_at = datetime.fromtimestamp(
+                    os.path.getmtime(latest)).isoformat()
+        except Exception:
+            pass
+        try:
+            mask_cells = len(self.processor.get_exclusion()[1])
+        except Exception:
+            mask_cells = None
+        results.append(check_calibration(
+            saved_at_iso=saved_at, active_profile=self.configs._active_profile,
+            warn_age_h=OPS_CALIB_AGE_WARN_H, mask_cells=mask_cells))
+        results.append(check_disk(
+            recordings_dir=self.recorder.recordings_dir,
+            warn_free_gb=OPS_DISK_WARN_FREE_GB,
+            fail_free_gb=OPS_DISK_FAIL_FREE_GB))
+        results.append(check_gpu_temp(gpu_stats=get_gpu_stats(),
+                                      warn_c=int(self._health.gpu_temp_c)))
+        return ReadinessReport(results)
+
     def _run_readiness_check(self):
         """Best-effort Go-Live readiness line (~0.3 s, off the main loop).
 
         Prints a [Readiness] block + one toast. NEVER prevents RUN.
         """
         try:
-            results = []
-            ids_frames = ids_dropped = 0
-            try:
-                if self._use_unified_camera and self.unified_camera is not None:
-                    ids_frames, ids_dropped = self.unified_camera.get_ids_counters()
-            except Exception:
-                pass
-            results.append(check_camera(
-                is_open=self.camera.state.is_open,
-                reconnecting=self.cameras._camera_reconnecting,
-                source=str(self.camera.state.source),
-                fps=self.fps, min_fps=OPS_MIN_SHOW_FPS,
-                ids_frames=ids_frames, ids_dropped=ids_dropped))
-            results.append(check_tensorrt(
-                trt_requested=bool(self.models._trt_requested),
-                trt_active=self.models.model_manager.is_using_tensorrt(),
-                fallback_reason=self.models.model_manager.get_tensorrt_fallback_reason(),
-                gpu_fallback_reason=self.processor.gpu_fallback_reason or ""))
-            results.append(check_osc(
-                enabled=self.osc_enabled, ip=self.osc_ip, port=self.osc_port,
-                timeout_s=OPS_OSC_PROBE_TIMEOUT_S))
-            saved_at = None
-            try:
-                latest = self.configs.config_store.latest_for_project(self.configs._current_project)
-                if latest:
-                    saved_at = datetime.fromtimestamp(
-                        os.path.getmtime(latest)).isoformat()
-            except Exception:
-                pass
-            try:
-                mask_cells = len(self.processor.get_exclusion()[1])
-            except Exception:
-                mask_cells = None
-            results.append(check_calibration(
-                saved_at_iso=saved_at, active_profile=self.configs._active_profile,
-                warn_age_h=OPS_CALIB_AGE_WARN_H, mask_cells=mask_cells))
-            results.append(check_disk(
-                recordings_dir=self.recorder.recordings_dir,
-                warn_free_gb=OPS_DISK_WARN_FREE_GB,
-                fail_free_gb=OPS_DISK_FAIL_FREE_GB))
-            results.append(check_gpu_temp(gpu_stats=get_gpu_stats(),
-                                          warn_c=int(self._health.gpu_temp_c)))
-            report = ReadinessReport(results)
+            report = self._build_readiness_report()
             print(report.console_block(
                 f"(project={self.configs._current_project}, "
                 f"profile={self.configs._active_profile}) "))
@@ -1772,6 +1786,103 @@ class WallDanceApp:
             self.bus.publish(api.Toast(msg, 6.0, color))
         except Exception as e:  # noqa: BLE001 - never disturb Go-Live
             print(f"[Readiness] check failed: {e}")
+
+    def _cb_check_readiness(self):
+        """Phase-⑤ on-demand readiness: run checks, render rows, toast.
+
+        Runs synchronously on the command/main-loop thread (the DPG-safe seam,
+        ~0.3 s incl. the OSC probe) so the rows render without a cross-thread
+        DPG mutation.  Never raises out -- readiness must not disturb the app."""
+        try:
+            report = self._build_readiness_report()
+        except Exception as e:  # noqa: BLE001
+            print(f"[Readiness] check failed: {e}")
+            self.bus.publish(api.ReadinessResult(
+                [{"name": "readiness", "status": "fail",
+                  "detail": f"check error: {e}"}]))
+            return
+        rows = [{"name": r.name, "status": r.status, "detail": r.detail}
+                for r in report.results]
+        print(report.console_block(
+            f"(project={self.configs._current_project}, "
+            f"profile={self.configs._active_profile}) "))
+        self.bus.publish(api.ReadinessResult(rows))
+        msg, color = report.toast_summary()
+        self.bus.publish(api.Toast(msg, 5.0, color))
+
+    def _cb_run_dry_run(self):
+        """Phase-⑤ dry-run: replay the last recording with the current config.
+
+        Gated to STANDBY (a live RUN keeps the GPU/model); the replay runs in a
+        SEPARATE process (isolated CUDA context — no contention with the live
+        pipeline) on a daemon thread, posting a DryRunResult back to the panel."""
+        if self.system_state == SystemState.RUN:
+            self.bus.publish(api.Toast(
+                "Dry-run runs in STANDBY (stop the show first).", 4.0,
+                (255, 200, 100)))
+            return
+        threading.Thread(target=self._run_dry_run_replay,
+                         name="DryRunReplay", daemon=True).start()
+        self.bus.publish(api.Toast(
+            "Dry-run: replaying the last recording...", 3.0, (120, 170, 220)))
+
+    def _run_dry_run_replay(self):
+        """Background worker: subprocess replay.py on the newest recording.
+
+        Posts a DryRunResult (summary or error).  Bounded to the first
+        _DRYRUN_FRAMES frames so it stays a quick glance, not a full replay."""
+        import subprocess
+        import tempfile
+        from pathlib import Path
+        try:
+            project = self.configs._current_project
+            # Newest recording across all slots, by mtime.
+            best = None  # (mtime, slot_id, path)
+            for info in self.recorder.get_all_slots_info():
+                path = info.latest_path
+                if not path:
+                    continue
+                try:
+                    mtime = os.path.getmtime(path)
+                except OSError:
+                    continue
+                if best is None or mtime > best[0]:
+                    best = (mtime, info.slot_id, path)
+            if best is None:
+                self.bus.publish(api.DryRunResult(
+                    {}, error="no recordings found for this project"))
+                return
+            if not self.configs.config_store.latest_for_project(project):
+                self.bus.publish(api.DryRunResult(
+                    {}, error=f"no saved config for project '{project}' "
+                              "- save one (calibrate) first"))
+                return
+            _, slot, _ = best
+            replay_py = Path(__file__).resolve().parent.parent / "tests" / "replay.py"
+            with tempfile.TemporaryDirectory() as td:
+                out = Path(td) / "summary.json"
+                proc = subprocess.run(
+                    [sys.executable, str(replay_py),
+                     "--project", project, "--slot", str(slot),
+                     "--frames", str(_DRYRUN_FRAMES), "--out", str(out)],
+                    capture_output=True, text=True, timeout=300)
+                if not out.exists():
+                    tail = (proc.stderr or proc.stdout or "")[-400:]
+                    self.bus.publish(api.DryRunResult(
+                        {}, error=f"replay failed (rc={proc.returncode}): {tail}"))
+                    return
+                summary = json.loads(out.read_text())
+            self.bus.publish(api.DryRunResult(summary))
+            self.bus.publish(api.Toast(
+                f"Dry-run: {summary.get('frames_processed', '?')} frames, "
+                f"{summary.get('real_tracks', '?')} real / "
+                f"{summary.get('ghost_tracks', '?')} ghost tracks",
+                8.0, (120, 220, 140)))
+        except subprocess.TimeoutExpired:
+            self.bus.publish(api.DryRunResult({}, error="replay timed out (>300 s)"))
+        except Exception as e:  # noqa: BLE001
+            print(f"[DryRun] failed: {e}")
+            self.bus.publish(api.DryRunResult({}, error=str(e)[:200]))
 
     # Keyboard shortcuts live in ui/adapter.py (_handle_key) since Phase 3:
     # runtime effects arrive as commands, GUI-local toggles stay in the adapter.
