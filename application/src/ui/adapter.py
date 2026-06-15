@@ -143,6 +143,7 @@ class DpgUiAdapter:
             "on_confidence_change": lambda v: submit(api.SetConfidence(v)),
             "on_sensitivity_change": lambda v: submit(api.SetSensitivity(v)),
             "on_motion_sensitivity_change": lambda v: submit(api.SetMotionSensitivity(v)),
+            "on_gap_bridging_change": lambda v: submit(api.SetGapBridging(float(v))),
             "on_output_smoothing_change": lambda v: submit(api.SetOutputSmoothing(int(v))),
             "on_box_clamp_toggle": lambda v: submit(api.ToggleBoxClamp(bool(v))),
             "on_model_change": lambda name: submit(api.LoadModel(name)),

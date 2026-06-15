@@ -103,7 +103,7 @@ from runtime.roi_state import RoiState
 from ui.adapter import DpgUiAdapter
 from ui.roi_mask_editor import RoiMaskEditor
 from web_monitor import WebMonitor
-from sensitivity_macro import macro_to_settings
+from sensitivity_macro import macro_to_settings, bridge_macro_to_settings
 
 
 # IDS Camera support (optional, falls back to OpenCV)
@@ -582,6 +582,9 @@ class WallDanceApp:
         self.sensitivity: float = 50.0
         self._sensitivity_conf_seed: float = YOLO_CONFIDENCE
         self._sensitivity_var_anchor: float = self.processor.get_motion_var_threshold()
+        # Dial B "Gap bridging" (OPERATOR_V2 §2.2): 50 = the calibrated seed.
+        self.gap_bridging: float = 50.0
+        self._bridge_sens_seed: float = self.processor.get_motion_sensitivity()
         self.last_tracked: List[ScaledTrack] = []
         self._total_frame_count: int = 0  # Phase 0: cumulative frame counter (live mode)
         self._last_raw_frame: Optional[np.ndarray] = None  # Last raw camera frame for BG capture
@@ -761,6 +764,7 @@ class WallDanceApp:
         reg(api.SetConfidence, lambda c: self._cb_confidence_change(c.value))
         reg(api.SetMotionSensitivity,
             lambda c: self._cb_motion_sensitivity_change(c.value))
+        reg(api.SetGapBridging, lambda c: self._cb_gap_bridging_change(c.value))
         reg(api.SetOutputSmoothing,
             lambda c: self._cb_output_smoothing_change(c.value))
         reg(api.ToggleBoxClamp, lambda c: self._cb_box_clamp_toggle(c.value))
@@ -1108,6 +1112,10 @@ class WallDanceApp:
         if "motion_sensitivity" in config:
             self.processor.set_motion_sensitivity(config["motion_sensitivity"])
             self._sync("slider","motion_sensitivity", config["motion_sensitivity"])
+            # Re-seed Dial B on the loaded value and re-center it at 50.
+            self._bridge_sens_seed = float(config["motion_sensitivity"])
+            self.gap_bridging = 50.0
+            self._sync("slider", "gap_bridging", 50.0)
 
         # OSC
         if "osc_enabled" in config:
@@ -1324,6 +1332,10 @@ class WallDanceApp:
         # so the dial position and the applied state agree (ROADMAP bug #8).
         self.processor.set_motion_var_threshold(self._sensitivity_var_anchor)
         self._sync("slider",'sensitivity', 50.0)
+        # Visible re-anchor (never silent): the raw knob moved Dial A.
+        self.bus.publish(api.Toast(
+            f"Drops<->Ghosts dial re-anchored (conf {value:.2f})",
+            3.0, (255, 200, 100)))
         print(f"Confidence: {value:.2f}")
         self._request_reprocess()
 
@@ -1349,8 +1361,28 @@ class WallDanceApp:
         self.sensitivity = 50.0
         self._sync("slider",'sensitivity', 50.0)
 
+    def _cb_gap_bridging_change(self, value: float):
+        """Dial B 'Gap bridging' (OPERATOR_V2 §2.2): one dial -> motion_sensitivity.
+
+        Monotonic 'fewer drops', calibrated-seeded at 50.  Keeps the Advanced raw
+        motion_sensitivity knob in sync (visible)."""
+        self.gap_bridging = float(value)
+        m = bridge_macro_to_settings(value, self._bridge_sens_seed)
+        self.processor.set_motion_sensitivity(m["motion_sensitivity"])
+        self._sync("slider", "motion_sensitivity", m["motion_sensitivity"])
+        print(f"Gap bridging {value:.0f} -> motion_sensitivity "
+              f"{m['motion_sensitivity']:.2f}")
+        self._request_reprocess()
+
     def _cb_motion_sensitivity_change(self, value: float):
+        # Expert raw knob behind Dial B: re-anchor the gap-bridging dial at 50 on
+        # the new value -- visible (toast), never silent (OPERATOR_V2 §2.2).
         self.processor.set_motion_sensitivity(value)
+        self._bridge_sens_seed = float(value)
+        self.gap_bridging = 50.0
+        self._sync("slider", "gap_bridging", 50.0)
+        self.bus.publish(api.Toast(
+            "Gap-bridging dial re-anchored", 3.0, (255, 200, 100)))
         print(f"Motion bridge sensitivity: {value:.2f}")
         self._request_reprocess()
 

@@ -773,9 +773,10 @@ def build_phase_live(gui: Any):
             with dpg.tooltip(run_btn):
                 dpg.add_text("RUN: Full YOLO inference + OSC output")
         dpg.add_spacer(height=scaled(12))
-        # The one operator live dial (KNOBS.md E2 macro), on the live surface
-        # where the operator actually nudges it.
-        dpg.add_text("Detection Sensitivity", color=TEXT_NORMAL)
+        # --- Detection dials (OPERATOR_V2 §2.2) — the live levers the operator
+        # nudges.  Both: 50 = calibrated seed, right = "catch more dancer".
+        dpg.add_text("Detection", color=TEXT_NORMAL)
+        dpg.add_text("Drops <-> Ghosts", color=TEXT_MUTED)
         with dpg.group(horizontal=True):
             sens_slider = dpg.add_slider_float(
                 tag="sensitivity_slider",
@@ -788,7 +789,21 @@ def build_phase_live(gui: Any):
             )
             _add_slider_row("sensitivity_slider", 5.0, 0.0, 100.0, gui._on_sensitivity_change)
         with dpg.tooltip(sens_slider):
-            dpg.add_text("The one live dial. 50 = calibrated.\nLosing the dancer? Raise it (catches more,\nmay add ghosts). Too many ghosts? Lower it\n(stricter). Calibration re-centers it at 50.")
+            dpg.add_text("Dial A (confidence-led). 50 = calibrated.\nLosing the dancer? Raise it (catches more,\nmay add ghosts). Too many ghosts? Lower it\n(stricter). Calibration re-centers it at 50.")
+        dpg.add_text("Gap bridging", color=TEXT_MUTED)
+        with dpg.group(horizontal=True):
+            bridge_slider = dpg.add_slider_float(
+                tag="gap_bridging_slider",
+                default_value=gui.config.get("gap_bridging", 50.0),
+                min_value=0.0,
+                max_value=100.0,
+                format="%.0f",
+                width=scaled(-90),
+                callback=gui._on_gap_bridging_change,
+            )
+            _add_slider_row("gap_bridging_slider", 5.0, 0.0, 100.0, gui._on_gap_bridging_change)
+        with dpg.tooltip(bridge_slider):
+            dpg.add_text("Dial B (gap bridging). 50 = calibrated.\nDancer dropping out during fast / aerial moves?\nRaise it to bridge YOLO gaps (monotonic\n'fewer drops'). Modest fine-tune; inert on\nclean scenes. Calibration re-centers it at 50.")
         dpg.add_spacer(height=scaled(12))
         # --- Output controls (Track X) — OUTPUT-domain, distinct from the
         # detection dial above.  These shape what OSC/preview reports; they do
@@ -1028,7 +1043,7 @@ def build_detection_section(gui: Any):
                 dpg.add_text("MOG2 background subtraction resolution.\nSet by the scene calibration (joint sweep\nwith varThreshold). 0.50 = fastest,\n1.00 = best blob accuracy.")
 
             dpg.add_spacer(height=scaled(6))
-            dpg.add_text("Motion Sensitivity", color=TEXT_NORMAL)
+            dpg.add_text("Motion Sensitivity (raw, Dial B)", color=TEXT_NORMAL)
             with dpg.group(horizontal=True):
                 motion_slider = dpg.add_slider_float(
                     tag="motion_sensitivity_slider",
@@ -1041,7 +1056,7 @@ def build_detection_section(gui: Any):
                 )
                 _add_slider_row("motion_sensitivity_slider", 0.05, 0.0, 1.0, gui._on_motion_sensitivity_change)
             with dpg.tooltip(motion_slider):
-                dpg.add_text("Bridge-only recovery sensitivity.\nHigher = smaller/weaker motion can keep an\nexisting dancer track alive when YOLO drops.\nLower = cleaner but easier to lose continuity.\nIf stale tracks linger, reduce this slider.")
+                dpg.add_text("Raw bridge recovery value behind the live\n'Gap bridging' dial (Dial B). Higher = smaller/\nweaker motion keeps a track alive when YOLO\ndrops. Moving this re-anchors the Gap-bridging\ndial at 50 (with a toast).")
 
 
 def build_visualization_toolbar(gui: Any):

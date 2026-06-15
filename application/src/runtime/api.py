@@ -110,6 +110,12 @@ class SetMotionSensitivity(Command):
 
 
 @dataclass(frozen=True)
+class SetGapBridging(Command):
+    """Dial B 'Gap bridging' [0,100] -> motion_sensitivity (OPERATOR_V2 §2.2)."""
+    value: float
+
+
+@dataclass(frozen=True)
 class SetOutputSmoothing(Command):
     """Output box-size smoothing depth L (Track X §B.2); L>=1, default 1."""
     value: int

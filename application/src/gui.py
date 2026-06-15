@@ -590,6 +590,10 @@ class WallDanceGUI:
         if 'on_motion_sensitivity_change' in self.callbacks:
             self.callbacks['on_motion_sensitivity_change'](float(value))
 
+    def _on_gap_bridging_change(self, sender, value):
+        if 'on_gap_bridging_change' in self.callbacks:
+            self.callbacks['on_gap_bridging_change'](float(value))
+
     def _on_output_smoothing_change(self, sender, value):
         if 'on_output_smoothing_change' in self.callbacks:
             self.callbacks['on_output_smoothing_change'](int(value))
@@ -1644,6 +1648,7 @@ class WallDanceGUI:
         tag_map = {
             'confidence': ['show_conf_slider'],
             'sensitivity': ['sensitivity_slider'],
+            'gap_bridging': ['gap_bridging_slider'],
             'motion_sensitivity': ['motion_sensitivity_slider'],
             'clahe': ['adv_clahe_slider'],
             'gamma': ['adv_gamma_slider'],

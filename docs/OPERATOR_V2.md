@@ -697,6 +697,23 @@ DoD: UI items = app smoke; box-clamp = goldens byte-identical + bridged-clip che
 joint w/ engine agent); Track-C fixes + unified C-next engine (calib agent); Track P (3→2 collapse);
 Track D (research-first).
 
+> **✅ SHIPPED 2026-06-15 (branch `operator-v2-batch2`).**
+> 1. **`docs/OSC_CONTRACT.md`** — current `/walldance/*` + planned box-clamp / L=1 latency / dual-tap.
+> 2. **Box-clamp (default ON)** — output-only; per-track `_last_yolo_wh`, clamp at the finalize
+>    boundary, `DancerTrack.bbox` untouched. Gate = `_frames_since_skeleton>0` (operator-confirmed;
+>    `is_bridged`-only would miss the cold-blob flicker — verified). **Goldens 3/3 byte-identical;**
+>    GPU+TRT hangar-aerial: ON-vs-OFF `--out` identical, within-gap size jitter 10–14 px → **0 px**.
+> 3. **Output smoothing slider (causal L=1)** — box-size EMA, `alpha = base/L`; latency table in
+>    OSC_CONTRACT §B.2. Acausal fixed-lag/RTS stays 🔴.
+> 4. **Two-dial surface (phase ⑥)** — `sensitivity_macro` split into Dial A (`macro_to_settings`,
+>    confidence, Drops↔Ghosts) + Dial B (`bridge_macro_to_settings`, motion_sensitivity, monotonic
+>    Gap-bridging, span 0.25–0.85). Raw Advanced knobs re-anchor their dial at 50 with a **toast**
+>    (never silent). Output controls grouped separately under "Output".
+>
+> **Verify:** unit 326 passed / 7 skipped (+ headless DPG phase-⑥ build smoke); goldens green.
+> **Deferred (NOT built):** Dial B *gap-derived* calib seeding (engine/calib lane — ships with a
+> default seed today); fixed-lag/RTS smoother + retroactive correction + case-2 (🔴 joint).
+
 ---
 
 ## 7. Open items / to confirm

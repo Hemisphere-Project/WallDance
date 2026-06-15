@@ -533,6 +533,12 @@ SENS_CONF_MIN = 0.15                # Confidence at slider = 100 (loosest)
 SENS_VAR_FLOOR = 8.0                # varThreshold at slider = 100 (corpus-confirmed §3.1)
 SENS_VAR_KNEE = 75.0                # Slider point where var starts ramping down
 
+# Dial B "Gap bridging" span (OPERATOR_V2 §2.2; motion_sensitivity).  Monotonic
+# "fewer drops", calibrated-seeded at 50.  Range = G1's validated grid
+# {0.25, 0.55, 0.85} (tmp_analysis/g1); a modest fine-tune, not a dramatic lever.
+SENS_BRIDGE_MIN = 0.25             # motion_sensitivity at slider = 0 (less bridging)
+SENS_BRIDGE_MAX = 0.85             # motion_sensitivity at slider = 100 (more, fewer drops)
+
 # --- Auto exclusion mask (P1.4) -------------------------------------------
 # During calibration, grid cells that show persistent MOG2 motion but ~never a
 # confirmed skeleton are scenery / ghost sources (trees, balcony, wall paint,

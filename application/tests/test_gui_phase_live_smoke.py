@@ -25,6 +25,7 @@ def test_phase_live_builds_with_output_controls():
             _on_state_standby=noop,
             _on_state_run=noop,
             _on_sensitivity_change=noop,
+            _on_gap_bridging_change=noop,
             _on_box_clamp_toggle=noop,
             _on_output_smoothing_change=noop,
             _btn_standby_theme=th1,
@@ -41,7 +42,8 @@ def test_phase_live_builds_with_output_controls():
             gui_builder.build_visualization_toolbar = orig_toolbar
 
         assert dpg.does_item_exist("phase_panel_live")
-        assert dpg.does_item_exist("sensitivity_slider")
+        assert dpg.does_item_exist("sensitivity_slider")        # Dial A
+        assert dpg.does_item_exist("gap_bridging_slider")       # Dial B
         assert dpg.does_item_exist("box_clamp_checkbox")
         assert dpg.does_item_exist("output_smoothing_slider")
         # defaults: box-clamp ON, smoothing L=1

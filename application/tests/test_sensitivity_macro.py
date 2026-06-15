@@ -6,9 +6,11 @@ seed — the old fixed deltas covered it only when the seed sat right.
 """
 import pytest
 
-from sensitivity_macro import macro_to_settings, CONF_BOUNDS
+from sensitivity_macro import (macro_to_settings, bridge_macro_to_settings,
+                               CONF_BOUNDS)
 from config import (SENS_CONF_MAX, SENS_CONF_MIN,
-                    SENS_VAR_FLOOR, SENS_VAR_KNEE)
+                    SENS_VAR_FLOOR, SENS_VAR_KNEE,
+                    SENS_BRIDGE_MIN, SENS_BRIDGE_MAX)
 
 
 def test_midpoint_returns_seeds():
@@ -80,3 +82,40 @@ def test_monotonic_in_slider():
         confs = [macro_to_settings(s, seed, 16.0)["confidence"]
                  for s in range(0, 101, 5)]
         assert confs == sorted(confs, reverse=True), seed
+
+
+# --- Dial B: gap bridging -> motion_sensitivity (OPERATOR_V2 §2.2) ----------
+
+def test_bridge_midpoint_returns_seed():
+    assert bridge_macro_to_settings(50, 0.55)["motion_sensitivity"] == \
+        pytest.approx(0.55)
+
+
+def test_bridge_ends_reach_corpus_span():
+    assert bridge_macro_to_settings(0, 0.55)["motion_sensitivity"] == \
+        pytest.approx(SENS_BRIDGE_MIN)
+    assert bridge_macro_to_settings(100, 0.55)["motion_sensitivity"] == \
+        pytest.approx(SENS_BRIDGE_MAX)
+
+
+def test_bridge_monotonic_more_is_fewer_drops():
+    # Higher slider must monotonically RAISE motion_sensitivity (more bridging).
+    for seed in (0.3, 0.55, 0.8):
+        ms = [bridge_macro_to_settings(s, seed)["motion_sensitivity"]
+              for s in range(0, 101, 5)]
+        assert ms == sorted(ms), seed
+
+
+def test_bridge_seed_outside_span_holds():
+    # Seed above the max: the high side holds (never pushes past), low side spans.
+    assert bridge_macro_to_settings(100, 0.95)["motion_sensitivity"] == \
+        pytest.approx(0.95)
+    assert bridge_macro_to_settings(0, 0.95)["motion_sensitivity"] == \
+        pytest.approx(SENS_BRIDGE_MIN)
+
+
+def test_bridge_stays_in_unit_range():
+    for s in range(0, 101, 5):
+        for seed in (0.0, 0.55, 1.0):
+            ms = bridge_macro_to_settings(s, seed)["motion_sensitivity"]
+            assert 0.0 <= ms <= 1.0
