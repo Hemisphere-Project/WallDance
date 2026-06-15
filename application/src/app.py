@@ -773,9 +773,6 @@ class WallDanceApp:
         reg(api.SetOutputSmoothing,
             lambda c: self._cb_output_smoothing_change(c.value))
         reg(api.ToggleBoxClamp, lambda c: self._cb_box_clamp_toggle(c.value))
-        reg(api.ToggleLaggedTap, lambda c: self._cb_lagged_tap_toggle(c.value))
-        reg(api.ToggleLaggedSuppress,
-            lambda c: self._cb_lagged_suppress_toggle(c.value))
         reg(api.SetPersonHeight, lambda c: self._cb_person_height_change(c.value))
         reg(api.SetImgsz, lambda c: self._cb_imgsz_change(c.value))
         reg(api.SetTrackerMaxAge, lambda c: self._cb_tracker_age_change(c.value))
@@ -1405,18 +1402,6 @@ class WallDanceApp:
         """Output box-clamp toggle (Track X §B.1).  Output-only."""
         self.processor.set_box_clamp_enabled(bool(enabled))
         print(f"Box-clamp: {'ON' if enabled else 'OFF'}")
-        self._request_reprocess()
-
-    def _cb_lagged_tap_toggle(self, enabled: bool):
-        """Lagged / RTS output tap toggle (Track X §7).  Output-only, opt-in."""
-        self.processor.set_lagged_enabled(bool(enabled))
-        print(f"Lagged tap: {'ON' if enabled else 'OFF'} (engages at L>1)")
-        self._request_reprocess()
-
-    def _cb_lagged_suppress_toggle(self, enabled: bool):
-        """Case-2 flying-ghost suppression on the lagged tap (Track X §5.1)."""
-        self.processor.set_lagged_suppress(bool(enabled))
-        print(f"Lagged case-2 suppression: {'ON' if enabled else 'OFF'}")
         self._request_reprocess()
 
     def _cb_imgsz_change(self, value: int):

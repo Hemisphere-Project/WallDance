@@ -30,11 +30,9 @@ class OSCSender:
     def send_dancer(self, track, frame_width, frame_height,
                     prefix="/walldance/dancer"):
         """
-        Send single dancer data under ``prefix`` (default ``/walldance/dancer``).
-
-        ``prefix`` selects the tap: the causal tap uses the default; the lagged
-        tap (Track X §7) passes ``/walldance/dancer_lagged`` for an
-        RTS-smoothed, L-frames-late copy with the same message shapes.
+        Send single dancer data under ``/walldance/dancer`` (the single output
+        stream — Track X / OSC_CONTRACT §B).  At L=1 ``track`` is the causal
+        report; at L>1 it is the fixed-lag RTS-smoothed report, L frames late.
 
         Messages sent (id is prepended to each argument list):
         - {prefix}/centroid [id, x, y]
@@ -103,33 +101,30 @@ class OSCSender:
         self.client.send_message(address, [count] + list(track_ids))
 
     def send_latency_ms(self, latency_ms):
-        """Publish the active lagged-tap output latency (Track X §7).
+        """Publish the active output latency (Track X / OSC_CONTRACT §B).
 
         ``/walldance/meta/latency_ms [ms]`` — re-emitted whenever L or fps
-        changes so TouchDesigner can time-align the causal and lagged taps.
-        0 ms means the lagged tap is inactive (causal-only)."""
+        changes so consumers know how far behind real time the single
+        /walldance/dancer/* stream runs.  0 ms means L=1 (causal / live)."""
         if not self.enabled or not self.client:
             return
 
         self.client.send_message("/walldance/meta/latency_ms",
                                  [float(latency_ms)])
 
-    def send_frame(self, tracks, frame_width, frame_height,
-                   prefix="/walldance/dancer", count_address="/walldance/count"):
-        """Send all tracking data for current frame under ``prefix``.
-
-        The causal tap uses the defaults; the lagged tap (Track X §7) passes
-        ``prefix='/walldance/dancer_lagged'`` and
-        ``count_address='/walldance/dancer_lagged/count'`` for a parallel,
-        L-frames-late stream with the same message shapes."""
+    def send_frame(self, tracks, frame_width, frame_height):
+        """Send all tracking data for the current frame on the single
+        /walldance/dancer/* stream (Track X / OSC_CONTRACT §B).  ``tracks`` is
+        the causal report at L=1 or the fixed-lag RTS report (L frames late) at
+        L>1 — the same message shapes either way."""
         if not self.enabled:
             return
 
         track_ids = [t.track_id for t in tracks]
-        self.send_count(len(tracks), track_ids, address=count_address)
+        self.send_count(len(tracks), track_ids, address="/walldance/count")
 
         for track in tracks:
-            self.send_dancer(track, frame_width, frame_height, prefix=prefix)
+            self.send_dancer(track, frame_width, frame_height)
 
     def send_clear(self):
         """Send clear message (e.g., when resetting)."""

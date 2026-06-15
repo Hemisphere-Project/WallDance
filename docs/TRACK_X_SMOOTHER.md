@@ -1,6 +1,24 @@
 # Track X — fixed-lag / RTS output smoother (joint design spec)
 
-**Date:** 2026-06-15 · **Status:** 🔴 DESIGN, not built. Joint design between the
+> **STATUS (shipped 2026-06):** The fixed-lag / RTS smoother **SHIPPED** and is now **the
+> single `/walldance/dancer/*` output stream at `L > 1`** — selected by `L` alone (`L = 1`
+> causal/live, `L > 1` RTS-smoothed and released `L` frames late on the **same** namespace).
+> **There is no dual tap and no `/walldance/dancer_lagged/*` namespace** — the second tap and
+> its `output_lagged_enabled` opt-in were **removed, 2026-06**. The **released id set now EQUALS
+> the reported (confirmed) id set** (every confirmed track is released `L`-late, no silent drops).
+> The canonical wording is **`OSC_CONTRACT.md` §B** (source of truth).
+>
+> The **case-2 flying-ghost SUPPRESSION** (Feature 3 / §5 — the K=2 / conf-floor 0.6 /
+> `min_bridge=8` predicate, the `output_lagged_suppress` setting, the phase-⑥ checkbox, the
+> `ToggleLaggedSuppress` API) was **REMOVED, 2026-06 by operator decision** (flying ghosts are no
+> longer observed → one stream, no suppression). §5 / §5.1 / §5.2 below and every "dual tap" /
+> "lagged tap" / "causal tap" reference are kept as historical design but are **SUPERSEDED** —
+> read them as describing the removed feature, not current behavior. The **kinematics /
+> CV-Kalman / RTS design (§2–§4) is still accurate** and describes the live `L > 1` stream.
+
+**Date:** 2026-06-15 · **Status:** 🔴 DESIGN, not built. *(superseded 2026-06: shipped — see the
+STATUS banner above; the smoother is live, the case-2 suppression and dual tap were removed.)*
+Joint design between the
 **operator-surface lane** (owns the controls + OSC integration + this spec) and the
 **engine agent** (kinematics/identity semantics). Code only after both sign off
 (OPERATOR_V2 §8 ask-first: the fixed-lag/RTS smoother core is "design before code").
@@ -13,13 +31,19 @@ OPERATOR_V2 "Track X" first.
 ---
 
 ## 0. One-paragraph summary
+*(superseded 2026-06: item (3) — case-2 suppression — was removed; the "second lagged tap"
+became the single `/walldance/dancer/*` stream at `L > 1`. The de-jitter + retroactive-correction
+description below is still accurate.)*
+
 Add an **output-boundary** stage that buffers the last `L` reported frames per track
 and **releases each frame `L` frames late**, using those `L` "future" frames to (1)
 **de-jitter** the trajectory with a fixed-interval (RTS) smoother, (2) **retroactively
-correct** a motion-bridged segment once YOLO re-acquires, and (3) **suppress case-2
+correct** a motion-bridged segment once YOLO re-acquires, and (3) ~~**suppress case-2
 flying ghosts** — bridged segments that never re-acquire a real skeleton within the
-window. It publishes a second **lagged tap** (`/walldance/dancer_lagged/*`) alongside
-the zero-lag causal tap, plus the active latency on `/walldance/meta/latency_ms`.
+window~~ *(removed 2026-06)*. ~~It publishes a second **lagged tap**
+(`/walldance/dancer_lagged/*`) alongside the zero-lag causal tap~~ *(superseded: it became the
+single `/walldance/dancer/*` stream, selected by `L`)*, plus the active latency on
+`/walldance/meta/latency_ms`.
 Like box-clamp it is **output-only** — it never touches the tracker, the detector, or
 `DancerTrack` state, so replay goldens stay byte-identical (the case-1 lesson).
 
@@ -45,7 +69,9 @@ Relevant per-track signals already available on `ScaledTrack` / `DancerTrack`:
 
 The smoother inserts **after** the causal EMA but does **not stack on it** — it consumes the
 **raw** centroid, not the EMA-smoothed one (§2/§3 — cascaded filtering would double-lag the
-lagged tap). The causal tap is unchanged; the lagged tap is new.
+lagged stream). *(superseded 2026-06: there is no separate "causal tap" + "lagged tap" — at
+`L = 1` the stream is causal, at `L > 1` the same `/walldance/dancer/*` stream carries the
+RTS-smoothed report; see the STATUS banner and `OSC_CONTRACT.md` §B.)*
 
 ---
 
@@ -62,13 +88,14 @@ Snapshot = { frame, centroid_raw(x,y), wh(w,h), is_real_skeleton, velocity, keyp
 
 At frame `N` the smoother:
 1. appends the new snapshot for each reported track,
-2. **releases frame `N-L`** for the lagged tap — having now seen `N-L … N`, i.e. `L`
+2. **releases frame `N-L`** for the lagged stream — having now seen `N-L … N`, i.e. `L`
    frames of look-ahead relative to the released frame,
 3. prunes track ids not seen for `> L + tracker_max_age` frames (bounded memory; ids
    are unbounded over a show — same discipline as `_box_size_ema`).
 
-The causal tap emits frame `N` immediately (today). The lagged tap emits the
-**smoothed, corrected** frame `N-L`. Two streams, same `track_id`s.
+*(superseded 2026-06: there are not "two streams" — at `L = 1` the `/walldance/dancer/*` stream
+emits frame `N` live; at `L > 1` the **same** stream emits the **smoothed, corrected** frame
+`N-L`. One stream selected by `L`, no `/walldance/dancer_lagged/*`. See `OSC_CONTRACT.md` §B.)*
 
 **Design rule (the case-1 lesson):** the smoother reads only the reported (original-space)
 trajectory. It runs its **own** small Kalman over the buffered centroids — it does **not**
@@ -97,25 +124,28 @@ EMA `smoothed_centroid` — no cascaded filtering):
 - **Backward pass:** the **RTS (Rauch–Tung–Striebel) fixed-interval smoother** over the
   window → the smoothed estimate for the released frame `N-L`, informed by the `L` future
   measurements. The acausal win the causal EMA can't get: smoothing **without** the causal
-  filter's lag-vs-noise tradeoff.
+  filter's lag-vs-noise tradeoff. *(This pass is live as the `L > 1` `/walldance/dancer/*`
+  stream — still accurate.)*
 - **Box size:** smooth `wh` the same way (RTS / centered window mean).
 
 `L` is the **smoothness depth = look-ahead frames**; latency = `L / fps`. The CV process
 noise is the secondary "how smooth" knob (fixed default; not operator-exposed).
 
-**Layering (was design-flaw #5 — no triple smoothing).** The lagged tap is RTS over the *raw*
+**Layering (was design-flaw #5 — no triple smoothing).** The `L > 1` stream is RTS over the *raw*
 centroid; it does **not** also carry the centroid EMA or the causal box EMA. For **`L > 1` the
-causal tap's box reverts to raw** (the RTS lagged tap is the smoothed one — avoids two box
-strategies). **`L = 1`** keeps today's behavior exactly (causal box-size EMA, no lagged tap) —
-back-compat. The internal centroid EMA (`CENTROID_OUTPUT_SMOOTHING`) stays on the *causal*
-centroid for back-compat; the lagged centroid bypasses it.
+box is the RTS-smoothed box** (avoids two box strategies). **`L = 1`** keeps today's behavior
+exactly (causal box-size EMA) — back-compat. *(superseded 2026-06: original wording said "the
+causal tap's box reverts to raw … no lagged tap" — there is no separate tap; at `L = 1` the
+internal centroid EMA `CENTROID_OUTPUT_SMOOTHING` applies, at `L > 1` the RTS estimate bypasses
+it. Same single `/walldance/dancer/*` stream selected by `L`.)*
 
 ## 4. Feature 2 — retroactive bridge correction
 When a bridged segment `[a..b]` is followed by a real-skeleton re-acquisition at frame `c`
 **within the window** (`c ≤ N`), the RTS backward pass **automatically** anchors the
 bridged centroids in `[a..b]` between the last real skeleton before `a` and the skeleton at
-`c` → the lagged-tap path through the gap is clean *in hindsight*. No special case — it
-falls out of the smoother as long as `c` is in the `L`-window.
+`c` → the `L > 1` stream's path through the gap is clean *in hindsight*. No special case — it
+falls out of the smoother as long as `c` is in the `L`-window. *(Still accurate — this is live
+on the `L > 1` `/walldance/dancer/*` stream.)*
 
 **Coverage caveat (document for the operator):** gaps **longer than `L`** are only
 partially corrected (the future anchor is outside the window — the tail is Kalman prediction,
@@ -124,6 +154,16 @@ to be coherently corrected (the RTS white-noise assumption is violated across a 
 gap pattern) — document, don't fight it.
 
 ## 5. Feature 3 — case-2 flying-ghost suppression (made safe)
+
+> **🔴 REMOVED 2026-06 (operator decision).** This entire feature — the §5.1 K=2 / conf-floor 0.6
+> / `min_bridge=8` predicate, the §5.2 sustained-bridge gate, the `output_lagged_suppress` /
+> `output_lagged_case2_min_bridge` settings, the `_should_suppress` predicate, the phase-⑥
+> "suppress flying ghosts" checkbox, and the `ToggleLaggedSuppress` API — was **deleted**. Flying
+> ghosts are no longer observed in practice, so the operator chose **one stream with no silent
+> drops**: the `L > 1` smoother now **releases every reported (confirmed) track** `L` frames late,
+> and the **released id set EQUALS the reported id set** (`OSC_CONTRACT.md` §B.3). The §5 / §5.1 /
+> §5.2 text below is retained as historical design only — it does **not** describe current behavior.
+
 At release time for frame `N-L`, suppress the track from the **LAGGED tap** iff:
 
 ```
@@ -151,8 +191,12 @@ re-acquisitions + recency makes it graceful:
   which already drops **stationary** stale tracks; case-2 catches the **moving** ghosts that
   gate spares. **Tap-id consistency:** lagged id set = causal id set **minus** case-2
   suppressions (a track the causal tap dropped via the internal gate is already absent).
+  *(superseded 2026-06: suppression removed — the released id set now **equals** the reported
+  (confirmed) id set with no subtraction; `OSC_CONTRACT.md` §B.3.)*
 
 ### 5.1 ENGINE-AGENT DECISIONS (2026-06-15, code-grounded — for X-3)
+*(SUPERSEDED 2026-06 — the case-2 suppression feature these decisions tuned was removed; see the
+§5 REMOVED banner. Retained as historical design.)*
 These resolve §9.2. They are tuned against the predicate logic + the frozen-ghost-gate
 reconciliation below; **the case-2 precision/recall (F1) is PROVISIONAL — no per-track-labeled
 flying-ghost clip exists in the corpus** (see §9.2). Values are deliberately conservative
@@ -176,6 +220,9 @@ dropped dancer).
 3. **AND** no such *confident* node has `step` within the last `max(1, L//3)` steps of `N`.
 
 ### 5.2 SUSTAINED-BRIDGE GATE (2026-06-15, count-proxy tuned on real footage — operator lane)
+*(SUPERSEDED 2026-06 — the `min_bridge` sustained-bridge gate and its `output_lagged_case2_min_bridge`
+setting were removed with the rest of case-2 suppression; see the §5 REMOVED banner. Retained as
+historical design.)*
 The §5.1 predicate as first drafted used predicate-1 = `is_real == False` (any bridged frame is a
 suppression candidate).  **Empirically (the §9.4 count-proxy on the CPU FP32 path,
 `tests/verify_lagged_tap.py --case2`) this over-suppressed the REAL aerial on `hangar-aerial`:**
@@ -227,6 +274,15 @@ interpolation — the useful kind; input-frame interpolation does **not** help d
 Adds an output timer/thread; decoupled from `L`. Ship last, only if a consumer needs it.
 
 ## 7. Dual tap + latency contract (reserved in OSC_CONTRACT §B.3)
+
+> **SUPERSEDED 2026-06 — there is no dual tap.** OSC is a **single** `/walldance/dancer/*` stream
+> selected by `L` alone: `L = 1` causal/live, `L > 1` RTS-smoothed and released `L` frames late on
+> the **same** namespace. The `/walldance/dancer_lagged/*` tap and the `output_lagged_enabled`
+> opt-in were **removed, 2026-06**; case-2 suppression is gone, so the released id set **equals**
+> the reported (confirmed) id set. `/walldance/meta/latency_ms` is unchanged. The live contract is
+> `OSC_CONTRACT.md` §B.3 (source of truth). The list below describes the original (removed) dual-tap
+> design.
+
 - **Causal tap** — `/walldance/dancer/*` (today + box-clamp + causal EMA). Zero look-ahead.
 - **Lagged tap** — `/walldance/dancer_lagged/*` (identical message shapes to §A.3):
   RTS-smoothed + retroactively-corrected + case-2-suppressed, `L` frames late. Same
@@ -239,6 +295,11 @@ Adds an output timer/thread; decoupled from `L`. Ship last, only if a consumer n
   the causal box-size EMA (OSC_CONTRACT §B.2, back-compat).
 
 ## 8. Code integration points
+*(changed 2026-06: the lagged tap was folded into the single `/walldance/dancer/*` stream — no
+`/dancer_lagged/*` emit, no `output_lagged_enabled` setting, no "lagged tap" checkbox; the case-2
+predicate referenced below was removed. The `output_smoother.py` core, the `finalize` fields, and
+`meta/latency_ms` shipped. See the STATUS banner and `OSC_CONTRACT.md` §B.)*
+
 - **`core/output_smoother.py`** (new): `OutputSmoother` with per-track ring buffers + the
   CV-forward / RTS-backward passes + the case-2 predicate. Pure, unit-testable (feed
   synthetic trajectories, assert smoothness/latency/suppression).
@@ -290,6 +351,8 @@ warmup-confirmed it. Justification, grounded in what is *actually visible at the
   (the smoother never buffered those frames) and do not couple case-2 to warmup state.
 
 ### 9.2 Case-2 tuning — DECISIONS in §5.1 (K=2, conf floor 0.6, recency `max(1,L//3)`, no post-hoc).
+*(SUPERSEDED 2026-06 — case-2 suppression was removed entirely; these tuning decisions and the F1
+work below are historical. See the §5 REMOVED banner.)*
 See the **§5.1 parameter table** and fully-specified predicate. Reconciliation with the internal
 frozen-ghost gate is in §5.1 ("the two must never fight"): the gate culls *stationary* stale
 tracks before they reach the smoother; case-2 catches the *moving* stale tracks it spares —
@@ -381,6 +444,12 @@ golden. Reuse all of that. To gate **case-2 F1**, add an opt-in mode that:
   (measured extra lag = 0 → total latency = `L`, no EMA leak); and on `hangar-aerial` (CPU+TRT)
   the lagged centroid is ~5× smoother than causal with frame delay = `L` vs the raw centroid
   (`tests/verify_lagged_tap.py`). `output_lagged_enabled` default **False** (opt-in).
+- **X-3 — SHIPPED then REVERTED.** *(superseded 2026-06: X-3 shipped case-2 suppression, then the
+  feature was **removed** by operator decision — flying ghosts no longer observed → one stream, no
+  silent drops. The `output_lagged_suppress` / `output_lagged_case2_min_bridge` settings, the
+  `_should_suppress` predicate, the phase-⑥ checkbox, and the `ToggleLaggedSuppress` API are gone;
+  the `L > 1` smoother now releases every confirmed track `L`-late, released id set = reported id
+  set. The historical X-3 log entry follows.)*
 - **X-3 — SHIPPED (branch operator-v2-batch3, 2026-06-15):** case-2 flying-ghost *suppression*
   (the §5/§5.1 predicate + the §5.2 sustained-bridge gate) + tap-id consistency (lagged ids =
   causal minus case-2), opt-in via `output_lagged_suppress` (default ON) with a phase-⑥ checkbox.
@@ -442,6 +511,9 @@ Lock these before the joint build (a ~30-min sync); they're decisions, not open 
 - **Lagged tap opt-in + volume:** `output_lagged_enabled` (default **False**). A second full
   `/dancer_lagged/*` stream **doubles** OSC traffic per dancer (centroid+bbox+velocity+17
   kpts). Batch-2 ships the full message set when enabled; per-message-type filtering deferred.
+  *(superseded 2026-06: no second stream and no `output_lagged_enabled` — OSC is a single
+  `/walldance/dancer/*` stream selected by `L`, so there is no traffic doubling. `L` is the only
+  output-stream control.)*
 - **Warmup interaction:** lagged emits a track from its first buffered frame regardless of
   whether the integral or the slow intermittent path (bug #14) confirmed it (hindsight). The
   *causal* tap still respects warmup as today.

@@ -1,18 +1,20 @@
-"""Lagged-tap trajectory verification on real footage (Track X, X-2 checkpoint).
+"""Output-stream trajectory verification on real footage (Track X checkpoint).
 
-Runs the REAL FrameProcessor (TRT GPU show path) on a scenario with the lagged
-tap ENABLED, capturing BOTH OSC streams via a fake OSC client:
+Runs the REAL FrameProcessor (TRT GPU show path) at L>1, where the single
+/walldance/dancer/* stream IS the fixed-lag RTS-smoothed output, and captures it
+via a fake OSC client alongside the RAW per-frame KF centroid (centroid_raw,
+from process()'s return — the unsmoothed baseline):
 
-  * causal  /walldance/dancer/centroid          (EMA-smoothed, zero look-ahead)
-  * lagged  /walldance/dancer_lagged/centroid    (RTS-smoothed, L frames late)
+  * output  /walldance/dancer/centroid   (RTS-smoothed, L frames late, at L>1)
+  * raw     centroid_raw (kf.x[:2])       (per-frame, no look-ahead)
 
 Then it asserts the two checkpoint properties on real data:
-  1. frame delay  causal→lagged  == L   (per-track cross-correlation peak)
-  2. lagged centroid is SMOOTHER than causal (lower jitter / acceleration RMS)
+  1. frame delay  raw→output  == L   (per-track cross-correlation peak)
+  2. the output centroid is SMOOTHER than raw (lower jitter / acceleration RMS)
 
-and, as the output-only A/B, rebuilds the tracker-internal metric summary with
-the lagged tap ON and compares it to the committed golden (the lagged tap must
-not perturb the tracker → byte-identical metrics).
+and, as the output-only A/B, rebuilds the tracker-internal metric summary and
+compares it to the committed golden (the output smoother must not perturb the
+tracker → byte-identical metrics).
 
 Not a pytest test (needs TRT + GPU + the recording, like replay.py).  Run:
   .venv/Scripts/python.exe tests/verify_lagged_tap.py \
@@ -106,8 +108,8 @@ def _best_delay(lagged, causal, max_d):
 def _jitter(series):
     """RMS of the centroid's discrete 2nd difference (acceleration) — a
     look-ahead-agnostic smoothness metric.  Lower = smoother.  Measured only over
-    CONTIGUOUS frame-triples so case-2 suppression gaps don't inflate it (a gap
-    would otherwise read as a large spurious acceleration)."""
+    CONTIGUOUS frame-triples so any reporting gap doesn't inflate it (a gap would
+    otherwise read as a large spurious acceleration)."""
     frames = sorted(series)
     accs = []
     for i in range(len(frames) - 2):
@@ -120,8 +122,7 @@ def _jitter(series):
     return float(np.sqrt(np.mean(accs)))
 
 
-def run(scenario_path, L, frames=None, use_trt=False, suppress=True,
-        min_bridge=None):
+def run(scenario_path, L, frames=None, use_trt=False):
     scenario = scoring.load_scenario(scenario_path)
     config = replay.scenario_config(scenario)
     video = replay._find_recording(scenario["project"], scenario["slot"])
@@ -139,11 +140,7 @@ def run(scenario_path, L, frames=None, use_trt=False, suppress=True,
     if use_trt and not proc.gpu_path_active:
         raise SystemExit("TRT/GPU path unavailable")
     proc.tracker.reset()
-    proc.settings.output_smoothing_l = int(L)
-    proc.settings.output_lagged_enabled = True
-    proc.settings.output_lagged_suppress = bool(suppress)
-    if min_bridge is not None:
-        proc.settings.output_lagged_case2_min_bridge = int(min_bridge)
+    proc.settings.output_smoothing_l = int(L)  # L>1 → the single stream is lagged
     proc.settings.osc_enabled = True
     rec = _RecordingClient()
     proc.attach_osc(_capturing_sender(rec))
@@ -188,45 +185,39 @@ def main():
     ap.add_argument("--golden", default=None,
                     help="golden JSON to A/B the internal summary against "
                          "(default: golden/<scenario name>.json)")
-    ap.add_argument("--case2", action="store_true",
-                    help="also run a suppress=OFF pass to verify the real track "
-                         "is KEPT (no false-drop) + report the suppression delta")
-    ap.add_argument("--min-bridge", type=int, default=None,
-                    help="override the case-2 sustained-bridge gate (tuning sweep)")
     args = ap.parse_args()
 
-    rec, summary, processed, raw = run(args.scenario, args.L, args.frames,
-                                       use_trt=args.trt, suppress=True,
-                                       min_bridge=args.min_bridge)
-    causal = _series_by_id(rec, "/walldance/dancer/centroid")
-    lagged = _series_by_id(rec, "/walldance/dancer_lagged/centroid")
+    if args.L <= 1:
+        raise SystemExit("verify the lagged output with L>1 (L=1 is causal/live)")
 
-    print(f"\n=== Lagged-tap verification "
+    rec, summary, processed, raw = run(args.scenario, args.L, args.frames,
+                                       use_trt=args.trt)
+    # At L>1 the single /walldance/dancer/* stream IS the lagged RTS output.
+    output = _series_by_id(rec, "/walldance/dancer/centroid")
+
+    print(f"\n=== Output-stream verification "
           f"({'TRT' if args.trt else 'CPU'}, L={args.L}, {processed} frames) ===")
-    print(f"causal tracks: {sorted(causal)}   lagged tracks: {sorted(lagged)}")
+    print(f"output tracks: {sorted(output)}   raw tracks: {sorted(raw)}")
     print("(meta/latency_ms is published by the runtime loop, not this harness)")
 
-    # Per-track delay + smoothness on the longest-lived shared tracks.  The
-    # frame delay is measured against the RAW centroid (lagged[N] ≈ raw[N-L]);
-    # measuring against the causal *EMA* tap would read L minus the EMA's own
-    # ~1-frame group delay.
-    shared = sorted(set(causal) & set(lagged) & set(raw),
-                    key=lambda t: -len(set(lagged[t]) & set(raw[t])))
+    # Per-track delay + smoothness on the longest-lived shared tracks.  The frame
+    # delay is measured against the RAW per-frame KF centroid (output[N] ≈
+    # raw[N-L]); raw is also the unsmoothed smoothness baseline.
+    shared = sorted(set(output) & set(raw),
+                    key=lambda t: -len(set(output[t]) & set(raw[t])))
     delays, smoother = [], []
     for tid in shared:
-        common = len(set(lagged[tid]) & set(raw[tid]))
+        common = len(set(output[tid]) & set(raw[tid]))
         if common < 2 * args.L + 10:
             continue
-        d_raw = _best_delay(lagged[tid], raw[tid], max_d=args.L + 6)
-        d_caus = _best_delay(lagged[tid], causal[tid], max_d=args.L + 6)
-        jc, jl = _jitter(causal[tid]), _jitter(lagged[tid])
+        d_raw = _best_delay(output[tid], raw[tid], max_d=args.L + 6)
+        jr, jo = _jitter(raw[tid]), _jitter(output[tid])
         delays.append(d_raw)
-        better = jl is not None and jc is not None and jl < jc
+        better = jo is not None and jr is not None and jo < jr
         smoother.append(better)
-        ratio = (jl / jc) if (jc and jl is not None) else float("nan")
+        ratio = (jo / jr) if (jr and jo is not None) else float("nan")
         print(f"  track {tid}: frames~{common}  delay vs raw={d_raw} "
-              f"(expect {args.L}; vs causal-EMA={d_caus})  "
-              f"jitter causal={jc:.4f} lagged={jl:.4f}  "
+              f"(expect {args.L})  jitter raw={jr:.4f} output={jo:.4f}  "
               f"{'SMOOTHER' if better else 'NOT smoother'} ({ratio:.2f}x)")
 
     # Output-only A/B: internal summary must match the golden (CPU path only —
@@ -241,43 +232,19 @@ def main():
         diffs = {k: (golden.get(k), summary.get(k))
                  for k in _LEAN_KEYS if golden.get(k) != summary.get(k)}
         ab_ok = not diffs
-        print(f"\noutput-only A/B vs {gpath.name} (lagged tap ON): "
+        print(f"\noutput-only A/B vs {gpath.name} (L>1 output smoother ON): "
               f"{'IDENTICAL' if ab_ok else 'DIFFERS ' + json.dumps(diffs)}")
     else:
         print(f"\n(no golden at {gpath}; skipping A/B)")
-
-    # Case-2 A/B (§9.4 count-proxy): a suppress=OFF pass; the REAL track must be
-    # KEPT under suppression (no false-drop), while suppression may drop ghost
-    # frames.  No per-track ground truth exists, so we proxy: the dominant
-    # (longest) lagged track is the real dancer and must survive suppression.
-    case2_ok = None
-    if args.case2:
-        rec_off, _s2, _p2, _r2 = run(args.scenario, args.L, args.frames,
-                                     use_trt=args.trt, suppress=False,
-                                     min_bridge=args.min_bridge)
-        lagged_off = _series_by_id(rec_off, "/walldance/dancer_lagged/centroid")
-        total_on = sum(len(v) for v in lagged.values())
-        total_off = sum(len(v) for v in lagged_off.values())
-        dominant = max(lagged_off, key=lambda t: len(lagged_off[t])) if lagged_off else None
-        on_n = len(lagged.get(dominant, {})) if dominant is not None else 0
-        off_n = len(lagged_off.get(dominant, {})) if dominant is not None else 0
-        kept = (on_n / off_n) if off_n else 0.0
-        case2_ok = kept >= 0.95
-        print(f"\ncase-2 A/B (suppress on vs off): total lagged emissions "
-              f"{total_on} vs {total_off} (Δ={total_off - total_on} suppressed); "
-              f"dominant track {dominant} kept {on_n}/{off_n} frames ({kept:.2%})")
 
     ok_delay = bool(delays) and all(d == args.L for d in delays)
     ok_smooth = bool(smoother) and all(smoother)
     print("\nVERDICT:")
     print(f"  frame delay == L : {'PASS' if ok_delay else 'FAIL'}  ({delays})")
-    print(f"  lagged smoother  : {'PASS' if ok_smooth else 'FAIL'}")
+    print(f"  output smoother  : {'PASS' if ok_smooth else 'FAIL'}")
     if ab_ok is not None:
         print(f"  output-only A/B  : {'PASS' if ab_ok else 'FAIL'}")
-    if case2_ok is not None:
-        print(f"  case-2 keeps real: {'PASS' if case2_ok else 'FAIL'}")
-    passed = (ok_delay and ok_smooth and (ab_ok is not False)
-              and (case2_ok is not False))
+    passed = ok_delay and ok_smooth and (ab_ok is not False)
     print(f"\n{'ALL CHECKS PASS' if passed else 'CHECK FAILED'}")
     return 0 if passed else 1
 

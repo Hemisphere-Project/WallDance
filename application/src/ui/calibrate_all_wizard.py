@@ -145,7 +145,8 @@ class CalibrateAllWizard:
         self._spacer(6)
         self._text("1.  SCENE & LIGHTING  -  clear the stage (rigging-time).\n"
                    "     Drives exposure/gain (IDS), seeds gamma/CLAHE, sweeps\n"
-                   "     MOG2, builds the exclusion mask.", TEXT_MUTED)
+                   "     MOG2, captures the clean plate. (Exclusion masks are a\n"
+                   "     manual paint step in phase ①.)", TEXT_MUTED)
         self._spacer(4)
         self._text("2.  DANCERS  -  1-4 dancers moving on stage (live or\n"
                    "     playback). Pools evidence runs: person height, image\n"

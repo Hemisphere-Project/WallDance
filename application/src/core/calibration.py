@@ -87,10 +87,16 @@ def seed_gamma(brightness_mean: float,
     brightens), so solving (b/255)^(1/g) = target/255 gives
     g = ln(b/255) / ln(target/255).  Clamped: a near-black IR scene wants the
     sensor/gain fixed first (servo), not an extreme gamma.
+
+    Returned at full precision (continuous): the gamma the scene asks for is a
+    smooth function of brightness, so we do NOT quantize it — the only stepping
+    is the safety clamp to ``bounds``.  (Rounding here made re-calibrations under
+    similar lighting collapse onto the same coarse value, which read as
+    "discrete" gamma selection.)
     """
     b = _clamp(float(brightness_mean), 1.0, 250.0)
     g = math.log(b / 255.0) / math.log(target / 255.0)
-    return round(_clamp(g, bounds[0], bounds[1]), 2)
+    return _clamp(g, bounds[0], bounds[1])
 
 
 def seed_clahe(noise_sigma: float) -> float:

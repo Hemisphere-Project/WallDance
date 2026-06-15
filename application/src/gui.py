@@ -512,10 +512,6 @@ class WallDanceGUI:
         """Show/hide the floating Advanced (numeric knobs) panel."""
         self._toggle_window("advanced_drawer_window")
 
-    def _toggle_recordings_drawer(self):
-        """Show/hide the floating Recordings panel (off the live surface)."""
-        self._toggle_window("recordings_drawer_window")
-
     # --- Alerts strip (OPERATOR_V2 §2.3c) -------------------------------------
     def push_alert(self, key: str, message: str):
         """Add or replace a named alert; rendered in the alerts strip.
@@ -604,14 +600,6 @@ class WallDanceGUI:
     def _on_box_clamp_toggle(self, sender, value):
         if 'on_box_clamp_toggle' in self.callbacks:
             self.callbacks['on_box_clamp_toggle'](bool(value))
-
-    def _on_lagged_tap_toggle(self, sender, value):
-        if 'on_lagged_tap_toggle' in self.callbacks:
-            self.callbacks['on_lagged_tap_toggle'](bool(value))
-
-    def _on_lagged_suppress_toggle(self, sender, value):
-        if 'on_lagged_suppress_toggle' in self.callbacks:
-            self.callbacks['on_lagged_suppress_toggle'](bool(value))
 
     def _on_check_readiness(self, *args):
         if 'on_check_readiness' in self.callbacks:
@@ -2703,23 +2691,24 @@ class WallDanceGUI:
         dpg.configure_item(tag, color=TEXT_NORMAL)
 
     def show_output_latency(self, latency_ms, enabled=False):
-        """Render the phase-⑥ lagged-tap latency readout (Track X §7).
+        """Render the phase-⑥ output-latency readout (Track X).
 
         Safe to call directly: OutputLatency fans out synchronously on the main
         loop thread (EventBus.publish from MainLoop._tick_events), so both
         set_value and configure_item run on the DPG/main thread.  ``enabled``
-        with a 0 latency means the tap is live but fps isn't known yet."""
+        (L>1) with a 0 latency means the lagged stream is live but fps isn't
+        known yet."""
         tag = "lagged_latency_text"
         if not dpg.does_item_exist(tag):
             return
         if enabled and latency_ms > 0:
-            text = f"lagged tap: {latency_ms:.0f} ms ({latency_ms / 1000.0:.2f} s)"
+            text = f"output: lagged {latency_ms:.0f} ms ({latency_ms / 1000.0:.2f} s)"
             color = TEXT_NORMAL
         elif enabled:
-            text = "lagged tap: on (latency pending)"
+            text = "output: lagged (latency pending)"
             color = TEXT_NORMAL
         else:
-            text = "lagged tap: off"
+            text = "output: live (L=1, 0 ms)"
             color = TEXT_DIM
         dpg.set_value(tag, text)
         dpg.configure_item(tag, color=color)

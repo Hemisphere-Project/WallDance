@@ -322,14 +322,12 @@ def build_ui(gui: Any):
         with dpg.group(tag="alerts_strip_wrapper"):
             build_alerts_strip(gui)
         with dpg.group(tag="drawer_bar_wrapper"):
-            build_drawer_bar(gui)
+            build_drawer_bar(gui)   # Recordings controls inline, on one line
         with dpg.group(tag="bottom_bar_wrapper"):
             build_bottom_bar(gui)
-    # Floating drawers (top-level windows, hidden until disclosed). The Advanced
-    # drawer holds today's numeric sections verbatim; Recordings holds the
-    # LIVE/REC + slots + transport, off the live surface (decision 2).
+    # Floating Advanced drawer (toggled by the phase-rail Advanced button) —
+    # holds today's numeric sections verbatim.
     build_advanced_drawer(gui)
-    build_recordings_drawer(gui)
 
 
 def build_top_bar(gui: Any):
@@ -559,23 +557,50 @@ def build_phase_rail(gui: Any):
     """Horizontal phase rail — clicking a phase opens its panel on the right.
 
     Drives the existing commands via gui._on_phase_select (pure UI nav). State
-    chips (done/pending/count) are refreshed by gui._update_phase_rail()."""
-    with dpg.group(horizontal=True):
-        dpg.add_text("PHASE", color=HEADING_GREEN)
-        dpg.add_spacer(width=scaled(6))
-        for pid, label in PHASES:
-            btn = dpg.add_button(
-                label=label,
-                tag=f"phase_btn_{pid}",
-                width=scaled(92),
-                height=scaled(26),
-                callback=lambda s, a, u: gui._on_phase_select(u),
-                user_data=pid,
-            )
-            dpg.bind_item_theme(btn, gui._btn_standby_theme)
-            # Per-phase status chip (done/pending/count) — set by _update_phase_rail.
-            dpg.add_text("", tag=f"phase_chip_{pid}", color=TEXT_HINT)
-            dpg.add_spacer(width=scaled(6))
+    chips (done/pending/count) are refreshed by gui._update_phase_rail().  A
+    2-column stretch table (the proven top-bar pattern) right-aligns the
+    Advanced drawer toggle on the rail."""
+    with dpg.table(
+        header_row=False,
+        policy=dpg.mvTable_SizingStretchProp,
+        borders_outerH=False,
+        borders_outerV=False,
+        pad_outerX=False,
+        tag="phase_rail_table",
+    ):
+        dpg.add_table_column(init_width_or_weight=1.0, width_stretch=True)
+        dpg.add_table_column(init_width_or_weight=0.0, width_stretch=False, width_fixed=True)
+        with dpg.table_row():
+            with dpg.group(horizontal=True):
+                dpg.add_text("PHASE", color=HEADING_GREEN)
+                dpg.add_spacer(width=scaled(6))
+                for pid, label in PHASES:
+                    btn = dpg.add_button(
+                        label=label,
+                        tag=f"phase_btn_{pid}",
+                        width=scaled(92),
+                        height=scaled(26),
+                        callback=lambda s, a, u: gui._on_phase_select(u),
+                        user_data=pid,
+                    )
+                    dpg.bind_item_theme(btn, gui._btn_standby_theme)
+                    # Per-phase status chip (done/pending/count) — set by _update_phase_rail.
+                    dpg.add_text("", tag=f"phase_chip_{pid}", color=TEXT_HINT)
+                    dpg.add_spacer(width=scaled(6))
+            # Right-aligned: Advanced drawer toggle (OPERATOR_V2 — promoted onto
+            # the phase bar; the panel itself stays a floating drawer).
+            with dpg.group(horizontal=True):
+                dpg.add_button(
+                    label="Advanced",
+                    tag="advanced_drawer_btn",
+                    width=scaled(110),
+                    height=scaled(26),
+                    callback=lambda: gui._toggle_advanced_drawer(),
+                )
+                with dpg.tooltip("advanced_drawer_btn"):
+                    dpg.add_text("Today's numeric sections (Input, Background, "
+                                 "Enhancement,\nModel, Detection, Preview) — "
+                                 "developer / power-user knobs.")
 
 
 def build_phase_panel(gui: Any):
@@ -685,8 +710,9 @@ def build_phase_aim(gui: Any):
         with dpg.tooltip(calib_btn):
             dpg.add_text("Calib 1 - SCENE (empty stage, during rigging):\n"
                          "drives IDS exposure/gain to the blur budget, seeds\n"
-                         "gamma/CLAHE, sweeps MOG2 var+scale, builds the\n"
-                         "exclusion mask. Re-click after each focus/IR change.")
+                         "gamma/CLAHE, sweeps MOG2 var+scale, captures the\n"
+                         "clean plate. Re-click after each focus/IR change.\n"
+                         "(Exclusion masks are a manual paint step in phase ①.)")
         dpg.add_spacer(height=scaled(10))
         # Last-calibration line: a real per-run timestamp + the exact applied
         # values need the gated calibration_state metadata (Track S); until then
@@ -870,36 +896,13 @@ def build_phase_live(gui: Any):
                 callback=gui._on_output_smoothing_change,
             )
         with dpg.tooltip(smooth_slider):
-            dpg.add_text("Output box-size smoothness vs latency.\n"
-                         "L=1 = light de-jitter, minimal latency (default).\n"
-                         "Higher = smoother box, more lag. At L>1 the smoothed\n"
-                         "(acausal) stream is on the lagged tap below.")
-        lagged_chk = dpg.add_checkbox(
-            label="Lagged tap (acausal RTS, L>1)",
-            tag="lagged_tap_checkbox",
-            default_value=bool(gui.config.get("output_lagged_enabled", False)),
-            callback=gui._on_lagged_tap_toggle,
-        )
-        with dpg.tooltip(lagged_chk):
-            dpg.add_text("Publish a second, RTS-smoothed /walldance/dancer_lagged/*\n"
-                         "stream, L frames late, plus /walldance/meta/latency_ms.\n"
-                         "Smoother + retroactively gap-corrected, for consumers that\n"
-                         "can trade latency for quality. Engages only at L>1; the\n"
-                         "causal /walldance/dancer/* tap stays live. Opt-in (doubles\n"
-                         "OSC traffic per dancer). Output-only.")
-        suppress_chk = dpg.add_checkbox(
-            label="  └ suppress flying ghosts (case-2)",
-            tag="lagged_suppress_checkbox",
-            default_value=bool(gui.config.get("output_lagged_suppress", True)),
-            callback=gui._on_lagged_suppress_toggle,
-        )
-        with dpg.tooltip(suppress_chk):
-            dpg.add_text("On the lagged tap only: drop a bridged track that never\n"
-                         "re-acquires a solid skeleton in its look-ahead (a moving\n"
-                         "ambient-motion 'flying ghost'). Conservative — real aerials\n"
-                         "that re-acquire are kept. Off = lagged ids match the causal\n"
-                         "tap. Output-only; default ON.")
-        dpg.add_text("lagged tap: off", tag="lagged_latency_text", color=TEXT_DIM)
+            dpg.add_text("Output smoothness vs latency — selects the single\n"
+                         "/walldance/dancer/* stream.\n"
+                         "L=1 = causal / live: zero look-ahead (default).\n"
+                         "L>1 = fixed-lag RTS-smoothed stream, released L frames\n"
+                         "late (smoother + retroactively gap-corrected), with\n"
+                         "/walldance/meta/latency_ms published. Output-only.")
+        dpg.add_text("output: live (L=1, 0 ms)", tag="lagged_latency_text", color=TEXT_DIM)
         dpg.add_spacer(height=scaled(12))
         build_visualization_toolbar(gui)    # promoted: View S/K/B/T/I
 
@@ -919,30 +922,13 @@ def build_alerts_strip(gui: Any):
 
 
 def build_drawer_bar(gui: Any):
-    """Bottom disclosure bar — opens the Advanced / Recordings floating panels."""
+    """Recordings bar — LIVE/REC + 10 slots + status + transport, inline on ONE
+    line, always visible (no toggle button).  (Advanced is on the phase rail.)"""
     dpg.add_separator()
     with dpg.group(horizontal=True):
-        dpg.add_button(
-            label="Advanced",
-            tag="advanced_drawer_btn",
-            width=scaled(110),
-            height=scaled(24),
-            callback=lambda: gui._toggle_advanced_drawer(),
-        )
-        with dpg.tooltip("advanced_drawer_btn"):
-            dpg.add_text("Today's numeric sections (Input, Background, Enhancement,\n"
-                         "Model, Detection, Preview) — developer / power-user knobs.")
-        dpg.add_spacer(width=scaled(12))
-        dpg.add_button(
-            label="Recordings",
-            tag="recordings_drawer_btn",
-            width=scaled(110),
-            height=scaled(24),
-            callback=lambda: gui._toggle_recordings_drawer(),
-        )
-        with dpg.tooltip("recordings_drawer_btn"):
-            dpg.add_text("LIVE / REC + 10 slots + playback transport - the\n"
-                         "setup/rehearsal tool, off the live surface (decision 2).")
+        dpg.add_text("Recordings", color=HEADING_GREEN)
+        dpg.add_spacer(width=scaled(6))
+        build_recordings_content(gui)
 
 
 def build_advanced_drawer(gui: Any):
@@ -954,84 +940,82 @@ def build_advanced_drawer(gui: Any):
         build_control_panel(gui)
 
 
-def build_recordings_drawer(gui: Any):
-    """Floating Recordings panel (decision 2): LIVE/REC + slots + transport."""
-    with dpg.window(label="Recordings", tag="recordings_drawer_window",
-                    show=False, no_collapse=True,
-                    width=scaled(580), height=scaled(150),
-                    pos=(scaled(40), scaled(560))):
-        # LIVE/REC buttons + slot buttons
-        with dpg.group(horizontal=True):
-            live_btn = dpg.add_button(
-                label="LIVE",
-                tag="rec_live_btn",
-                width=scaled(45),
-                callback=gui._on_rec_live,
-            )
-            dpg.bind_item_theme(live_btn, gui._rec_live_active_theme)
-            rec_btn = dpg.add_button(
-                label="REC",
-                tag="rec_rec_btn",
-                width=scaled(45),
-                callback=gui._on_rec_toggle,
-            )
-            dpg.bind_item_theme(rec_btn, gui._rec_btn_theme)
-            dpg.add_spacer(width=scaled(4))
-            for slot in range(1, 11):
-                slot_btn = dpg.add_button(
-                    label=str(slot),
-                    tag=f"rec_slot_{slot}_btn",
-                    width=scaled(23),
-                    callback=lambda s, a, u: gui._on_rec_slot_click(u),
-                    user_data=slot,
-                )
-                dpg.bind_item_theme(slot_btn, gui._slot_empty_theme)
+def build_recordings_content(gui: Any):
+    """Recordings controls laid out inline on the recordings bar's single line:
+    LIVE/REC + 10 slots + dynamic status + playback transport.  Emitted directly
+    into the caller's horizontal group (no wrapper) so it sits on one line; all
+    widget tags are preserved so gui.update_recording_ui drives them unchanged."""
+    # LIVE / REC + 10 slot buttons
+    live_btn = dpg.add_button(
+        label="LIVE",
+        tag="rec_live_btn",
+        width=scaled(45),
+        callback=gui._on_rec_live,
+    )
+    dpg.bind_item_theme(live_btn, gui._rec_live_active_theme)
+    rec_btn = dpg.add_button(
+        label="REC",
+        tag="rec_rec_btn",
+        width=scaled(45),
+        callback=gui._on_rec_toggle,
+    )
+    dpg.bind_item_theme(rec_btn, gui._rec_btn_theme)
+    dpg.add_spacer(width=scaled(4))
+    for slot in range(1, 11):
+        slot_btn = dpg.add_button(
+            label=str(slot),
+            tag=f"rec_slot_{slot}_btn",
+            width=scaled(23),
+            callback=lambda s, a, u: gui._on_rec_slot_click(u),
+            user_data=slot,
+        )
+        dpg.bind_item_theme(slot_btn, gui._slot_empty_theme)
 
-        dpg.add_spacer(height=scaled(6))
+    dpg.add_spacer(width=scaled(10))
 
-        # Dynamic status / playback transport
-        with dpg.group(horizontal=True, tag="source_status_group"):
-            dpg.add_text("", tag="rec_status_text", color=(80, 200, 80))
-            dpg.add_text("", tag="rec_frame_counter", color=(255, 100, 100))
-        with dpg.group(horizontal=True, tag="source_playback_group", show=False):
-            dpg.add_text("", tag="rec_playback_progress", color=(100, 180, 220))
-            dpg.add_combo(
-                items=["x0.1", "x0.25", "x0.5", "x0.75", "x1.0", "x1.5", "x2.0", "x4.0"],
-                tag="rec_speed_combo",
-                default_value="x1.0",
-                width=scaled(65),
-                callback=gui._on_playback_speed_change,
-            )
-            pause_btn = dpg.add_button(
-                label=Icons.PAUSE,
-                tag="rec_pause_btn",
-                width=scaled(24),
-                callback=gui._on_playback_pause,
-            )
-            if gui._icon_font:
-                dpg.bind_item_font(pause_btn, gui._icon_font)
-            prev_btn = dpg.add_button(
-                label=Icons.STEP_BACKWARD,
-                tag="rec_prev_frame_btn",
-                width=scaled(24),
-                callback=gui._on_playback_prev_frame,
-            )
-            if gui._icon_font:
-                dpg.bind_item_font(prev_btn, gui._icon_font)
-            next_btn = dpg.add_button(
-                label=Icons.STEP_FORWARD,
-                tag="rec_next_frame_btn",
-                width=scaled(24),
-                callback=gui._on_playback_next_frame,
-            )
-            if gui._icon_font:
-                dpg.bind_item_font(next_btn, gui._icon_font)
-            dpg.add_button(
-                label="ISSUE",
-                tag="rec_report_issue_btn",
-                width=scaled(52),
-                callback=gui._on_report_issue,
-            )
+    # Dynamic status / playback transport — same line, to the right of the slots.
+    with dpg.group(horizontal=True, tag="source_status_group"):
+        dpg.add_text("", tag="rec_status_text", color=(80, 200, 80))
+        dpg.add_text("", tag="rec_frame_counter", color=(255, 100, 100))
+    with dpg.group(horizontal=True, tag="source_playback_group", show=False):
+        dpg.add_text("", tag="rec_playback_progress", color=(100, 180, 220))
+        dpg.add_combo(
+            items=["x0.1", "x0.25", "x0.5", "x0.75", "x1.0", "x1.5", "x2.0", "x4.0"],
+            tag="rec_speed_combo",
+            default_value="x1.0",
+            width=scaled(65),
+            callback=gui._on_playback_speed_change,
+        )
+        pause_btn = dpg.add_button(
+            label=Icons.PAUSE,
+            tag="rec_pause_btn",
+            width=scaled(24),
+            callback=gui._on_playback_pause,
+        )
+        if gui._icon_font:
+            dpg.bind_item_font(pause_btn, gui._icon_font)
+        prev_btn = dpg.add_button(
+            label=Icons.STEP_BACKWARD,
+            tag="rec_prev_frame_btn",
+            width=scaled(24),
+            callback=gui._on_playback_prev_frame,
+        )
+        if gui._icon_font:
+            dpg.bind_item_font(prev_btn, gui._icon_font)
+        next_btn = dpg.add_button(
+            label=Icons.STEP_FORWARD,
+            tag="rec_next_frame_btn",
+            width=scaled(24),
+            callback=gui._on_playback_next_frame,
+        )
+        if gui._icon_font:
+            dpg.bind_item_font(next_btn, gui._icon_font)
+        dpg.add_button(
+            label="ISSUE",
+            tag="rec_report_issue_btn",
+            width=scaled(52),
+            callback=gui._on_report_issue,
+        )
 
 
 def build_detection_section(gui: Any):

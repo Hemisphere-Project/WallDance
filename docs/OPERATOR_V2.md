@@ -24,6 +24,9 @@ sweep in flight — see §6 coordination). Grounded in the 2026-06-15 five-dimen
    spatially-narrow calibration window vs the dancers' real use of the stage, and already bit
    back on `texture-duo`). Operator paints known dead zones; **masked cells stay visible at all
    times**, not only in edit mode. (Reverses ROADMAP P1.4 "auto exclusion on Go-Live".)
+   **(Implemented 2026-06: now enforced in code — 3AIM/Aim no longer auto-builds or activates an
+   exclusion mask; Aim derives servo + gamma + var + clean-plate only, and a manually-painted
+   mask survives and keeps applying.)**
 6. **Output/OSC layer** = a dedicated post-tracker stage with **two decoupled controls**: a
    *box-clamp-to-last-known-YOLO-size* toggle, and a *smoothing-depth* slider that buys
    coherence/ghost-suppression at the cost of latency (operator sets per show). See Track X.
@@ -141,14 +144,19 @@ becomes an Advanced drawer.
   OSC / FPS / Engine / state) — one row, plain meanings, fallback states explicit.
 - **Phase rail** (the new primary control): ① Rig · ② Profile · ③ Aim · ④ Calibrate · ⑤
   Verify · ⑥ Live, each showing **done / pending / count** state. Clicking a phase opens its
-  panel on the right.
+  panel on the right. *(changed 2026-06: the `⚙ Advanced` toggle button lives on this rail,
+  right-aligned — moved here from the bottom drawer bar.)*
 - **Right panel = current phase only:** one primary action + that phase's minimal controls +
   status. (e.g. ④ shows `[Record run]`, pool list, `[Apply]`.)
 - **Advanced drawer (`⚙`):** today's 8 sections verbatim, behind one disclosure — for the
   developer/power user. Replaces the binary Expert-mode dump with a single drawer; the truly
-  internal knobs stay hidden inside it.
-- **Recordings drawer (decision 2):** LIVE/REC + 10 slots + playback transport move here, off
-  the live surface. Calib ④ can still pull a slot as an evidence source.
+  internal knobs stay hidden inside it. *(changed 2026-06: the toggle button lives on the phase
+  rail, right-aligned; the panel itself is still a floating drawer.)*
+- **Recordings panel (decision 2):** LIVE/REC + 10 slots + playback transport, off the live
+  surface. Calib ④ can still pull a slot as an evidence source. *(changed 2026-06: this is now an
+  **inline** panel in the main window — `build_recordings_content` → a hidden `recordings_inline_panel`
+  group, toggled by the bottom drawer-bar `🎞 Recordings` button — **not** a floating window; the old
+  `recordings_drawer_window` is gone.)*
 
 **Layout mockup (batch-1 scaffold target — confirm before full build).** Two states shown: a
 calibration phase (④ selected) and the live phase (⑥). The rail, drawers, and status strip are
@@ -160,7 +168,7 @@ the same in both; only the right panel swaps with the selected phase.
 │ Project: TOGO-night ▾   Profile: SHOW ▾   │    │ Project: TOGO-night ▾   Profile: SHOW ▾   │
 │ CAM●IDS  OSC●  19fps  [TRT]  ● STANDBY    │    │ CAM●IDS  OSC●  19fps  [TRT]  ● RUN        │
 ├──────────────────────────────────────────┤    ├──────────────────────────────────────────┤
-│ ①Rig✓ ②Prof✓ ③Aim✓ │④Calibrate│⑤Verify ⑥Live│  │ ①✓ ②✓ ③✓ ④✓(3 runs) ⑤✓ │⑥ LIVE ▶│        │
+│①Rig✓②Prof✓③Aim✓│④Calibr.│⑤Vfy ⑥Live   ⚙Adv ▸│  │①✓②✓③✓④✓(3runs)⑤✓│⑥ LIVE ▶│      ⚙Adv ▸│
 ├───────────────────────────┬──────────────┤    ├───────────────────────────┬──────────────┤
 │                           │ ④ CALIBRATE   │    │                           │ ⑥ LIVE        │
 │                           │ dancers       │    │                           │               │
@@ -174,13 +182,16 @@ the same in both; only the right panel swaps with the selected phase.
 │                           │  applied 2m   │    │                           │ View: S K B T I│
 ├───────────────────────────┴──────────────┤    ├───────────────────────────┴──────────────┤
 │ ⚠ Alerts: (none)                          │    │ ⚠ Alerts: GPU 78°C                        │
-│ ⚙ Advanced ▸        🎞 Recordings ▸        │    │ ⚙ Advanced ▸        🎞 Recordings ▸        │
+│ 🎞 Recordings ▸                            │    │ 🎞 Recordings ▸                            │
 └──────────────────────────────────────────┘    └──────────────────────────────────────────┘
 ```
 *(Manual exclusion paint lives in ① Rig & Frame alongside the stage-ROI tool; masked cells
 render dimmed on the preview at all times. Box-clamp + smoothing controls are stubs in batch-1
 — the toggle is wired but the fixed-lag behavior is 🟡/🔴, built later. The Advanced drawer holds
-today's 8 sections verbatim.)*
+today's 8 sections verbatim.* **(changed 2026-06: the `⚙ Advanced` toggle moved onto the phase
+rail, right-aligned — it is no longer on the bottom drawer bar; the Advanced panel itself is still
+a floating drawer. The bottom bar now carries only `🎞 Recordings`, which toggles an inline panel,
+not a floating window — see §2.1.)*)
 
 ### 2.2 Live-show surface (phase ⑥) — two dials (decision 3)
 - **Dial A — "Drops ↔ Ghosts"** (confidence-led, range fit by Track G; today 0.15–0.65).
@@ -243,6 +254,8 @@ unbuilt enhancement sweep.**
   more evidence arrives without disrupting the running show.
 - **Exclusion leaves the scene pass** (decision 5): ③ Aim derives servo + gamma + var +
   clean-plate only. Exclusion is a manual phase-① paint step (Track O §2.5) — no auto-build.
+  **(Implemented 2026-06: Aim no longer auto-builds or activates an exclusion mask; a manually
+  painted mask survives and keeps applying.)**
 - **Soft ordering enforcement:** ④ warns if ③ (Aim/servo) never ran in this profile; ③ blocks
   if a pool review is open. (audit: today `_cb_calib2` only checks Calib1 isn't *currently*
   running.)
@@ -316,24 +329,32 @@ EMA-smoothed `centroid`; this stage closes that gap. **Two decoupled controls (d
      Kalman already running) — smoothing without the causal filter's lag-vs-noise tradeoff.
   2. **Retroactive bridge correction** — once YOLO re-acquires, the bridged segment is corrected
      *backward*, so a bridged path is clean in hindsight.
-  3. **Case-2 flying-ghost fix, made safe** — suppress a bridged segment only if, looking L
-     frames ahead, it *never re-acquired a real skeleton*. Real aerials re-acquire within the
-     window (1-in-3 frames) → kept; ambient-motion flyers never do → dropped. The latency budget
-     turns the deferred "too risky" causal fix into a robust one.
+  3. ~~**Case-2 flying-ghost fix, made safe**~~ — *(removed 2026-06: the case-2 flying-ghost
+     suppression was originally planned + shipped, then dropped entirely — ghosts are no longer
+     observed in the field, so the stream now releases every confirmed track with **no silent
+     drops**. The released id set equals the reported id set. See OSC_CONTRACT §B.2/§B.3.)*
   4. **Steady high-rate OSC** — resample the smoothed trajectory to a fixed output rate
      regardless of YOLO cadence (output-side interpolation — the useful kind; input-frame
-     interpolation does **not** help detection).
+     interpolation does **not** help detection). *(Still unbuilt — X-4.)*
 
-  *Items 2–3 (retroactive correction, case-2 suppression) only engage once L is raised past a
-  few frames; at the default L = 1 the stage is just box-clamp + light de-jitter, so the default
-  experience is low-latency and the heavier behavior is strictly opt-in.*
+  *(changed 2026-06: item 2 — retroactive correction — engages automatically once L is raised
+  past 1; at the default L = 1 the stage is just box-clamp + light de-jitter, so the default
+  experience is low-latency and the heavier behavior is opt-in via the L slider. Item 3 was
+  removed.)*
 
-**Dual tap:** offer a **live causal tap** (zero-lag, for latency-sensitive consumers) *and* the
-**smoothed lagged tap**, and **publish the latency** so TouchDesigner can compensate.
+**One L-driven stream (changed 2026-06):** there is now a **single** `/walldance/dancer/*`
+stream selected by **L alone** — `L = 1` is causal/live (zero-lag, for latency-sensitive
+consumers); `L > 1` is the fixed-lag RTS-smoothed report, released `L` frames late, on the
+**same** namespace. The earlier *dual tap* (a second `/walldance/dancer_lagged/*` namespace +
+the `output_lagged_enabled` opt-in) was **removed**. Latency is still published on
+`/walldance/meta/latency_ms` (`0` at `L = 1`, `L/fps·1000` at `L > 1`) so TouchDesigner can
+compensate. The L slider is the only output-stream control. (Canonical: OSC_CONTRACT §B.)
 
 **Why low-risk + high-leverage:** lives entirely at the output boundary; touches **neither the
 detector nor the tracker internals** (the case-1 lesson). One module resolves case-1 (box),
-case-2 (flying ghost), trajectory smoothing, and OSC cadence. **Ownership:** operator-facing
+trajectory smoothing, and OSC cadence. *(changed 2026-06: case-2 flying-ghost suppression was
+also originally in scope here but has since been removed — ghosts are no longer observed.)*
+**Ownership:** operator-facing
 controls + integration = this track; the fixed-lag/RTS smoother core is a good **joint spec**
 with the engine agent (they offered to scope it). See §6.
 
@@ -455,7 +476,7 @@ produces the data; this table is the deliverable.
 | **Calibrate / dancer-signal** | CLAHE ✅(G2: per-scene sweep {1.0…6.0}, **no formula**, pick by detection — unbuilt), person_height + ratios, imgsz (+model advisory), confidence seed ✅, blur budget | calibrate | pool dialog |
 | **Calibrate / per-scene (known-N, Phase 3)** ✅(G4) | `tracker_max_age`, `crossval_skel_min_kpts` (θ_s), `crossval_motion_min_ratio` (θ_m) — scene-dependent (0.03–0.07 on multi-dancer/occlusion + static-sitter; inert on easy scenes). Set by the Phase-3 joint search, **never a user surface**. θ_m motion-coupled → TRT-confirm | known-N calib | none (internal) |
 | **Fixed (internal)** ✅(G4: inert all-corpus) | `crossval_skel_min_conf`, `tracker_smoothing`; + the ~50 tracker/bridge/warmup constants, Kalman Q/R, swap correctors (off); NMS/IoU + keypoint-conf floor (Track-D candidates) | Fixed | Advanced drawer (read-mostly) |
-| **Drop / retire** | **auto-exclusion builder** (decision 5); `tracking_mode` UI (P3 merged); `bg_subtract` → clean-plate path (Track D); duplicated `tracker_max_age` defaults. *(`motion_sensitivity` is **not** dropped — it's now Dial B.)* | — | removed |
+| **Drop / retire** | **auto-exclusion builder** (decision 5; **removed 2026-06** — Aim no longer auto-builds/activates a mask); `tracking_mode` UI (P3 merged); `bg_subtract` → clean-plate path (Track D); duplicated `tracker_max_age` defaults. *(`motion_sensitivity` is **not** dropped — it's now Dial B.)* | — | removed |
 
 ### 4.2 Structural fixes
 - **`calibration_state` metadata** in config: which value came from which phase + when → drives
@@ -600,7 +621,9 @@ increment is a validated, reusable first brick, and G2 + G6 give the redesign da
    detection risk; replay goldens stay green; output stage touches only the OSC/preview boundary.
 4. **Track C correctness fixes** §3.2 (small, high-value; each replay-gated).
 5. **Track-X fixed-lag smoother** — once the smoother core is jointly specced; brings the case-2
-   flying-ghost fix + retroactive bridge correction (latency-budgeted, dual-tap).
+   flying-ghost fix + retroactive bridge correction (latency-budgeted, dual-tap). *(superseded
+   2026-06: shipped as one L-driven `/walldance/dancer/*` stream — retroactive correction kept;
+   case-2 suppression + the dual tap were removed.)*
 6. **G2–G4 + G6** as the operator grants benchmark time → **G5 governance table** → finalize §4.1.
 7. **Phase C-next unified engine** — deliberate joint design once G2/G6 land.
 8. **Track D** = research-first, **nothing committed** — each lead needs a scoped, replay-gated
@@ -713,6 +736,9 @@ Track D (research-first).
 > **Verify:** unit 326 passed / 7 skipped (+ headless DPG phase-⑥ build smoke); goldens green.
 > **Deferred (NOT built):** Dial B *gap-derived* calib seeding (engine/calib lane — ships with a
 > default seed today); fixed-lag/RTS smoother + retroactive correction + case-2 (🔴 joint).
+> *(superseded 2026-06: the fixed-lag/RTS smoother + retroactive correction later shipped as the
+> single L-driven `/walldance/dancer/*` stream; the case-2 suppression and the dual `_lagged` tap
+> were built then **removed** — see Track X + OSC_CONTRACT §B.)*
 
 > **✅ Phase ⑤ Verify + `docs/NEW_SHOW.md` SHIPPED 2026-06-15 (same branch; §6 item 9).**
 > - **Readiness panel** — reuses `ops_monitor` checks via the extracted
@@ -731,12 +757,15 @@ Operator-surface lane has taken these as far as it can **without** crossing a la
 (design + coordination; **no code, no calib-file edits, no golden re-baseline**). Each needs
 the named agent / an explicit operator go before any build.
 
-- **Track X fixed-lag / RTS smoother (🔴 joint w/ engine agent) → SPEC WRITTEN.** Full design
+- **Track X fixed-lag / RTS smoother (🔴 joint w/ engine agent) → SHIPPED (X-2/X-3).** Full design
   in [TRACK_X_SMOOTHER.md](TRACK_X_SMOOTHER.md): RTS de-jitter, retroactive bridge correction,
-  case-2 suppression, dual tap + latency, code integration points, and **5 open questions for
+  ~~case-2 suppression, dual tap~~ + latency, code integration points, and **5 open questions for
   the engine agent** (independent vs tracker Kalman; identity across the lag; case-2 vs the
   internal frozen-ghost gate; bridged measurement noise; the lagged-tap replay metric). Output-
-  only by design (goldens stay green). *Next:* engine agent answers §9, then joint build X-2/X-3.
+  only by design (goldens stay green). *(changed 2026-06: X-2/X-3 built, then **case-2 flying-ghost
+  suppression and the dual `/walldance/dancer_lagged/*` tap were removed** — it is now one L-driven
+  `/walldance/dancer/*` stream, released L frames late at L>1, no suppression; see Track X above +
+  OSC_CONTRACT §B.)*
 - **Track-C correctness fixes + C-next unified engine → calib agent's lane (do NOT edit
   `calibration.py`/`calib2.py`).** Operator-surface seam **already shipped**: the inline pool
   renders `Calib2PoolChanged`; the two dials seed off `reset_sensitivity_anchor`

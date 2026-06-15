@@ -13,14 +13,13 @@ buffered centroids; it never reads or mutates ``DancerTrack.kf`` or any tracker
 state.  Output-only by construction → replay goldens are unaffected (the case-1
 lesson).
 
-This module is the X-2 CORE: trajectory de-jitter + box-size smoothing + the
-dual-tap release mechanics with latency exactly ``L`` frames.  **Retroactive
-bridge correction falls out of the RTS pass automatically** — a bridged gap of
-length ``<= L`` that is re-anchored by a future real skeleton inside the window
-is corrected in hindsight with no special case.  **Case-2 flying-ghost
-SUPPRESSION is phase X-3 and is deliberately NOT implemented here**; in X-2 the
-lagged id set equals the causal id set (every reported track is released
-``L`` frames late).
+Trajectory de-jitter + box-size smoothing + fixed-lag release mechanics with
+latency exactly ``L`` frames.  **Retroactive bridge correction falls out of the
+RTS pass automatically** — a bridged gap of length ``<= L`` that is re-anchored
+by a future real skeleton inside the window is corrected in hindsight with no
+special case.  Every reported track is released ``L`` frames late: **the
+released id set equals the reported id set** — there is no flying-ghost
+suppression (that opt-in feature was removed, 2026-06).
 
 Pure and unit-testable: feed synthetic ``SmootherInput`` trajectories, assert
 smoothness / latency / gap reconstruction (see ``tests/test_output_smoother``).
@@ -34,12 +33,10 @@ from typing import Any, List, Optional
 import numpy as np
 
 try:  # imported by bare name inside the app's src/ (see tests/conftest.py)
-    from core.config import (MOTION_BRIDGE_NOISE_STAGES, TRACKER_MAX_AGE,
-                             KEYPOINT_CONFIDENCE)
+    from core.config import MOTION_BRIDGE_NOISE_STAGES, TRACKER_MAX_AGE
 except Exception:  # pragma: no cover - allow standalone import in tooling
     MOTION_BRIDGE_NOISE_STAGES = [(10, 1.5), (30, 2.5), (80, 4.0)]
     TRACKER_MAX_AGE = 45
-    KEYPOINT_CONFIDENCE = 0.3
 
 
 # --- Constant-velocity model (dt = 1 frame).  State x = [px, py, vx, vy]. -----
@@ -78,20 +75,6 @@ _DEFAULT_PROCESS_VAR = 1.0
 _DEFAULT_MEAS_VAR = 4.0
 _INIT_VEL_VAR = 1.0e3  # large initial velocity uncertainty at track birth
 
-# Case-2 flying-ghost suppression defaults (Track X §5.1, engine-agent decisions).
-# A track is suppressed from the LAGGED tap only if its released frame is bridged
-# AND it fails to re-acquire a SOLID skeleton (≥ K confident hits) in the look-
-# ahead, with none recent.  Conservative (bias to KEEP real aerials); F1 is
-# PROVISIONAL pending a per-track-labeled flying-ghost clip.
-_CASE2_K = 2                                  # confident re-acquisitions required to keep
-_CASE2_CONF_FLOOR = 2.0 * KEYPOINT_CONFIDENCE  # 0.6 — 2× the skeleton floor (a SOLID hit)
-# Sustained-bridge gate: only a track bridged for >= this many frames is a
-# suppression candidate.  A real aerial's drops are BRIEF (fss resets on each
-# re-acquisition, incl. low-conf ones at the 0.3 floor); a flying ghost is bridged
-# for a long unbroken run (fss grows).  Count-proxy-tuned on hangar-aerial so the
-# real dancer's brief drops are never suppressed (drop_rate ≈ 0).
-_CASE2_MIN_BRIDGE = 8
-
 
 @dataclass
 class SmootherInput:
@@ -101,7 +84,6 @@ class SmootherInput:
     wh: np.ndarray                  # reported box size (w, h)
     is_real_skeleton: bool          # frames_since_skeleton == 0
     frames_since_skeleton: int = 0  # staleness → R inflation stage
-    max_kpt_conf: float = 0.0       # max per-keypoint confidence (case-2 "confident" test)
     payload: Any = None             # opaque; carried through to the release
 
 
@@ -122,12 +104,10 @@ class _Node:
     step: int
     z: np.ndarray        # measurement centroid (2,)
     is_real: bool
-    fss: int             # frames_since_skeleton (sustained-bridge gate)
     wh: np.ndarray       # box size (2,)
     weight: float        # box-size weight (1 / noise_mult)
     x_post: np.ndarray   # filtered state (4,)
     P_post: np.ndarray   # filtered covariance (4, 4)
-    max_kpt_conf: float  # max per-keypoint conf (case-2 confident test)
     payload: Any
 
 
@@ -139,21 +119,15 @@ class _TrackFilter:
     pass can smooth the oldest buffered frame using its look-ahead.
     """
 
-    __slots__ = ("nodes", "x_post", "P_post", "last_step", "_q", "_r",
-                 "_k", "_floor", "_min_bridge")
+    __slots__ = ("nodes", "x_post", "P_post", "last_step", "_q", "_r")
 
-    def __init__(self, process_var: float, meas_var: float,
-                 case2_k: int = _CASE2_K, case2_conf_floor: float = _CASE2_CONF_FLOOR,
-                 case2_min_bridge: int = _CASE2_MIN_BRIDGE):
+    def __init__(self, process_var: float, meas_var: float):
         self.nodes: List[_Node] = []
         self.x_post: Optional[np.ndarray] = None
         self.P_post: Optional[np.ndarray] = None
         self.last_step: int = -1
         self._q = float(process_var)
         self._r = float(meas_var)
-        self._k = int(case2_k)
-        self._floor = float(case2_conf_floor)
-        self._min_bridge = max(1, int(case2_min_bridge))
 
     # -- forward pass ---------------------------------------------------------
     def ingest(self, step: int, inp: SmootherInput, noise_mult: float) -> None:
@@ -178,12 +152,10 @@ class _TrackFilter:
             step=step,
             z=z,
             is_real=bool(inp.is_real_skeleton),
-            fss=int(inp.frames_since_skeleton),
             wh=np.asarray(inp.wh, dtype=np.float64).reshape(2),
             weight=1.0 / max(1.0, noise_mult),
             x_post=self.x_post.copy(),
             P_post=self.P_post.copy(),
-            max_kpt_conf=float(inp.max_kpt_conf),
             payload=inp.payload,
         ))
         self.last_step = step
@@ -216,40 +188,7 @@ class _TrackFilter:
             wsum += node.weight
         return acc / wsum if wsum > 0 else self.nodes[0].wh.copy()
 
-    def _should_suppress(self, lag: int) -> bool:
-        """Case-2 flying-ghost predicate (Track X §5.1) for the oldest node R.
-
-        Suppress R from the lagged tap iff ALL hold:
-          (1) R is deep in a SUSTAINED bridge (frames_since_skeleton >= min_bridge)
-              — a brief drop of a real dancer (small fss, re-acquires) is exempt;
-              only a track bridged for a long unbroken run is a suppression
-              candidate (a true flying ghost never re-acquires, so its fss grows);
-          (2) the look-ahead nodes (step ∈ (R … N]) contain < K CONFIDENT real
-              skeletons (confident := is_real AND max_kpt_conf > floor);
-          (3) AND none of those confident nodes is within the last ⌈lag/3⌉ steps
-              of N (recency — a recent solid re-acquisition keeps the track).
-
-        Output-only: suppression drops the EMIT; the node is still popped and the
-        forward filter is untouched (a later window that re-acquires emits)."""
-        if self.nodes[0].fss < self._min_bridge:
-            return False                       # (1) not a sustained-enough bridge
-        lookahead = self.nodes[1:]
-        if not lookahead:
-            return False
-        confident_steps = [nd.step for nd in lookahead
-                           if nd.is_real and nd.max_kpt_conf > self._floor]
-        if len(confident_steps) >= self._k:
-            return False                       # (2) enough solid re-acquisitions
-        recency = max(1, lag // 3)
-        newest = self.nodes[-1].step
-        if any(s > newest - recency for s in confident_steps):
-            return False                       # (3) a recent solid hit → keep
-        return True
-
-    def _release_oldest(self, suppress: bool, lag: int) -> Optional[SmootherOutput]:
-        if suppress and self._should_suppress(lag):
-            self.nodes.pop(0)                  # advance the buffer, emit nothing
-            return None
+    def _release_oldest(self) -> Optional[SmootherOutput]:
         node = self.nodes[0]
         state = self._rts_smoothed_oldest()  # full [px,py,vx,vy]
         wh = self._smoothed_wh()
@@ -265,23 +204,22 @@ class _TrackFilter:
         self.nodes.pop(0)
         return out
 
-    def drain_overdue(self, lag: int, suppress: bool) -> List[SmootherOutput]:
+    def drain_overdue(self, lag: int) -> List[SmootherOutput]:
         """Release every node that now has >= ``lag`` future frames (steady
-        state releases exactly one; a live ``L`` decrease releases the backlog).
-        Case-2-suppressed releases advance the buffer but are not emitted."""
+        state releases exactly one; a live ``L`` decrease releases the backlog)."""
         out: List[SmootherOutput] = []
         while len(self.nodes) > lag:
-            rel = self._release_oldest(suppress, lag)
+            rel = self._release_oldest()
             if rel is not None:
                 out.append(rel)
         return out
 
-    def flush_one(self, lag: int, suppress: bool) -> Optional[SmootherOutput]:
+    def flush_one(self) -> Optional[SmootherOutput]:
         """Release the oldest remaining node even with < ``lag`` look-ahead —
         used to flush a dying track's tail (§12 lifecycle)."""
         if not self.nodes:
             return None
-        return self._release_oldest(suppress, lag)
+        return self._release_oldest()
 
     def empty(self) -> bool:
         return not self.nodes
@@ -308,17 +246,11 @@ class OutputSmoother:
     def __init__(self, lag: int = 2, *,
                  process_var: float = _DEFAULT_PROCESS_VAR,
                  meas_var: float = _DEFAULT_MEAS_VAR,
-                 max_age: int = TRACKER_MAX_AGE,
-                 case2_k: int = _CASE2_K,
-                 case2_conf_floor: float = _CASE2_CONF_FLOOR,
-                 case2_min_bridge: int = _CASE2_MIN_BRIDGE):
+                 max_age: int = TRACKER_MAX_AGE):
         self._lag = max(1, int(lag))
         self._process_var = float(process_var)
         self._meas_var = float(meas_var)
         self._max_age = int(max_age)
-        self._case2_k = int(case2_k)
-        self._case2_conf_floor = float(case2_conf_floor)
-        self._case2_min_bridge = max(1, int(case2_min_bridge))
         self._tracks: dict[int, _TrackFilter] = {}
         self._step = -1
 
@@ -349,14 +281,11 @@ class OutputSmoother:
         return float(MOTION_BRIDGE_NOISE_STAGES[-1][1])
 
     def process(self, inputs: List[SmootherInput],
-                lag: Optional[int] = None,
-                suppress: bool = False) -> List[SmootherOutput]:
+                lag: Optional[int] = None) -> List[SmootherOutput]:
         """Ingest this frame's reported tracks; return the releases (frame N-L).
 
-        ``suppress`` engages case-2 flying-ghost suppression (Track X §5.1): a
-        released track that is bridged AND fails to re-acquire a solid skeleton
-        in its look-ahead is dropped from the lagged tap (the id is simply absent
-        that frame).  Off → the lagged id set equals the causal id set."""
+        Every reported track is released ``L`` frames late: the released id set
+        equals the reported id set (no flying-ghost suppression)."""
         if lag is not None:
             self._lag = max(1, int(lag))
         self._step += 1
@@ -373,13 +302,11 @@ class OutputSmoother:
                 # non-contiguous reporting gap.  The CV forward pass assumes dt=1
                 # per ingest, so never stitch a post-gap measurement onto stale
                 # nodes as if one frame elapsed — start a clean window.
-                tf = _TrackFilter(self._process_var, self._meas_var,
-                                  self._case2_k, self._case2_conf_floor,
-                                  self._case2_min_bridge)
+                tf = _TrackFilter(self._process_var, self._meas_var)
                 self._tracks[tid] = tf
             mult = self._noise_mult(int(inp.frames_since_skeleton))
             tf.ingest(step, inp, mult)
-            for out in tf.drain_overdue(self._lag, suppress):
+            for out in tf.drain_overdue(self._lag):
                 out.track_id = tid
                 releases.append(out)
 
@@ -388,7 +315,7 @@ class OutputSmoother:
             if tid in present:
                 continue
             tf = self._tracks[tid]
-            out = tf.flush_one(self._lag, suppress)
+            out = tf.flush_one()
             if out is not None:
                 out.track_id = tid
                 releases.append(out)

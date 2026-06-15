@@ -872,19 +872,22 @@ class MainLoop:
         )))
         t.gui_stats_ms = (time.perf_counter() - _stats_t0) * 1000.0
 
-        # Lagged-tap latency (Track X §7).  Published on change (incl. fps drift)
-        # so the phase-⑥ readout and /walldance/meta/latency_ms stay current
-        # without per-frame spam.  latency = L / fps; 0 when the tap is inactive.
-        # While the tap is live but fps isn't known yet (startup / stall) the
-        # latency is "pending": the readout shows it, but we DON'T assert a
-        # misleading 0 ms on /walldance/meta/latency_ms.
+        # Output latency (Track X).  Published on change (incl. fps drift) so the
+        # phase-⑥ readout and /walldance/meta/latency_ms stay current without
+        # per-frame spam.  The single /walldance/dancer/* stream is lagged by
+        # L frames when L>1, so latency = L / fps; 0 when L=1 (causal/live).
+        # While L>1 but fps isn't known yet (startup / stall) the latency is
+        # "pending": the readout shows it, but we DON'T assert a misleading 0 ms
+        # on /walldance/meta/latency_ms.
         s = app.settings
-        lag_active = (bool(getattr(s, "output_lagged_enabled", False))
-                      and int(getattr(s, "output_smoothing_l", 1)) > 1)
+        lag_active = int(getattr(s, "output_smoothing_l", 1)) > 1
         pending = lag_active and app.fps <= 0
         latency_ms = (int(s.output_smoothing_l) / app.fps * 1000.0
                       if lag_active and app.fps > 0 else 0.0)
-        key = (round(latency_ms, 1), lag_active, pending)
+        # osc_enabled is part of the key so an OSC off→on toggle (with L/fps
+        # unchanged) re-asserts /walldance/meta/latency_ms — a reconnecting
+        # consumer must re-learn the stream delay even if nothing else moved.
+        key = (round(latency_ms, 1), lag_active, pending, bool(app.osc_enabled))
         if getattr(app, "_output_latency_pub", None) != key:
             app._output_latency_pub = key
             app.bus.publish(api.OutputLatency(latency_ms, lag_active))

@@ -175,7 +175,8 @@ class CalibrationFlows:
             if raw is not None:
                 self._seed_gamma_for_calibration(float(raw.mean()))
             self._calibrator.start()
-            self.processor.start_exclusion_calibration()
+            # Exclusion masks are MANUAL-ONLY (OPERATOR_V2 decision 5) — Aim no
+            # longer opens an exclusion-collection window.
             if self.ui.available:
                 self.ui.set_calibrate_status("Calibrating 0%")
                 self.ui.show_toast("Calibrating scene - keep dancers in frame",
@@ -191,7 +192,7 @@ class CalibrationFlows:
         self.enhancer._update_gamma_lut()
         if self.ui.available:
             self.ui.sync_slider('gamma', g)
-        print(f"[Calibrate] gamma seeded to {g:.2f} "
+        print(f"[Calibrate] gamma seeded to {g:.3f} "
               f"(raw brightness {brightness:.0f})")
 
     def _step_calibration(self, tracked, process_wall_ms):
@@ -222,7 +223,7 @@ class CalibrationFlows:
                 self._seed_gamma_for_calibration(self._servo_result.brightness)
                 self._servo = None
                 self._calibrator.start()
-                self.processor.start_exclusion_calibration()
+                # Exclusion masks are MANUAL-ONLY (OPERATOR_V2 decision 5).
             return
 
         cal = self._calibrator
@@ -284,27 +285,26 @@ class CalibrationFlows:
             self.enhancer._update_gamma_lut()
             if self.ui.available:
                 self.ui.sync_slider('gamma', capped_gamma)
-            print(f"[Calibrate] gamma capped to {capped_gamma:.2f} "
+            print(f"[Calibrate] gamma capped to {capped_gamma:.3f} "
                   f"(noise sigma {result.noise_sigma:.2f})")
-        # P1.4: build + activate the auto exclusion mask from the same window.
-        # Manual overlays survive the rebuild (Phase 2 ④).
-        excl = self.processor.finish_exclusion_calibration()
-        self.sync_mask_ui()
+        # Exclusion masks are MANUAL-ONLY now (OPERATOR_V2 decision 5): Aim
+        # derives servo + gamma + var + clean-plate but does NOT auto-build or
+        # activate an exclusion mask.  Any manually-painted mask is left intact
+        # and keeps applying (we never opened a collection window).
         print(result.log_line())
-        print(f"[Calibrate] {excl.summary_line()} cells={excl.cells}")
         self.request_reprocess()
         if self.ui.available:
             self.ui.set_calibrate_status(None)
             servo_line = (self._servo_result.summary_line() + "\n"
                           if self._servo_result else "")
-            gamma_line = (f"Gamma seeded: {self.enhancer.gamma:.2f}"
+            gamma_line = (f"Gamma seeded: {self.enhancer.gamma:.3f}"
                           + ("  (capped: scene noise high)" if gamma_capped else "")
                           + "\n")
             # "Save to project" must be a normal timestamped save (what startup
             # and the picker load) — safe-defaults stays a separate explicit
             # action (ROADMAP bug #6).
             self.ui.show_calibration_result_dialog(
-                servo_line + gamma_line + result.summary() + "\n" + excl.summary_line(),
+                servo_line + gamma_line + result.summary(),
                 on_save=self.configs._cb_save_config)
 
     # ------------------------------------------------------------------

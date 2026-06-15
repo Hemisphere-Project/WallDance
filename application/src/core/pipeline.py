@@ -105,29 +105,14 @@ class ProcessingSettings:
     # the smoothed centroid.  OUTPUT-ONLY — applied at the ScaledTrack/OSC/preview
     # boundary; never mutates DancerTrack.bbox.  Locked default ON.
     box_clamp_enabled: bool = True
-    # Output box-size smoothing depth (Track X, OSC_CONTRACT §B.2).  L=1 = light
-    # causal de-jitter (default, minimal latency); higher L = smoother box at the
-    # cost of causal group-delay.  OUTPUT-ONLY.  The acausal fixed-lag/RTS upgrade
-    # (look-ahead L>1) is deferred (joint w/ engine agent).
+    # Output smoothing depth / latency selector (Track X, OSC_CONTRACT §B).  This
+    # is the SINGLE control over the one /walldance/dancer/* output stream:
+    #   L = 1 → causal / live: zero look-ahead, light box-size EMA de-jitter.
+    #   L > 1 → fixed-lag RTS-smoothed stream, released L frames late (acausal),
+    #           with retroactive bridge correction.  No second stream — the
+    #           lagged signal IS the /walldance/dancer/* stream at L>1.
+    # OUTPUT-ONLY (never touches the tracker/detector → replay goldens unaffected).
     output_smoothing_l: int = 1
-    # Lagged / RTS output tap (Track X §7, OSC_CONTRACT §B.3).  OUTPUT-ONLY,
-    # OPT-IN (a second /walldance/dancer_lagged/* stream doubles OSC traffic per
-    # dancer).  Engages only when L>1: publishes an acausal RTS-smoothed copy of
-    # the trajectory L frames late, and the causal tap's box reverts to raw (the
-    # smoothed box lives on the lagged tap — no double-smoothing).  L=1 keeps the
-    # frozen causal default (box-size EMA, no lagged tap).
-    output_lagged_enabled: bool = False
-    # Case-2 flying-ghost suppression on the lagged tap (Track X §5.1).  When on,
-    # a released track that is bridged AND never re-acquires a solid skeleton in
-    # its look-ahead is dropped from /walldance/dancer_lagged/* (lagged ids =
-    # causal ids minus case-2).  OUTPUT-ONLY; only affects the lagged tap.
-    # Conservative (bias to KEEP real aerials); default ON, off-switch for shows.
-    output_lagged_suppress: bool = True
-    # Case-2 sustained-bridge gate (Track X §5.1): only a track bridged for >=
-    # this many frames is a suppression candidate — brief real-dancer drops are
-    # exempt.  Count-proxy tuned (hangar-aerial drop_rate ≈ 0).  Tunable here so a
-    # future labeled-clip pass can re-tune without code changes.
-    output_lagged_case2_min_bridge: int = 8
     use_gpu_path: bool = USE_GPU_PATH  # Enable GPU frame buffer
     bg_subtract_enabled: bool = BG_SUBTRACT_ENABLED  # Static BG subtraction
     bg_subtract_sensitivity: int = BG_SUBTRACT_SENSITIVITY  # Threshold 0-255
@@ -468,9 +453,9 @@ class FrameProcessor:
         # Output box-SIZE EMA state (Track X §B.2): track_id -> (w, h) smoothed
         # in original space; pruned to the reported set each frame.
         self._box_size_ema: Dict[int, tuple] = {}
-        # Fixed-lag / RTS output smoother for the lagged tap (Track X §2).
-        # Lazily engaged when output_lagged_enabled and L>1; reset on a
-        # disable→enable transition so it never releases stale buffered frames.
+        # Fixed-lag / RTS output smoother (Track X §2).  Lazily engaged when
+        # L>1 (it becomes the /walldance/dancer/* stream); reset on an
+        # inactive→active edge so it never releases stale buffered frames.
         self._output_smoother: Optional[OutputSmoother] = None
         self._output_lagged_active = False
         # Raw detection heights (original-space px) BEFORE the size gate — the
@@ -952,36 +937,33 @@ class FrameProcessor:
                     st.box_conf = self._last_box_confs.get(
                         self._bbox_conf_key(t.bbox))
 
-        # Output smoothing (Track X).  L=1 keeps the frozen causal box-size EMA
-        # (back-compat); for L>1 the causal box reverts to RAW (the smoothed box
-        # lives on the lagged tap — no double-smoothing, §3).
+        # Single output stream selected by L (OSC_CONTRACT §B).  ONE namespace,
+        # /walldance/dancer/*:
+        #   L = 1 → causal / live: light box-size EMA, emitted this frame.
+        #   L > 1 → the fixed-lag RTS-smoothed stream, released L frames late.
+        # The PREVIEW always uses the causal ``scaled_tracks`` (returned below),
+        # so the operator's view stays live regardless of L.
         L = max(1, int(self.settings.output_smoothing_l))
-        if L == 1:
-            self._smooth_output_box_sizes(scaled_tracks)
-
-        # Causal tap (zero look-ahead) — the default /walldance/dancer/* stream;
-        # also drives the preview, so it must stay coherent.
-        if self.osc and self.settings.osc_enabled:
-            self.osc.send_frame(scaled_tracks, original_w, original_h)
-
-        # Lagged / RTS tap (Track X §7) — OPT-IN, engages only for L>1.  The
-        # active condition INCLUDES osc (so the smoother is fed exactly when it
-        # emits); resetting on its disable→enable edge means an OSC toggle (which
-        # starves the smoother) re-warms a fresh window instead of releasing a
-        # stale tail stitched across the gap as if dt=1.
         osc_on = bool(self.osc) and bool(self.settings.osc_enabled)
-        lagged_active = bool(self.settings.output_lagged_enabled) and L > 1 and osc_on
+
+        # The smoother is fed exactly when it emits (osc on AND L>1); resetting
+        # on the inactive→active edge means an OSC toggle or an L 1→>1 change
+        # re-warms a fresh window instead of releasing a stale tail stitched
+        # across the gap as if dt=1.
+        lagged_active = L > 1 and osc_on
         if (lagged_active and not self._output_lagged_active
                 and self._output_smoother is not None):
             self._output_smoother.reset()
         self._output_lagged_active = lagged_active
-        if lagged_active:
+
+        if L == 1:
+            self._smooth_output_box_sizes(scaled_tracks)   # causal box-size EMA
+            if osc_on:
+                self.osc.send_frame(scaled_tracks, original_w, original_h)
+        elif lagged_active:
             lagged_tracks = self._run_output_smoother(scaled_tracks, L)
-            if lagged_tracks:
-                self.osc.send_frame(
-                    lagged_tracks, original_w, original_h,
-                    prefix="/walldance/dancer_lagged",
-                    count_address="/walldance/dancer_lagged/count")
+            if lagged_tracks:  # empty during the first L-frame warm-up
+                self.osc.send_frame(lagged_tracks, original_w, original_h)
 
         return scaled_tracks
 
@@ -1002,16 +984,12 @@ class FrameProcessor:
         share keypoint/confidence arrays via ``replace``)."""
         if self._output_smoother is None:
             self._output_smoother = OutputSmoother(
-                lag=L, max_age=int(getattr(self.tracker, 'max_age', TRACKER_MAX_AGE)),
-                case2_min_bridge=int(self.settings.output_lagged_case2_min_bridge))
+                lag=L, max_age=int(getattr(self.tracker, 'max_age', TRACKER_MAX_AGE)))
         inputs: List[SmootherInput] = []
         for st in scaled_tracks:
             if st.centroid_raw is None or st.frames_since_skeleton is None:
                 continue  # missing the smoother signals — skip (non-DancerTrack)
             fss = int(st.frames_since_skeleton)
-            conf = st.confidence
-            max_conf = (float(np.max(conf))
-                        if conf is not None and len(conf) else 0.0)
             inputs.append(SmootherInput(
                 track_id=int(st.track_id),
                 centroid=np.asarray(st.centroid_raw, dtype=np.float64),
@@ -1019,12 +997,10 @@ class FrameProcessor:
                             dtype=np.float64),
                 is_real_skeleton=(fss == 0),
                 frames_since_skeleton=fss,
-                max_kpt_conf=max_conf,
                 payload=st,
             ))
         lagged: List[ScaledTrack] = []
-        suppress = bool(self.settings.output_lagged_suppress)
-        for o in self._output_smoother.process(inputs, lag=L, suppress=suppress):
+        for o in self._output_smoother.process(inputs, lag=L):
             st0 = o.payload
             smoothed_c = np.array([float(o.centroid[0]), float(o.centroid[1])],
                                   dtype=np.float64)
@@ -1047,14 +1023,14 @@ class FrameProcessor:
     def _smooth_output_box_sizes(self, scaled_tracks):
         """Causal box-SIZE EMA on the reported boxes (Track X, OSC_CONTRACT §B.2).
 
-        OUTPUT-ONLY 'smoothness vs latency' stage.  EMA the reported bbox SIZE
-        around its own center (position/centroid are already EMA-smoothed); never
-        touches DancerTrack.  alpha = BOX_SIZE_OUTPUT_SMOOTHING / L, so L=1 is the
-        light de-jitter floor (~1 frame group delay) and higher L = smoother box
-        at the cost of more causal group-delay latency.  The ACAUSAL fixed-lag /
-        RTS smoother (look-ahead buffer, retroactive bridge correction, case-2
-        suppression) is deferred (joint w/ the engine agent) and will supersede
-        this for L>1.  State is keyed by track_id and pruned to the reported set
+        OUTPUT-ONLY 'smoothness vs latency' stage, applied only at **L=1** (the
+        causal / live stream).  EMA the reported bbox SIZE around its own center
+        (position/centroid are already EMA-smoothed); never touches DancerTrack.
+        alpha = BOX_SIZE_OUTPUT_SMOOTHING (L=1) → ~1-frame group delay, light
+        de-jitter.  For **L>1** the ACAUSAL fixed-lag / RTS smoother
+        (``_run_output_smoother``: look-ahead buffer + retroactive bridge
+        correction) IS the /walldance/dancer/* stream instead — this causal EMA
+        is bypassed.  State is keyed by track_id and pruned to the reported set
         each frame (ids are unbounded over a show)."""
         L = max(1, int(self.settings.output_smoothing_l))
         alpha = max(0.05, min(1.0, BOX_SIZE_OUTPUT_SMOOTHING / L))
@@ -1429,21 +1405,11 @@ class FrameProcessor:
         self.settings.box_clamp_enabled = bool(enabled)
 
     def set_output_smoothing(self, depth: int) -> None:
-        """Set the output box-size smoothing depth L (Track X §B.2).  L>=1."""
+        """Set the output smoothing depth / latency selector L (Track X §B).
+
+        L>=1.  L=1 → causal/live; L>1 → the fixed-lag RTS-smoothed stream,
+        released L frames late, on the single /walldance/dancer/* tap."""
         self.settings.output_smoothing_l = max(1, int(depth))
-
-    def set_lagged_enabled(self, enabled: bool) -> None:
-        """Toggle the lagged / RTS output tap (Track X §7).  Output-only, opt-in.
-
-        Engages only when L>1; the smoother is reset on a disable→enable
-        transition (in ``_post_yolo_chain``) so it never releases stale buffered
-        frames after being off."""
-        self.settings.output_lagged_enabled = bool(enabled)
-
-    def set_lagged_suppress(self, enabled: bool) -> None:
-        """Toggle case-2 flying-ghost suppression on the lagged tap (Track X
-        §5.1).  Output-only; only affects /walldance/dancer_lagged/*."""
-        self.settings.output_lagged_suppress = bool(enabled)
 
     def get_last_motion_gray(self) -> Optional[np.ndarray]:
         """The most recent enhanced gray fed to MOG2 (Go-Live noise calibration).

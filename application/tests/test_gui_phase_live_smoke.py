@@ -28,8 +28,6 @@ def test_phase_live_builds_with_output_controls():
             _on_gap_bridging_change=noop,
             _on_box_clamp_toggle=noop,
             _on_output_smoothing_change=noop,
-            _on_lagged_tap_toggle=noop,
-            _on_lagged_suppress_toggle=noop,
             _btn_standby_theme=th1,
             _btn_run_active_theme=th2,
         )
@@ -48,14 +46,13 @@ def test_phase_live_builds_with_output_controls():
         assert dpg.does_item_exist("gap_bridging_slider")       # Dial B
         assert dpg.does_item_exist("box_clamp_checkbox")
         assert dpg.does_item_exist("output_smoothing_slider")
-        assert dpg.does_item_exist("lagged_tap_checkbox")       # Track X §7
-        assert dpg.does_item_exist("lagged_suppress_checkbox")  # Track X §5.1
         assert dpg.does_item_exist("lagged_latency_text")
-        # defaults: box-clamp ON, smoothing L=1, lagged tap OFF (opt-in),
-        # case-2 suppression ON (conservative)
+        # The lagged-tap + case-2 suppression checkboxes were removed (2026-06):
+        # the single /walldance/dancer/* stream is selected by L alone.
+        assert not dpg.does_item_exist("lagged_tap_checkbox")
+        assert not dpg.does_item_exist("lagged_suppress_checkbox")
+        # defaults: box-clamp ON, smoothing L=1 (causal/live).
         assert dpg.get_value("box_clamp_checkbox") is True
         assert dpg.get_value("output_smoothing_slider") == 1
-        assert dpg.get_value("lagged_tap_checkbox") is False
-        assert dpg.get_value("lagged_suppress_checkbox") is True
     finally:
         dpg.destroy_context()

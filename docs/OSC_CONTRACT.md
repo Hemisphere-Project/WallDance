@@ -6,10 +6,12 @@ changes until this contract is confirmed** (OPERATOR_V2 §8 ask-first trigger: "
 contract").
 
 Documents (A) what `/walldance/*` emits **today, as shipped** (`core/osc_output.py`), and
-(B) the **planned batch-2 additions** — box-clamp, the causal output-smoothing model, and the
-causal-vs-lagged dual tap. **Locked defaults (operator, 2026-06-15): box-clamp ON, smoothing
-L = 1.** The deep fixed-lag / RTS smoother (L > 1) is **deferred** (🔴 joint design with the
-engine agent) and only its *namespace* is reserved here so the contract is forward-stable.
+(B) the **output-domain controls** — box-clamp and the L-driven output smoother. **Locked
+defaults (operator, 2026-06-15): box-clamp ON, smoothing L = 1.** The output is a **single
+stream** selected by `L`: `L = 1` is causal/live; `L > 1` is the fixed-lag RTS-smoothed stream,
+released `L` frames late, on the **same** `/walldance/dancer/*` namespace. (The earlier
+"dual tap" `/walldance/dancer_lagged/*` and the opt-in case-2 flying-ghost suppression were
+**removed, 2026-06** — operator decision: one stream, no suppression.)
 
 Companion: [OPERATOR_V2.md](OPERATOR_V2.md) Track X (§"Track X — Output / OSC layer") and §8.
 
@@ -164,42 +166,42 @@ a **group delay ≈ `(1−α)/α` frames** on the box *size*:
 The dancer **position** stream is unaffected by `L` (only the box size lags). `L = 1` is the
 minimal-latency default.
 
-**Acausal fixed-lag / RTS smoother — core shipped (batch-3, Track X X-2).** A genuine look-ahead
-buffer of `L` frames feeds an RTS (acausal) smoother on the lagged tap (§B.3). For **`L > 1` the
-causal box reverts to raw** (no causal box EMA) and the smoothed box + RTS centroid live on the
-lagged tap — **no double-smoothing**; **`L = 1` keeps the causal box-size EMA above unchanged**
-(back-compat). The slider's operator-facing meaning ("more L = smoother + more latency") is
-forward-stable across the upgrade; only the internal mechanism changes. **Retroactive bridge
-correction** falls out of the RTS pass automatically (a bridged gap `≤ L` re-anchored inside the
-window is corrected in hindsight). **Still deferred to X-3** (joint w/ the engine agent):
-**case-2 flying-ghost *suppression*** (the lagged id set currently equals the causal id set) and
-the optional steady-rate resample (X-4).
+**Acausal fixed-lag / RTS smoother — shipped.** A genuine look-ahead buffer of `L` frames feeds
+an RTS (acausal) smoother that **becomes** the `/walldance/dancer/*` stream when `L > 1` (§B.3).
+At **`L > 1`** the centroid + box + keypoints + velocity are all RTS-smoothed and the stream is
+released `L` frames late; at **`L = 1`** the causal box-size EMA above is unchanged (back-compat).
+The slider's operator-facing meaning ("more L = smoother + more latency") is stable.
+**Retroactive bridge correction** falls out of the RTS pass automatically (a bridged gap `≤ L`
+re-anchored inside the window is corrected in hindsight). The released id set **equals the
+reported id set** — there is no flying-ghost suppression (that opt-in feature was removed,
+2026-06; the optional steady-rate resample X-4 remains unbuilt).
 
-### B.3 Causal vs lagged — the dual tap
+### B.3 One stream, selected by `L` (causal at L=1, lagged at L>1)
 
-- **Causal tap (zero look-ahead) — the only tap in batch-2.** All `/walldance/dancer/*` messages
-  above, plus box-clamp (§B.1) and the causal box-size EMA (§B.2). For latency-sensitive
-  consumers.
-- **Lagged / smoothed tap (L > 1) — IMPLEMENTED (batch-3, Track X X-2).** A *second*,
-  look-ahead-smoothed stream under the **`/walldance/dancer_lagged/*`** namespace (same message
-  shapes as §A.3, plus `/walldance/dancer_lagged/count`), released `L` frames late. The centroid
-  is an **RTS (acausal) smoothed** estimate over the raw KF centroid (not the causal EMA — no
-  cascade); the box is smoothed the same way. The active output latency is published on
-  **`/walldance/meta/latency_ms` `[ms]`** (= `L / fps · 1000`, re-emitted when `L` or fps changes;
-  `0` when the tap is inactive) so TouchDesigner can time-align the two taps. **Opt-in** via
-  `output_lagged_enabled` (default **False** — a second full stream doubles OSC traffic per
-  dancer); engages only at `L > 1`. **Lagged `track_id`s = the causal id set minus case-2
-  flying-ghost suppression** (Track X X-3, `TRACK_X_SMOOTHER.md` §5.1): a released track that is
-  bridged AND never re-acquires a *solid* skeleton (≥2 hits over `2×KEYPOINT_CONFIDENCE`, none
-  within the last `⌈L/3⌉` frames) in its look-ahead is dropped from the lagged tap only — the
-  causal tap and the tracker are untouched. Opt-in via `output_lagged_suppress` (default **ON**;
-  off → lagged ids match the causal tap). Conservative (bias to KEEP real aerials); the
-  suppression precision/recall is **provisional** pending a per-track-labeled flying-ghost clip.
-  **Per-message coherence:** within one lagged
-  frame the keypoints are rigidly translated by the same centroid correction (so the skeleton
-  stays aligned with the corrected centroid/box, incl. through corrected gaps) and `velocity` is
-  the RTS-smoothed velocity — `centroid`, `bbox`, `keypoints`, `velocity` are mutually consistent.
-  See `TRACK_X_SMOOTHER.md`.
+There is a **single** output stream — the `/walldance/dancer/*` messages of §A.3, plus
+box-clamp (§B.1). Its source is selected by `L` alone (no second namespace, no opt-in toggle):
+
+- **`L = 1` — causal / live (default).** Zero look-ahead. Plus the causal box-size EMA (§B.2).
+  For latency-sensitive consumers.
+- **`L > 1` — fixed-lag / RTS-smoothed.** The *same* `/walldance/dancer/*` messages now carry
+  the look-ahead-smoothed report, released `L` frames late. The centroid is an **RTS (acausal)
+  smoothed** estimate over the raw KF centroid (not the causal EMA — no cascade); the box,
+  keypoints, and velocity are smoothed/derived the same way. **Retroactive bridge correction**
+  falls out of the RTS pass automatically (a bridged gap `≤ L` re-anchored inside the window is
+  corrected in hindsight). The released `track_id` set **equals the reported (confirmed) id
+  set** — every confirmed track is released `L` frames late (no flying-ghost suppression). The
+  smoother is **output-only**: it never touches the detector, the tracker, or `DancerTrack`
+  state, so replay goldens stay byte-identical at any `L`.
+
+- **Latency.** The active output latency is published on **`/walldance/meta/latency_ms` `[ms]`**
+  (= `L / fps · 1000`, re-emitted when `L` or fps changes; `0` at `L = 1`) so consumers know how
+  far behind real time the stream runs.
+- **Per-message coherence (L > 1).** Within one output frame the keypoints are rigidly translated
+  by the same centroid correction (so the skeleton stays aligned with the corrected centroid/box,
+  incl. through corrected gaps) and `velocity` is the RTS-smoothed velocity — `centroid`, `bbox`,
+  `keypoints`, `velocity` are mutually consistent. See `TRACK_X_SMOOTHER.md`.
+- **Preview.** The operator preview always shows the causal report (live), regardless of `L`, so
+  the on-screen view never lags even when the OSC stream is fixed-lag.
 
 ### B.4 Not changing in batch-2 (explicit)
 - Message **shapes, addresses, types, normalization, and cadence** of every §A message are
