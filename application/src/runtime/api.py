@@ -328,6 +328,12 @@ class ClearCalib2Pool(Command):
     pass
 
 
+@dataclass(frozen=True)
+class ViewCalib2Pool(Command):
+    """Open the Calib2 evidence-pool dialog without running a DANCERS pass."""
+    pass
+
+
 # --- config / project -------------------------------------------------------
 
 @dataclass(frozen=True)

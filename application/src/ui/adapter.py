@@ -156,6 +156,7 @@ class DpgUiAdapter:
             "on_calib2": lambda: submit(api.StartDancersRun()),
             "on_calib2_apply": lambda sel: submit(api.ApplyCalib2(list(sel))),
             "on_calib2_clear": lambda: submit(api.ClearCalib2Pool()),
+            "on_view_calib2_pool": lambda: submit(api.ViewCalib2Pool()),
             "on_visualization_toggle": lambda name, v: submit(
                 api.ToggleOverlay(name, bool(v))),
             "on_tracker_age_change": lambda v: submit(api.SetTrackerMaxAge(int(v))),

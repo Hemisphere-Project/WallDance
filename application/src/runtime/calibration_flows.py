@@ -484,3 +484,7 @@ class CalibrationFlows:
         if self.ui.available:
             self.ui.show_toast(f"Cleared {removed} run(s)",
                                duration=2.5, color=(150, 200, 255))
+
+    def _cb_view_calib2_pool(self):
+        """Open the evidence-pool dialog without running a new DANCERS pass."""
+        self._show_calib2_dialog()

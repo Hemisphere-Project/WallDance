@@ -616,6 +616,18 @@ def build_bottom_bar(gui: Any):
                                  "collects one evidence run (sizes, confidences, speeds)\n"
                                  "into the project pool, then lets you apply the pooled\n"
                                  "result: person height, image size, sensitivity seed.")
+                pool_btn = dpg.add_button(
+                    label="POOL",
+                    tag="view_calib2_pool_btn",
+                    width=scaled(55),
+                    height=scaled(28),
+                    callback=gui._on_view_calib2_pool,
+                )
+                dpg.bind_item_theme(pool_btn, gui._btn_standby_theme)
+                with dpg.tooltip(pool_btn):
+                    dpg.add_text("Calib 2 POOL - open the evidence-pool dialog WITHOUT\n"
+                                 "running a new DANCERS pass: review / apply / clear the\n"
+                                 "saved runs for the active project + profile.")
                 calibrate_all_btn = dpg.add_button(
                     label="ALL",
                     tag="calibrate_all_btn",

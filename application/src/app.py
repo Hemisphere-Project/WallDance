@@ -804,6 +804,7 @@ class WallDanceApp:
         reg(api.StartDancersRun, lambda c: self.calibration._cb_calib2())
         reg(api.ApplyCalib2, lambda c: self.calibration._cb_calib2_apply(c.selection))
         reg(api.ClearCalib2Pool, lambda c: self.calibration._cb_calib2_clear())
+        reg(api.ViewCalib2Pool, lambda c: self.calibration._cb_view_calib2_pool())
         # config / project
         reg(api.SaveConfig, lambda c: (self.configs._cb_do_save_config(c.name)
                                        if c.name else self.configs._cb_save_config()))

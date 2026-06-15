@@ -2306,6 +2306,10 @@ class WallDanceGUI:
         if 'on_calib2' in self.callbacks:
             self.callbacks['on_calib2']()
 
+    def _on_view_calib2_pool(self, sender=None, value=None):
+        if 'on_view_calib2_pool' in self.callbacks:
+            self.callbacks['on_view_calib2_pool']()
+
     def show_calib2_dialog(self, rows, proposal: str):
         """Dancer-calibration evidence pool: run list with include-checkboxes,
         the pooled proposal preview, and Apply / Clear pool / Close."""
