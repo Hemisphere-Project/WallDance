@@ -2701,13 +2701,18 @@ class WallDanceGUI:
     def show_output_latency(self, latency_ms, enabled=False):
         """Render the phase-⑥ lagged-tap latency readout (Track X §7).
 
-        Uses ``dpg.set_value`` only (the loop posts this from the runtime tick),
-        the batch-2 cross-thread DPG rule (see ``show_dryrun_result``)."""
+        Safe to call directly: OutputLatency fans out synchronously on the main
+        loop thread (EventBus.publish from MainLoop._tick_events), so both
+        set_value and configure_item run on the DPG/main thread.  ``enabled``
+        with a 0 latency means the tap is live but fps isn't known yet."""
         tag = "lagged_latency_text"
         if not dpg.does_item_exist(tag):
             return
         if enabled and latency_ms > 0:
             text = f"lagged tap: {latency_ms:.0f} ms ({latency_ms / 1000.0:.2f} s)"
+            color = TEXT_NORMAL
+        elif enabled:
+            text = "lagged tap: on (latency pending)"
             color = TEXT_NORMAL
         else:
             text = "lagged tap: off"

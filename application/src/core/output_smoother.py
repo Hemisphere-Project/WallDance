@@ -94,6 +94,7 @@ class SmootherOutput:
     track_id: int
     step: int               # the released frame's ingest step (current_step - L in steady state)
     centroid: np.ndarray    # RTS-smoothed (x, y)
+    velocity: np.ndarray    # RTS-smoothed (vx, vy) — the de-jittered velocity
     wh: np.ndarray          # smoothed box size (w, h)
     is_real_skeleton: bool  # of the released frame
     payload: Any            # the released frame's payload
@@ -162,10 +163,11 @@ class _TrackFilter:
 
     # -- backward (RTS) pass over the current window --------------------------
     def _rts_smoothed_oldest(self) -> np.ndarray:
-        """RTS over the buffered window → smoothed state of nodes[0]."""
+        """RTS over the buffered window → smoothed FULL state [px,py,vx,vy] of
+        nodes[0] (caller slices position / velocity)."""
         n = len(self.nodes)
         if n == 1:
-            return self.nodes[0].x_post[:2].copy()
+            return self.nodes[0].x_post.copy()
         Q = self._q * _Q_UNIT
         xs_next = self.nodes[-1].x_post
         for k in range(n - 2, -1, -1):
@@ -174,7 +176,7 @@ class _TrackFilter:
             P_prior_next = _F @ node.P_post @ _F.T + Q
             C = node.P_post @ _F.T @ _inv(P_prior_next)
             xs_next = node.x_post + C @ (xs_next - x_prior_next)
-        return xs_next[:2].copy()
+        return xs_next.copy()
 
     def _smoothed_wh(self) -> np.ndarray:
         """Box size for the oldest frame: confidence-weighted window mean
@@ -189,12 +191,13 @@ class _TrackFilter:
 
     def _release_oldest(self) -> SmootherOutput:
         node = self.nodes[0]
-        centroid = self._rts_smoothed_oldest()
+        state = self._rts_smoothed_oldest()  # full [px,py,vx,vy]
         wh = self._smoothed_wh()
         out = SmootherOutput(
             track_id=-1,  # filled by caller
             step=node.step,
-            centroid=centroid,
+            centroid=state[:2].copy(),
+            velocity=state[2:4].copy(),
             wh=wh,
             is_real_skeleton=node.is_real,
             payload=node.payload,
@@ -289,7 +292,11 @@ class OutputSmoother:
             tid = int(inp.track_id)
             present.add(tid)
             tf = self._tracks.get(tid)
-            if tf is None:
+            if tf is None or (tf.last_step >= 0 and step - tf.last_step > 1):
+                # Fresh segment: a new track, OR the same id reappearing after a
+                # non-contiguous reporting gap.  The CV forward pass assumes dt=1
+                # per ingest, so never stitch a post-gap measurement onto stale
+                # nodes as if one frame elapsed — start a clean window.
                 tf = _TrackFilter(self._process_var, self._meas_var)
                 self._tracks[tid] = tf
             mult = self._noise_mult(int(inp.frames_since_skeleton))

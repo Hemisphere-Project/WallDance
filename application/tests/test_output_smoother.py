@@ -235,3 +235,67 @@ def test_two_tracks_independent_and_idset_preserved():
         for o in sm.process(inps):
             released_ids.add(o.track_id)
     assert released_ids == {1, 2}
+
+
+def test_smoothed_velocity_tracks_true_velocity():
+    """The released velocity comes from the RTS state (de-jittered), not raw."""
+    rng = np.random.default_rng(3)
+    T, L, vx = 120, 8, 2.0
+    vels = []
+    sm = OutputSmoother(lag=L, meas_var=9.0)
+    for s in range(T):
+        meas = np.array([vx * s + rng.normal(0, 3.0), 5.0 + rng.normal(0, 3.0)])
+        for o in sm.process([SmootherInput(1, meas, np.array([10.0, 20.0]), True, 0)]):
+            if o.step >= L:  # steady
+                vels.append(o.velocity)
+    vels = np.array(vels)
+    # smoothed vx ≈ true 2.0, vy ≈ 0; well inside a loose band despite 3px noise
+    assert abs(vels[:, 0].mean() - vx) < 0.4
+    assert abs(vels[:, 1].mean()) < 0.4
+    assert np.all(np.isfinite(vels))
+
+
+def test_noncontiguous_reappearance_resets_filter():
+    """A non-contiguous reporting gap (same id) starts a FRESH window — never
+    stitch a post-gap measurement onto stale nodes as if dt=1 (review finding)."""
+    L = 4
+    sm = OutputSmoother(lag=L)
+    for s in range(10):  # continuous frames 0..9
+        sm.process([SmootherInput(1, np.array([1.0 * s, 0.0]),
+                                  np.array([10.0, 20.0]), True, 0)])
+    old_filter = sm._tracks[1]
+    sm.process([])           # absent (step 10) → flush tail
+    sm.process([])           # absent (step 11)
+    # reappear at a distant position (step 12, last_step was 9 → gap of 3)
+    sm.process([SmootherInput(1, np.array([100.0, 0.0]),
+                              np.array([10.0, 20.0]), True, 0)])
+    new_filter = sm._tracks.get(1)
+    assert new_filter is not None and new_filter is not old_filter, "filter not reset"
+    assert len(new_filter.nodes) == 1, "fresh window should hold only the new frame"
+
+
+def test_lagged_keypoints_stay_coherent_with_centroid():
+    """Pipeline coherence (review finding): the released skeleton is rigidly
+    translated by the centroid correction, so keypoints keep their offset from
+    the smoothed centroid (no centroid/keypoint drift on the lagged tap)."""
+    from types import SimpleNamespace
+    from pipeline import FrameProcessor, ScaledTrack
+
+    L = 3
+    fake = SimpleNamespace(_output_smoother=None,
+                           tracker=SimpleNamespace(max_age=45))
+    offset = np.array([5.0, -3.0])
+    releases = []
+    for s in range(14):
+        c = np.array([2.0 * s, 0.0])                 # moving centroid
+        kp = np.tile(c + offset, (17, 1))            # every keypoint at c+offset
+        st = ScaledTrack(
+            track_id=1, keypoints=kp, confidence=np.ones(17),
+            bbox=np.array([c[0] - 5, c[1] - 10, 10.0, 20.0]),
+            history=[], velocity=np.zeros(2), smoothed_centroid=c.copy(),
+            centroid_raw=c.copy(), frames_since_skeleton=0)
+        releases += FrameProcessor._run_output_smoother(fake, [st], L)
+    assert releases
+    for r in releases:
+        rel_off = np.asarray(r.keypoints) - np.asarray(r.smoothed_centroid)
+        np.testing.assert_allclose(rel_off, np.tile(offset, (17, 1)), atol=1e-6)

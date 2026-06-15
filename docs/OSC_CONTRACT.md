@@ -189,7 +189,11 @@ the optional steady-rate resample (X-4).
   `0` when the tap is inactive) so TouchDesigner can time-align the two taps. **Opt-in** via
   `output_lagged_enabled` (default **False** — a second full stream doubles OSC traffic per
   dancer); engages only at `L > 1`. Lagged `track_id`s equal the causal id set (case-2
-  flying-ghost *suppression* is X-3, deferred). See `TRACK_X_SMOOTHER.md`.
+  flying-ghost *suppression* is X-3, deferred). **Per-message coherence:** within one lagged
+  frame the keypoints are rigidly translated by the same centroid correction (so the skeleton
+  stays aligned with the corrected centroid/box, incl. through corrected gaps) and `velocity` is
+  the RTS-smoothed velocity — `centroid`, `bbox`, `keypoints`, `velocity` are mutually consistent.
+  See `TRACK_X_SMOOTHER.md`.
 
 ### B.4 Not changing in batch-2 (explicit)
 - Message **shapes, addresses, types, normalization, and cadence** of every §A message are

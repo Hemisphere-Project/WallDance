@@ -22,6 +22,7 @@ from core.config import (
     KEYPOINT_CONFIDENCE,
     PERSON_HEIGHT_MAX_RATIO,
     PERSON_HEIGHT_MIN_RATIO,
+    TRACKER_MAX_AGE,
     YOLO_IOU_THRESHOLD,
     USE_GPU_PATH,
     SHADOW_QUALITY_MIN_KEYPOINTS,
@@ -952,15 +953,18 @@ class FrameProcessor:
         if self.osc and self.settings.osc_enabled:
             self.osc.send_frame(scaled_tracks, original_w, original_h)
 
-        # Lagged / RTS tap (Track X §7) — OPT-IN, engages only for L>1.  Reset
-        # the smoother on a disable→enable transition so it never releases stale
-        # buffered frames after being off.
-        lagged_active = bool(self.settings.output_lagged_enabled) and L > 1
+        # Lagged / RTS tap (Track X §7) — OPT-IN, engages only for L>1.  The
+        # active condition INCLUDES osc (so the smoother is fed exactly when it
+        # emits); resetting on its disable→enable edge means an OSC toggle (which
+        # starves the smoother) re-warms a fresh window instead of releasing a
+        # stale tail stitched across the gap as if dt=1.
+        osc_on = bool(self.osc) and bool(self.settings.osc_enabled)
+        lagged_active = bool(self.settings.output_lagged_enabled) and L > 1 and osc_on
         if (lagged_active and not self._output_lagged_active
                 and self._output_smoother is not None):
             self._output_smoother.reset()
         self._output_lagged_active = lagged_active
-        if lagged_active and self.osc and self.settings.osc_enabled:
+        if lagged_active:
             lagged_tracks = self._run_output_smoother(scaled_tracks, L)
             if lagged_tracks:
                 self.osc.send_frame(
@@ -976,10 +980,18 @@ class FrameProcessor:
 
         OUTPUT-ONLY (Track X §2): consumes ``centroid_raw`` (NOT the EMA
         ``smoothed_centroid`` — no cascade) and the reported box size; rebuilds
-        each released track with the smoothed centroid + smoothed box, carrying
-        the released frame's keypoints/velocity through unchanged."""
+        each released track COHERENTLY — centroid + box on the RTS-smoothed
+        trajectory, the keypoints rigidly translated by the same centroid
+        correction so the skeleton stays aligned with the corrected centroid/box
+        (esp. through retroactively-corrected gaps), and the velocity taken from
+        the RTS-smoothed state (de-jittered, not the raw per-frame velocity).
+
+        The smoother buffers each ScaledTrack as its release payload for L frames;
+        callers must treat reported ScaledTracks as immutable (the lagged copies
+        share keypoint/confidence arrays via ``replace``)."""
         if self._output_smoother is None:
-            self._output_smoother = OutputSmoother(lag=L)
+            self._output_smoother = OutputSmoother(
+                lag=L, max_age=int(getattr(self.tracker, 'max_age', TRACKER_MAX_AGE)))
         inputs: List[SmootherInput] = []
         for st in scaled_tracks:
             if st.centroid_raw is None or st.frames_since_skeleton is None:
@@ -997,14 +1009,21 @@ class FrameProcessor:
         lagged: List[ScaledTrack] = []
         for o in self._output_smoother.process(inputs, lag=L):
             st0 = o.payload
-            cx, cy = float(o.centroid[0]), float(o.centroid[1])
+            smoothed_c = np.array([float(o.centroid[0]), float(o.centroid[1])],
+                                  dtype=np.float64)
             w, h = float(o.wh[0]), float(o.wh[1])
+            cx, cy = smoothed_c
+            # Rigid skeleton translation by the centroid correction (smoothed -
+            # raw) keeps keypoints coherent with the corrected centroid/box.
+            delta = smoothed_c - np.asarray(st0.centroid_raw, dtype=np.float64)
             lagged.append(replace(
                 st0,
-                smoothed_centroid=np.array([cx, cy], dtype=np.float64),
-                centroid_raw=np.array([cx, cy], dtype=np.float64),
+                smoothed_centroid=smoothed_c,
+                centroid_raw=smoothed_c.copy(),
                 bbox=np.array([cx - w / 2.0, cy - h / 2.0, w, h],
                               dtype=np.float64),
+                keypoints=np.asarray(st0.keypoints, dtype=np.float64) + delta,
+                velocity=np.asarray(o.velocity, dtype=np.float64),
             ))
         return lagged
 

@@ -875,17 +875,20 @@ class MainLoop:
         # Lagged-tap latency (Track X §7).  Published on change (incl. fps drift)
         # so the phase-⑥ readout and /walldance/meta/latency_ms stay current
         # without per-frame spam.  latency = L / fps; 0 when the tap is inactive.
+        # While the tap is live but fps isn't known yet (startup / stall) the
+        # latency is "pending": the readout shows it, but we DON'T assert a
+        # misleading 0 ms on /walldance/meta/latency_ms.
         s = app.settings
         lag_active = (bool(getattr(s, "output_lagged_enabled", False))
                       and int(getattr(s, "output_smoothing_l", 1)) > 1)
+        pending = lag_active and app.fps <= 0
         latency_ms = (int(s.output_smoothing_l) / app.fps * 1000.0
                       if lag_active and app.fps > 0 else 0.0)
-        last = getattr(app, "_output_latency_pub", None)
-        if (last is None or abs(latency_ms - last) > 1.0
-                or (last > 0) != (latency_ms > 0)):
-            app._output_latency_pub = latency_ms
+        key = (round(latency_ms, 1), lag_active, pending)
+        if getattr(app, "_output_latency_pub", None) != key:
+            app._output_latency_pub = key
             app.bus.publish(api.OutputLatency(latency_ms, lag_active))
-            if app.osc_enabled and app.processor.osc is not None:
+            if app.osc_enabled and app.processor.osc is not None and not pending:
                 app.processor.osc.send_latency_ms(latency_ms)
 
         # Update BG subtraction status (piggyback on stats update cycle)
