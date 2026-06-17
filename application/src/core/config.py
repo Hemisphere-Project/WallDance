@@ -470,7 +470,14 @@ AUTOCAL_SERVO_MAX_STEPS = 30        # Hard stop for the servo loop
 # Gamma seed: chosen so the measured raw median maps near mid-gray; CLAHE is
 # reduced on noisy scenes (CLAHE amplifies noise — ROADMAP bug #1 lesson).
 AUTOCAL_GAMMA_TARGET = 110.0
-AUTOCAL_GAMMA_BOUNDS = (0.8, 2.2)
+# Upper bound relaxed 2.2 -> 4.0 (2026-06-16): the 12-corpus per-project sweep
+# (tmp_analysis/calib_project_20260616) found relaxed gamma (toward the schema's
+# 4.0 ceiling) was the best pick on 4/7 HANGAR/TOGO projects — near-black IR
+# scenes are darker than the old 2.2 clamp allowed (whitebg2 b=5 wanted ~4.6;
+# letting it reach 4.0 improved that project's score ~40%). The noise-cap below
+# (AUTOCAL_GAMMA_NOISY_MAX) still independently protects noisy near-black scenes
+# (e.g. TOGO-night) where extreme gamma would just amplify noise.
+AUTOCAL_GAMMA_BOUNDS = (0.8, 4.0)
 AUTOCAL_CLAHE_DEFAULT = 2.5
 AUTOCAL_CLAHE_NOISY = 1.5
 AUTOCAL_CLAHE_NOISE_SIGMA = 4.0     # Noise σ above which the reduced clip is used

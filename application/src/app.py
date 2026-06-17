@@ -764,6 +764,8 @@ class WallDanceApp:
         reg(api.ShowQr, lambda c: self._show_qr())
         reg(api.CheckReadiness, lambda c: self._cb_check_readiness())
         reg(api.RunDryRunReplay, lambda c: self._cb_run_dry_run())
+        reg(api.RunCalibSweep, lambda c: self._cb_run_calib_sweep(c.n, c.slot))
+        reg(api.ApplyCalibSweep, lambda c: self._cb_apply_calib_sweep())
         # detection / sensitivity
         reg(api.SetSensitivity, lambda c: self._cb_sensitivity_change(c.value))
         reg(api.SetConfidence, lambda c: self._cb_confidence_change(c.value))
@@ -1114,6 +1116,25 @@ class WallDanceApp:
             self._sync("slider","tracker_smoothing", config["tracker_smoothing"])
         if "max_persons" in config:
             self.tracker.max_persons = int(config["max_persons"])
+        # Per-scene tracker switches (bug #14 / §3a). The replay harness already
+        # applies these (replay.py:241-244); the LIVE app dropped them, so a
+        # project tuned for intermittent-confirm (aerial/dark) or swap-correctors
+        # (sustained duo contact) never took effect at show time. Absent key =
+        # the tracker's default (byte-identical), so this only changes behavior
+        # for projects that explicitly set it.
+        if "tracker_intermittent_confirm" in config:
+            self.tracker.intermittent_confirm = bool(config["tracker_intermittent_confirm"])
+        if "tracker_swap_correctors" in config:
+            self.tracker.swap_correctors = bool(config["tracker_swap_correctors"])
+        # Per-scene crossval gates (θ_s / θ_m — the known-N tier, G4). Applied in
+        # replay (replay.py:209-211) but dropped live; wire them so a known-N-tuned
+        # project takes effect at show time. Absent = the ProcessingSettings default.
+        if "crossval_skel_min_kpts" in config:
+            self.settings.crossval_skel_min_kpts = int(config["crossval_skel_min_kpts"])
+        if "crossval_skel_min_conf" in config:
+            self.settings.crossval_skel_min_conf = float(config["crossval_skel_min_conf"])
+        if "crossval_motion_min_ratio" in config:
+            self.settings.crossval_motion_min_ratio = float(config["crossval_motion_min_ratio"])
         if "motion_sensitivity" in config:
             self.processor.set_motion_sensitivity(config["motion_sensitivity"])
             self._sync("slider","motion_sensitivity", config["motion_sensitivity"])
@@ -1121,6 +1142,11 @@ class WallDanceApp:
             self._bridge_sens_seed = float(config["motion_sensitivity"])
             self.gap_bridging = 50.0
             self._sync("slider", "gap_bridging", 50.0)
+        # Conditional Dial-B visibility (OPERATOR_V2 P3 / build #3): calibration
+        # writes `dial_b_relevant` (drop-rate at the tuned config still leaves
+        # gaps gap-bridging could address). Absent = visible (no regression);
+        # False hides it on the live surface (raw slider stays in Advanced).
+        self.bus.publish(api.DialBVisible(bool(config.get("dial_b_relevant", True))))
 
         # OSC
         if "osc_enabled" in config:
@@ -1883,6 +1909,132 @@ class WallDanceApp:
         except Exception as e:  # noqa: BLE001
             print(f"[DryRun] failed: {e}")
             self.bus.publish(api.DryRunResult({}, error=str(e)[:200]))
+
+    def _cb_run_calib_sweep(self, n: int, slot: int = -1):
+        """Phase-④ auto-tune: CLAHE x confidence pass-line sweep over a recording
+        (the chosen slot, or the newest if slot < 0), scored vs N. Runs in a
+        SEPARATE process (isolated CUDA) on a daemon thread, posting a
+        CalibSweepResult. STANDBY-gated (a live RUN keeps the GPU/model). ~2-4 min
+        (CLAHE has no formula -> empirical sweep)."""
+        if self.system_state == SystemState.RUN:
+            self.bus.publish(api.Toast(
+                "Auto-tune runs in STANDBY (stop the show first).", 4.0,
+                (255, 200, 100)))
+            return
+        threading.Thread(target=self._run_calib_sweep, args=(int(n), int(slot)),
+                         name="CalibSweep", daemon=True).start()
+        self.bus.publish(api.Toast(
+            "Auto-tune: sweeping CLAHE x confidence (~2-4 min)...", 4.0,
+            (120, 170, 220)))
+
+    def _run_calib_sweep(self, n: int, slot: int = -1):
+        """Background worker: subprocess calibrate_segment.py on the chosen slot
+        (or newest if slot < 0), scored vs N. Posts a CalibSweepResult (curves +
+        seed config) and stashes the merged config for Apply."""
+        import subprocess
+        import tempfile
+        from pathlib import Path
+        try:
+            project = self.configs._current_project
+            chosen_slot = None
+            if slot is not None and slot >= 0:
+                # Operator picked a specific slot.
+                for info in self.recorder.get_all_slots_info():
+                    if info.slot_id == slot and info.latest_path:
+                        chosen_slot = slot
+                        break
+                if chosen_slot is None:
+                    self.bus.publish(api.CalibSweepResult(
+                        {}, error=f"slot {slot} has no recording"))
+                    return
+            else:
+                best = None  # (mtime, slot_id) — newest across all slots
+                for info in self.recorder.get_all_slots_info():
+                    path = info.latest_path
+                    if not path:
+                        continue
+                    try:
+                        mtime = os.path.getmtime(path)
+                    except OSError:
+                        continue
+                    if best is None or mtime > best[0]:
+                        best = (mtime, info.slot_id)
+                if best is None:
+                    self.bus.publish(api.CalibSweepResult(
+                        {}, error="no recordings found for this project"))
+                    return
+                chosen_slot = best[1]
+            slot = chosen_slot
+            seg_py = Path(__file__).resolve().parent.parent / "tests" / "calibrate_segment.py"
+            with tempfile.TemporaryDirectory() as td:
+                out = Path(td) / "sweep.json"
+                proc = subprocess.run(
+                    [sys.executable, str(seg_py),
+                     "--project", project, "--slot", str(slot),
+                     "--frames", "500", "--n", str(int(n)), "--out", str(out)],
+                    capture_output=True, text=True, timeout=900)
+                if not out.exists():
+                    tail = (proc.stderr or proc.stdout or "")[-400:]
+                    self.bus.publish(api.CalibSweepResult(
+                        {}, error=f"sweep failed (rc={proc.returncode}): {tail}"))
+                    return
+                result = json.loads(out.read_text())
+            self._calib_sweep_seed = result.get("merged_config")
+            self.bus.publish(api.CalibSweepResult(result))
+            self.bus.publish(api.Toast(
+                f"Auto-tune done: CLAHE {result.get('best_clahe')}, "
+                f"conf {result.get('best_conf')} - review + Apply seed",
+                8.0, (120, 220, 140)))
+        except subprocess.TimeoutExpired:
+            self.bus.publish(api.CalibSweepResult({}, error="sweep timed out (>15 min)"))
+        except Exception as e:  # noqa: BLE001
+            print(f"[CalibSweep] failed: {e}")
+            self.bus.publish(api.CalibSweepResult({}, error=str(e)[:200]))
+
+    def _cb_apply_calib_sweep(self):
+        """Apply the last auto-tune seed: a profile-aware timestamped SAVE
+        (gamma/clahe/conf/var/scale -> active profile; height/imgsz/blur/
+        intermittent/dial_b_relevant -> shared) PLUS a live push of the tuned keys
+        onto the running session. imgsz is saved but needs a reload to run at the
+        new resolution (only the combo is synced live)."""
+        from core import config_schema
+        cfg = getattr(self, "_calib_sweep_seed", None)
+        if not cfg:
+            self.bus.publish(api.Toast(
+                "No auto-tune result to apply yet - run it first.", 3.0,
+                (255, 180, 80)))
+            return
+        project = self.configs._current_project
+        latest = self.configs.config_store.latest_for_project(project)
+        base = self.configs.config_store.load(latest) if latest else {}
+        # migrate() also seeds BOTH profiles for a fresh (empty) project, so the
+        # saved file is canonical v2 — parity with batch_projects.save_into_project.
+        structured = config_schema.migrate(base or {})
+        active = structured.get("active_profile", config_schema.DEFAULT_PROFILE)
+        prof = structured.setdefault("profiles", {}).setdefault(active, {})
+        TUNED = ("gamma", "clahe_clip", "confidence", "mog2_var_threshold",
+                 "mog2_scale", "person_height_px", "person_height_min_ratio",
+                 "person_height_max_ratio", "yolo_imgsz", "blur_budget_ms",
+                 "tracker_intermittent_confirm", "dial_b_relevant")
+        for k in TUNED:
+            if k in cfg:
+                (prof if k in config_schema.PROFILE_KEYS else structured)[k] = cfg[k]
+        path = self.configs.config_store.save(project, structured)
+        # Live-apply (v2): push the tuned detection keys onto the running session
+        # via the normal config-apply path (minimal dict -> only these keys, so
+        # OSC/model are untouched; the ROI block re-applies the current rect as a
+        # value-preserving no-op and resets roi_edit_mode). Main loop refreshes on
+        # the next tick. imgsz only syncs the combo here (no engine reload).
+        apply_cfg = {k: cfg[k] for k in TUNED if k in cfg}
+        self._apply_config_without_model(apply_cfg)
+        cur_imgsz = int(getattr(self.settings, "imgsz", 0) or 0)
+        imgsz_note = ""
+        if cfg.get("yolo_imgsz") and int(cfg["yolo_imgsz"]) != cur_imgsz:
+            imgsz_note = f" (imgsz {cfg['yolo_imgsz']} saved - reload to run at it)"
+        print(f"[CalibSweep] applied seed live + saved -> {path}{imgsz_note}")
+        self.bus.publish(api.Toast(
+            f"Auto-tune applied: CLAHE {cfg.get('clahe_clip')} conf "
+            f"{cfg.get('confidence')} + saved.{imgsz_note}", 7.0, (120, 220, 140)))
 
     # Keyboard shortcuts live in ui/adapter.py (_handle_key) since Phase 3:
     # runtime effects arrive as commands, GUI-local toggles stay in the adapter.

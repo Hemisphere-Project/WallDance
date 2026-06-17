@@ -609,6 +609,16 @@ class WallDanceGUI:
         if 'on_dryrun' in self.callbacks:
             self.callbacks['on_dryrun']()
 
+    def _on_calib_sweep(self, *args):
+        if 'on_calib_sweep' in self.callbacks:
+            n = dpg.get_value("calib_sweep_n") if dpg.does_item_exist("calib_sweep_n") else 1
+            slot = dpg.get_value("calib_sweep_slot") if dpg.does_item_exist("calib_sweep_slot") else -1
+            self.callbacks['on_calib_sweep'](int(n or 1), int(-1 if slot is None else slot))
+
+    def _on_calib_sweep_apply(self, *args):
+        if 'on_calib_sweep_apply' in self.callbacks:
+            self.callbacks['on_calib_sweep_apply']()
+
     def _on_max_persons_change(self, sender, value):
         if 'on_max_persons_change' in self.callbacks:
             self.callbacks['on_max_persons_change'](value)
@@ -2689,6 +2699,48 @@ class WallDanceGUI:
         )
         dpg.set_value(tag, text)
         dpg.configure_item(tag, color=TEXT_NORMAL)
+
+    def show_calib_sweep_result(self, result, error=""):
+        """Render the phase-④ auto-tune sweep (CLAHE curve + best values +
+        condition flags) and reveal the Apply button. set_value/configure_item
+        only (posted from a background thread, like the dry-run)."""
+        tag = "calib_sweep_result_text"
+        if not dpg.does_item_exist(tag):
+            return
+        if error:
+            dpg.set_value(tag, f"Auto-tune failed: {error}")
+            dpg.configure_item(tag, color=ALERT_RED)
+            if dpg.does_item_exist("calib_sweep_apply_btn"):
+                dpg.configure_item("calib_sweep_apply_btn", show=False)
+            return
+        r = result or {}
+        curve = r.get("clahe_curve", {})
+        try:
+            curve_str = "  ".join(
+                f"{float(k):g}:{v:.3f}" for k, v in
+                sorted(curve.items(), key=lambda kv: float(kv[0]))) if curve else "-"
+        except Exception:  # noqa: BLE001
+            curve_str = str(curve)
+        d = r.get("derived", {}) or {}
+        lines = [
+            f"Best: CLAHE {r.get('best_clahe', '?')}   confidence {r.get('best_conf', '?')}",
+            f"CLAHE curve (score, lower=better): {curve_str}",
+            f"derived: gamma {d.get('gamma', '?')}  height {d.get('person_height_px', '?')}  "
+            f"imgsz {d.get('yolo_imgsz', '?')}  var {d.get('var_threshold', '?')}",
+        ]
+        for f in (d.get("saturation_flags") or []):
+            lines.append(f"! {f}")
+        dpg.set_value(tag, "\n".join(lines))
+        dpg.configure_item(tag, color=TEXT_NORMAL)
+        if dpg.does_item_exist("calib_sweep_apply_btn"):
+            dpg.configure_item("calib_sweep_apply_btn", show=True)
+
+    def set_dial_b_visible(self, visible):
+        """Show/hide Dial B (gap-bridging) on the live surface. Calibration hides
+        it when the scene's drop-rate says gap-bridging is inert; the raw
+        motion_sensitivity slider stays reachable in Advanced (OPERATOR_V2 P3)."""
+        if dpg.does_item_exist("dial_b_group"):
+            dpg.configure_item("dial_b_group", show=bool(visible))
 
     def show_output_latency(self, latency_ms, enabled=False):
         """Render the phase-⑥ output-latency readout (Track X).

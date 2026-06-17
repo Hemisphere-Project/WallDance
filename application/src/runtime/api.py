@@ -140,6 +140,22 @@ class RunDryRunReplay(Command):
 
 
 @dataclass(frozen=True)
+class RunCalibSweep(Command):
+    """Phase-④: CLAHE x confidence pass-line sweep over a recording, scored vs the
+    operator-confirmed dancer count N (auto-tune the detection enhancement; CLAHE
+    has no formula). Runs offline in a subprocess. ``slot`` = the recording slot
+    to sweep, or -1 for the newest recording."""
+    n: int = 1
+    slot: int = -1
+
+
+@dataclass(frozen=True)
+class ApplyCalibSweep(Command):
+    """Phase-④: apply the last CalibSweep seed config to the project (save)."""
+    pass
+
+
+@dataclass(frozen=True)
 class SetPersonHeight(Command):
     value: int
 
@@ -511,6 +527,22 @@ class DryRunResult(Event):
     """Phase-⑤ dry-run replay summary (lean replay metrics) or an error."""
     summary: Dict[str, Any]
     error: str = ""
+
+
+@dataclass(frozen=True)
+class CalibSweepResult(Event):
+    """Phase-④ auto-tune sweep result: {clahe_curve, best_clahe, conf_curve,
+    best_conf, derived, merged_config} or an error."""
+    result: Dict[str, Any]
+    error: str = ""
+
+
+@dataclass(frozen=True)
+class DialBVisible(Event):
+    """Phase-⑥: show/hide Dial B (gap-bridging) on the live surface. Calibration
+    hides it when the scene's drop-rate says gap-bridging is inert; the raw
+    motion_sensitivity slider stays in Advanced (OPERATOR_V2 P3)."""
+    visible: bool = True
 
 
 @dataclass(frozen=True)

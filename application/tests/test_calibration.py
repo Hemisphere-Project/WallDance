@@ -433,7 +433,8 @@ def test_servo_too_bright_drops_gain_then_exposure():
 # U3 — gamma / CLAHE seeds
 # --------------------------------------------------------------------------
 def test_seed_gamma_mapping():
-    assert seed_gamma(5.0) == pytest.approx(2.2)      # near-black → clamp high
+    # Upper clamp relaxed 2.2 -> 4.0 for near-black IR (2026-06-16, corpus sweep).
+    assert seed_gamma(5.0) == pytest.approx(4.0)      # near-black → clamp high (relaxed)
     assert seed_gamma(110.0) == pytest.approx(1.0, abs=0.05)
     assert seed_gamma(200.0) == pytest.approx(0.8)    # bright → clamp low
     assert seed_gamma(30.0) > seed_gamma(60.0)        # darker → stronger gamma

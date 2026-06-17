@@ -1,0 +1,29 @@
+[
+  {
+    "knobs": {
+      "clahe_clip": 6.0,
+      "confidence": 0.5,
+      "motion_sensitivity": 0.55
+    },
+    "mean": 0.06737,
+    "worst": 0.11509,
+    "n_pass": 1,
+    "n_slots": 2,
+    "per_slot": [
+      {
+        "scenario": "hangar-floor",
+        "score": 0.11509,
+        "drop": 0.10877,
+        "ghost": 0.0,
+        "passed": false
+      },
+      {
+        "scenario": "hangar-aerial",
+        "score": 0.01965,
+        "drop": 0.01754,
+        "ghost": 0.0,
+        "passed": true
+      }
+    ]
+  }
+]

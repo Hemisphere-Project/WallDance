@@ -25,9 +25,11 @@ REPO = HERE.parent.parent
 MODELS_DIR = REPO / "models"
 PROJECTS_DIR = REPO / "projects"
 
-PROJECT = "residence1-solo"
+# residence1-solo was renamed 3_TANGO_HANGAR-whitebg2 in the 2026-06-10 corpus
+# re-founding (same recording); slot 4 is the hangar-aerial scenario.
+PROJECT = "3_TANGO_HANGAR-whitebg2"
 SLOT = 4
-SCENARIO = HERE / "scenarios" / "residence1-solo_slot4.json"
+SCENARIO = HERE / "scenarios" / "hangar-aerial.json"
 # A short window that still spans a real drop region (abs 1643-1654) so the
 # equivalence is exercised on non-trivial gate/bridge behaviour, not just empty
 # frames.

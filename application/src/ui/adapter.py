@@ -148,6 +148,8 @@ class DpgUiAdapter:
             "on_box_clamp_toggle": lambda v: submit(api.ToggleBoxClamp(bool(v))),
             "on_check_readiness": lambda: submit(api.CheckReadiness()),
             "on_dryrun": lambda: submit(api.RunDryRunReplay()),
+            "on_calib_sweep": lambda n, slot=-1: submit(api.RunCalibSweep(int(n), int(slot))),
+            "on_calib_sweep_apply": lambda: submit(api.ApplyCalibSweep()),
             "on_model_change": lambda name: submit(api.LoadModel(name)),
             "on_trt_toggle": lambda v: submit(api.ToggleTrt(bool(v))),
             "on_trt_rebuild": lambda: submit(api.RebuildTrt()),
@@ -293,6 +295,9 @@ class DpgUiAdapter:
             api.ReadinessResult: lambda e: self.gui.show_readiness_rows(e.rows),
             api.DryRunResult: lambda e: self.gui.show_dryrun_result(
                 e.summary, e.error),
+            api.CalibSweepResult: lambda e: self.gui.show_calib_sweep_result(
+                e.result, e.error),
+            api.DialBVisible: lambda e: self.gui.set_dial_b_visible(e.visible),
             api.Alert: lambda e: self.gui.show_toast(
                 f"/!\\ {e.message}", duration=8.0, color=(255, 80, 80)),
             # Calibration events route through the wizard first; when it is

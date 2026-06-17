@@ -41,9 +41,12 @@ PROJECTS_DIR = REPO / "projects"
 FIXTURES = [
     # bounds = measured baseline + headroom (absorbs run jitter, catches
     # transform regressions, which blow these up by an order of magnitude)
-    {"project": "residence1-solo", "slot": 3, "start": 1500, "frames": 300,
+    # NOTE: residence1-solo was renamed 3_TANGO_HANGAR-whitebg2 in the
+    # 2026-06-10 corpus re-founding (same recordings); slot 3 = hangar-floor,
+    # slot 4 = hangar-aerial.
+    {"project": "3_TANGO_HANGAR-whitebg2", "slot": 3, "start": 1500, "frames": 300,
      "min_count_agreement": 0.95, "centroid_p95_max_px": 20.0},
-    {"project": "residence1-solo", "slot": 4, "start": 1500, "frames": 300,
+    {"project": "3_TANGO_HANGAR-whitebg2", "slot": 4, "start": 1500, "frames": 300,
      "min_count_agreement": 0.78, "centroid_p95_max_px": 90.0},
 ]
 

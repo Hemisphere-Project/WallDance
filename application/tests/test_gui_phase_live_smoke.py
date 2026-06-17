@@ -54,5 +54,14 @@ def test_phase_live_builds_with_output_controls():
         # defaults: box-clamp ON, smoothing L=1 (causal/live).
         assert dpg.get_value("box_clamp_checkbox") is True
         assert dpg.get_value("output_smoothing_slider") == 1
+        # Conditional Dial B (build #3): the gap-bridging group is hideable, and
+        # WallDanceGUI.set_dial_b_visible toggles it (unbound; ignores self).
+        from gui import WallDanceGUI
+        assert dpg.does_item_exist("dial_b_group")
+        assert dpg.get_item_configuration("dial_b_group")["show"] is True
+        WallDanceGUI.set_dial_b_visible(None, False)
+        assert dpg.get_item_configuration("dial_b_group")["show"] is False
+        WallDanceGUI.set_dial_b_visible(None, True)
+        assert dpg.get_item_configuration("dial_b_group")["show"] is True
     finally:
         dpg.destroy_context()

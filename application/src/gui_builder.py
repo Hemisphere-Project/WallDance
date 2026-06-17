@@ -753,6 +753,48 @@ def build_phase_calibrate(gui: Any):
         # Evidence pool, rendered inline by gui.show_calib2_dialog (populated on
         # entering this phase and after each run via Calib2PoolChanged).
         dpg.add_group(tag="calib2_pool_inline")
+        # --- Auto-tune (CLAHE + confidence) — the segment/slot pass-line sweep.
+        dpg.add_spacer(height=scaled(12))
+        dpg.add_separator()
+        dpg.add_spacer(height=scaled(6))
+        dpg.add_text("Auto-tune (CLAHE + confidence)", color=TEXT_NORMAL)
+        dpg.add_text("Sweep CLAHE x confidence over the newest recording, scored "
+                     "vs the dancer count, to auto-pick the detection enhancement "
+                     "(CLAHE has no formula). STANDBY only; ~2-4 min.",
+                     color=TEXT_MUTED, wrap=scaled(_PHASE_WRAP))
+        dpg.add_spacer(height=scaled(6))
+        with dpg.group(horizontal=True):
+            dpg.add_text("Dancers in clip (N):", color=TEXT_DIM)
+            dpg.add_input_int(tag="calib_sweep_n", default_value=1, min_value=1,
+                              max_value=8, width=scaled(90), step=1)
+            dpg.add_text("Slot:", color=TEXT_DIM)
+            dpg.add_input_int(tag="calib_sweep_slot", default_value=-1, min_value=-1,
+                              max_value=9, width=scaled(90), step=1)
+        dpg.add_text("Record a clip in the Recordings panel first, or use -1 for "
+                     "the newest. Keep N dancers present throughout, moving "
+                     "fast/varied (no entrances/exits).",
+                     color=TEXT_HINT, wrap=scaled(_PHASE_WRAP))
+        dpg.add_spacer(height=scaled(4))
+        sweep_btn = dpg.add_button(
+            label="Calculate (auto-tune)", tag="calib_sweep_btn",
+            width=scaled(200), height=scaled(30), callback=gui._on_calib_sweep)
+        dpg.bind_item_theme(sweep_btn, gui._btn_standby_theme)
+        with dpg.tooltip(sweep_btn):
+            dpg.add_text("Offline CLAHE x confidence sweep over the newest recording\n"
+                         "(separate process), scored vs N dancers. Picks the best\n"
+                         "detection enhancement; review the curve, then Apply the\n"
+                         "seed. STANDBY only, ~2-4 min.")
+        dpg.add_spacer(height=scaled(6))
+        dpg.add_text("", tag="calib_sweep_result_text", color=TEXT_MUTED,
+                     wrap=scaled(_PHASE_WRAP))
+        dpg.add_spacer(height=scaled(4))
+        apply_btn = dpg.add_button(
+            label="Apply seed", tag="calib_sweep_apply_btn", show=False,
+            width=scaled(140), height=scaled(28), callback=gui._on_calib_sweep_apply)
+        dpg.bind_item_theme(apply_btn, gui._btn_standby_theme)
+        with dpg.tooltip(apply_btn):
+            dpg.add_text("Save the auto-tuned values into the project (profile-aware).\n"
+                         "Reload the project to run with them.")
 
 
 def build_phase_verify(gui: Any):
@@ -855,20 +897,25 @@ def build_phase_live(gui: Any):
             _add_slider_row("sensitivity_slider", 5.0, 0.0, 100.0, gui._on_sensitivity_change)
         with dpg.tooltip(sens_slider):
             dpg.add_text("Dial A (confidence-led). 50 = calibrated.\nLosing the dancer? Raise it (catches more,\nmay add ghosts). Too many ghosts? Lower it\n(stricter). Calibration re-centers it at 50.")
-        dpg.add_text("Gap bridging", color=TEXT_MUTED)
-        with dpg.group(horizontal=True):
-            bridge_slider = dpg.add_slider_float(
-                tag="gap_bridging_slider",
-                default_value=gui.config.get("gap_bridging", 50.0),
-                min_value=0.0,
-                max_value=100.0,
-                format="%.0f",
-                width=scaled(-90),
-                callback=gui._on_gap_bridging_change,
-            )
-            _add_slider_row("gap_bridging_slider", 5.0, 0.0, 100.0, gui._on_gap_bridging_change)
-        with dpg.tooltip(bridge_slider):
-            dpg.add_text("Dial B (gap bridging). 50 = calibrated.\nDancer dropping out during fast / aerial moves?\nRaise it to bridge YOLO gaps (monotonic\n'fewer drops'). Modest fine-tune; inert on\nclean scenes. Calibration re-centers it at 50.")
+        # Dial B lives in a hideable group: calibration hides it on the live
+        # surface when the scene's drop-rate says gap-bridging is inert (it
+        # stays reachable as the raw motion_sensitivity slider in Advanced, per
+        # OPERATOR_V2 P3). gui.set_dial_b_visible() toggles this on project load.
+        with dpg.group(tag="dial_b_group"):
+            dpg.add_text("Gap bridging", color=TEXT_MUTED)
+            with dpg.group(horizontal=True):
+                bridge_slider = dpg.add_slider_float(
+                    tag="gap_bridging_slider",
+                    default_value=gui.config.get("gap_bridging", 50.0),
+                    min_value=0.0,
+                    max_value=100.0,
+                    format="%.0f",
+                    width=scaled(-90),
+                    callback=gui._on_gap_bridging_change,
+                )
+                _add_slider_row("gap_bridging_slider", 5.0, 0.0, 100.0, gui._on_gap_bridging_change)
+            with dpg.tooltip(bridge_slider):
+                dpg.add_text("Dial B (gap bridging). 50 = calibrated.\nDancer dropping out during fast / aerial moves?\nRaise it to bridge YOLO gaps (monotonic\n'fewer drops'). Modest fine-tune; inert on\nclean scenes. Calibration re-centers it at 50.\nHidden when calibration finds it inert (raw\nslider stays in Advanced).")
         dpg.add_spacer(height=scaled(12))
         # --- Output controls (Track X) — OUTPUT-domain, distinct from the
         # detection dial above.  These shape what OSC/preview reports; they do
@@ -1465,11 +1512,13 @@ def build_preview_section(gui: Any):
 
 
 def build_exclusion_mask_section(gui: Any):
-    """Exclusion mask status + manual editor controls (ROADMAP §4.2 Phase 2 ④).
+    """Exclusion mask status + manual editor controls (OPERATOR_V2 decision 5).
 
-    The mask itself is built automatically during Calib1; this section shows
-    the active cell count and opens the preview cell editor for operator
-    knowledge the auto pass cannot have (bystander zones, static ghosts).
+    The mask is **manual-only** — Aim/Calibrate no longer auto-build or activate
+    one. This section shows the active cell count and opens the preview cell
+    editor so the operator can paint known dead zones (bystander strip,
+    reflective wall, static ghosts). Masked cells stay dimmed on the preview at
+    all times and survive recalibration.
     """
     with dpg.collapsing_header(label="Exclusion Mask", default_open=True,
                                tag="section_exclusion_mask", closable=False):
@@ -1490,8 +1539,9 @@ def build_exclusion_mask_section(gui: Any):
                 width=scaled(80),
             )
         dpg.add_text(
-            "Auto-built on every Calibrate. Edit: click/drag preview cells to "
-            "mask (red) / unmask; manual cells survive recalibration.",
+            "Manual only — paint what you know is dead. Edit: click/drag preview "
+            "cells to mask (red) / unmask. Masked cells stay dimmed at all times "
+            "and survive recalibration.",
             color=TEXT_DIM,
             wrap=scaled(300),
         )

@@ -92,10 +92,15 @@ def _latest_config(project: str) -> Optional[dict]:
 
 
 def _find_recording(project: str, slot: int) -> Optional[Path]:
-    recs = sorted((PROJECTS_DIR / project / "recordings").glob(
-        f"slot_{slot}_*.avi")) + sorted(
-        (PROJECTS_DIR / project / "recordings").glob(f"slot_{slot}_*.mp4"))
-    return recs[0] if recs else None
+    # NEWEST recording for the slot — timestamped filenames
+    # (slot_<n>_<YYYYMMDD_HHMMSS>.ext) sort chronologically, so [-1] is the
+    # latest take. This matches the recorder's newest-first ordering and the
+    # app's slot-by-latest_path selection (so the in-app sweep/dry-run scores the
+    # take the operator just recorded, not an older one). Single-take slots — the
+    # corpus goldens — are unaffected ([-1] == [0]), so pinned fingerprints hold.
+    recs = sorted(list((PROJECTS_DIR / project / "recordings").glob(f"slot_{slot}_*.avi"))
+                  + list((PROJECTS_DIR / project / "recordings").glob(f"slot_{slot}_*.mp4")))
+    return recs[-1] if recs else None
 
 
 def scenario_config(manifest: dict) -> dict:

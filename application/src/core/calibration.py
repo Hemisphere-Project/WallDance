@@ -93,6 +93,12 @@ def seed_gamma(brightness_mean: float,
     is the safety clamp to ``bounds``.  (Rounding here made re-calibrations under
     similar lighting collapse onto the same coarse value, which read as
     "discrete" gamma selection.)
+
+    The upper clamp is the schema ceiling (4.0): near-black IR scenes want strong
+    brightening (the 12-corpus sweep confirmed relaxed gamma wins on most
+    HANGAR/TOGO projects). ``cap_gamma_for_noise`` is the separate guard that
+    pulls gamma back on *noisy* near-black scenes where brightening would just
+    amplify noise into ghosts.
     """
     b = _clamp(float(brightness_mean), 1.0, 250.0)
     g = math.log(b / 255.0) / math.log(target / 255.0)
