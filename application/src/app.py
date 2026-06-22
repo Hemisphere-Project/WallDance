@@ -1468,8 +1468,10 @@ class WallDanceApp:
                 # Block processing until model is reloaded to prevent imgsz mismatch
                 self.models._model_loading = True
                 self.models._model_loaded = False
-                self.bus.publish(api.Toast(f"No TRT for {new_imgsz}px, using PyTorch",
-                                           3.0, (255, 200, 100)))
+                self.bus.publish(api.Toast(
+                    f"No TRT engine for {new_imgsz}px — running PyTorch (slower). "
+                    f"Build the {new_imgsz}px engine or pick an imgsz that has one.",
+                    5.0, (255, 200, 100)))
 
     def _cb_person_height_change(self, value: int):
         self.settings.person_height_px = int(value)

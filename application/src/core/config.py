@@ -525,6 +525,10 @@ AUTOCAL2_SPEED_PCTL = 95.0          # Speed percentile that sets the blur budget
 AUTOCAL2_BLUR_BOUNDS_MS = (5.0, 30.0)  # Clamp for the refined blur budget
 AUTOCAL2_STALE_TOL = 0.10           # ROI long-side relative change → run flagged stale
 AUTOCAL2_FRAME_SAMPLES = 12         # Raw frames saved per run (future gamma/CLAHE sweep)
+AUTOCAL2_NOISE_REUSE_S = 600.0      # Track C: if Aim ran within this many seconds,
+                                    # Calib2 reuses Aim's clean-scene noise σ for the
+                                    # dark net-height target instead of the live (now
+                                    # dancer-populated) motion_model reading.
 
 # --- Detection-sensitivity macro (UX_PLAN.md U5 / KNOBS.md E2) ---------------
 # One operator dial 0-100 (50 = the calibrated seed).  Higher = more sensitive

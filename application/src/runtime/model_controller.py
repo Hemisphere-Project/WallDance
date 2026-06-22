@@ -383,6 +383,11 @@ class ModelController:
             self._model_loaded = self.model is not None
             # Revert dropdown to current model
             if self.ui.available:
+                # Track C: surface the failure (was print-only) — an imgsz/TRT
+                # reload that silently fails leaves config != engine.
+                self.ui.show_toast(
+                    f"Model reload failed ({model_to_load}) — kept the current "
+                    "engine.", duration=5.0, color=(255, 100, 100))
                 self.ui.update_model_dropdown(self.current_model_name)
                 # Also revert TRT checkbox if it was a TRT switch attempt
                 if trt_switch:

@@ -2475,7 +2475,8 @@ class WallDanceGUI:
                     dpg.add_checkbox(tag=tag, default_value=not row.get("stale", False))
                     label = row["label"]
                     if row.get("stale"):
-                        dpg.add_text(label + "  [STALE - framing changed]",
+                        reason = row.get("stale_reason") or "framing changed"
+                        dpg.add_text(label + f"  [STALE - {reason}]",
                                      color=WARN_ORANGE)
                     else:
                         dpg.add_text(label)

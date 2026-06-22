@@ -29,7 +29,8 @@ from core.calib2 import aggregate as calib2_aggregate
 from core.calibration import (ExposureServo, SceneCalibrator,
                               cap_gamma_for_noise, seed_gamma)
 from core.config import (AUTOCAL_BLUR_BUDGET_MS, AUTOCAL2_FRAME_SAMPLES,
-                         AUTOCAL2_WINDOW_FRAMES, MODELS_DIR)
+                         AUTOCAL2_NOISE_REUSE_S, AUTOCAL2_WINDOW_FRAMES,
+                         MODELS_DIR)
 
 try:
     from camera.ids_camera import CameraSource
@@ -110,6 +111,22 @@ class CalibrationFlows:
         self._calibrating2 = False
         self._calib2_saved_frames = 0
         self.blur_budget_ms: float = AUTOCAL_BLUR_BUDGET_MS
+        # Track C — calibration provenance: which phase set which knob + when.
+        # In-memory (session-scoped); config persistence is a Track S follow-up.
+        # Aim/Calib1 owns the scene knobs; Calib2 (DANCERS) owns subject knobs.
+        self.calibration_state: dict = {}
+        # Track C (noise-σ unify): Aim's last clean-scene window σ + when, so a
+        # Calib2 pass run right after Aim reuses it for the dark net-height
+        # target instead of re-reading a now-dancer-populated live motion model.
+        self._last_calib1_noise_sigma: Optional[float] = None
+        self._last_calib1_noise_ts: float = 0.0
+
+    def _stamp_calib_state(self, source: str, *knobs: str) -> None:
+        """Record which calibration phase ('aim'/'dancers') set which knob, and
+        when (Track C provenance — feeds the Aim 'Last calibrated' line)."""
+        ts = time.strftime("%Y-%m-%d %H:%M")
+        for k in knobs:
+            self.calibration_state[k] = {"source": source, "ts": ts}
 
     # ------------------------------------------------------------------
     # Calib1 — CALIBRATE (scene window, optional exposure servo)
@@ -253,15 +270,27 @@ class CalibrationFlows:
             self._apply_calibration(cal.compute())
 
     def _apply_calibration(self, result):
-        """Apply a finished CalibrationResult to the running session + log it."""
-        if result.height_ok and result.person_height_px:
-            ph = int(result.person_height_px)
-            self.settings.person_height_px = ph
-            self.settings.person_height_min_ratio = float(result.min_ratio)
-            self.settings.person_height_max_ratio = float(result.max_ratio)
-            self.tracker.set_person_height(ph)
-            if self.ui.available:
-                self.ui.sync_slider('person_height', ph)
+        """Apply a finished CalibrationResult to the running session + log it.
+
+        Aim/scene pass: derives servo + gamma + var + clean-plate.  Person
+        height is DIAGNOSTIC-ONLY here (measured for the report card + MOG2
+        scaling) — Calib2 (DANCERS) is the SOLE writer of person_height_px,
+        which needs dancers in frame; an empty-stage height measure is noise
+        (Track C: height ownership).
+        """
+        # Track C apply-gate: warn (never block — calibration is idempotent)
+        # when the scene defeats MOG2, so the operator can fix IR/gain before
+        # trusting the ghost rejection.
+        if result.var_saturated and self.ui.available:
+            self.ui.show_toast(
+                "Calibrate: scene too noisy for MOG2 (varThreshold saturated) "
+                "— ghost rejection is weak. Add/even the IR or lower gain, "
+                "then re-Aim.", duration=6.0, color=(255, 140, 70))
+        # Track C (noise-σ unify): keep Aim's clean-scene window σ for a
+        # following Calib2 pass (see _calib2_aggregate).
+        self._last_calib1_noise_sigma = float(result.noise_sigma)
+        self._last_calib1_noise_ts = time.time()
+        # Person height is Calib2-owned (Track C) — Calib1 no longer writes it.
         if result.var_ok and result.var_threshold:
             self.processor.set_motion_var_threshold(result.var_threshold)
             self.reset_sensitivity_anchor(var_anchor=result.var_threshold)
@@ -291,6 +320,12 @@ class CalibrationFlows:
         # derives servo + gamma + var + clean-plate but does NOT auto-build or
         # activate an exclusion mask.  Any manually-painted mask is left intact
         # and keeps applying (we never opened a collection window).
+        touched = ["gamma"]
+        if result.var_ok and result.var_threshold:
+            touched += ["mog2_var_threshold", "mog2_scale"]
+        if result.clahe_value is not None:
+            touched.append("clahe")
+        self._stamp_calib_state("aim", *touched)
         print(result.log_line())
         self.request_reprocess()
         if self.ui.available:
@@ -410,13 +445,21 @@ class CalibrationFlows:
         """calib2.aggregate with the live calib-time context: MOG2-input noise
         sigma (dark-target switch), the per-rig engine fps table and the
         current model (P-6 cost curve + report-only model advisory)."""
+        # Track C (noise-σ unify): if Aim ran recently, reuse its clean-scene
+        # window σ (same MOG2-input-gray statistic) — a fresh Calib2 pass has
+        # dancers in frame, which biases a live motion_model.noise_sigma() read
+        # and could flip the 110↔45 dark net-height target.
         noise = None
-        mm = getattr(self.processor, "motion_model", None)
-        if mm is not None:
-            try:
-                noise = float(mm.noise_sigma())
-            except Exception:
-                noise = None
+        if (self._last_calib1_noise_sigma is not None and
+                time.time() - self._last_calib1_noise_ts < AUTOCAL2_NOISE_REUSE_S):
+            noise = self._last_calib1_noise_sigma
+        if noise is None:
+            mm = getattr(self.processor, "motion_model", None)
+            if mm is not None:
+                try:
+                    noise = float(mm.noise_sigma())
+                except Exception:
+                    noise = None
         table = load_fps_table(os.path.join(MODELS_DIR, "fps_table.json"))
         current = getattr(self.models, "current_model_name", "") or ""
         return calib2_aggregate(runs, roi_long_side, noise_sigma=noise,
@@ -430,14 +473,22 @@ class CalibrationFlows:
         entries = pool.load_runs()
         frame_w, frame_h = self.roi_source_size()
         roi = self.get_effective_roi(frame_w, frame_h)
-        rows = [
-            {
+        # Track C: a run is stale if the framing drifted OR it was captured
+        # under a different lighting profile than the one now active (its px
+        # heights / detection conf no longer compare).
+        active = getattr(self.configs, "_active_profile", None)
+        rows = []
+        for path, run in entries:
+            framing_stale = run.stale_for(roi, (frame_w, frame_h))
+            profile_stale = bool(active) and run.profile != active
+            reason = ("framing changed" if framing_stale
+                      else (f"profile != {active}" if profile_stale else ""))
+            rows.append({
                 "path": path,
                 "label": run.label(),
-                "stale": run.stale_for(roi, (frame_w, frame_h)),
-            }
-            for path, run in entries
-        ]
+                "stale": framing_stale or profile_stale,
+                "stale_reason": reason,
+            })
         proposal = self._calib2_aggregate([r for _p, r in entries],
                                           max(roi[2], roi[3]))
         self.ui.show_calib2_dialog(rows, proposal.summary())
@@ -471,6 +522,14 @@ class CalibrationFlows:
             if self.ui.available:
                 self.ui.sync_combo('imgsz', str(prop.imgsz))
             self.imgsz_change(prop.imgsz)   # handles the TRT engine reload
+        touched = ["person_height_px"]
+        if prop.confidence is not None:
+            touched.append("confidence")
+        if prop.blur_budget_ms is not None:
+            touched.append("blur_budget_ms")
+        if prop.imgsz:
+            touched.append("imgsz")
+        self._stamp_calib_state("dancers", *touched)
         print("[Calib2] applied: " + prop.summary().replace("\n", " | "))
         self.request_reprocess()
         if self.ui.available:
