@@ -11,8 +11,8 @@ import numpy as np
 import pytest
 
 pytest.importorskip("torch")  # pipeline pulls in torch/ultralytics
-from tracker import DancerTrack  # noqa: E402
-from pipeline import FrameProcessor  # noqa: E402
+from core.tracker import DancerTrack  # noqa: E402
+from core.pipeline import FrameProcessor  # noqa: E402
 
 
 def _skeleton(conf=0.9):

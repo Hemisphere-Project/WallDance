@@ -87,7 +87,8 @@ def _latest_config(project: str) -> Optional[dict]:
         return None
     # Flatten schema-v2 (lighting profiles) configs to the active profile's
     # flat view; v1 flat configs pass through unchanged.
-    import config_schema
+    import core.config_schema as config_schema
+
     return config_schema.flatten(json.loads(cfgs[0].read_text()))
 
 
@@ -169,10 +170,10 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
     (``_process_gpu`` → ``_run_yolo_and_track``) instead of ``_process_cpu`` —
     the show path. Used by the CPU↔GPU parity test (ROADMAP bug #10).
     """
-    from enhancer import ImageEnhancer
-    from tracker import DancerTracker
-    from pipeline import FrameProcessor, ProcessingSettings
-    from config import (
+    from core.enhancer import ImageEnhancer
+    from core.tracker import DancerTracker
+    from core.pipeline import FrameProcessor, ProcessingSettings
+    from core.config import (
         YOLO_CONFIDENCE, PERSON_HEIGHT_PX, PERSON_HEIGHT_MIN_RATIO,
         PERSON_HEIGHT_MAX_RATIO, BRIGHTNESS_THRESHOLD, ENHANCE_ENABLED,
         MOTION_BRIDGE_SENSITIVITY, TrackingMode, AUTOCAL_EXCL_GRID,

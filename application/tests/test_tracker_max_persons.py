@@ -18,7 +18,7 @@ HERE = Path(__file__).resolve().parent
 SRC = HERE.parent / "src"
 sys.path.insert(0, str(SRC))
 
-from tracker import DancerTrack, DancerTracker  # noqa: E402
+from core.tracker import DancerTrack, DancerTracker  # noqa: E402
 
 
 def _mk_track(x: float, n_matches: int):

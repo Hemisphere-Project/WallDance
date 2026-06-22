@@ -9,8 +9,8 @@ import pytest
 pytest.importorskip("cv2")
 import cv2  # noqa: E402
 
-from config import MOTION_DIFF_PAIR_MAX_AGE_FRAMES  # noqa: E402
-from motion_model import MotionModel  # noqa: E402
+from core.config import MOTION_DIFF_PAIR_MAX_AGE_FRAMES  # noqa: E402
+from core.motion_model import MotionModel  # noqa: E402
 
 W, H = 640, 480
 PERSON_H = 200

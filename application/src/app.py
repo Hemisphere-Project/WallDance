@@ -32,8 +32,8 @@ import numpy as np
 sys.stdout.reconfigure(line_buffering=True)
 sys.stderr.reconfigure(line_buffering=True)
 
-from camera_manager import CameraManager
-from config import (
+from camera.camera_manager import CameraManager
+from core.config import (
     BRIGHTNESS_THRESHOLD,
     CAMERA_FPS,
     CAMERA_HEIGHT,
@@ -73,10 +73,10 @@ from config import (
     OPS_DISK_WARN_FREE_GB,
     OPS_DISK_FAIL_FREE_GB,
 )
-from osc_output import OSCSender
-from pipeline import FrameProcessor, ProcessingSettings, ScaledTrack
+from core.osc_output import OSCSender
+from core.pipeline import FrameProcessor, ProcessingSettings, ScaledTrack
 from gui import get_display_scale, get_gpu_stats
-from ops_monitor import (
+from core.ops_monitor import (
     HealthMonitor,
     LoopWatchdog,
     ReadinessReport,
@@ -87,10 +87,10 @@ from ops_monitor import (
     check_osc,
     check_tensorrt,
 )
-from enhancer import ImageEnhancer
-from tracker import DancerTracker
-from tracking_logger import _json_default
-from video_recorder import VideoRecorder
+from core.enhancer import ImageEnhancer
+from core.tracker import DancerTracker
+from core.tracking_logger import _json_default
+from core.video_recorder import VideoRecorder
 from runtime import api
 from runtime.api import SystemState
 from runtime.main_loop import MainLoop
@@ -102,8 +102,8 @@ from runtime.calibration_flows import CalibrationFlows
 from runtime.roi_state import RoiState
 from ui.adapter import DpgUiAdapter
 from ui.roi_mask_editor import RoiMaskEditor
-from web_monitor import WebMonitor
-from sensitivity_macro import macro_to_settings, bridge_macro_to_settings
+from services.web_monitor import WebMonitor
+from core.sensitivity_macro import macro_to_settings, bridge_macro_to_settings
 
 # Phase-⑤ dry-run: bound the offline replay to a quick glance, not a full pass.
 _DRYRUN_FRAMES = 600
@@ -111,7 +111,7 @@ _DRYRUN_FRAMES = 600
 
 # IDS Camera support (optional, falls back to OpenCV)
 try:
-    from ids_camera import (
+    from camera.ids_camera import (
         UnifiedCamera,
         IDS_EXPOSURE_MIN_FPS,
         IDS_EXPOSURE_WARNING_FPS,

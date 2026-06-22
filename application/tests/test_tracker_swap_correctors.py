@@ -18,8 +18,8 @@ HERE = Path(__file__).resolve().parent
 SRC = HERE.parent / "src"
 sys.path.insert(0, str(SRC))
 
-from config import TRACKER_SWAP_CORRECTORS  # noqa: E402
-from tracker import DancerTrack, DancerTracker  # noqa: E402
+from core.config import TRACKER_SWAP_CORRECTORS  # noqa: E402
+from core.tracker import DancerTrack, DancerTracker  # noqa: E402
 
 CORRECTORS = ("_check_occlusion_cascade_swaps",
               "_check_merge_direction_swaps",

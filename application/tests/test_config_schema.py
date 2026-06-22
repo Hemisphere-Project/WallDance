@@ -1,7 +1,8 @@
 """Schema v2 (lighting profiles) — migration, flatten/structure round-trip, validation."""
 import copy
 
-import config_schema as cs
+import core.config_schema as cs
+
 
 
 def _v1_config():

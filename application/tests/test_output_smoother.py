@@ -280,7 +280,7 @@ def test_lagged_keypoints_stay_coherent_with_centroid():
     translated by the centroid correction, so keypoints keep their offset from
     the smoothed centroid (no centroid/keypoint drift on the lagged tap)."""
     from types import SimpleNamespace
-    from pipeline import FrameProcessor, ScaledTrack
+    from core.pipeline import FrameProcessor, ScaledTrack
 
     L = 3
     fake = SimpleNamespace(

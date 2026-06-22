@@ -2,10 +2,11 @@
 import numpy as np
 import pytest
 
-import calib2
-from calib2 import (SubjectCollector, SubjectPool, SubjectRun, aggregate,
+import core.calib2 as calib2
+
+from core.calib2 import (SubjectCollector, SubjectPool, SubjectRun, aggregate,
                     select_imgsz)
-from config import (AUTOCAL2_MIN_SAMPLES, AUTOCAL2_NET_HEIGHT_TARGET,
+from core.config import (AUTOCAL2_MIN_SAMPLES, AUTOCAL2_NET_HEIGHT_TARGET,
                     AUTOCAL2_BLUR_BOUNDS_MS, AUTOCAL2_CONF_BOUNDS)
 
 

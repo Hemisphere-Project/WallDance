@@ -21,8 +21,8 @@ HERE = Path(__file__).resolve().parent
 SRC = HERE.parent / "src"
 sys.path.insert(0, str(SRC))
 
-import config  # noqa: E402
-from tracker import DancerTrack  # noqa: E402
+import core.config as config  # noqa: E402
+from core.tracker import DancerTrack  # noqa: E402
 
 
 def _mk_track(x: float = 100.0):
@@ -131,7 +131,7 @@ def test_slow_path_duplicate_suppressed_at_report():
     # A slow-path-only track riding an integral-confirmed track is not
     # reported; the same track far away is (real second dancer).
     import tempfile
-    from tracker import DancerTracker
+    from core.tracker import DancerTracker
 
     def _confirmed_ids(tracks):
         tk = DancerTracker()
@@ -168,7 +168,7 @@ def test_slow_path_default_off_at_report():
     # is NOT reported — the report boundary behaves exactly like the shipped
     # integral-only warmup.
     import tempfile
-    from tracker import DancerTracker
+    from core.tracker import DancerTracker
 
     t = _mk_track()
     for i in range(60):

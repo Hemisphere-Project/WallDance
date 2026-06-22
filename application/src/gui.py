@@ -20,7 +20,7 @@ from gui_constants import (
     TOAST_POS, VIEWPORT_BASE_W, VIEWPORT_BASE_H, VIEWPORT_MIN,
     LAYOUT_H_PAD, LAYOUT_V_MARGIN, LAYOUT_V_FALLBACK,
 )
-from config import DANCER_COLORS
+from core.config import DANCER_COLORS
 from gui_icons import Icons
 
 # GPU monitoring (optional - works with NVIDIA GPUs)

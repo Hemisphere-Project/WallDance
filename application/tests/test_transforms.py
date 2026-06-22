@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 pytest.importorskip("torch")  # pipeline pulls in torch/ultralytics
-from pipeline import FrameProcessor  # noqa: E402
+from core.pipeline import FrameProcessor  # noqa: E402
 
 
 def _stub_track(keypoints, bbox, *, velocity=(0.0, 0.0), history=None,

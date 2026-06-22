@@ -6,9 +6,9 @@ seed — the old fixed deltas covered it only when the seed sat right.
 """
 import pytest
 
-from sensitivity_macro import (macro_to_settings, bridge_macro_to_settings,
+from core.sensitivity_macro import (macro_to_settings, bridge_macro_to_settings,
                                CONF_BOUNDS)
-from config import (SENS_CONF_MAX, SENS_CONF_MIN,
+from core.config import (SENS_CONF_MAX, SENS_CONF_MIN,
                     SENS_VAR_FLOOR, SENS_VAR_KNEE,
                     SENS_BRIDGE_MIN, SENS_BRIDGE_MAX)
 

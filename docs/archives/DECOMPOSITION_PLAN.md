@@ -1,9 +1,9 @@
 # app.py Decomposition Plan
 
 > **⚠ ARCHIVED 2026-06-22.** Phases 0–4 shipped — `app.py` is the composition root over
-> core/runtime/ui/camera/services. Kept as the architecture record + because the 22 import shims'
-> docstrings cite "docs/archives/DECOMPOSITION_PLAN.md Phase 1". The remaining follow-up (delete
-> the shims; Phase 5 tablet client) is tracked in **[../ROADMAP.md](../ROADMAP.md) §4**.
+> core/runtime/ui/camera/services. Kept as the architecture record. The Phase-1 import shims were
+> **deleted 2026-06-22** (consumers migrated to package paths); the only remaining follow-up is
+> Phase 5 (the tablet calibration client), tracked in **[../ROADMAP.md](../ROADMAP.md)**.
 > *(Internal links may point at the pre-move `docs/` layout.)*
 
 **Date:** 2026-06-11

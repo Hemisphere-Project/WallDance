@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from config_store import ConfigStore
+from core.config_store import ConfigStore
 
 
 @pytest.fixture

@@ -8,9 +8,10 @@ false-positive sweep that picks MOG2 varThreshold, and the exposure / FPS report
 import numpy as np
 import pytest
 
-import calibration
-from calibration import SceneCalibrator, ExclusionMaskBuilder
-from config import (
+import core.calibration as calibration
+
+from core.calibration import SceneCalibrator, ExclusionMaskBuilder
+from core.config import (
     AUTOCAL_MIN_HEIGHT_SAMPLES,
     AUTOCAL_VARTHRESH_CANDIDATES,
     AUTOCAL_FP_TARGET,
@@ -336,14 +337,14 @@ def test_cell_at_maps_points():
 # Gamma noise cap (⑤b — verydark regime)
 # --------------------------------------------------------------------------
 def test_gamma_cap_limits_brightening_on_noisy_scene():
-    from calibration import cap_gamma_for_noise
+    from core.calibration import cap_gamma_for_noise
     g, capped = cap_gamma_for_noise(2.6, noise_sigma=6.0,
                                     sigma_threshold=4.0, cap=1.8)
     assert capped and g == 1.8
 
 
 def test_gamma_cap_leaves_quiet_or_mild_scenes_alone():
-    from calibration import cap_gamma_for_noise
+    from core.calibration import cap_gamma_for_noise
     # Quiet scene: any gamma passes.
     g, capped = cap_gamma_for_noise(2.6, noise_sigma=1.0,
                                     sigma_threshold=4.0, cap=1.8)
@@ -372,7 +373,7 @@ def test_state_machine_guards():
 # --------------------------------------------------------------------------
 # U3 — exposure servo (Calib1 phase A)
 # --------------------------------------------------------------------------
-from calibration import ExposureServo, seed_clahe, seed_gamma, scene_report_stats
+from core.calibration import ExposureServo, seed_clahe, seed_gamma, scene_report_stats
 
 
 def _drive(servo, brightness, clip=0.0, max_frames=400):

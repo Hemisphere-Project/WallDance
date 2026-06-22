@@ -11,7 +11,7 @@ from datetime import datetime
 
 import pytest
 
-from ops_monitor import (
+from core.ops_monitor import (
     Alert,
     CheckResult,
     HealthMonitor,

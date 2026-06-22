@@ -15,8 +15,8 @@ HERE = Path(__file__).resolve().parent
 SRC = HERE.parent / "src"
 sys.path.insert(0, str(SRC))
 
-import config  # noqa: E402
-from tracker import DancerTracker  # noqa: E402
+import core.config as config  # noqa: E402
+from core.tracker import DancerTracker  # noqa: E402
 
 
 class FakeTrack:
@@ -87,7 +87,8 @@ def test_low_warmup_still_not_reported():
 
 
 def test_gate_can_be_disabled(monkeypatch):
-    import tracker
+    import core.tracker as tracker
+
     monkeypatch.setattr(tracker, "TRACKER_REPORT_REQUIRES_SKELETON", False)
     t = _tracker()
     ids = _confirmed_ids(t, [FakeTrack(6, since_skel=10, vel=[0.0, 0.0])])

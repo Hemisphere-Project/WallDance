@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 pytest.importorskip("torch")  # pipeline pulls in torch/ultralytics
-from pipeline import FrameProcessor, ScaledTrack  # noqa: E402
+from core.pipeline import FrameProcessor, ScaledTrack  # noqa: E402
 from core.config import BOX_SIZE_OUTPUT_SMOOTHING  # noqa: E402
 
 
