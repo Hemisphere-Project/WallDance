@@ -11,7 +11,7 @@ There are three kinds of testing here, do them in this order:
 3. **On-rig checks** — the things only the real camera + dancers can prove.
 
 Companion docs: [NEW_SHOW.md](NEW_SHOW.md) (the live field checklist),
-[OPERATOR_V2.md](OPERATOR_V2.md) (design), [OSC_CONTRACT.md](OSC_CONTRACT.md)
+[ROADMAP.md](ROADMAP.md) (the plan), [OSC_CONTRACT.md](OSC_CONTRACT.md)
 (what TouchDesigner receives).
 
 > **All commands below run from the `application/` folder**, using the bundled
@@ -56,8 +56,9 @@ on `127.0.0.1:9000`:
   it must never silently disagree with the applied value.
 
 ### 1.5 The automated safety net (run before trusting any change)
-- Unit suite (fast, ~8 s): `./.venv/Scripts/python.exe -m pytest -q`
-  → expect **342 passed, 7 skipped**.
+- Unit suite (fast, ~12 s): `./.venv/Scripts/python.exe -m pytest -q`
+  → expect **345 passed, 7 skipped** (the 7 need footage). Requires the project venv
+  (`application/.venv`); the system Python has no pytest.
 - Golden replay (needs footage, which is present on this machine):
   `WD_RUN_REPLAY=1 ./.venv/Scripts/python.exe -m pytest tests/test_regression_replay.py -v`
   → the golden trio (`hangar-floor`, `hangar-aerial`, `texture-aerial`) must

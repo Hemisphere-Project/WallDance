@@ -2,7 +2,7 @@
 
 > **Status: toolchain built (A–F done) and in use.** The cross-parameter test that builds on
 > this harness (scoring/replay/detect_cache/tune/sensitivity/overlay) is **Track G in
-> [OPERATOR_V2.md](OPERATOR_V2.md)**. This doc = the methodology + tool inventory reference.
+> [ROADMAP.md](ROADMAP.md) §3** (G1–G6 done). This doc = the methodology + tool inventory reference.
 
 **Date:** 2026-06-09
 **Status:** **ALL phases A–F DONE** (see "## Progress" below). The end-to-end

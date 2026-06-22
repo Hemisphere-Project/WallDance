@@ -45,7 +45,7 @@
  "ground_truth": {
   "verified": true,
   "method": "operator tile-count pass 2026-06-10 on the brightened GT sheets (tmp_analysis/gen_gt_sheets.py, 20-frame stride; range boundaries accurate to +/-20 frames)",
-  "notes": "Operator verified 2026-06-10 (per-range): [0,119]=1, [120,339]=2, [340,399]=1. DRAFT -- N varies 1-4 (people enter/leave); expected_count=2 is a placeholder. Needs per-range labels from the GT sheet before promotion to scenarios/."
+  "notes": "Operator verified 2026-06-10 (per-range): [0,119]=1, [120,339]=2, [340,399]=1. N varies 1-4 as people enter/leave; per-range expected_count labels applied (the top-level expected_count is the dominant-range fallback)."
  },
  "config": {
   "camera_source": "ids:4110042130",

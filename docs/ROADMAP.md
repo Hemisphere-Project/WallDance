@@ -1,318 +1,238 @@
 # WallDance Roadmap
 
-**Date:** 2026-06-10 (full code review; P3 + UX track U0–U5 are now **merged to `main`** — branch pointers below are historical)
-**Status:** Single source of truth. Merges and supersedes `ROBUSTNESS_PLAN.md` (detection/setup north star), `AUDIT.md` (maintainability), `P3_FUSION_SIMPLIFICATION.md` (P3 design), and the tracker history in `TRACKING_PLAN.md` — all now under [archives/](archives/).
-**Companion:** [TODO.md](TODO.md) — the granular build / hardware checklist (a different altitude; not duplicated here).
+**Date:** 2026-06-22 · **Status:** Single source of truth for *forward work*. Index of all docs:
+**[README.md](README.md)**.
 
-> **▶ Forward work now lives in [OPERATOR_V2.md](OPERATOR_V2.md)** — the authoritative entry
-> point for the next operations (operator UX = linear phase rail, calibration v2 / signal-axis
-> merge, settings governance, the output/OSC layer, and the cross-parameter test). This roadmap
-> stays the **strategic source of truth + the record of the shipped detection algorithm**
-> (P0–P4, §4.2 Phase 2/2b). When the two disagree on forward plan, OPERATOR_V2 wins.
+This is the one place for "what's next." It merges and supersedes the forward content of the old
+`OPERATOR_V2.md` (Tracks O/X/C/S/G/D/P), the `TODO.md` build/hardware phases, the open
+`AUTOTUNE_DESIGN.md` gaps, and the `TRACKING_ROBUSTNESS.md` IR-marker direction. The detailed
+**shipped record** (P0–P4, corpus Phase 0–2b, resolved bugs #1–#14, tracker lessons, env findings)
+moved to **[archives/ENGINEERING_RECORD.md](archives/ENGINEERING_RECORD.md)** — §6 keeps a
+condensed index so code comments that cite `ROADMAP bug #N` / `P3` / `§3a` / `Track O` still
+resolve here.
 
-Two parallel tracks run through this roadmap: **Detection & Setup** (make it robust and set-and-forget) and **Maintainability** (make it safe to evolve). They are sequenced together in §4.
+> **Track labels (O/X/C/S/G/D/P)** are referenced throughout the code (`gui_builder.py`
+> "OPERATOR_V2 Track O", `pipeline.py` "Track X", etc.). They are preserved in §3 below — that is
+> now their canonical home.
 
 ---
 
 ## 0. North star
 
-A WallDance operator should: rig the camera, aim the IR light, press **one calibration button**, and get robust detection for the whole show — without tuning knobs per venue. "Set and forget" = **one explicit, logged calibration, then stable**, *not* continuous silent auto-tuning.
+A WallDance operator should: rig the camera, aim the IR light, press **one calibration button**,
+and get robust detection for the whole show — **without tuning knobs per venue**. "Set and forget"
+= one explicit, logged calibration, then stable, *not* continuous silent auto-tuning.
 
-The system is excellent engineering that historically optimized for the wrong target (zero ID-swaps on one clip). This roadmap re-points it at the real field pains.
-
----
-
-## 1. Field constraints (operator-confirmed 2026-06-08)
-
-| Question | Answer | Consequence |
-|----------|--------|-------------|
-| Worst field pains | **Ghosts, drops, setup time** (NOT ID swaps) | Stop optimizing swaps to zero; spend the budget on ghosts/drops/setup |
-| Scene stability | **Fixed per show, re-rigged often** | Calibrate-on-Go-Live is the right model; in-show background modeling + auto exclusion masks are safe |
-| IR hardware appetite | **Willing to add illuminators** | Weight root-cause (better SNR) over software compensation |
-| OSC consumer needs | **Positions + rough identity OK** | Occasional ID swaps are acceptable; pose/centroid quality matters more than identity permanence |
+The **detection algorithm is done** (§6 P0–P4, corpus Phase 2/2b). Two frontiers remain:
+1. **Operability** — make the shipped algorithm trustworthy on a *new* show: a linear operator
+   spine, a unified calibration pass, settings governance, the output/OSC layer. (Tracks O/C/S/X/G,
+   mostly shipped; the remaining correctness + engine work is §3.)
+2. **The next leap** — the current detection tower is near its ceiling (§2). The durable win is a
+   **positive signal at the source: IR retroreflective markers** (§3.3, the marquee research bet).
 
 ---
 
-## 2. Diagnosis — the compensation cascade
+## 1. Where we are (shipped subsystems)
 
-The detection stack accreted as a chain where each layer patches the weakness below it:
-
-```
-Poor / uneven IR lighting on big scenes        ← root cause
-  → low YOLO contrast & confidence
-    → YOLO_CONFIDENCE lowered to 0.25 (to catch awkward poses)
-      → background ghost floods (trees, balcony, wall paint, shadows)
-        → MOTION_CROSSVAL layer (reject non-moving ghosts via MOG2)
-          → crossval kills real dancers who stand still
-            → BYPASS + CONFIDENT + HYSTERESIS + STICKY exceptions
-              → crossval "death spirals" (0 confirmed tracks)
-                → REACQUIRE escape mode
-                  → motion bridge (survive YOLO gaps)
-                    → bridge Kalman drift
-                      → velocity friction + progressive R inflation + presence/frame-diff tiers
-```
-
-Each arrow is individually reasonable. The **sum** is ~90 interacting constants in [config.py](../application/src/config.py), most fit to the **p99 of a single 700-frame clip** (slot 7, tango-phone). That is overfitting — a new venue lands outside the fitted distribution, so it "needs tuning." **That is the setup-time pain, by construction.**
-
-**Strategic implication:** the cheapest intervention is at the *top* of the cascade. Better IR → higher confidence → raise the YOLO threshold → most ghosts die at the source → the lower layers become optional.
+| Subsystem | State | Where |
+|-----------|-------|-------|
+| Detection algorithm P0–P4 | ✅ Shipped + corpus-validated (Phase 2/2b) | §6; [archives/ENGINEERING_RECORD.md](archives/ENGINEERING_RECORD.md) |
+| `app.py` decomposition (core/runtime/ui/camera/services + command/event seam) | ✅ Phases 0–4 done; app.py = composition root (~2.1k ln) | [archives/DECOMPOSITION_PLAN.md](archives/DECOMPOSITION_PLAN.md) |
+| Operator UX v2 — linear **phase rail** (① Rig → ⑥ Live), drawers, status strip, two dials | ✅ Shipped (Track O) | `gui_builder.py`, `gui.py` |
+| Two-pass calibration (Aim/servo + Dancers pool), in-app **CLAHE×conf sweep**, manual exclusion paint | ✅ Shipped (Track C) | `runtime/calibration_flows.py`, `core/calibration.py`, `core/calib2.py` |
+| Output/OSC layer — box-clamp + single **L-driven `/walldance/dancer/*`** stream (CV-Kalman + RTS smoother) | ✅ Shipped (Track X) | `core/output_smoother.py`, `core/osc_output.py`; contract: [OSC_CONTRACT.md](OSC_CONTRACT.md) |
+| Phase ⑤ Verify (readiness panel + subprocess dry-run) + operator playbook | ✅ Shipped | [NEW_SHOW.md](NEW_SHOW.md) |
+| Ops: readiness gate, HealthMonitor, LoopWatchdog, camera auto-recovery, 4 h soak | ✅ Shipped (4 h PASS 2026-06-13) | `core/ops_monitor.py`, `tests/soak.py` |
+| Cross-parameter test (Track G, G1–G6) | ✅ Done 2026-06-15 — dials validated, CLAHE no-formula, governance table | §3, `tmp_analysis/g1…g6/` |
+| Config schema v2 + validation + versioning, launcher update safety, CI (352 tests) | ✅ Shipped | `core/config_schema.py`, `tests/`, `.github/workflows/ci.yml` |
 
 ---
 
-## 3. The two reframes
+## 2. The strategy in brief
 
-**3a. Stop fighting ID swaps so hard.** The OSC consumer only needs *positions + rough identity*, yet the most fragile, most overfit code is the swap-correction machinery (`_check_occlusion_cascade_swaps`, `_check_merge_direction_swaps`, `_check_two_opt_swaps`, the slot-7 `TRACKER_MAHALANOBIS_GATE=16.27` / `TRACKER_MAX_DISPLACEMENT_RATIO=0.5` gates). Keep a simple identity layer (Kalman + Hungarian + sane gates); **relax or disable** the post-hoc correctors; accept occasional swaps. Simultaneously more robust *and* easier to set up.
+The detection stack is a **compensation cascade** — each layer (low conf → ghost flood →
+motion crossval → bridge → frozen-ghost gate → exclusion) patches the weakness below it; the sum is
+~90 interacting constants overfit to one clip. Two reframes followed (full prose:
+[ENGINEERING_RECORD §2–§3](archives/ENGINEERING_RECORD.md)):
 
-**3b. Separate the ghost axis from the drop axis.** Ghosts want a **high** confidence threshold; drops want a **low** one. A single threshold cannot win under uneven IR. Decouple: reject ghosts **by location + stationarity** (auto exclusion mask), keep confidence **low** enough to catch awkward/still/far dancers, and let **better IR** lift the whole distribution so one threshold cleanly separates real from ghost.
+- **§3a — stop fighting ID swaps.** The OSC consumer needs *position + rough identity*; the
+  post-hoc swap correctors were the most fragile, most overfit code → disabled by default
+  (`tracker_swap_correctors`, Phase 2 ⑧).
+- **§3b — separate the ghost axis from the drop axis.** Ghosts want high confidence, drops want
+  low; one threshold can't win under uneven IR → reject ghosts by location/stationarity, keep
+  confidence low, lift the whole distribution with better IR.
 
-All field answers point the same way: **better lighting + spatial ghost rejection + calibrate-on-Go-Live** attack ghosts, drops, and setup *at once*, without per-session tuning.
-
----
-
-## 4. Status at a glance
-
-| Item | Track | Status | Notes |
-|------|-------|--------|-------|
-| **P0** Smartphone monitor + focus/lighting | Detection | ✅ Done | [web_monitor.py](../application/src/web_monitor.py); MJPEG + variance-of-Laplacian focus + uniformity/clip/histogram |
-| **P1.3** Add IR, raise confidence | Detection | ⛔ Hardware-blocked | Needs illuminators rigged, then measure ghost drop on a recording |
-| **P1.4** Auto exclusion mask | Detection | ✅ Done | Built in the Calibrate window; validated on real ghosts 2026-06-11 (§4.2 Phase 2 ④: facade-ghosts ghost 1.117→0.514 at zero drop cost; caveat: can eat dancers on heavy-texture scenes → manual editor ships with ④) |
-| **P2** Go-Live auto-calibration | Detection | ✅ Done | Height/ratios + empirical FP-sweep varThreshold + exposure/FPS report; apply-then-save |
-| **P3** Motion-subsystem simplification | Detection | ✅ Done (merged to `main`) | One `MotionModel` (1 MOG2 + frame-diff), scored detection gate, merged YOLO/Motion-First, source-weighted measurement, simplified bridge; see §5 P3. Slot-7 corrector relaxation **done 2026-06-11** (§4.2 Phase 2 ⑧: correctors default-off behind `tracker_swap_correctors`). |
-| **P4** Regression fixtures + transform tests | Both | ✅ Re-founded 2026-06-10 | Replay harness ([replay.py](../application/tests/replay.py)) + transform tests ([test_transforms.py](../application/tests/test_transforms.py)). Goldens **re-founded on the annotated corpus** (trio: `hangar-floor`/`hangar-aerial` = ex residence1-solo slots 3&4 + `texture-aerial`; opt-in `WD_RUN_REPLAY=1`) with **configs pinned in the scenario manifests** + recording fingerprints — see [CORPUS_ANALYSIS.md](CORPUS_ANALYSIS.md) §5. 10 manifests + 2 drafts cover the multi-dancer/aerial/ghost/small-far/static-person gaps; operator GT pass pending. |
-| Tests + CI | Maint. | ✅ CI live | GitHub Actions runs `tests/` on push/PR (import-light); replay regression is opt-in/GPU. |
-| Typed config validation + versioning | Maint. | 🟡 Largely done (U2) | [config_schema.py](../application/src/config_schema.py): v2 profiles, migration, range clamps on load. Remaining: cross-field checks; surface warnings in the GUI (today console-only) |
-| `app.py` decomposition | Maint. | ✅ Phases 0–4 + wizard operator-passed 2026-06-12 | app.py 4856→1801 ln; core/runtime/ui/camera/services packages, six controllers, command/event seam, main loop as tick stages, guided Calibrate All wizard as a second seam client ([DECOMPOSITION_PLAN.md](DECOMPOSITION_PLAN.md)). Remaining: Phase 5 = tablet calibration client (separate effort, unblocked); wizard servo phase re-check on next rig day |
-| GUI / stack direction | Maint. | ✅ Decided 2026-06-11 | Stay Python; keep DearPyGui for now — 4 targeted fixes shipped (toast race, modal centering, preview upload, `gui_constants.py`); PySide6 is the default candidate if/when migrating. Audit: [GUI_STACK_AUDIT.md](GUI_STACK_AUDIT.md) |
-| Launcher update safety | Maint. | ✅ Done 2026-06-11 | Ahead/diverged classification + dirty-tree refusal; see §6 |
-| Model-artifact footprint | Maint. | ✅ Resolved (verified 2026-06-10) | `models/` is gitignored; `.git` ≈ 69 MB. (8 GB on disk is untracked working data.) |
-| Startup project picker | Enhancement | ✅ Done | §7B; shipped (`config_store.rename_project`/`delete_project`, modal picker, Enter-launch) |
-| **Production UX track (U0–U5)** | UX | ✅ Merged to `main` | See [UX_PLAN.md](UX_PLAN.md): expert mode, lighting profiles, calib1 (scene/servo/joint sweep), calib2 (evidence pool/imgsz), sensitivity macro. Numeric rules provisional → re-fit on annotated footage (imgsz target + model choice: ✅ benchmarked 2026-06-12, §4.2 Phase 2b — target 110 validated + dark-scene target 45, model rule = largest yolo11 tier in budget; τ seeding deferred to Phase 3) |
-
-### 4.1 Decisions + sequenced next steps (full review, operator-arbitrated 2026-06-10)
-
-**Decisions locked:**
-
-1. **Calibration persistence** — the calibration result dialog's "Save to project" must write a
-   normal **timestamped project save** (what the picker / startup loads). `_safe_defaults.json`
-   stays a *separate, explicit* action. (Today it silently writes safe-defaults only → a
-   calibrate→Save→restart loses the calibration; bugs #6/#7.)
-2. **Calib1 scope = camera + lighting only** (exposure/gain servo, gamma/CLAHE seed, var×scale
-   sweep, exclusion mask, report card). The person-height measurement still living in
-   `SceneCalibrator` moves out — **Calib2 owns all subject-derived knobs**. Fix the contradictory
-   operator toasts at the same time (bug #12b).
-3. **Corpus first** — recording + labeling broader footage outranks all other open work (it gates
-   the provisional U4/U5 constants, the KNOBS "FIXED" verdicts, and the unexercised P3
-   relay/cold/`yolo_first` paths).
-4. **Full GPU/CPU post-YOLO unification** (not just a parity test) — see step 4 below for the
-   risk plan.
-
-**Sequence:**
-
-| # | Step | Why this order |
-|---|------|----------------|
-| 1 | **Corpus**: on the real IDS rig, record ghost-heavy / multi-dancer / YOLO-dropout / `yolo_first` / small-far sessions into slots; label known-N scenarios (cheap: count per frame range, TUNING Phase A schema) — **✅ done 2026-06-10** (except the rig session): operator annotated 38 slots (CORPUS_NOTES), full survey + replay analysis ran ([CORPUS_ANALYSIS.md](CORPUS_ANALYSIS.md)), goldens re-founded (trio, pinned configs), **12 GT-verified manifests** committed (incl. per-range labels). Remaining: a session on the real IDS+Starvis2+even-IR rig | Keystone — everything numeric downstream re-fits against it |
-| 2 | **Persistence fixes**: bugs #6 (save semantics), #7 (`_safe_defaults` hijacks "latest"), #8 (sensitivity var-anchor ratchet) — **✅ done 2026-06-10** (see §9) | Small diffs, high operator value — the "last mile" of the P2/U3/U4 investment |
-| 3 | **Signal fixes**: bug #9 (letterbox pad @ scale=1) + bug #4 (frame-diff stale pair cap), each validated on replay + new transform test cases — **✅ done 2026-06-10** (see §9) | Correctness of the primary ghost/relay signal on the quiet Starvis2 scenes we are building toward |
-| 4 | **Unify the post-YOLO path** (bug #10): extract one transform-parameterized chain (gate → exclusion → cold blobs → tracker → OSC) consumed by both `_process_cpu` and the GPU path. Risk plan: (a) land a CPU↔GPU parity replay test *first* (same frames through both paths, compare timelines) so the refactor is measurable; (b) goldens must stay bit-identical on the CPU path; (c) the letterbox proxies stay — only the orchestration unifies — **✅ done 2026-06-10** (see §9 bug #10) | Removes the "tuned path ≠ show path" blind spot; bug #9 lives in exactly this duplication |
-| 5 | **Ops cluster** (TODO Phase 7, elevated): camera auto-recovery, watchdog, FPS/no-detection alerts, **4 h soak test**; plus a pre-Go-Live "show readiness" line (camera FPS, TRT active vs fallback, OSC reachable, calibration age + profile, disk space) — **✅ code shipped 2026-06-11** ([ops_monitor.py](../application/src/ops_monitor.py) readiness + HealthMonitor + LoopWatchdog, camera dead-spin recovery fix, [tests/soak.py](../application/tests/soak.py) chunked soak harness; detail in TODO Phase 7). **4 h soak ✅ PASS 2026-06-13** (cool machine, `tmp_analysis/soak_20260612_234512`: 276k frames, 0 stalls, RSS +1.4 MB/h, CUDA 0.0, fps flat — the 06-12 fps-trend FAIL was thermal). Remaining: a rig USB-pull validation | A USB3 stall at minute 40 is worse than any ghost; detection got the recent budget, ops did not |
-| 6 | **Performance backlog** (§10) — opportunistic, replay-gated | None of it blocks a show today; do alongside 3–5 where touching the same code |
-
-### 4.2 Corpus-analysis follow-up plan (operator-agreed 2026-06-10)
-
-Full plan + evidence in [CORPUS_ANALYSIS.md](CORPUS_ANALYSIS.md) (§9 + the agreed chat plan). Phases:
-
-| Phase | Scope | Status |
-|-------|-------|--------|
-| **0 — Corpus re-founding** | Pinned-config scenario schema + loud-fail replay + fingerprints + pass lines (`scoring.evaluate_pass`); golden trio regenerated (`hangar-floor`, `hangar-aerial`, `texture-aerial`); 12 manifests | ✅ **Done 2026-06-10** incl. the operator GT pass (all 12 verified; per-range labels for blur-runner / dark-crowd / white-walkers) |
-| **1 — Project config repair** | Agent-run headless Calib1+Calib2 per IDS-rig project → timestamped saves + before/after replay report; operator does a ~10 min in-app pass per project. (Fixes the bulk-copied `person_height_px=56` configs live on 4 projects) | ✅ **Done 2026-06-10** — 7/8 adopted (mean scores e.g. whitebg2 0.537→0.012, testflou 0.742→0.042 PASS-B, TOGO-day 0.501→0.056 PASS-B); TOGO-night retained (brightening trades drops for *static* facade ghosts the motion-exclusion mask can't catch → Phase 2 ⑥ must be clean-plate-guarded). 3 scenarios now meet pass lines (was 0). Details: `tmp_analysis/phase1/SUMMARY.md`. Operator in-app pass pending |
-| **2 — Logic & constants** (each a small replay-gated diff, in order) | ① warmup intermittent-confirm — **✅ done 2026-06-11** as the per-scene switch `tracker_intermittent_confirm` (bug #14; six-variant measurement trail in tmp_analysis/phase2/SUMMARY.md; default off = bit-identical, goldens green) ② duplicate-track merge — **✅ done 2026-06-11** as the default-on **takeover merge** (`tracker._merge_takeover_duplicates`): the measured duplicates are not co-located doubles but *zombie* tracks that lost their dancer to another track and keep wandering (the TUNING Phase F residual); discriminator = pair **co-fed history** (both tracks skeleton-fed the same frame: 22–96 % on real pairs vs ~0 % on zombie pairs; outdoor-sitter control 96 %). 12-scenario gate: mean **−0.044** — white-duo 0.809→0.539, texture-aerial 0.386→0.233, facade-ghosts −0.075, texture-duo −0.028 (ghost halved; part of the drop uptick is zombie-masked drops surfacing honestly), 8 scenes bit-identical, PASS verdicts unchanged; texture-aerial golden re-baselined (internal churn metrics moved, reported timeline improved). Known residual: a *young* real pair (<3 co-fed frames) during a one-sided YOLO dropout can be falsely merged — measured net-positive anyway; trail in tmp_analysis/phase2/SUMMARY.md ③ MAX_PERSONS enforcement (bug 12c) — **✅ done 2026-06-11** as a report-boundary cap (`tracker._collect_confirmed_tracks`, default 6): top-K by hits / older id on ties, internal tracks untouched, per-project key `max_persons` (schema-clamped 1–32, replay manifests honor it), `MAX_PERSONS_CAPPED` JSONL event + sustained `over_cap` HealthMonitor alert (`OPS_OVER_CAP_ALERT_S`, active in playback rehearsal too). 12-scenario gate: mean **−0.046**, 11/12 timelines bit-identical (cap never engages on non-stress scenes); facade-ghosts 1.817→1.266 (ghost 1.668→1.117, **drop untouched** 0.036 — never evicted a real dancer; was 107/400 frames over cap peaking at 12 simultaneous ids for 4 dancers, now 0 over). Goldens 3/3 green. Residual: caps *simultaneous* ids only — lifetime id churn is ②/④'s job; trail in tmp_analysis/phase2/SUMMARY.md ④ exclusion mask default-on + manual editor + report line — **✅ done 2026-06-11**: auto-build on Calib1 was already default-on (P1.4); shipped the **manual cell editor** (paint-style click/drag on the preview, GUI section with count + Edit/Clear; operator overlays `exclusion_manual_add/remove` stored separately so Calib1 re-runs replace only auto cells — bystander zones + vetoes survive recalibration), calib-dialog manual counts + readiness mask-cell line. Gate: 12/12 timelines bit-identical (no default change). Evidence (pre-show-window masks via the real pipeline): facade-ghosts 1.266→**0.663** (ghost 1.117→0.514, drop untouched; cumulative Phase 2: 1.892→0.663) — but texture-duo NET WORSE (drop 0.432→0.518; cells overlap the dance area) and white-duo unchanged (its ghosts ride dancers, ② territory) → masks are the fixed-spot weapon only, must stay visible/editable (= this step's editor); operator-check item for the Phase 4 playbook. Trail in tmp_analysis/phase2/SUMMARY.md ⑤ calib2 amendments — **✅ done 2026-06-11** (all four): ⓐ **box-conf seed** (supersedes bug #11) — box confidences threaded extraction→`ScaledTrack.box_conf` via a value-keyed map; Calib2 pools box conf (the unit `confidence` thresholds), legacy kp-conf runs tagged + excluded from the seed, clamp widened to the corpus best-τ span (0.15–0.65); ⓑ **gamma noise cap** (`cap_gamma_for_noise`, ≤1.8 when window noise σ high — verydark/TOGO-night regime; applied post-sweep = conservative var); ⓒ **imgsz FPS budget** (bug 12e/P-6) — fps ∝ imgsz⁻² from the runs' measured fps, presets under 20 fps rejected, height-target miss is an explicit RIG ADVISORY not a silent fallback; ⓓ **height-staleness alarm** — `height_stale` health alert on 2 min of RAW pre-size-gate median height outside the gate (track heights can't carry the signal: the gate eats out-of-gate dancers) — would have caught the bulk-copied h=56 configs. Gate: 12/12 bit-identical + goldens green (stash-only pipeline change); +14 unit tests; trail in tmp_analysis/phase2/SUMMARY.md ⑥ static-person gate OR-term *only if* `outdoor-sitter` still fails after ①–⑤ ⑦ sensitivity-macro span re-fit — **✅ done 2026-06-11**: the dial now interpolates from the seed to **absolute corpus bounds** `SENS_CONF_MIN/MAX = 0.15/0.65` (best-τ span, §6.7) instead of fixed ±deltas — the full measured range is reachable from any seed (the old +0.25/−0.15 covered it only when the seed sat right); out-of-span seeds hold on that side instead of pushing further out; var floor 8 / knee 75 kept (corpus-confirmed). Macro is GUI-side only → no replay impact; unit suite 224 green ⑧ slot-7 corrector relaxation (§3a) — **✅ done 2026-06-11**: the three post-hoc swap correctors (occlusion-cascade, merge-direction, two-opt) now sit behind ONE master switch `tracker.swap_correctors` (`TRACKER_SWAP_CORRECTORS`, **default off**; per-scene key `tracker_swap_correctors` as the duo-show fallback). Measured first: 83 firings on 5/12 scenarios, **78 of 83 = occlusion-cascade**; all-off gate mean **−0.027** — hangar-aerial 0.222→0.043 (**golden flips fail→PASS**), texture-aerial 0.233→0.104, white-duo 0.539→0.450, and **id_pen improves on every affected scene** (the identity machinery was itself the churn source: the cascade heuristic false-fires on aerial/erratic motion and suppresses the REAL track). Cost: texture-duo +0.068, dominated by one 45-frame corrector-assisted hold (scene fails its line ~10× either way — IR/duo territory). No-cascade ablation: no corrector subset dominates → all three off together. Pre-assignment gates (Mahalanobis/displacement) untouched per §8 lessons 3–4. Goldens re-baselined (swap_count→0), 12/12 shipped-code byte-identity vs the measured variant; trail in tmp_analysis/phase2/SUMMARY.md | ✅ **Phase 2 done 2026-06-11** (⑥ skipped per its condition: outdoor-sitter passes post-①–⑤) |
-| **2b — imgsz × model selection benchmark** (operator-requested 2026-06-11) | One corpus sweep, two selection rules. Today **imgsz has a rule but unvalidated constants** — `calib2.select_imgsz` picks the smallest preset with net dancer height `person_height_px × imgsz / roi_long_side ≥ 110 px` under the ⑤c FPS budget, but the **110 px target is observational** (extrapolated from the fixed 11x@1280 survey + two replay points: TOGO-day 960 ⇒ ~78 px net → drops, 1536 fixes the math — CORPUS §3.5), never measured as a curve; **model has no rule at all** (global `yolo11m` default in config.py, manifests pin 11x, `select_imgsz`'s budget "assumes L/X" per UX_PLAN §2, README hand-waves n/s-for-speed — yet build_engines.sh already builds all ten `{yolo11,yolo26}{n,s,m,l,x}-pose` engines nothing measures). Grid: 12 scenarios × 10 models × 6 imgsz presets (~720 cells, prunable where predicted net height sits far under any plausible knee), scored **through the full pipeline vs the pass lines** (TUNING lesson: YOLO-level picks measurably backfire), one detect-cache build per (scenario, model, imgsz) at conf floor 0.05 with τ re-applied from cache (small detect_cache filter hook; a fixed pinned τ would bias every cell toward the calibrated 11x — re-seed per cell via the ⑤a box-conf rule or a coarse τ sweep). Deliverables: (a) **net-height target validated/re-fit** — score-vs-net-height curves per scene class: knee location and shape, whether above-knee imgsz buys anything or only costs FPS, whether the knee shifts for aerial/crumpled poses (§3.5 claims pose ≠ size — untested across imgsz) and per model tier (smaller models likely need more px); (b) **yolo26-vs-yolo11 same-tier verdict** — if 26 wins tier-for-tier it's a free default swap; pre-check the 26-pose decode/conf semantics through the extraction path on one scene before bulk runs; (c) **joint (model, imgsz) pick under the FPS budget** for Calib2 — capacity vs resolution at equal predicted cost (does 11n@1536 beat 11x@960 on small-far scenes, and the reverse on low-SNR/aerial?), rule inputs restricted to calib-time measurables (height, ROI, measured fps, brightness, noise σ). Per-model fps cost factors are **per-rig** — measure once at engine-build time and extend ⑤c's imgsz⁻² model (§10 P-6); the quality surface itself is rig-independent (recordings). Quality measured on .pt; spot-check one scene on TRT FP16 for conf drift before trusting the transfer. Run as a chunked background batch (soak-harness pattern: heartbeat progress + stall detection). Feeds Phase 3's per-scene seeds + the Phase 4 playbook defaults | ✅ **Done 2026-06-12** — 710-cell grid measured (12 × 10 × 6 after the net<30 px prune; ~7,400 full-pipeline cache replays, coarse τ grid + per-cell ⑤a seed; the cache-filter path proven **bit-identical** to the standard harness on 2 scenes before the bulk runs). **(a) target 110 validated** (knee medians 83–102 px, p75 104–128, flat across tiers; aerial does *not* raise the knee — §3.5's pose-needs-more-px claim fails at knee level) and **oversizing actively hurts** (above-knee Δ median −0.10)… except the curve **inverts on dark/noisy scenes** (dark-crowd 0.19@640 → 0.76@960-pinned → 0.96@1536: downscale = denoise; outdoor-night U-shaped) → shipped `AUTOCAL2_NET_HEIGHT_TARGET_DARK=45` behind the ⑤b noise-σ condition (live `motion_model.noise_sigma()`, wired in `calibration_flows._calib2_aggregate`); white-walkers confirms the starvation → rig-advisory case (monotone to 1920, knee unreachable in-grid; IR/optics, not software). **(b) yolo26: NOT a free swap** — yolo11 wins or ties every tier (Δ mean +0.05…+0.12 on n/s/x; 26n/26s clearly weak; 26x fails white-walkers outright; 26 conf scale sits −0.21 below 11 on matched boxes → would break every seeded config); keep yolo11. **(c) joint rule landed**: imgsz = smallest preset ≥ target (110 / 45-dark) under the FPS budget; model = largest yolo11 tier inside the budget at that imgsz (capacity is the only reliable lever on hard small-far/dark scenes; n/s never auto-picked) — implemented as the P-6 per-rig fps table (`extra/measure_engine_fps.py`, auto-run by build_engines.sh → `models/fps_table.json`; calib2 consumes it for the measured cost curve — the imgsz⁻² law measurably breaks <960 — plus a report-only model advisory in the Calib2 dialog). **(d) ⑤a seed is weak grid-wide** (median regret +0.056 vs sweep-best τ; 91 % of seeds pinned at the clamp; best τ = the 0.05 floor on 313/710 cells — the post-YOLO chain carries low τ) → τ ownership moves to Phase 3's known-N search; per-scene oracle (model, imgsz, τ) seeds exported in tmp_analysis/phase2b/analysis.json. TRT FP16 spot-check: conf drift ≤0.029 max / 0.017 p95, identical det sets, 1.85× faster → the .pt quality surface transfers to the show path. Unit suite 310 green (+9 new), goldens bit-green (calibration-time-only diff). Full trail: tmp_analysis/phase2b/SUMMARY.md |
-| **3 — Known-N calibration productization** | tune.py joint search behind an operator flow (CLI ritual first, GUI later) — YOLO-level threshold picks measurably backfire on ghost-heavy scenes. Phase 2b additions to this scope: **per-scene τ ownership** (the ⑤a seed is weak grid-wide — median regret +0.056, 91 % clamp-pinned; per-scene oracle (model, imgsz, τ) seeds exported in tmp_analysis/phase2b/analysis.json) and the **calib-time imgsz dark-probe** (run the Calib2 window's tail frames at the two candidate presets — the 110 px and the 45 px pick — and compare detections/box-conf on the known dancers; supersedes the σ>4 threshold heuristic, which is fit on only n=2 dark scenes; ~2–4 s extra at calibration, zero show-time cost) | ⬜ |
-| **4 — "New show" procedure** | `docs/NEW_SHOW.md` operator playbook + dry-run on 2 existing projects via playback | ⬜ |
-
-**Scene-class pass lines (agreed, refinable per manifest):** A (indoor rigged) drop ≤ 0.05, longest ≤ 1.0 s, ghost ≤ 0.05 · B (outdoor/uncontrolled) 0.10 / 2.0 s / 0.15 · S (stress) no line. `0-TEST-phones` stays corpus-only (one project ≠ one rig setup).
+**2026-06 conclusion (TRACKING_ROBUSTNESS):** the cascade is **near its ceiling** — 2/5 hard scenes
+are not dial-solvable, CLAHE *hurts* on noisy-near-black, higher imgsz *hurts* on dark/IR (G3), and
+static dancers structurally never acquire a track. Stacking more post-processing buys little.
+**The margin is at the signal source** — hence the IR-marker bet (§3.3).
 
 ---
 
-## 5. Roadmap — Detection & Setup
+## 3. Forward plan
 
-### P0 — Remove friction, measure reality — ✅ Done
-Smartphone MJPEG monitor with a variance-of-Laplacian focus score (peak-hold + zoomed center inset) and a lighting readout (brightness, clip %, luma histogram, uniformity with the darkest tile marked). Solves "set focus and aim IR from 2 m away." Toggle via `WEB_MONITOR_ENABLED`.
+Ordered by readiness. Every behavior-touching item is **replay-gated** (goldens / 12-scenario
+scores decide, not eyeballs); pure-UI items need app-smoke only. Cross-lane items (calibration
+engine, tracker core, OSC contract) need a heads-up + explicit go before code.
 
-### P1 — Attack ghosts + drops at the root
+### 3.1 NOW — small, ready, replay-gated (one noted commit each)
 
-**P1.3 — Add IR coverage (hardware), then raise confidence.** ⛔ Pending hardware. Rig illuminators for *even* coverage (MOG2 hates gradients more than darkness), raise `YOLO_CONFIDENCE`, and measure the ghost drop on a recorded ghost-heavy session. The raw IR is near-black today (calibration measured scene brightness ≈ 5/255) — this is the root cause in §2 made concrete.
+| Item | Track | Notes |
+|------|-------|-------|
+| **Calib correctness fixes** | C | Height ownership (Calib2 = sole writer; Calib1 height diagnostic-only); apply-gate **warn-banner** on `height_ok=False`/`var_saturated=True` (don't hard-block — idempotent); **stale flag** adds profile/lighting mismatch (not just ROI drift); **imgsz reload** surfaces TRT export success/failure + fallback; **noise-σ unify** (record `noise_sigma_live` in Calib1, Calib2 reuses). Each replay-gated; re-baselines goldens on purpose → separate noted commits. *(`tracker_intermittent_confirm` wiring — ✅ done, `app.py:1125`.)* |
+| **Calib2 pool: subset preview + quiet-apply** | C | The phase-④ inline pool's proposal aggregates *all* runs, not the checkbox selection, and Apply is manual. Recompute the proposal for the **checked subset** (live preview on toggle) + a **quiet apply** (no result-modal). Operator-surface hooks already shipped (`Calib2PoolChanged`). |
+| **Track G harness gaps** | G | `--frame-skip` flag on `replay.py`/`tune.py` (cheap exploration; G1 wanted it); promote the **0.05-floor τ cache + re-apply hook** (Phase 2b used a one-off) so confidence is cheap; `calibration_state`-aware scenario configs for per-tier pins. |
+| **Phase 0a — IR-marker physical spike** ⭐ | D | **OPERATOR-OWNED, ~½ day — THE GATE for the next leap.** Retroreflective tape/thread on a test harness recorded under show IR; measure return brightness/saturation vs background, smallest reliable size, self-occlusion behaviour, visible-light invisibility, fixed-glint false positives. **Go/no-go on markers.** (Phase 0b software prototype already done: `tmp_analysis/marker_spike.py` — glint floor is low, markers look separable.) |
 
-**P1.4 — Auto exclusion mask on Go-Live.** ✅ Done. `ExclusionMaskBuilder` ([calibration.py](../application/src/calibration.py)) accumulates, over a 16×10 normalized grid during the Calibrate window, MOG2 foreground (tiled clean mask) + the positions of *kept* skeletons; a cell is masked if it moves in ≥30% of frames but holds a skeleton in ≤2% (scenery/ghost). Collected + applied at **both** crossval call sites via `FrameProcessor._exclusion_step` (GPU: letterbox scale/pad, `roi_local=True`; CPU: original space, `roi_local=False`), reusing the existing tracker→mask transform — no new coordinate code. Rejection is **guarded by proximity to a confirmed track** (a real dancer in a masked region is protected). Persisted as `exclusion_grid`/`exclusion_cells`. **Validated on playback: 0 ghost cells on clean tango footage (correct, no false masking); still needs a ghost-heavy recording to see it exclude.**
+### 3.2 NEXT — deliberate, larger
 
-### P2 — Make setup automatic — ✅ Done
-A dedicated **CALIBRATE** button (bottom bar, by STANDBY/RUN) runs a short window with YOLO forced on — works live **or during recording playback** — and sets the biggest manual knobs, then leaves them fixed. Apply-then-confirm: values apply to the session, a result dialog offers **Save to project** vs **Keep session**. Core: `SceneCalibrator` in [calibration.py](../application/src/calibration.py); `AUTOCAL_*` in config.py; persisted via `_get_saveable_config`/`_apply_config_without_model`; unit-tested.
+| Item | Track | Notes |
+|------|-------|-------|
+| **Known-N calibration productization** | C / Phase 3 | `tune.py` joint search behind an operator flow (CLI ritual first, GUI later). **Per-scene τ ownership** — the ⑤a box-conf seed is weak grid-wide (median regret +0.056, 91 % clamp-pinned); per-scene oracle `(model, imgsz, τ)` seeds exported in `tmp_analysis/phase2b/analysis.json`. **Calib-time imgsz dark-probe** (run Calib2 tail frames at the 110-px and 45-px picks, compare detections) supersedes the σ>4 heuristic. **θ_s/θ_m per-scene writer** (AUTOTUNE gap #2 / G4: `tracker_max_age`, `crossval_skel_min_kpts`, `crossval_motion_min_ratio` carry 0.03–0.07 on multi-dancer/occlusion/static — a per-scene known-N class, never a user dial). |
+| **Unified calibration engine** (C-next) | C | Collapse the engine to **Aim (servo, autonomous, early) + one Calibrate-with-dancers pass** deriving, in coupling order: **gamma (brightness) → var + clean-plate → CLAHE + height + imgsz + confidence (detection-derived) → blur budget**, over the evidence pool (exclusion stays manual). Deliberate joint design — the engine is load-bearing. G6 verified `var` is window-invariant (one dancers pass can derive it); clean-plate *pixel* recovery (skeleton-sparing robust median) is the unbuilt piece. Cross-lane (calib engine owner). |
+| **Track P — collapse 3 evidence paths → 2 (GPU-only)** | P | Drop the CPU path (#1) entirely; **TRT (#3) = single production + golden/tuning base** (eliminates the FP32→FP16 proxy gap that G1 caught mis-estimating a bridge knob); keep PT FP32 (#2) as a thin GPU-backend fallback/debug. Removes ~270–400 LOC + the dual coordinate-space transforms (the bug #5/#9 class, gone by construction) + the parity test. **Operator-approved migration** (re-baselines the 12 goldens on the TRT cache) — sequence *after* the calib Track-C golden re-baselines. Also in §4 (simplification). |
+| **Logging & diagnostics** | TODO P8 | Per-show timestamped log folder; CSV metrics (FPS/latency/brightness/track-count/dropped); snapshot profile on Go-Live (reproducibility); end-of-show summary. Builds on the existing JSONL session logging. |
 
-| Knob | Source |
-|------|--------|
-| `PERSON_HEIGHT_PX` + min/max ratios | median + p05/p95 of YOLO detection heights |
-| MOG2 `varThreshold` | **empirical background false-positive sweep** (see below) |
-| Report (no apply) | exposure stability (σ/μ), achieved FPS, post-CLAHE noise σ diagnostic |
+### 3.3 LATER — research-first, nothing committed
 
-**Lesson — varThreshold is chosen empirically, not by formula.** A first `(N·σ)²`-from-noise map was tried and discarded: it saturated at a clamp either way (raw σ0.69→16, post-CLAHE σ4.23→120) because **MOG2 self-normalises** — `varThreshold` thresholds the Mahalanobis distance `(I−μ)²/σ²_model`, and MOG2 *learns* σ²_model, so a pixel-σ→varThreshold map is dimensionless. Replaced with a sweep: each candidate runs as its own MOG2 over the window, scored by the **median grid-tile foreground fraction** (robust to the dancer minority — no bbox/letterbox transform), picking the lowest candidate under `AUTOCAL_FP_TARGET` else the highest + a `saturated` flag. On dark tango footage it picked **varThreshold=16 @ 0.01% FP** — *more* sensitive than the old default 40, with evidence ghosts stay low. Noise/FP are measured on the **actual MOG2-input gray** (`FrameProcessor.get_last_motion_gray`); brightness on the raw frame. (Caveat: calibration MOG2 models use history=window(90) vs production 500 — watch early-show behaviour.)
+> **⚠ RESEARCH-FIRST (operator directive 2026-06-15).** Each lead is gated by a scoped
+> investigation that (a) measures the benefit through the full pipeline vs the pass lines,
+> (b) is replay-gated, (c) clears an explicit go/no-go **before any implementation.** Default =
+> don't touch the pipeline.
 
-### P3 — Simplify the motion subsystem — ✅ Done (merged to `main`)
+**⭐ The next leap — IR retroreflective markers** (Track D primary; full plan
+[TRACKING_ROBUSTNESS.md](TRACKING_ROBUSTNESS.md)). A marker is the **positive "this IS a dancer"
+signal** the system lacks today — it hits all three pains at once: continuity (a saturated retro
+point ~never drops), ghosts (texture has no marker), and **static** (detectable with zero motion).
+Additive/no-regression (markerless = today's pipeline). Audience-invisibility is physics
+(retroreflection is directional). **Gated on Phase 0a (§3.1).** Phase 1 build = new
+`core/marker_detector.py` (threshold→blobs→centroids) + high-confidence fusion in `tracker.py` +
+per-venue brightness threshold in the calib flow; OSC contract unchanged.
 
-**Was:** three jobs across three files and ~90 constants — ghost rejection (`_crossval_motion_filter`, a 7-step tree), gap bridging (tracker `_lazy_bridge_with_motion`, a 3-tier cascade), cold motion-first detection (`_fuse_motion_blobs`) — fed by **two full MOG2 models per frame** (`bridge` @0.001 + `crossval` @0.005, differing only in learn rate).
+**Secondary — corpus-trained IR detector** (reframes the old Track D #1 fine-tune). Train **once**
+on the accumulated IR corpus → a domain-general IR-aerial *person/centroid* detector (boxes, not
+17-kpt — cheaper to label, and position+identity is what continuity needs). No on-site data is
+needed/possible (new venue per show). Bounded feasibility = Phase 0c (`tmp_analysis/marker_spike.py`
+neighbourhood; not yet run). Ranks below markers (lifts the floor, doesn't solve *static* as
+cleanly).
 
-**Now:** **one** `MotionModel` (one slow MOG2 silhouette + frame-diff "moving now?", surface `feed/reset/noise_sigma/foreground_blob(s)/foreground_ratio/recent_motion(_blob)`) feeding **source-weighted measurements** into the existing Kalman/Hungarian tracker. Key result: **frame-diff — not MOG2 foreground — is the ghost killer** (static textured background + lighting drift read as MOG2 foreground but show no frame-to-frame change). Each result below was measured on residence1-solo slots 3 & 4 via the replay harness.
+**Track D SNR / detection-quality leads** (ranked by leverage; each research-gated):
+2. Motion-gated temporal denoise (average static regions, keep movers sharp; upgrade the naive
+   whole-frame EMA — stay frame-independent on the motion feed, bug #1).
+3. Native-bit-depth tone-map (curve in Mono10/12, quantize last — near-free SNR in the 1–5/255
+   regime).
+4. Optical-flow coherence on the motion path (sparse LK = "coherent motion?" — stronger ghost/real
+   discriminator + better bridge prediction).
+5. Clean-plate static-person path (`background.py` exists, dormant — pairs with C-next).
+6. IR-PSF sharpening / mild deconvolution (Tamron glass isn't IR-corrected → soft IR focal plane).
+7. 3-frame difference (cleaner moving-object isolation; cheap).
+8. Motion-ROI tiling for small-far dancers (pairs with the 4K-tiling TODO).
+9. Surface untuned knobs: NMS/IoU, keypoint-conf floor, latency-tolerant multi-scale/TTA.
 
-| Stage | Done | Result |
-|-------|------|--------|
-| 0 | Replay harness + golden fixtures + transform tests (P4) | measurable refactor |
-| 1 | `motion_model.py` over one MOG2 + frame-diff (unwired) | unit-tested |
-| 2 | One `MotionModel` replaces both MOG2 (compat view shim) | **bit-identical** (2nd MOG2 was redundant) |
-| 3a | Scored gate (skeleton OR frame-diff motion OR live-track) + **Bug #1 fix** (gamma-only feed, no adaptive CLAHE) — coupled | **swaps 18→0 / 5→0, ghosts↓, dancer retained** |
-| 3b | Merge YOLO/Motion-First (§7A), gated cold detection, source-weighted R, removed redundant global-blob Hungarian bridge | no regression |
-| 3c/3d | varThreshold self-adapts via calibration (no retune); retired the orphaned `MOTION_CROSSVAL_*`/bridge-helper constants | bit-identical |
+*(Rejected: edge/gradient as a YOLO input — COCO-RGB domain mismatch. Demoted: constrained-dynamics
+"pendulum" prior, ROI spot-recheck standalone, 4×640 tiling, radio/UWB beacons, learned/LSTM
+motion — reasons in TRACKING_ROBUSTNESS.)*
 
-**Deliberate deviation (evidence-driven):** the "collapse the bridge to one position-only measurement" target was **not** fully taken — the harness showed the presence + frame-diff bridge tiers actively prevent drops (the #1 field pain), so they were kept; only the genuinely-redundant global-blob Hungarian was removed.
+**Track X X-4 — steady high-rate OSC resampling** (resample the smoothed trajectory to a fixed
+output rate regardless of YOLO cadence; output-side interpolation — unbuilt).
 
-**Deferred (not in P3):** removing the `MotionModel.detector` compat shim (a consumer-migration refactor); ~~relaxing the slot-7 swap correctors (§3a)~~ — done 2026-06-11 as §4.2 Phase 2 ⑧ (default-off master switch, corpus-gated); broadening the golden footage set (currently single-dancer motion_first only — needs a YOLO-dropout / multi-dancer / yolo_first clip to exercise the relay + cold-detection paths the current corpus leaves bit-identical).
+**TODO Phase 9 enhancements** (lower priority): OSC **status broadcasting**
+(`/walldance/status/{state,fps,tracks,errors}` + heartbeat); TouchOSC bidirectional control;
+standalone OSC record/playback tool; video+OSC synchronized record for offline replay; IDS crop
+ratio buttons; standard-webcam path auto-detect; check-for-updates on startup; 4K tiling; rotate
+playback (90°); Nuitka/Windows launcher build.
 
-### P4 — Lock it in
-Regression fixtures from 2–3 recorded sessions (the JSONL logging + `analyze_session.py` already exist — this is half-built): golden drop/ghost/swap counts so refactors are measurable. Add tests for the ROI→letterbox→unscale coordinate transforms (a classic off-by-a-transform hazard, currently untested) and config validation. First tests landed ([test_calibration.py](../application/tests/test_calibration.py)).
+### 3.4 Hardware-blocked
 
----
-
-## 6. Roadmap — Maintainability (audit track)
-
-Condensed from the full audit (now [archives/AUDIT.md](archives/AUDIT.md)). The codebase is field-oriented and solid; the debt is in testability, config governance, architecture concentration, and updater/install safety — not obvious correctness failures.
-
-**Progress since the audit (2026-06-08):** first tests now exist (dents the no-tests finding); new behavior went into an isolated, testable `calibration.py` rather than growing the big modules; several formerly-global tuning constants are now measured/logged/per-project. The large items below are unchanged.
-
-| Priority | Item | Status | Note |
-|----------|------|--------|------|
-| 1 | Minimal test suite + **CI** | ✅ CI live | [.github/workflows/ci.yml](../.github/workflows/ci.yml) (3.10 + 3.12 matrix); 123 unit tests green 2026-06-10. Remaining: tracker-scenario + OSC tests; replay regression stays opt-in/GPU |
-| 1 | Typed config **validation + versioning** | ✅ Done (2026-06-11) | `config_schema.py` v2: profiles, migration, range clamps; cross-field/structural checks (ratio ordering, ROI coercibility, exclusion-mask shape — each previously able to crash the load); load warnings now also surface as a GUI toast (`_report_config_warnings`) |
-| 1 | Launcher update safety | ✅ Done (2026-06-11) | `check_updates` now classifies up-to-date / behind / **ahead** / diverged (`dulwich.graph.can_fast_forward`); `update()` refuses on local modifications to tracked files (`DirtyWorkingTreeError`; untracked working data never counts); GUI warns-and-skips on dirty, asks an explicit destructive confirmation on diverged, never offers an update when ahead. Unit-tested ([test_launcher_git_manager.py](../application/tests/test_launcher_git_manager.py), runs in CI) |
-| 1 | `run.sh` hardcoded `python3.10` lib path | ✅ Done (2026-06-11) | `run.sh` + `extra/build_engines.sh` discover `.venv/lib/python3.*` by glob (any 3.10–3.12 venv). The actual 3.12 venv rebuild stays §10 P-8 (needs GPU-wheel re-verification) |
-| 2 | Decompose `app.py` (~4456 ln) into controllers | ⬜ | Runtime / playback / model-loading / session services; modules have *grown* since the audit |
-| 2 | Tracker scenario tests from known-hard sessions | ⬜ | Surround the tracker with reproducible tests before simplifying it (§8) |
-| 2 | README / `projects/` layout doc | ✅ Verified (2026-06-11) | No `configs/` drift left; README "Projects and Configs" matches `config_store.py` (timestamped saves, `calib2/`, `last_project.txt`); `_safe_defaults.json` now documented |
-| 3 | In-repo model-artifact footprint | ✅ resolved | Verified 2026-06-10: `models/` gitignored, `.git` ≈ 69 MB |
-| 3 | Untrack committed junk | ✅ Done (2026-06-11) | `git rm --cached` on both; `.gitignore` now ignores `tracking_events.jsonl` / `merge_dbg.log` globally. The launcher dirty-check keeps a transition exemption for the two paths (`_DIRTY_EXEMPT`) until field checkouts are past this commit |
-| 3 | Unify install/update logic (scripts vs launcher) | ⬜ | One canonical policy, thin wrappers |
-| 3 | Consolidate stale docs | 🟡 in progress | *This roadmap is part of that work* |
-
-> **Operational reliability** — camera auto-reconnect, watchdog auto-recovery, FPS/temp/no-detection alerts, and a 4h stability test — is the largest open *ops* cluster. It is tracked in [TODO.md](TODO.md) Phase 7 (different altitude from this roadmap), not duplicated here.
-
----
-
-## 7. Requested enhancements (backlog, 2026-06-08)
-
-### A. Simplify the YOLO-First / Motion-First duality
-`TrackingMode` (`YOLO_FIRST` / `MOTION_FIRST`) was a user-facing toggle that bifurcated the pipeline. **✅ Merged in P3 Stage 3b:** motion blobs are now always candidates (gated by frame-diff + exclusion) fed through one scored path — no bifurcation. The `TrackingMode` enum still exists for config/learn-rate compatibility but no longer changes the detection logic; fully removing it is a follow-up cleanup.
-
-### B. Startup project picker (no silent auto-load)
-Today the app auto-loads the last project (`config_store.read_last_project()` / `last_project.txt`); there is no launch-time way to choose or manage projects, and after a mid-show crash the operator is dropped straight back into auto-load.
-
-**Requested behavior** — on start, do **not** auto-load; open a modal picker:
-- **Projects ordered by last-save date**, most recent first (newest config mtime per project — `get_latest_config_in_project` / `project_history`).
-- **Last project highlighted**; **Enter launches it** — the fast crash-recovery path to the last state.
-- Per-project: **Launch**, **Rename**, **Delete** (delete behind a confirmation prompt).
-
-Implementation notes: `config_store` already has `list_projects`/`project_history`/`latest_for_project`/`read_last_project`/`save`/`sanitize_project_name`; **`rename_project` + `delete_project` must be added** (move/remove `projects/<name>/`, fix `last_project.txt`). Reuse the existing GUI modal pattern; launch via the existing full project-switch path. Good place to **validate config on load** (§6) and surface stale configs. Keep an env/flag **escape hatch to auto-launch** the last project for unattended/kiosk boot.
+- **P1.3 — Add IR illuminators, then raise confidence.** Rig for *even* coverage, raise
+  `YOLO_CONFIDENCE`, measure the ghost drop on a recorded ghost-heavy session. The root cause in §2
+  made concrete (raw IR ≈ 5/255 today).
+- **Procurement still needed:** IP66 camera housing · mounting hardware (tripod/rigging). *(Camera,
+  lens, IR filter, illuminator, laptop, USB3 extension already purchased — see [TODO.md](TODO.md).)*
 
 ---
 
-## 8. Tracker — lessons + key gates (condensed)
+## 4. Simplification path
 
-The tracker is sophisticated and intentionally engineered (Kalman + cascaded Hungarian + dormant resurrection + post-hoc swap correctors). Full decision log, architecture, and slot-7 tuning history are in [archives/TRACKING_PLAN.md](archives/TRACKING_PLAN.md). The durable lessons:
+Explicit cleanup backlog (deduplicated from the old Tracks/perf-backlog). None blocks a show;
+do alongside adjacent work, replay-gated where behavior-touching.
 
-1. **Post-hoc swap correction is inherently fragile** — timing-dependent on flag states; one fix triggers false positives elsewhere. Pre-assignment gates (Mahalanobis, displacement) are more robust. *(Confirmed and acted on 2026-06-11: Phase 2 ⑧ measured the correctors net-harmful on the corpus — id churn improved everywhere when they came off — and disabled all three by default behind `tracker_swap_correctors`.)*
-2. **Merge-frame inflation is the #1 silent killer of identity** — ghost tracks from scenery count as "active" → `n_det < n_tracks` fires almost every frame → all tracks get merge context → swap detectors misfire. Count only established, recently-matched tracks. *(P1.4's spatial ghost rejection attacks this at the source.)*
-3. **Kalman velocity amplifies during convergence** — two approaching tracks spike each other's velocity, making a tight Mahalanobis gate reject the correct match. Keep the gate generous; use a displacement cap for teleport protection.
-4. **Skeleton similarity can mask centroid jumps** — a track can match a body-similar detection 75px away; the displacement gate enforces a hard centroid cap.
-5. **The JSONL event log is essential** — every diagnostic insight came from `FRAME_SUMMARY` + per-session logs (`tracking_logger.py`).
-
-Key gates (slot-7-derived): `TRACKER_MAHALANOBIS_GATE=16.27`, `TRACKER_MAX_DISPLACEMENT_RATIO=0.5`, `TRACKER_CLOSE_PROXIMITY_RATIO=0.35`. Phase 2 ⑧ (2026-06-11) deliberately kept these — per lessons 3–4 they are the robust layer; only the post-hoc correctors went off by default.
-
----
-
-## 9. Bugs & smells
-
-| # | Severity | Location | Issue |
-|---|----------|----------|-------|
-| 1 | ✅ Fixed (P3 3a) | `pipeline._feed_motion_detectors` | Adaptive CLAHE before MOG2 amplified noise per-frame → frame-diff read it as fake motion (admitted a ghost on slot 4). Now feeds **gamma-only** (fixed, frame-independent) gray. The harness proved this fix is inseparable from the scored gate. (`_enhance_gray_for_motion` is now dead — sweep with the compat-shim cleanup.) |
-| 2 | ✅ Fixed (P3 2) | one `MotionModel` | Collapsed the two MOG2 into one slow model + frame-diff; bit-identical → the 2nd MOG2 was redundant. |
-| 3 | Low | `_extract_transfer_timing` | Assigned inside the per-detection loop; stale on zero-detection frames. Cosmetic. (Re-confirmed 2026-06-10, pipeline.py ~1425.) |
-| 4 | ✅ Fixed (2026-06-10) | `motion_detector.feed_preprocessed` | `_curr_raw`/`_prev_raw` advance only when the *global* peak diff > 8 — on a clean static stretch the pair froze and `frame_diff_blob_in_bbox` reported the **last motion event's diff indefinitely** (frame-diff is the primary ghost-killer *and* relay signal; quiet Starvis2 + even-IR scenes are the at-risk regime). Now a frames-since-advance counter (`_diff_pair_age`, cap `MOTION_DIFF_PAIR_MAX_AGE_FRAMES=30`) zeroes the report past the cap, keeping the slow-mover accumulate bridge under it; `reset()` also clears the pair; age surfaced in `bridge_diagnostics`. Unit-tested (freeze→cap→revive); goldens unchanged on replay (noise self-heals on dirty footage, as predicted — the cap's positive effect needs the clean-scene corpus). |
-| 5 | ✅ Covered (P3 0) | ROI→letterbox→unscale transform chain | Now under [test_transforms.py](../application/tests/test_transforms.py) (round-trip + crossval/exclusion transform). The `scale == 1.0` + nonzero-pad gap found 2026-06-10 is closed with the bug #9 fix (parametrized cases + a ground-truth pad test). |
-| 6 | ✅ Fixed (2026-06-10) | `app.py _apply_calibration` → `_cb_save_safe_defaults` | The calibration result dialog's "Save to project" wrote `projects/<name>/_safe_defaults.json`, **not** a timestamped project save — calibrate → Save → restart **lost the calibration**. Now both calibration dialogs (calib1 + calib2 apply) route `on_save` to `_cb_save_config` (normal timestamped save, what startup/picker load); safe-defaults stays a separate explicit action. |
-| 7 | ✅ Fixed (2026-06-10) | `config_store.get_latest_config_in_project` / `project_history` / `list_projects_by_date` | `_safe_defaults.json` matched the `.json` listing, and "latest" was a reverse **name** sort: uppercase letters sort before `_`, so for capitalized project names `_safe_defaults.json` won → startup silently loaded safe defaults. Now `list_config_files()` skips `_`-prefixed files and sorts by **mtime** (robust to renamed projects); all listing paths go through it; regression-tested. *Migration note: a project holding only `_safe_defaults.json` (possible artifact of bug #6) no longer appears in the picker — its safe defaults remain loadable in-app once the project is current.* |
-| 8 | ✅ Fixed (2026-06-10) | sensitivity-macro persistence (`_get_saveable_config` / `_apply_config_without_model`) | The saved `mog2_var_threshold` is the live **macro output**, and on load it became the macro **anchor** → one save while loose permanently ratcheted the calibrated var away. Now `sensitivity_var_anchor` is persisted separately (profile-scoped in `config_schema`, like `sensitivity_conf_seed`) and restored on load; older configs keep the previous fallback. Also fixed the related mismatch: an expert confidence change (which recenters the dial at 50) now restores varThreshold to the anchor. |
-| 9 | ✅ Fixed (2026-06-10) | `pipeline._crossval_motion_filter` + `_exclusion_norm_xy` | `(x − pad)/scale if scale != 1.0 else x` **dropped the letterbox pad when `lb_scale == 1.0`** — whenever the ROI long side equals imgsz with nonzero pad on the short axis (e.g. 1280×720 ROI @ imgsz 1280 → pad_y 280); gate + exclusion sampled the motion mask off by the pad (GPU path only). Both sites now subtract pad unconditionally (matching `_unscale_letterbox`; the `MotionConsumerShim` was already correct). CPU path bit-identical (scale 1, pad 0 → identity); goldens pass. test_transforms gained the scale=1+pad cases + a ground-truth pad-subtraction test (closes the bug #5 gap). |
-| 10 | ✅ Fixed (2026-06-10) | `pipeline._run_yolo_and_track` (GPU) vs `_track_detections` (CPU) | The GPU path hand-duplicated the post-YOLO chain — all replay/golden/tuning evidence validated the CPU copy while the show ran the GPU copy (bug #9 lived in exactly this duplication). Now **one `_post_yolo_chain`** (gate → exclusion → cold blobs → tracker → finalize → OSC) parameterized by `_TrackerSpace` (person height, scale/pad/roi/roi_local tracker↔mask transform, frame width) serves both wrappers; the letterbox/offset proxies stay, only orchestration unified. Risk plan executed in order: (a) CPU↔GPU **parity replay test landed first** ([test_gpu_cpu_parity.py](../application/tests/test_gpu_cpu_parity.py), `WD_RUN_REPLAY=1`; measured baseline slot 3 = 100% count agreement / 7 px p95, slot 4 = 87% / 53 px — the bridge-regime gap is now pinned and re-measurable); (b) CPU path verified **metric-exact** against the pre-refactor baseline on both slots; (c) goldens + parity green post-refactor. `replay.py` gained `--gpu-path` / `--details` for ad-hoc GPU-path replays. |
-| 11 | ✅ Superseded (2026-06-11) | `app.py _step_calib2` → `calib2.aggregate` | The pooled confidence seed averaged keypoint confs (incl. invisible ≈0 ones) and seeded a *box*-confidence threshold from *keypoint* units — pinned at the clamp either way. **Fixed by Phase 2 ⑤a**: YOLO box confidences are threaded to the tracked output (`ScaledTrack.box_conf`) and the seed pools those directly; legacy kp-conf runs are excluded with a re-run note. |
-| 13 | ✅ Fixed (2026-06-10) | `tests/replay.py` config resolution | A missing/renamed project silently fell back to `config={}` (defaults) — the 06-10 reorganisation orphaned the goldens exactly this way, and the failure was invisible. Now: scenario manifests **pin a frozen config snapshot** (`"config"`) + a **recording fingerprint** (bytes + frames, hard-fail on mismatch); `replay.py`/`tune.py`/`overlay.py`/`detect_cache.py` prefer the pinned config via `replay.scenario_config()`, and a bare `--project` lookup that finds nothing **errors loudly**. |
-| 14 | ✅ Fixed (2026-06-11, per-scene) | `tracker.py` warmup scoring | Confirmation needs +1/hit vs −0.8/miss to reach 15 → a track **can never confirm below ~45 % sustained detection rate** (replay-measured: aerial dancer detected 1-in-3 frames, permanently unreported). **Six measured variants** (tmp_analysis/phase2/SUMMARY.md) proved the integral's hysteresis is load-bearing (windowed replacements either latched texture-flicker ghosts or flickered steady tracks out) and that the drops↔ghosts value of intermittent confirmation is **scene-dependent** — same lesson as §3b. Shipped: integral untouched (default bit-identical, goldens + 6-scene identity verified) + an **intermittent path behind the per-scene switch `tracker_intermittent_confirm`** (≥12 YOLO credits/40 frames AND travel ≥0.5×h, live evaluation, separation-guarded 0.7×h, bridge earns no confirmation credit). Flag-ON wins on aerial/dark scenes (aerial drop .126→.074, dark-crowd longest drop 9.6→5.8 s); enable per scene via the known-N search (§4.2 Phase 3). |
-| 12 | Low (cluster) | misc | (a) `_execute_project_switch` step 7 compares `new_imgsz != settings.imgsz` *after* step 6 already assigned it — always False, masked by the TRT special-case; (b) contradictory Calib1 toasts: servo path says "keep the stage clear", non-IDS path says "keep dancers in frame" (resolve per §4.1 decision 2); (c) ✅ **fixed 2026-06-11** — `MAX_PERSONS` now enforced as a report-boundary cap + `over_cap` health alert (§4.2 Phase 2 ③); (d) config.py OSC comment documents `/walldance/dancer/<id>/centroid [x,y]` but the code sends `/walldance/dancer/centroid [id,x,y]` — consumer-facing drift, fix the comment (or the schema); (e) ✅ **fixed 2026-06-11** — `select_imgsz` now enforces the FPS budget with an explicit rig advisory (Phase 2 ⑤c / §10 P-6); (f) profile-switch reuses `_apply_config_without_model` with a partial profile bundle — works, but the unconditional ROI block shows the contract is fragile (document or split). |
+| Item | Win | Risk |
+|------|-----|------|
+| **Track P (3→2 GPU collapse)** — see §3.2 | ~270–400 LOC + dual coord transforms + parity test gone; "test what you ship" | Re-baselines goldens (cv2-CPU → TRT-locked); operator-approved migration |
+| **Delete the 22 import shims** (DECOMPOSITION_PLAN Phase-1 follow-up) | Removes the `application/src/*.py` → `core/`/`runtime/` aliasing layer | Rewrite `app.py`/`gui.py` (+ tests) to import `core.`/`runtime.` directly first; run the suite. Their own docstrings request this |
+| **Remove the `TrackingMode` enum** (P3 merged — detection no longer bifurcates) | Deletes a vestigial user-facing toggle still in config/learn-rate | Confirm no learn-rate path depends on it |
+| **Remove `MotionModel.detector` compat shim** (P3-deferred consumer migration) | One fewer indirection in the motion feed | Migrate the shim's consumers first |
+| **Retire dead knobs** (Track S "drop" tier) | auto-exclusion builder (already inert), `bg_subtract` → clean-plate path (Track D #5), duplicated `tracker_max_age` defaults, `tracker_smoothing` (G4: truly Fixed, no config key) | Low — read-mostly removals |
+| **Perf backlog (opportunistic, replay-gated):** P-1 mono-aware gray path · P-2 persistent motion-feed worker (no per-frame thread spawn) · P-3 frame-diff resolution cap · P-4 blur-after-downscale · P-5 OSC bundling (atomic frame for TouchDesigner) · P-7 tiered motion cache (dev-loop) · P-8 Python 3.12 venv · P-9 calib-window sweep pruning | ms/frame + dev-loop speed | P-1/P-2/P-5 bit-identical; P-3/P-4 re-baseline goldens; P-8 re-verify GPU wheels |
+| **`install.sh` cu130 fallback footgun** | Driver reports CUDA True while ops crash → fallback never triggers | Low-priority hardening |
 
 ---
 
-## 10. Performance backlog (review pass 2026-06-10)
+## 5. Open bugs (still live)
 
-**Context (measured, TUNING Phase B):** the **motion feed (MOG2 + frame-diff) dominates CPU
-cost, not YOLO** — cache replay ≈ 53 ms/frame vs ≈ 125 ms live on the dev box; the frame-diff
-component-selection vectorisation alone cut golden runtime 102 s → 67 s. So the levers below are
-ranked by what they do to the motion feed and to per-frame fixed costs. **Every behavior-touching
-item is replay-gated** (goldens / scenario scores decide, not eyeballs); pure-orchestration items
-(P-1, P-2, P-5) should be bit-identical.
+Full prose: [ENGINEERING_RECORD §8](archives/ENGINEERING_RECORD.md). The unresolved ones:
 
-| # | Item | What / where | Expected win | Risk |
-|---|------|--------------|--------------|------|
-| P-1 | **Mono-aware gray path** | IDS mono is expanded mono→BGR ([ids_camera.py](../application/src/ids_camera.py) ~1304, 4 MP→12 MP) and the pipeline then collapses BGR→gray again every frame for the motion feed (`mog2_cvt`). When the source is mono (or greyscale mode), pass the single channel through (`frame[:,:,0]` view) instead of two full-frame conversions | A few ms/frame + memory traffic, every frame | None (identical pixels) |
-| P-2 | **Persistent motion-feed worker** | `_feed_motion_detectors` spawns a **new `threading.Thread` every frame** (both CPU + GPU paths, pipeline.py). Replace with one long-lived worker (queue/Event), same join semantics | Removes per-frame spawn cost + scheduler jitter + GC churn | Low (same sync points) |
-| P-3 | **Frame-diff resolution cap** | `_diff_scale = min(1.0, 2 × mog2_scale)` → at the shipped scales (0.5/0.7) the frame-diff path runs at **full resolution**: absdiff + threshold + connectedComponents per queried box, plus a full-frame absdiff for the peak-advance gate *every* frame. Cap at e.g. 0.75 | ~2× on the dominant signal's cost | θ_m ratios shift → must re-validate on replay (drops/ghosts scores) |
-| P-4 | **Blur after downscale in `preprocess`** | Low-light path runs `medianBlur(5)` + `GaussianBlur` at full ROI res *before* the INTER_AREA downscale (which already averages). Downscale first, blur small | ~2–4× on that step | Not bit-identical → golden re-baseline; replay-validate |
-| P-5 | **OSC bundling** | `OscBundleBuilder` is imported but unused; today 1 + 4n datagrams per frame. One timestamped bundle per frame | Fewer syscalls; **consumer gets an atomic frame** (real consistency win for TouchDesigner) | Consumer must accept bundles (standard OSC) |
-| P-6 | **imgsz auto-select FPS budget** (bug #12e) | ✅ **Done 2026-06-11** (§4.2 Phase 2 ⑤c): `select_imgsz` models fps ∝ imgsz⁻² from the runs' measured fps and rejects presets predicted under `AUTOCAL2_FPS_BUDGET`; a height-target miss is an explicit rig advisory, never a silent fallback. Extension **done 2026-06-12** (§4.2 Phase 2b): `extra/measure_engine_fps.py` (auto-run by build_engines.sh) measures actual per-(model, imgsz) engine fps → `models/fps_table.json`; calib2 prefers the measured cost curve over the imgsz⁻² law (which breaks <960 — fixed overhead) and adds a report-only model advisory | Prevents a silent worst-case regression | None — it was a missing guard |
-| P-7 | **Tiered motion cache for the tuning loop** | Already noted in TUNING Phase B: when sweeping tracker-only params, cache the MOG2/frame-diff outputs too (dev-loop speed, not show speed) | Search iterations ~53 → ~15 ms/frame (est.) | Cache-key discipline |
-| P-8 | **Python 3.12 venv** | pyproject already allows `<3.13`; interpreter is ~5–10 % faster than 3.10 on this kind of code. Same work item as the §6 `run.sh` hardcoded-`python3.10` fix | ~5 % across all CPU paths | Dependency wheels re-verify (torch/cu130, kornia stub, IDS bindings) |
-| P-9 | **Calib-window sweep pruning** | The var×scale sweep runs 24 MOG2 models every 2nd frame during the 15 s window — calibration-time only. Prune candidates that already exceed the FP target mid-window if the dip bothers operators | Calibration-window smoothness only | None |
+| # | Severity | Issue |
+|---|----------|-------|
+| 3 | 🟡 Cosmetic | `_extract_transfer_timing` assigned inside the per-detection loop → stale on zero-detection frames. |
+| 12a | Low | `_execute_project_switch` step 7 compares `new_imgsz != settings.imgsz` *after* step 6 assigned it — always False (masked by the TRT special-case). |
+| 12b | Low | Contradictory Calib1 toasts: servo path says "keep the stage clear", non-IDS path says "keep dancers in frame" — resolve per the calib correctness fixes (§3.1). |
+| 12f | Low | Profile-switch reuses `_apply_config_without_model` with a partial bundle; the unconditional ROI block shows the contract is fragile — document or split. |
 
-Non-items (checked, fine as-is): tracker O(n²) loops (n ≤ ~6), preview path (rate-limited,
-0.35 render scale, cached-CPU standby path), threaded recorder, web-monitor per-client encode.
+*(Fixed 2026-06-22 in this pass: #12d — the `config.py` OSC comment now matches the wire format
+`/walldance/dancer/centroid [id,x,y]`.)*
 
 ---
 
-## 11. Environment / install findings
+## 6. Historical record — condensed index (anchors → ENGINEERING_RECORD)
 
-- **`kornia_rs` SIGILL on non-AVX2 CPUs (FIXED).** `kornia.io` pulls `kornia_rs`, whose AVX2 wheel crashes the process (`Illegal instruction`, exit 132) on the dev Ivy-Bridge i7-3770K. Fixed by stubbing `kornia_rs` in `sys.modules` before importing kornia ([gpu_pipeline.py](../application/src/gpu_pipeline.py)). GPU CLAHE/pipeline unaffected; harmless on the RTX 5080 laptop (has AVX2).
-- **`install.sh` always installs the `cu130` torch index** and only falls back when `torch.cuda.is_available()` is False. Latent footgun: an older driver can report `True` while CUDA ops crash, so the fallback ladder never triggers. Lower priority.
+Code comments cite these labels. Full prose:
+**[archives/ENGINEERING_RECORD.md](archives/ENGINEERING_RECORD.md)**.
+
+**Shipped milestones:** **P0** smartphone monitor + focus/lighting · **P1.4** exclusion mask
+(shipped, then reversed to manual paint — decision 5) · **P2** Go-Live auto-calibration · **P3**
+motion-subsystem simplification (one `MotionModel`, frame-diff = the ghost killer) · **P4**
+regression fixtures + transform tests · **§7B** startup project picker. Corpus **Phase 0** (12
+manifests) · **Phase 1** (per-project config repair) · **Phase 2** ①–⑧ (warmup intermittent /
+takeover merge / MAX_PERSONS cap / manual exclusion / calib2 amendments / sensitivity span /
+corrector relaxation) · **Phase 2b** (imgsz×model grid — target 110, dark 45, keep yolo11).
+
+**Resolved bugs (index):** #1 CLAHE-noise motion feed (gamma-only) · #2 two-MOG2 collapse · #4
+frame-diff stale-pair cap · #5 transform tests · #6 calib save semantics · #7 `_safe_defaults`
+listing · #8 sensitivity var-anchor ratchet · #9 letterbox pad @ scale=1 · #10 GPU/CPU post-YOLO
+unification · #11 box-conf seed · #12c MAX_PERSONS cap · **#12d OSC comment drift (fixed
+2026-06-22)** · #13 replay config pinning · #14 warmup intermittent-confirm. *(Still open: #3, #12a,
+#12b, #12f — see §5.)*
+
+**Tracker lessons (§8):** post-hoc swap correction is fragile (pre-assignment gates are robust);
+merge-frame inflation is the #1 identity killer; Kalman velocity amplifies on convergence; skeleton
+similarity masks centroid jumps; the JSONL log is essential. Key gates kept:
+`TRACKER_MAHALANOBIS_GATE=16.27`, `TRACKER_MAX_DISPLACEMENT_RATIO=0.5`,
+`TRACKER_CLOSE_PROXIMITY_RATIO=0.35`.
 
 ---
 
-## 12. Open questions — ✅ all answered by the corpus analysis (2026-06-10)
+## 7. Doc map
 
-Measured answers in [CORPUS_ANALYSIS.md](CORPUS_ANALYSIS.md) §8:
-
-- **Size range / one config?** Median heights 100–1000 px across venues, in-scene spread 0.4–1.8× — one config cannot generalize; per-scene Calib2 is structurally required (imgsz 640→1536+ per scene).
-- **Ghost flood magnitude:** 0.7–3 ghost-dets/frame on textured/outdoor scenes (8+/frame on the facade stress case), **60–95 % at fixed scene spots** → maskable (P1.4 validated on real ghosts).
-- **Setup ritual cost:** replays with stale/bulk-copied configs drop 36–100 % of dancers on 6/7 hard scenes — the calibration flow closes most of it; residual manual steps = ROI/stage definition + sensitivity nudge.
-- **"Good enough" numerically:** the §4.2 scene-class pass lines, embedded per-manifest (`"pass"`, evaluated by `scoring.evaluate_pass`).
-
----
-
-## 13. Doc map
+See **[README.md](README.md)** for the full index. Live companions to this roadmap:
 
 | Doc | Role |
 |-----|------|
-| **[OPERATOR_V2.md](OPERATOR_V2.md)** | **▶ Authoritative forward plan** — operator UX (phase rail), calibration v2 (signal-axis merge), settings governance, output/OSC layer, cross-parameter test, autonomy map for implementation |
-| **ROADMAP.md** (this) | Strategic source of truth + shipped-detection-algorithm record (forward work → OPERATOR_V2) |
-| [CORPUS_ANALYSIS.md](CORPUS_ANALYSIS.md) | 2026-06-10 corpus analysis — measured scene physics, settings/strategy evidence, re-founded regression corpus, §4.2 plan |
-| [UX_PLAN.md](UX_PLAN.md) | **Historical** — U0–U5 shipped record + calib design rationale; forward UX superseded by OPERATOR_V2 |
-| [TODO.md](TODO.md) | Granular build / hardware checklist (live) |
-| [OPTICS.md](OPTICS.md) | Camera + lens working envelopes (distance/stage-size limits per optic, derived from the Phase 2b detection floors) |
-| [archives/ROBUSTNESS_PLAN.md](archives/ROBUSTNESS_PLAN.md) | Original detection north star (merged here) |
-| [archives/AUDIT.md](archives/AUDIT.md) | Full maintainability audit (condensed in §6) |
-| [archives/P3_FUSION_SIMPLIFICATION.md](archives/P3_FUSION_SIMPLIFICATION.md) | Full P3 fusion design (condensed in §5 P3) |
-| [archives/TRACKING_PLAN.md](archives/TRACKING_PLAN.md) | Full tracker decision log + lessons (condensed in §8) |
-| archives/ (older) | IDS stall investigation, specifications, hardware guide, legacy proposal |
+| [TODO.md](TODO.md) | Build/hardware checklist (phase inventory + procurement) |
+| [TRACKING_ROBUSTNESS.md](TRACKING_ROBUSTNESS.md) | The IR-marker next-leap plan (§3.3) |
+| [OSC_CONTRACT.md](OSC_CONTRACT.md) | Wire-level `/walldance/*` output contract (canonical) |
+| [NEW_SHOW.md](NEW_SHOW.md) | Operator field playbook (the spine ①→⑥) |
+| [CORPUS_ANALYSIS.md](CORPUS_ANALYSIS.md) | Measured scene physics + the regression corpus |
+| [TUNING.md](TUNING.md) · [OPTICS.md](OPTICS.md) · [CHECK_TEST.md](CHECK_TEST.md) | Tuning toolchain · lens envelopes · pre-show test procedure |
+| [GUI_STACK_AUDIT.md](GUI_STACK_AUDIT.md) | Stay-Python/DPG decision record |
+| [archives/ENGINEERING_RECORD.md](archives/ENGINEERING_RECORD.md) | Full shipped-detection record (P0–P4, bugs, lessons) |
+| archives/ (OPERATOR_V2, UX_PLAN, DECOMPOSITION_PLAN, KNOBS, TRACK_X_SMOOTHER, CALIB_DETECTION_FIX_PLAN, …) | Superseded design docs |
 
-**Key code:** [app.py](../application/src/app.py) (orchestration), [pipeline.py](../application/src/pipeline.py) (enhance→YOLO→motion→track), [tracker.py](../application/src/tracker.py) (identity), [calibration.py](../application/src/calibration.py) (Go-Live calibration + exclusion mask), [motion_detector.py](../application/src/motion_detector.py) (MOG2), [web_monitor.py](../application/src/web_monitor.py) (phone monitor), [config.py](../application/src/config.py) (constants).
+**Key code:** [app.py](../application/src/app.py) (composition root) ·
+[core/pipeline.py](../application/src/core/pipeline.py) (enhance→YOLO→motion→track) ·
+[core/tracker.py](../application/src/core/tracker.py) (identity) ·
+[core/calibration.py](../application/src/core/calibration.py) +
+[core/calib2.py](../application/src/core/calib2.py) (calibration) ·
+[core/osc_output.py](../application/src/core/osc_output.py) (OSC) ·
+[core/config.py](../application/src/core/config.py) (constants).

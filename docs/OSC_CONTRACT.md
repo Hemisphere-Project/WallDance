@@ -1,19 +1,19 @@
 # WallDance — OSC output contract
 
-**Date:** 2026-06-15 · **Status:** DRAFT for operator confirmation (OPERATOR_V2 batch-2,
-item 1). This is the prerequisite for the Track-X output controls. **Nothing that OSC emits
-changes until this contract is confirmed** (OPERATOR_V2 §8 ask-first trigger: "the OSC message
-contract").
+**Date:** 2026-06-22 · **Status:** **CONFIRMED / live** — the canonical wire-level contract for
+WallDance's OSC output (box-clamp + L-driven output smoother shipped on `main`). Any change to
+what `/walldance/*` emits is an explicit, operator-confirmed change to this document.
 
 Documents (A) what `/walldance/*` emits **today, as shipped** (`core/osc_output.py`), and
 (B) the **output-domain controls** — box-clamp and the L-driven output smoother. **Locked
-defaults (operator, 2026-06-15): box-clamp ON, smoothing L = 1.** The output is a **single
-stream** selected by `L`: `L = 1` is causal/live; `L > 1` is the fixed-lag RTS-smoothed stream,
-released `L` frames late, on the **same** `/walldance/dancer/*` namespace. (The earlier
-"dual tap" `/walldance/dancer_lagged/*` and the opt-in case-2 flying-ghost suppression were
-**removed, 2026-06** — operator decision: one stream, no suppression.)
+defaults: box-clamp ON, smoothing L = 1.** The output is a **single stream** selected by `L`:
+`L = 1` is causal/live; `L > 1` is the fixed-lag RTS-smoothed stream, released `L` frames late, on
+the **same** `/walldance/dancer/*` namespace. (The earlier "dual tap" `/walldance/dancer_lagged/*`
+and the opt-in case-2 flying-ghost suppression were **removed, 2026-06** — one stream, no
+suppression.)
 
-Companion: [OPERATOR_V2.md](OPERATOR_V2.md) Track X (§"Track X — Output / OSC layer") and §8.
+Companion: [ROADMAP.md](ROADMAP.md) §3 (Track X) · design history:
+[archives/TRACK_X_SMOOTHER.md](archives/TRACK_X_SMOOTHER.md).
 
 ---
 

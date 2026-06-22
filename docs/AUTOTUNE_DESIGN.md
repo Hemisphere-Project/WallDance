@@ -1,5 +1,11 @@
 # WallDance — Auto-tune / auto-detection / settings-exposure design
 
+> **📘 Reference / partly historical (updated 2026-06-22).** The knob-determinability analysis
+> (§1–§4) is still useful reference. Two of its §5 "gaps" have since **shipped** (in-app CLAHE×conf
+> sweep `_cb_run_calib_sweep`; `tracker_intermittent_confirm` wired at `app.py:1125`) — marked
+> below. The remaining live gaps (θ_s/θ_m calibration writer, the known-N tuning build) are tracked
+> forward in **[ROADMAP.md](ROADMAP.md) §3.2**. Don't plan from §5–§7 without checking ROADMAP.
+
 **Date:** 2026-06-16 · **Status:** DRAFT for operator decision. Grounded in the
 12-corpus Track-G findings, the calibration code, and the 2026-06-16 per-project
 best-effort batch (which empirically measured what each knob actually does).
@@ -200,14 +206,16 @@ already computed or cheap. The proposed contrast/edge/motion routers are dropped
 
 ## 5. Gaps surfaced (things that should exist but don't)
 
-1. **CLAHE detection-sweep engine is UNBUILT** — calibration still seeds a crude
-   noise-based 1.5/2.5. This is the single biggest auto-tune gap (the dominant
-   drop lever, no formula). *(Proven offline this session; the in-app sweep is the
-   productization step.)*
+1. ~~**CLAHE detection-sweep engine is UNBUILT**~~ — ✅ **SHIPPED since (2026-06)**: the in-app
+   CLAHE×confidence pass-line sweep runs from the Calibrate UI (`app.py` `_cb_run_calib_sweep` →
+   `_run_calib_sweep` → `tests/calibrate_segment.py` subprocess). The crude noise seed
+   (`seed_clahe`) remains the *pre*-sweep starting point only.
 2. **θ_s / θ_m have no calibration writer or UI** — exposed on settings, read in
-   the gate, but nothing sets them per scene (the Phase-3 known-N search).
-3. **`tracker_intermittent_confirm` is unwired** — documented per-scene but reads
-   the global; the aerial/dark win is unreachable per scene (Track C).
+   the gate, but nothing sets them per scene (the Phase-3 known-N search). **(Still open →
+   ROADMAP §3.2.)**
+3. ~~**`tracker_intermittent_confirm` is unwired**~~ — ✅ **SHIPPED since**: wired through project
+   config at `app.py:1125-1126` (→ `self.tracker.intermittent_confirm`) + in `PROFILE_KEYS`. The
+   aerial/dark win is now reachable per scene.
 4. **No scene-condition detector** — the cheap routing signals in §4 aren't
    computed/surfaced, so the workflow can't adapt or hide inert knobs yet.
 5. **gamma seed clamp** — ✅ already relaxed 2.2→4.0 this session.

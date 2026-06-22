@@ -1,4 +1,4 @@
-"""Import shim (docs/DECOMPOSITION_PLAN.md Phase 1): moved to core/calib2.py.
+"""Import shim (docs/archives/DECOMPOSITION_PLAN.md Phase 1): moved to core/calib2.py.
 
 Aliases this module to the moved one so bare-name imports, module-attribute
 access, and monkeypatching keep working for app.py/gui.py, tests, and

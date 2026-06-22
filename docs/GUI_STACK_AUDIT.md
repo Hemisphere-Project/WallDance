@@ -1,5 +1,11 @@
 # GUI & Stack Overhaul Audit — Decision Report
 
+> **📘 Decision record (note 2026-06-22).** The headline decision holds and is verified — **stay
+> Python, keep DearPyGui, no PySide6** (zero Qt imports in the tree). Two premises have since
+> moved on: the recommended `app.py` → core/runtime/ui **decomposition is done** (Phases 0–4; see
+> [archives/DECOMPOSITION_PLAN.md](archives/DECOMPOSITION_PLAN.md)), and the LOC / line-number /
+> test-count figures below have drifted. Read it as a dated decision record, not current metrics.
+
 **Date:** 2026-06-11
 **Scope:** (1) GUI layer audit (DearPyGui), (2) keep/refactor/replace GUI toolkit, (3) Python architecture refactor vs language/framework switch, (4) deployment & auto-update constraints (Linux dev + Windows 11 show laptop).
 **Method:** three parallel deep-dives (GUI code audit, architecture/perf/deployment audit, ecosystem research with primary sources), load-bearing claims spot-verified against source.

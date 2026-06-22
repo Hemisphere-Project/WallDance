@@ -383,12 +383,15 @@ OSC_ENABLED = True                  # Enable OSC output
 OSC_IP = "127.0.0.1"                # Target IP address
 OSC_PORT = 9000                     # Target port
 
-# OSC message format:
-# /walldance/dancer/<id>/centroid    [x, y]           (normalized 0-1)
-# /walldance/dancer/<id>/bbox        [x, y, w, h]     (normalized 0-1)
-# /walldance/dancer/<id>/keypoints   [x0,y0,c0, ...]  (17 keypoints, normalized)
-# /walldance/dancer/<id>/velocity    [vx, vy]         (normalized per frame)
-# /walldance/count                   [n]              (number of tracked dancers)
+# OSC message format (canonical wire contract: docs/OSC_CONTRACT.md).
+# id is the FIRST arg of each /dancer message (one flat stream, not per-id addresses):
+# /walldance/dancer/centroid    [id, x, y]            (normalized 0-1)
+# /walldance/dancer/bbox        [id, x, y, w, h]      (normalized 0-1)
+# /walldance/dancer/keypoints   [id, x0,y0,c0, ...]   (17 keypoints, normalized)
+# /walldance/dancer/velocity    [id, vx, vy]          (normalized per frame)
+# /walldance/count              [n, id0, id1, ...]    (count + the active id set)
+# /walldance/meta/latency_ms    [ms]                  (0 at L=1; L/fps*1000 at L>1)
+# /walldance/clear              [1]                   (emitted when no dancers tracked)
 
 # =============================================================================
 # VISUALIZATION

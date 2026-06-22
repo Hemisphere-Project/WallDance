@@ -1,10 +1,10 @@
 # WallDance Production TODO
 
-> Granular build / hardware checklist. For strategy + the shipped-detection record see **[ROADMAP.md](ROADMAP.md)**; for the **forward operator/calibration/UX plan** see **[OPERATOR_V2.md](OPERATOR_V2.md)** (authoritative for upcoming work).
+> Granular build / hardware checklist. For strategy, the forward plan, and the shipped-detection record see **[ROADMAP.md](ROADMAP.md)** (the single roadmap; doc index in [README.md](README.md)).
 
 Last reviewed 2026-06-10 (full code review). Phases 1–6 are shipped (inventory below); active work is **Phases 7–9 + hardware**, sequenced by **[ROADMAP.md §4.1](ROADMAP.md)**: ① labeled-footage **corpus** on the IDS rig ② calibration-persistence bug fixes (✅ done 2026-06-10) ③ signal fixes (✅ done 2026-06-10) ④ GPU/CPU path unification (✅ done 2026-06-10) ⑤ **Phase 7 ops cluster (elevated)** ⑥ performance backlog.
 
-> **Operator UX track (U0–U5) shipped** — expert mode, lighting profiles (Show/Rehearsal), the CALIBRATE (scene) + DANCERS (subject) two-pass calibration, and the one-dial sensitivity macro. Full design in **[UX_PLAN.md](UX_PLAN.md)**; numeric calibration rules are provisional pending an annotated-footage re-fit.
+> **Operator UX track (U0–U5) shipped** — expert mode, lighting profiles (Show/Rehearsal), the CALIBRATE (scene) + DANCERS (subject) two-pass calibration, and the one-dial sensitivity macro. Full design in **[archives/UX_PLAN.md](archives/UX_PLAN.md)**; numeric calibration rules are provisional pending an annotated-footage re-fit.
 
 ---
 
@@ -74,7 +74,7 @@ Core application is built and in production use — inventory, not active work (
 ## Recently completed (were open here, verified done in code)
 
 - ✅ **Startup project picker** — no silent auto-load; last project highlighted, Enter to launch; rename/delete (`config_store.rename_project`/`delete_project`). Was Phase 9 / ROADMAP §7B.
-- ✅ **Operator UX (U0–U5)** — expert mode, lighting profiles, CALIBRATE/DANCERS two-pass calibration, sensitivity macro. See [UX_PLAN.md](UX_PLAN.md).
+- ✅ **Operator UX (U0–U5)** — expert mode, lighting profiles, CALIBRATE/DANCERS two-pass calibration, sensitivity macro. See [archives/UX_PLAN.md](archives/UX_PLAN.md).
 - ✅ **Static background subtraction** — `BackgroundSubtractor` + `BG_SUBTRACT_ENABLED` (off by default; now expert-only). Was Phase 9 "Remove static background."
 - ✅ **Interactive ROI editing** — now via double-click on the preview + corner drag. The ROI half of Phase 9 "ROI / scene mask editing"; the *scene-mask* half is now automatic via [ROADMAP.md](ROADMAP.md) P1.4 (a manual editor remains, listed under Processing above).
 

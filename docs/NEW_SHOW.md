@@ -1,5 +1,7 @@
 # WallDance — running a new show
 
+**Date:** 2026-06-22 · **Status:** 🟢 Live operator playbook (matches the shipped phase rail).
+
 Operator procedure for taking WallDance from a cold rig to live OSC output. The
 UI **is** this procedure: the phase rail (① → ⑥) is the checklist. Work left to
 right; each phase has **one primary action** and a plain-language status line.
@@ -8,8 +10,9 @@ right; each phase has **one primary action** and a plain-language status line.
 
 **Golden rule:** set up once, calibrate once (explicit, logged), then go live and
 **only nudge a dial or two**. There is no continuous auto-tuning — live, you have
-other things to handle. (Companion: [OPERATOR_V2.md](OPERATOR_V2.md) is the design
-spec; this is the field checklist.)
+other things to handle. (Companion: [ROADMAP.md](ROADMAP.md) is the plan and
+[archives/OPERATOR_V2.md](archives/OPERATOR_V2.md) the design history; this is the field
+checklist.)
 
 ---
 

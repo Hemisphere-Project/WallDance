@@ -1,5 +1,10 @@
 # WallDance — Knob-simplification analysis (TUNING.md Phase E)
 
+> **⚠ ARCHIVED 2026-06-22.** Single-clip-era knob-sensitivity evidence (pre-dates the 12-scenario
+> corpus). Forward knob governance is the Track S table in **[../ROADMAP.md](../ROADMAP.md)**.
+> Kept because code comments cite "KNOBS.md finding #2 / E2". **Do not plan new work from here.**
+> *(Internal links may point at the pre-move `docs/` layout.)*
+
 **Date:** 2026-06-10 · **Branch:** `p3-motion-simplification`
 **Inputs:** `tests/sensitivity.py` (E1) over the Phase-A objective + Phase-B cache,
 on the two seed scenarios (`residence1-solo` slots 3 & 4).

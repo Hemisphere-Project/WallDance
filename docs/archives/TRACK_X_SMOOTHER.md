@@ -1,5 +1,12 @@
 # Track X — fixed-lag / RTS output smoother (joint design spec)
 
+> **⚠ ARCHIVED 2026-06-22.** The smoother core shipped (`core/output_smoother.py`), but ~half this
+> spec describes the **removed** dual `/walldance/dancer_lagged/*` tap + case-2 flying-ghost
+> suppression. The canonical live behavior is **[../OSC_CONTRACT.md](../OSC_CONTRACT.md) §B**
+> (single L-driven stream). Kept for the kinematics rationale + because `output_smoother.py` cites
+> it. **Do not plan new work from here.** *(Internal links may point at the pre-move `docs/`
+> layout.)*
+
 > **STATUS (shipped 2026-06):** The fixed-lag / RTS smoother **SHIPPED** and is now **the
 > single `/walldance/dancer/*` output stream at `L > 1`** — selected by `L` alone (`L = 1`
 > causal/live, `L > 1` RTS-smoothed and released `L` frames late on the **same** namespace).

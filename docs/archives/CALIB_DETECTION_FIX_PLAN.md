@@ -1,12 +1,17 @@
 # Calibration & Detection Fix Plan
 
+> **⚠ ARCHIVED 2026-06-22.** Detection case 1/2/3/4 study record — all cases closed/deferred and
+> the case-3 CLAHE sweep has since shipped (in-app `_cb_run_calib_sweep`). Forward work is in
+> **[../ROADMAP.md](../ROADMAP.md)**. Kept as the root-cause reference. **Do not plan new work from
+> here.** *(Internal links may point at the pre-move `docs/` layout.)*
+
 > **▶ Forward calibration/detection work now lives in [OPERATOR_V2.md](OPERATOR_V2.md)** — the
 > deferred items here are folded in: case-3 CLAHE → Track C (C-now sweep) + Track G G2; case-1
 > box-flicker + case-2 flying-ghost → Track X (output box-clamp + fixed-lag smoother). This doc
 > stays the **case 1/2/3/4 study record** (and the prerequisite reading for that history).
 
 **Date:** 2026-06-13
-**Origin:** Operator in-app pass (2026-06-13) over the §4.2 Phase-1 adopted configs surfaced live detection issues that the headless Phase-1 "PASS" verdicts did not predict. Root cause of the mismatch is a **validation-path divergence** (below), plus a handful of genuine code/seed issues. Companion: [ROADMAP.md](ROADMAP.md) §4.2, [CORPUS_ANALYSIS.md](CORPUS_ANALYSIS.md).
+**Origin:** Operator in-app pass (2026-06-13) over the §4.2 Phase-1 adopted configs surfaced live detection issues that the headless Phase-1 "PASS" verdicts did not predict. Root cause of the mismatch is a **validation-path divergence** (below), plus a handful of genuine code/seed issues. Companion: [ROADMAP.md](../ROADMAP.md) §4.2, [CORPUS_ANALYSIS.md](../CORPUS_ANALYSIS.md).
 
 ---
 

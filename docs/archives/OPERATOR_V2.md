@@ -1,12 +1,19 @@
 # WallDance — Operator & Calibration v2 (roadmap)
 
+> **⚠ ARCHIVED 2026-06-22.** This was the forward operator/calibration/output plan
+> (Tracks O/X/C/S/G/D/P). Its forward content is **folded into [../ROADMAP.md](../ROADMAP.md) §3**
+> (the Track labels are preserved there as their canonical home). Kept for provenance + the full
+> design rationale, and because code comments still cite "OPERATOR_V2 Track O/X/§2.2". **Do not
+> plan new work from here** — see ROADMAP. *(Internal links may point at the pre-move `docs/`
+> layout.)*
+
 **Date:** 2026-06-15 · **Status:** DRAFT for operator review. Forward plan for the
 *operator-experience / calibration / setting-governance* layer. The detection
 **algorithm** is done (ROADMAP §5 P0–P4, §4.2 Phase 2/2b); this track is about making
 it **operable and trustworthy on a new show**, which is where the remaining field pain
 now lives.
 
-**Companion / supersedes-forward:** extends [ROADMAP.md](ROADMAP.md) §4.2 Phase 3–4 and
+**Companion / supersedes-forward:** extends [ROADMAP.md](../ROADMAP.md) §4.2 Phase 3–4 and
 [UX_PLAN.md](UX_PLAN.md) U0–U5 (shipped). Folds in the deferred items of
 [CALIB_DETECTION_FIX_PLAN.md](CALIB_DETECTION_FIX_PLAN.md) (U-a/b/c done; case-3 CLAHE
 sweep in flight — see §6 coordination). Grounded in the 2026-06-15 five-dimension audit
@@ -34,7 +41,7 @@ sweep in flight — see §6 coordination). Grounded in the 2026-06-15 five-dimen
    first live moments as dancers enter); **live interaction is minimized** — the operator has
    other things to handle, so live = nudge a couple of dials, nothing more.
 
-**Prerequisites for a fresh implementer (read first):** [ROADMAP.md](ROADMAP.md) §4.2 (the
+**Prerequisites for a fresh implementer (read first):** [ROADMAP.md](../ROADMAP.md) §4.2 (the
 detection algorithm is *done*; this track makes it operable), [UX_PLAN.md](UX_PLAN.md) U0–U5
 (**already shipped** — multi-profile, config schema v2, two-pass calib, sensitivity macro; do not
 re-ship), [CALIB_DETECTION_FIX_PLAN.md](CALIB_DETECTION_FIX_PLAN.md) (cases 1/2/3 — the
@@ -42,11 +49,11 @@ box-flicker / flying-ghost / CLAHE findings this track builds on), and `MEMORY.m
 touching code, read §8 (autonomy map) + the ask-first triggers. Run scope = autonomous batch 1
 only** (§8) unless told otherwise.
 
-**Supporting reference (data + tools, not plans):** [CORPUS_ANALYSIS.md](CORPUS_ANALYSIS.md) +
-[../projects/CORPUS_NOTES.md](../projects/CORPUS_NOTES.md) (measured scene physics + the 12-slot
-corpus map), [OPTICS.md](OPTICS.md) (lens/distance envelopes), [TUNING.md](TUNING.md) (the
+**Supporting reference (data + tools, not plans):** [CORPUS_ANALYSIS.md](../CORPUS_ANALYSIS.md) +
+[../projects/CORPUS_NOTES.md](../../projects/CORPUS_NOTES.md) (measured scene physics + the 12-slot
+corpus map), [OPTICS.md](../OPTICS.md) (lens/distance envelopes), [TUNING.md](../TUNING.md) (the
 replay/tune/scoring toolchain Track G drives), [KNOBS.md](KNOBS.md) (historical knob evidence →
-governed forward by Track S/G), [GUI_STACK_AUDIT.md](GUI_STACK_AUDIT.md) (DPG-vs-PySide decision),
+governed forward by Track S/G), [GUI_STACK_AUDIT.md](../GUI_STACK_AUDIT.md) (DPG-vs-PySide decision),
 [DECOMPOSITION_PLAN.md](DECOMPOSITION_PLAN.md) (core/runtime/ui split, Phases 0–4 done). The
 2026-06-15 five-dimension audit + readiness validation that produced this doc were distilled into
 it; their raw outputs are ephemeral (not committed).

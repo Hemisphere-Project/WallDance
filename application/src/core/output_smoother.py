@@ -6,7 +6,7 @@ A per-track look-ahead buffer at the OSC/preview boundary.  Each processed frame
 Rauch--Tung--Striebel (RTS) fixed-interval smoother running on the **raw** KF
 centroid (``ScaledTrack.centroid_raw`` = ``kf.x[:2]``, NOT the EMA
 ``smoothed_centroid`` — no cascaded filtering, the design rule of
-``docs/TRACK_X_SMOOTHER.md`` §3).
+``docs/archives/TRACK_X_SMOOTHER.md`` §3).
 
 The smoother runs its **own** small constant-velocity (CV) Kalman over the
 buffered centroids; it never reads or mutates ``DancerTrack.kf`` or any tracker

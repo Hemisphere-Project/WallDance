@@ -1,6 +1,11 @@
 # Corpus analysis — settings, strategy & robustness report
 
-**Date:** 2026-06-10 · **Status:** AGREED (operator-ratified 2026-06-10) — decisions folded into ROADMAP §4.2; **Phase 0 (corpus re-founding) executed** same day: pinned-config scenario schema + fingerprints + pass lines landed, golden trio (`hangar-floor`, `hangar-aerial`, `texture-aerial`) regenerated and green, 10 manifests + 2 drafts committed, GT sheets in `tmp_analysis/gt_sheets/` awaiting the operator pass.
+> **📘 Reference (note 2026-06-22).** Canonical measurement record (scene physics + the re-founded
+> regression corpus). Several §6/§9 "next steps" have since **shipped** (Phase 2 ①–⑧, Phase 2b) —
+> the shipped detail is in [archives/ENGINEERING_RECORD.md](archives/ENGINEERING_RECORD.md) §4–§5;
+> live forward work is in [ROADMAP.md](ROADMAP.md). Read §6/§9 here as the *original* proposals.
+
+**Date:** 2026-06-10 · **Status:** AGREED (operator-ratified 2026-06-10) — decisions folded into ROADMAP §4.2 (now [archives/ENGINEERING_RECORD.md](archives/ENGINEERING_RECORD.md) §5); **Phase 0 (corpus re-founding) executed** same day: pinned-config scenario schema + fingerprints + pass lines landed, golden trio (`hangar-floor`, `hangar-aerial`, `texture-aerial`) regenerated and green, 10 manifests + 2 drafts committed, GT sheets in `tmp_analysis/gt_sheets/` awaiting the operator pass.
 **Ratified decisions:** golden trio as above (whitebg2 s3/s4 + whitebg s7) · §8 pass lines accepted as-is (refine later) · `0-TEST-phones` stays corpus-only · whitebg slots 8/9 recovered and **moved to texturedbg** · §6 sequence approved.
 **Errata vs the reviewed draft:** the slot-3 "footage mapping broken" suspicion (§1.2/§2) was **wrong** — the committed goldens record the exact filenames (`slot_3_20260402_205941.avi` / `slot_4_20260402_210914.avi` = whitebg2 slots 3/4, fps sidecars match), and a closer brightened look at frames 1500–1799 is consistent with the verified floor-dancer GT (the earlier montage was misread). Only the **config** was lost — which the pinned-config schema now prevents structurally.
 **Inputs:** [projects/CORPUS_NOTES.md](../projects/CORPUS_NOTES.md) (operator annotations, 38 slots / 10 projects) · the full local recording set (~50 GB) · the existing tooling (replay harness, scoring, SceneCalibrator/calib2, sensitivity/tune)

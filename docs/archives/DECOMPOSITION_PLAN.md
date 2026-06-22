@@ -1,7 +1,13 @@
 # app.py Decomposition Plan
 
+> **⚠ ARCHIVED 2026-06-22.** Phases 0–4 shipped — `app.py` is the composition root over
+> core/runtime/ui/camera/services. Kept as the architecture record + because the 22 import shims'
+> docstrings cite "docs/archives/DECOMPOSITION_PLAN.md Phase 1". The remaining follow-up (delete
+> the shims; Phase 5 tablet client) is tracked in **[../ROADMAP.md](../ROADMAP.md) §4**.
+> *(Internal links may point at the pre-move `docs/` layout.)*
+
 **Date:** 2026-06-11
-**Companion:** [GUI_STACK_AUDIT.md](GUI_STACK_AUDIT.md) (the audit that motivated this), [ROADMAP.md](ROADMAP.md) ("`app.py` decomposition" maintainability item).
+**Companion:** [GUI_STACK_AUDIT.md](../GUI_STACK_AUDIT.md) (the audit that motivated this), [ROADMAP.md](../ROADMAP.md) ("`app.py` decomposition" maintainability item).
 **Decisions locked in (operator, 2026-06-11):** stay in Python; keep DearPyGui for now (targeted fixes shipped — toast thread race, centered-modal helper, preview texture path, `gui_constants.py`); GUI toolkit migration deferred; a **remote tablet client for the calibration phases + quality feedback** is wanted later, while main operation stays on the desktop.
 
 **Status (2026-06-11):**

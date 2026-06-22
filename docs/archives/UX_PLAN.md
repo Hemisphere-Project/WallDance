@@ -1,5 +1,9 @@
 # WallDance — Production UX plan (operator track)
 
+> **⚠ ARCHIVED 2026-06-22.** Superseded by the linear phase rail; forward work is in
+> **[../ROADMAP.md](../ROADMAP.md)**. Kept because code comments cite "UX_PLAN U3/U4/U5/§6".
+> **Do not plan new work from here.** *(Internal links may point at the pre-move `docs/` layout.)*
+
 > **⚠ HISTORICAL (U0–U5 shipped).** This records the shipped section-panel UX + the two-pass
 > calibration design, and remains the target of `UX_PLAN U2/U3/U4/U5` code-comment references.
 > **The forward UX/calibration plan is [OPERATOR_V2.md](OPERATOR_V2.md)** — it supersedes the
