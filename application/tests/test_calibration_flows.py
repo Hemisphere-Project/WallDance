@@ -73,3 +73,45 @@ def test_calib1_retains_noise_sigma_for_calib2():
     flows._apply_calibration(_scene_result())
     assert flows._last_calib1_noise_sigma == 2.0
     assert flows._last_calib1_noise_ts > 0
+
+
+def _calib2_flows_with(prop):
+    """A flows wired for _cb_calib2_apply with a stubbed pool + aggregate."""
+    flows, settings = _flows()
+    flows.ui = MagicMock(available=True)
+    flows.imgsz_change = MagicMock()
+    flows._calib2_pool = lambda: MagicMock(load_runs=lambda: [("p1", object())])
+    flows._calib2_aggregate = lambda chosen, roi_long: prop
+    return flows, settings
+
+
+def _ok_proposal(imgsz=1280):
+    prop = MagicMock()
+    prop.ok = True
+    prop.person_height_px = 200
+    prop.min_ratio, prop.max_ratio = 0.5, 1.5
+    prop.confidence = 0.3
+    prop.blur_budget_ms = None
+    prop.imgsz = imgsz
+    prop.summary.return_value = "height 200px"
+    return prop
+
+
+def test_calib2_quiet_apply_previews_without_modal_or_reload():
+    """Checkbox-toggle preview: applies live + refreshes text, but no modal and
+    no imgsz/engine reload (settings.imgsz starts 960, proposal 1280)."""
+    flows, settings = _calib2_flows_with(_ok_proposal(imgsz=1280))
+    flows._cb_calib2_apply(["p1"], quiet=True)
+    assert settings.person_height_px == 200            # cheap knobs applied live
+    flows.ui.update_calib2_proposal.assert_called_once()
+    flows.ui.show_calibration_result_dialog.assert_not_called()
+    flows.imgsz_change.assert_not_called()             # heavy reload deferred
+    assert "imgsz" not in flows.calibration_state      # imgsz not committed on toggle
+
+
+def test_calib2_explicit_apply_commits_imgsz_and_modal():
+    flows, settings = _calib2_flows_with(_ok_proposal(imgsz=1280))
+    flows._cb_calib2_apply(["p1"], quiet=False)
+    flows.imgsz_change.assert_called_once_with(1280)
+    flows.ui.show_calibration_result_dialog.assert_called_once()
+    flows.ui.update_calib2_proposal.assert_not_called()

@@ -49,6 +49,11 @@ this on a **clear stage** (no dancers).
 person-height + ratios, image size, a confidence seed, and the blur budget.
 **Notes:** ④ warns if ③ never ran in this profile. The pool accumulates — Apply
 once for a usable result, keep refining without disrupting a running show.
+**Reviewing the pool:** **un/checking a run** recomputes the proposal over the
+checked subset and applies it **live** (height/confidence) so you see the effect
+immediately; runs from a different framing or lighting **profile** are flagged
+stale and unchecked by default. **Apply selected** commits the full proposal —
+including any image-size (engine) change — and offers **Save to project**.
 
 ## ⑤ Verify
 **You:** glance at **readiness**; optionally **dry-run** on the last recording.

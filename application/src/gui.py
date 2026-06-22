@@ -2466,13 +2466,23 @@ class WallDanceGUI:
             if 'on_view_calib2_pool' in self.callbacks:
                 self.callbacks['on_view_calib2_pool']()
 
+        def on_select(sender=None, value=None):
+            # Checkbox toggle -> recompute the proposal over the checked subset
+            # and quiet-apply it live (no modal); the proposal text updates in
+            # place via update_calib2_proposal() (Track C).
+            selected = [path for tag, path in checkbox_tags
+                        if dpg.does_item_exist(tag) and dpg.get_value(tag)]
+            if 'on_calib2_select' in self.callbacks:
+                self.callbacks['on_calib2_select'](selected)
+
         dpg.add_text("Runs in the pool (uncheck to exclude):",
                      color=TEXT_NORMAL, parent=container)
         with dpg.child_window(height=scaled(140), border=True, parent=container):
             for i, row in enumerate(rows):
                 tag = f"calib2_run_chk_{i}"
                 with dpg.group(horizontal=True):
-                    dpg.add_checkbox(tag=tag, default_value=not row.get("stale", False))
+                    dpg.add_checkbox(tag=tag, default_value=not row.get("stale", False),
+                                     callback=on_select)
                     label = row["label"]
                     if row.get("stale"):
                         reason = row.get("stale_reason") or "framing changed"
@@ -2485,16 +2495,25 @@ class WallDanceGUI:
                 dpg.add_text("(empty - run 'Calibrate with Dancers' to add evidence)",
                              color=TEXT_DIM)
         dpg.add_spacer(height=scaled(6), parent=container)
-        # NOTE: this proposal is aggregated over ALL pooled runs, not the current
-        # checkbox selection -- a live per-selection recompute + auto-apply needs
-        # a calib-flow preview path (flagged for the calib agent).
-        dpg.add_text("Pooled proposal (all pooled runs):", color=TEXT_NORMAL, parent=container)
-        dpg.add_text(proposal, wrap=wrap, color=TEXT_MUTED, parent=container)
+        # Toggling a checkbox recomputes this proposal over the checked subset
+        # and quiet-applies it live (Track C); the text updates in place via
+        # update_calib2_proposal() (no full re-render → checkbox state survives).
+        dpg.add_text("Pooled proposal (checked runs, auto-applied):",
+                     color=TEXT_NORMAL, parent=container)
+        dpg.add_text(proposal, wrap=wrap, color=TEXT_MUTED, parent=container,
+                     tag="calib2_proposal_value")
         dpg.add_spacer(height=scaled(8), parent=container)
         with dpg.group(horizontal=True, parent=container):
             dpg.add_button(label="Apply selected", callback=on_apply, width=scaled(130))
             dpg.add_spacer(width=scaled(10))
             dpg.add_button(label="Clear pool", callback=on_clear, width=scaled(100))
+
+    def update_calib2_proposal(self, summary: str):
+        """In-place refresh of the inline pool's proposal text after a
+        checked-subset recompute (Track C) — leaves the run list/checkboxes
+        untouched so the operator's selection survives."""
+        if dpg.does_item_exist("calib2_proposal_value"):
+            dpg.set_value("calib2_proposal_value", summary)
 
     def show_calibration_result_dialog(self, summary: str, on_save):
         """Show the measured Go-Live calibration and offer to save it.

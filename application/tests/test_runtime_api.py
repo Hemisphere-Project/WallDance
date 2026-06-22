@@ -166,6 +166,7 @@ EVENT_SAMPLES = {
     api.CalibReportCard: dict(summary="median height 212px"),
     api.Calib2PoolChanged: dict(rows=[{"path": "p", "label": "l", "stale": False}],
                                 proposal="height 210px"),
+    api.Calib2ProposalUpdated: dict(proposal="height 210px (2 runs)"),
     api.ConfigSaved: dict(message="Saved!"),
     api.ConfigList: dict(configs=[("today 12:00", "/p/c.json")]),
     api.CurrentConfig: dict(display="today 12:00"),

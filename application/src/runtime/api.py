@@ -367,6 +367,9 @@ class StartDancersRun(Command):
 @dataclass(frozen=True)
 class ApplyCalib2(Command):
     selection: List[str] = field(default_factory=list)
+    quiet: bool = False   # True = live subset preview/quiet-apply on a checkbox
+                          # toggle (no result modal, no imgsz reload); False =
+                          # explicit Apply (full commit incl. imgsz + save modal).
 
 
 @dataclass(frozen=True)
@@ -650,6 +653,13 @@ class CalibReportCard(Event):
 @dataclass(frozen=True)
 class Calib2PoolChanged(Event):
     rows: List[Dict[str, Any]]  # {path, label, stale}
+    proposal: str
+
+
+@dataclass(frozen=True)
+class Calib2ProposalUpdated(Event):
+    """In-place refresh of the inline pool's proposal text after a checked-subset
+    recompute (checkbox toggle) — does NOT re-render the run list/checkboxes."""
     proposal: str
 
 

@@ -193,6 +193,9 @@ class _CalibrationUiAdapter:
     def show_calib2_dialog(self, rows, proposal: str):
         self._app.bus.publish(api.Calib2PoolChanged(rows, proposal))
 
+    def update_calib2_proposal(self, summary: str):
+        self._app.bus.publish(api.Calib2ProposalUpdated(summary))
+
 
 class _ConfigUiAdapter:
     """ConfigUiPort publishing seam events; available mirrors GUI existence."""
@@ -816,7 +819,7 @@ class WallDanceApp:
         # calibration
         reg(api.StartCalibration, lambda c: self.calibration._cb_calibrate())
         reg(api.StartDancersRun, lambda c: self.calibration._cb_calib2())
-        reg(api.ApplyCalib2, lambda c: self.calibration._cb_calib2_apply(c.selection))
+        reg(api.ApplyCalib2, lambda c: self.calibration._cb_calib2_apply(c.selection, quiet=c.quiet))
         reg(api.ClearCalib2Pool, lambda c: self.calibration._cb_calib2_clear())
         reg(api.ViewCalib2Pool, lambda c: self.calibration._cb_view_calib2_pool())
         # config / project

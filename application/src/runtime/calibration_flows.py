@@ -56,6 +56,8 @@ class CalibrationUiPort(Protocol):
 
     def show_calib2_dialog(self, rows, proposal: str) -> None: ...
 
+    def update_calib2_proposal(self, summary: str) -> None: ...
+
 
 class CalibrationFlows:
     """Owns the CALIBRATE / DANCERS state machines stepped by the main loop."""
@@ -489,12 +491,23 @@ class CalibrationFlows:
                 "stale": framing_stale or profile_stale,
                 "stale_reason": reason,
             })
-        proposal = self._calib2_aggregate([r for _p, r in entries],
-                                          max(roi[2], roi[3]))
+        # Initial proposal = the DEFAULT-checked (non-stale) subset, so the
+        # preview matches the checkboxes; toggling recomputes for the actual
+        # selection (Track C).  Fall back to all runs if every run is stale.
+        default_runs = [run for (_p, run), row in zip(entries, rows)
+                        if not row["stale"]] or [r for _p, r in entries]
+        proposal = self._calib2_aggregate(default_runs, max(roi[2], roi[3]))
         self.ui.show_calib2_dialog(rows, proposal.summary())
 
-    def _cb_calib2_apply(self, selected_paths):
-        """Apply the pooled proposal from the selected runs."""
+    def _cb_calib2_apply(self, selected_paths, quiet: bool = False):
+        """Apply the pooled proposal from the selected runs.
+
+        ``quiet=True`` (checkbox toggle, Track C): recompute over the checked
+        subset, apply the instant detection knobs (height/conf/blur) and refresh
+        the inline proposal text live — NO result modal and NO imgsz/engine
+        reload (heavy → deferred to the explicit Apply).  ``quiet=False`` (Apply
+        button): full commit incl. the imgsz reload + the save-to-project modal.
+        """
         pool = self._calib2_pool()
         chosen = [run for path, run in pool.load_runs() if path in set(selected_paths)]
         frame_w, frame_h = self.roi_source_size()
@@ -502,8 +515,11 @@ class CalibrationFlows:
         prop = self._calib2_aggregate(chosen, max(roi[2], roi[3]))
         if not prop.ok:
             if self.ui.available:
-                self.ui.show_toast(prop.summary(),
-                                   duration=4.0, color=(255, 180, 80))
+                if quiet:                       # show why in-place, don't pop a toast
+                    self.ui.update_calib2_proposal(prop.summary())
+                else:
+                    self.ui.show_toast(prop.summary(),
+                                       duration=4.0, color=(255, 180, 80))
             return
         self.settings.person_height_px = int(prop.person_height_px)
         self.settings.person_height_min_ratio = float(prop.min_ratio)
@@ -518,7 +534,10 @@ class CalibrationFlows:
             self.reset_sensitivity_anchor(conf_seed=float(prop.confidence))
         if prop.blur_budget_ms is not None:
             self.blur_budget_ms = float(prop.blur_budget_ms)
-        if prop.imgsz and prop.imgsz != int(self.settings.imgsz):
+        # imgsz changes swap the TRT engine (seconds) — only on the explicit
+        # Apply, never per checkbox toggle.  The proposed imgsz still shows in
+        # the preview text either way.
+        if (not quiet) and prop.imgsz and prop.imgsz != int(self.settings.imgsz):
             if self.ui.available:
                 self.ui.sync_combo('imgsz', str(prop.imgsz))
             self.imgsz_change(prop.imgsz)   # handles the TRT engine reload
@@ -527,12 +546,17 @@ class CalibrationFlows:
             touched.append("confidence")
         if prop.blur_budget_ms is not None:
             touched.append("blur_budget_ms")
-        if prop.imgsz:
+        if (not quiet) and prop.imgsz:
             touched.append("imgsz")
         self._stamp_calib_state("dancers", *touched)
-        print("[Calib2] applied: " + prop.summary().replace("\n", " | "))
+        print(f"[Calib2] {'preview' if quiet else 'applied'}: "
+              + prop.summary().replace("\n", " | "))
         self.request_reprocess()
-        if self.ui.available:
+        if not self.ui.available:
+            return
+        if quiet:
+            self.ui.update_calib2_proposal(prop.summary())
+        else:
             self.ui.show_calibration_result_dialog(
                 "Dancer calibration (pooled)\n" + prop.summary(),
                 on_save=self.configs._cb_save_config)
