@@ -7,7 +7,7 @@ Supports full GPU pipeline for zero-copy processing (see gpu_pipeline.py).
 from __future__ import annotations
 
 import time
-import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -447,6 +447,12 @@ class FrameProcessor:
         self._motion_gamma_lut: Optional[np.ndarray] = None
         self._motion_gamma_val: float = 0.0
         self._last_motion_gray: Optional[np.ndarray] = None  # enhanced gray fed to MOG2
+        # P-2: one long-lived motion-feed worker (was a Thread spawned per frame).
+        # The MOG2/frame-diff feed runs on CPU in parallel with GPU YOLO, then we
+        # block on it before the tracker needs blobs — identical sync points.
+        self._motion_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="mog2-feed")
+        self._motion_future = None
         self._exclusion = ExclusionMaskBuilder()  # auto exclusion mask (P1.4)
         # Per-frame YOLO box confidences keyed by bbox value (calib2 seed, ⑤a)
         self._last_box_confs: Dict[tuple, float] = {}
@@ -632,8 +638,10 @@ class FrameProcessor:
             timing.update(gpu_timing)
             timing["path_enhance"] = "gpu-direct"
 
-            # 2-6. YOLO → Track → OSC
-            scaled_tracks = self._run_yolo_and_track(yolo_tensor, gpu_timing, timing, original_w, original_h, frame_number=frame_number, raw_frame=raw_frame)
+            # 2-6. YOLO → Track → OSC.  This is the IDS-only path: the camera
+            # delivers mono frames expanded to BGR (R==G==B), so the motion feed
+            # can take the single channel directly (P-1, mono_raw=True).
+            scaled_tracks = self._run_yolo_and_track(yolo_tensor, gpu_timing, timing, original_w, original_h, frame_number=frame_number, raw_frame=raw_frame, mono_raw=True)
 
             latency_ms = (time.time() - frame_start) * 1000
             timing["total"] = latency_ms
@@ -659,6 +667,7 @@ class FrameProcessor:
         original_h: int,
         frame_number: int | None = None,
         raw_frame: np.ndarray | None = None,
+        mono_raw: bool = False,
     ) -> List[ScaledTrack]:
         """Shared YOLO inference → extract → track → unscale → OSC pipeline.
 
@@ -669,8 +678,8 @@ class FrameProcessor:
         roi_x = int(roi.get('x', 0))
         roi_y = int(roi.get('y', 0))
 
-        # Start MOG2 feed in background thread — runs on CPU while YOLO uses GPU
-        mog2_thread = None
+        # Start MOG2 feed on the persistent worker — runs on CPU while YOLO uses GPU
+        motion_submitted = False
         if (self.bridge_motion_detector is not None
                 or self.crossval_motion_detector is not None) and raw_frame is not None:
             t_mog_start = time.time()
@@ -679,12 +688,16 @@ class FrameProcessor:
                 roi_w = int(roi.get('w', 0))
                 roi_h = int(roi.get('h', 0))
                 motion_frame = raw_frame[roi_y:roi_y + roi_h, roi_x:roi_x + roi_w]
-            gray_for_motion = cv2.cvtColor(motion_frame, cv2.COLOR_BGR2GRAY)
+            # P-1: a mono source is expanded to BGR with R==G==B, so the single
+            # channel equals cv2 BGR2GRAY bit-for-bit (weights sum to 1.0) — skip
+            # the conversion.  Only the IDS path sets mono_raw; everything else
+            # (incl. replay/goldens) keeps cvtColor → byte-identical.
+            gray_for_motion = (np.ascontiguousarray(motion_frame[:, :, 0])
+                               if mono_raw and motion_frame.ndim == 3
+                               else cv2.cvtColor(motion_frame, cv2.COLOR_BGR2GRAY))
             timing["mog2_cvt"] = (time.time() - t_mog_start) * 1000
-            mog2_thread = threading.Thread(
-                target=self._feed_motion_detectors, args=(gray_for_motion,),
-                daemon=True)
-            mog2_thread.start()
+            self._submit_motion_feed(gray_for_motion)  # P-2
+            motion_submitted = True
 
         # YOLO inference (GPU) — runs in parallel with MOG2 feed (CPU)
         t0 = time.time()
@@ -719,9 +732,9 @@ class FrameProcessor:
         timing["extract"] = (time.time() - t0) * 1000
         timing.update(self._extract_transfer_timing)
 
-        # Join MOG2 thread before tracker needs blobs
-        if mog2_thread is not None:
-            mog2_thread.join()
+        # Block on the MOG2 feed before tracker needs blobs (same sync point)
+        if motion_submitted:
+            self._await_motion_feed()
             timing["mog2_feed"] = (time.time() - t_mog_start) * 1000 - timing.get("mog2_cvt", 0)
 
         # GPU tracker space: ROI-local letterboxed imgsz coords — content sits
@@ -1178,18 +1191,16 @@ class FrameProcessor:
         timing["path_enhance"] = "gpu" if enhance_on_gpu else "cpu"
         timing["brightness"] = brightness
 
-        # Start MOG2 feed in background thread — runs on CPU while YOLO uses GPU
-        mog2_thread = None
+        # Start MOG2 feed on the persistent worker — runs on CPU while YOLO uses GPU
+        motion_submitted = False
         t_mog_start = None
         gray_for_motion = None
         if self.bridge_motion_detector is not None or self.crossval_motion_detector is not None:
             t_mog_start = time.time()
             gray_for_motion = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             timing["mog2_cvt"] = (time.time() - t_mog_start) * 1000
-            mog2_thread = threading.Thread(
-                target=self._feed_motion_detectors, args=(gray_for_motion,),
-                daemon=True)
-            mog2_thread.start()
+            self._submit_motion_feed(gray_for_motion)  # P-2
+            motion_submitted = True
 
         # 2. YOLO inference (GPU) — runs in parallel with MOG2 feed (CPU)
         t0 = time.time()
@@ -1215,9 +1226,9 @@ class FrameProcessor:
         timing["extract"] = (time.time() - t0) * 1000
         timing.update(self._extract_transfer_timing)
 
-        # Join MOG2 thread before tracker needs blobs
-        if mog2_thread is not None:
-            mog2_thread.join()
+        # Block on the MOG2 feed before tracker needs blobs (same sync point)
+        if motion_submitted:
+            self._await_motion_feed()
             timing["mog2_feed"] = (time.time() - t_mog_start) * 1000 - timing.get("mog2_cvt", 0)
 
         # Capture hook for the detect-pass cache (TUNING Phase B): record the
@@ -1287,6 +1298,25 @@ class FrameProcessor:
             out = cv2.LUT(out, self._motion_gamma_lut)
 
         return out
+
+    def _submit_motion_feed(self, gray: np.ndarray) -> None:
+        """P-2: hand the motion gray to the persistent worker (was a Thread
+        spawned per frame). Pairs with ``_await_motion_feed`` (the old ``join``)."""
+        self._motion_future = self._motion_executor.submit(
+            self._feed_motion_detectors, gray)
+
+    def _await_motion_feed(self) -> None:
+        """Block until the in-flight motion feed finishes (the old ``join``).
+        A feed error is logged, not raised — matching the old daemon thread,
+        whose exceptions never propagated into the main loop."""
+        fut, self._motion_future = self._motion_future, None
+        if fut is None:
+            return
+        try:
+            fut.result()
+        except Exception:
+            import traceback
+            traceback.print_exc()
 
     def _feed_motion_detectors(self, gray: np.ndarray) -> None:
         """Feed the single motion model from one grayscale frame.

@@ -57,7 +57,7 @@ on `127.0.0.1:9000`:
 
 ### 1.5 The automated safety net (run before trusting any change)
 - Unit suite (fast, ~12 s): `./.venv/Scripts/python.exe -m pytest -q`
-  → expect **355 passed, 7 skipped** (the 7 need footage). Requires the project venv
+  → expect **356 passed, 7 skipped** (the 7 need footage). Requires the project venv
   (`application/.venv`); the system Python has no pytest.
 - Golden replay (needs footage, which is present on this machine):
   `WD_RUN_REPLAY=1 ./.venv/Scripts/python.exe -m pytest tests/test_regression_replay.py -v`
