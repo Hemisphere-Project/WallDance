@@ -383,6 +383,12 @@ class ViewCalib2Pool(Command):
     pass
 
 
+@dataclass(frozen=True)
+class ViewAimCalibState(Command):
+    """Refresh the Aim panel's 'Last calibrated' provenance line (Track S)."""
+    pass
+
+
 # --- config / project -------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -661,6 +667,12 @@ class Calib2ProposalUpdated(Event):
     """In-place refresh of the inline pool's proposal text after a checked-subset
     recompute (checkbox toggle) — does NOT re-render the run list/checkboxes."""
     proposal: str
+
+
+@dataclass(frozen=True)
+class AimCalibStateChanged(Event):
+    """The Aim panel's 'Last calibrated' provenance line (Track S)."""
+    text: str
 
 
 @dataclass(frozen=True)

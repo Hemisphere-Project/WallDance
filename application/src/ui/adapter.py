@@ -167,6 +167,7 @@ class DpgUiAdapter:
             "on_calib2_select": lambda sel: submit(api.ApplyCalib2(list(sel), quiet=True)),
             "on_calib2_clear": lambda: submit(api.ClearCalib2Pool()),
             "on_view_calib2_pool": lambda: submit(api.ViewCalib2Pool()),
+            "on_view_aim_state": lambda: submit(api.ViewAimCalibState()),
             "on_visualization_toggle": lambda name, v: submit(
                 api.ToggleOverlay(name, bool(v))),
             "on_tracker_age_change": lambda v: submit(api.SetTrackerMaxAge(int(v))),
@@ -315,6 +316,7 @@ class DpgUiAdapter:
                 None if self.wizard.on_pool_changed(e.rows, e.proposal)
                 else self.gui.show_calib2_dialog(e.rows, e.proposal)),
             api.Calib2ProposalUpdated: lambda e: self.gui.update_calib2_proposal(e.proposal),
+            api.AimCalibStateChanged: lambda e: self.gui.update_aim_calib_state(e.text),
             api.ConfigSaved: lambda e: self.gui.show_save_indicator(e.message),
             api.ConfigList: lambda e: self.gui.update_config_list(
                 e.configs, e.current_display),

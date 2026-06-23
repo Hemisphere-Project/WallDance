@@ -196,6 +196,9 @@ class _CalibrationUiAdapter:
     def update_calib2_proposal(self, summary: str):
         self._app.bus.publish(api.Calib2ProposalUpdated(summary))
 
+    def update_aim_calib_state(self, text: str):
+        self._app.bus.publish(api.AimCalibStateChanged(text))
+
 
 class _ConfigUiAdapter:
     """ConfigUiPort publishing seam events; available mirrors GUI existence."""
@@ -822,6 +825,7 @@ class WallDanceApp:
         reg(api.ApplyCalib2, lambda c: self.calibration._cb_calib2_apply(c.selection, quiet=c.quiet))
         reg(api.ClearCalib2Pool, lambda c: self.calibration._cb_calib2_clear())
         reg(api.ViewCalib2Pool, lambda c: self.calibration._cb_view_calib2_pool())
+        reg(api.ViewAimCalibState, lambda c: self.calibration._cb_view_aim_state())
         # config / project
         reg(api.SaveConfig, lambda c: (self.configs._cb_do_save_config(c.name)
                                        if c.name else self.configs._cb_save_config()))
@@ -1008,10 +1012,17 @@ class WallDanceApp:
             # otherwise a save while the dial is loose ratchets the calibrated
             # varThreshold away on the next load (ROADMAP bug #8).
             "sensitivity_var_anchor": self._sensitivity_var_anchor,
+            # Track S: calibration provenance (which phase set which knob + when).
+            # A shared (non-profile) key — rides through the schema untouched
+            # (validate_flat only clamps numerics); restored in apply below.
+            "calibration_state": dict(self.calibration.calibration_state),
         }
 
     def _apply_config_without_model(self, config: Dict):
         """Apply config settings except model/imgsz (those are handled separately during project switch)."""
+        # Track S: restore calibration provenance (drives the Aim "Last
+        # calibrated" line) before the value-applies; independent of them.
+        self.calibration.calibration_state = dict(config.get("calibration_state") or {})
         # YOLO settings (except imgsz which is handled separately)
         if "confidence" in config:
             self.settings.confidence = config["confidence"]

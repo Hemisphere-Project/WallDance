@@ -115,3 +115,38 @@ def test_calib2_explicit_apply_commits_imgsz_and_modal():
     flows.imgsz_change.assert_called_once_with(1280)
     flows.ui.show_calibration_result_dialog.assert_called_once()
     flows.ui.update_calib2_proposal.assert_not_called()
+
+
+# --- Track S: provenance line + config persistence ---------------------------
+
+def test_aim_calib_line_empty():
+    flows, _ = _flows()
+    assert flows._aim_calib_line() == "Last calibrated: --"
+
+
+def test_aim_calib_line_groups_by_phase():
+    import time as _t
+    flows, _ = _flows()
+    now = _t.time()
+    flows.calibration_state = {
+        "gamma": {"source": "aim", "ts": "x", "epoch": now},
+        "mog2_var_threshold": {"source": "aim", "ts": "x", "epoch": now},
+        "person_height_px": {"source": "dancers", "ts": "x", "epoch": now},
+    }
+    line = flows._aim_calib_line()
+    assert line.startswith("Last calibrated · ")
+    assert "Aim:" in line and "Dancers:" in line
+    assert "gamma" in line and "var" in line and "height" in line
+    assert "just now" in line
+
+
+def test_calibration_state_survives_config_roundtrip():
+    """The provenance dict is a shared key — it must round-trip the schema
+    (structure -> flatten -> validate) without being dropped or mangled."""
+    from core import config_schema
+    state = {"gamma": {"source": "aim", "ts": "t", "epoch": 123.0}}
+    flat = {"confidence": 0.3, "gamma": 1.5, "calibration_state": state}
+    structured = config_schema.structure(flat, {}, config_schema.DEFAULT_PROFILE)
+    back = config_schema.flatten(structured)
+    validated, _warnings = config_schema.validate_flat(back)
+    assert validated.get("calibration_state") == state

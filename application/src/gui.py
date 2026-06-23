@@ -498,6 +498,9 @@ class WallDanceGUI:
         # fetch the old POOL button did; renders via show_calib2_dialog).
         if phase_id == "calibrate" and 'on_view_calib2_pool' in self.callbacks:
             self.callbacks['on_view_calib2_pool']()
+        # Entering Aim: refresh the "Last calibrated" provenance line (Track S).
+        if phase_id == "aim" and 'on_view_aim_state' in self.callbacks:
+            self.callbacks['on_view_aim_state']()
         # Entering Verify: auto-run the readiness glance (cheap, off-thread).
         if phase_id == "verify" and 'on_check_readiness' in self.callbacks:
             self.callbacks['on_check_readiness']()
@@ -2514,6 +2517,11 @@ class WallDanceGUI:
         untouched so the operator's selection survives."""
         if dpg.does_item_exist("calib2_proposal_value"):
             dpg.set_value("calib2_proposal_value", summary)
+
+    def update_aim_calib_state(self, text: str):
+        """Track S: set the Aim panel's 'Last calibrated' provenance line."""
+        if dpg.does_item_exist("aim_last_calib_text"):
+            dpg.set_value("aim_last_calib_text", text)
 
     def show_calibration_result_dialog(self, summary: str, on_save):
         """Show the measured Go-Live calibration and offer to save it.

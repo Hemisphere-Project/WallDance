@@ -58,6 +58,8 @@ class CalibrationUiPort(Protocol):
 
     def update_calib2_proposal(self, summary: str) -> None: ...
 
+    def update_aim_calib_state(self, text: str) -> None: ...
+
 
 class CalibrationFlows:
     """Owns the CALIBRATE / DANCERS state machines stepped by the main loop."""
@@ -125,10 +127,60 @@ class CalibrationFlows:
 
     def _stamp_calib_state(self, source: str, *knobs: str) -> None:
         """Record which calibration phase ('aim'/'dancers') set which knob, and
-        when (Track C provenance — feeds the Aim 'Last calibrated' line)."""
+        when (Track C/S provenance — feeds the Aim 'Last calibrated' line)."""
         ts = time.strftime("%Y-%m-%d %H:%M")
+        epoch = time.time()
         for k in knobs:
-            self.calibration_state[k] = {"source": source, "ts": ts}
+            self.calibration_state[k] = {"source": source, "ts": ts, "epoch": epoch}
+
+    # Track S — Aim "Last calibrated" provenance line --------------------
+    _CALIB_KNOB_LABELS = {
+        "gamma": "gamma", "mog2_var_threshold": "var", "mog2_scale": "scale",
+        "clahe": "CLAHE", "person_height_px": "height", "confidence": "conf",
+        "imgsz": "imgsz", "blur_budget_ms": "blur",
+    }
+
+    @staticmethod
+    def _ago(epoch: float) -> str:
+        if not epoch:
+            return ""
+        try:
+            secs = max(0.0, time.time() - float(epoch))
+        except (TypeError, ValueError):
+            return ""
+        if secs < 90:
+            return "just now"
+        mins = secs / 60.0
+        if mins < 90:
+            return f"{int(round(mins))} min ago"
+        hrs = mins / 60.0
+        if hrs < 36:
+            return f"{int(round(hrs))} h ago"
+        return f"{int(round(hrs / 24.0))} d ago"
+
+    def _aim_calib_line(self) -> str:
+        """Format the calibration provenance (which phase set which knob + when)
+        into the Aim panel's 'Last calibrated' line."""
+        st = self.calibration_state or {}
+
+        def group(src, label):
+            ks = [k for k, v in st.items()
+                  if isinstance(v, dict) and v.get("source") == src]
+            if not ks:
+                return None
+            latest = max((st[k].get("epoch", 0) or 0) for k in ks)
+            names = ", ".join(self._CALIB_KNOB_LABELS.get(k, k) for k in sorted(ks))
+            when = self._ago(latest)
+            sep = " " if when else ""
+            return f"{label}{sep}{when} ({names})"
+
+        parts = [p for p in (group("aim", "Aim:"), group("dancers", "Dancers:")) if p]
+        return "Last calibrated · " + " · ".join(parts) if parts else "Last calibrated: --"
+
+    def _cb_view_aim_state(self) -> None:
+        """Push the current provenance line to the Aim panel (on phase entry)."""
+        if self.ui.available:
+            self.ui.update_aim_calib_state(self._aim_calib_line())
 
     # ------------------------------------------------------------------
     # Calib1 — CALIBRATE (scene window, optional exposure servo)
@@ -332,6 +384,7 @@ class CalibrationFlows:
         self.request_reprocess()
         if self.ui.available:
             self.ui.set_calibrate_status(None)
+            self.ui.update_aim_calib_state(self._aim_calib_line())  # Track S
             servo_line = (self._servo_result.summary_line() + "\n"
                           if self._servo_result else "")
             gamma_line = (f"Gamma seeded: {self.enhancer.gamma:.3f}"
@@ -554,6 +607,7 @@ class CalibrationFlows:
         self.request_reprocess()
         if not self.ui.available:
             return
+        self.ui.update_aim_calib_state(self._aim_calib_line())  # Track S
         if quiet:
             self.ui.update_calib2_proposal(prop.summary())
         else:
