@@ -1706,6 +1706,10 @@ class FrameProcessor:
         # CORPUS_ANALYSIS §6.5a).  Duplicate filtering reuses the surviving
         # bbox arrays, so survivors always resolve in this map.
         self._last_box_confs = {}
+        # (#3) reset per call so a zero-detection frame reports no STALE GPU→CPU
+        # transfer timing — the per-detection assignment below only fires when
+        # there are detections, so without this it kept the last frame's value.
+        self._extract_transfer_timing = {}
         for result in results:
             if result.keypoints is None or len(result.keypoints) == 0:
                 continue

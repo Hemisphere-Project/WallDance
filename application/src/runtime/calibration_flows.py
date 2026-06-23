@@ -250,7 +250,7 @@ class CalibrationFlows:
             # longer opens an exclusion-collection window.
             if self.ui.available:
                 self.ui.set_calibrate_status("Calibrating 0%")
-                self.ui.show_toast("Calibrating scene - keep dancers in frame",
+                self.ui.show_toast("Calibrating scene - keep the stage clear",
                                    duration=2.5, color=(160, 200, 255))
         print("[Calibrate] started "
               f"({'playback' if self.recorder.is_playing else 'live'}"

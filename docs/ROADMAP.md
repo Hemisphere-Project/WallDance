@@ -161,27 +161,31 @@ do alongside adjacent work, replay-gated where behavior-touching.
 |------|-----|------|
 | **Track P (3→2 GPU collapse)** — ⏸ **DEFERRED 2026-06-22** as a dedicated effort (before §3.2) | ~450 LOC (CPU front-end + dual coord transforms + parity test) gone; "test what you ship" | **Bigger than first framed** (pre-check 2026-06-22): the **TRT determinism gate PASSED** (byte-identical run-to-run on a fixed engine, both goldens) — but the whole tuning/cache/golden harness (`detect_cache`/`tune`/`sensitivity`/`replay`) is **hard-wired to the CPU path** (`detect_cache` builds caches inside `_process_cpu`, replays via `_track_detections`). So Stage 1 = re-target the harness onto GPU+TRT + re-baseline the 12 goldens to **engine/driver-locked** (a real portability downgrade); Stage 2 = delete the CPU surface; Stage 3 = harden the engine gate. Do as a focused effort, not bundled |
 | ~~**Delete the 22 import shims**~~ ✅ **done 2026-06-22** | Removed the `application/src/*.py` → `core/`/`camera/`/`services/` aliasing layer (22 files) | Migrated 51 bare-name import sites (app.py/gui.py + 18 test files) to package paths first; app/gui/main import clean, 351 tests + goldens byte-identical |
-| **Remove the `TrackingMode` enum** (P3 merged — detection no longer bifurcates) | Deletes a vestigial user-facing toggle still in config/learn-rate | Confirm no learn-rate path depends on it |
-| **Remove `MotionModel.detector` compat shim** (P3-deferred consumer migration) | One fewer indirection in the motion feed | Migrate the shim's consumers first |
+| **Remove the `TrackingMode` enum** (P3 merged — detection no longer bifurcates) | Deletes a vestigial toggle | ⚠ **bigger than it looks (71 refs** across config/tracker/pipeline/motion_detector/app, incl. hot code) — own focused effort, not a quick cleanup; confirm the learn-rate path first |
+| **Remove `MotionModel.detector` compat shim** (P3-deferred consumer migration) | One fewer indirection in the motion feed | Consumer-migration refactor in the motion feed (`pipeline` crossval/bridge views read `motion_model.detector`) — own effort; migrate consumers first |
 | **Retire dead knobs** (Track S "drop" tier) | auto-exclusion builder (already inert), `bg_subtract` → clean-plate path (Track D #5), duplicated `tracker_max_age` defaults, `tracker_smoothing` (G4: truly Fixed, no config key) | Low — read-mostly removals |
-| **Perf backlog (opportunistic, replay-gated):** ~~P-1 mono-aware gray path~~ ✅ + ~~P-2 persistent motion-feed worker~~ ✅ **done 2026-06-23** (P-1: IDS `mono_raw` fast path takes the single channel — bit-identical since R==G==B; P-2: one `ThreadPoolExecutor` worker replaces the per-frame `threading.Thread`). Remaining: P-3 frame-diff resolution cap · P-4 blur-after-downscale · P-5 OSC bundling (atomic frame for TouchDesigner) · P-7 tiered motion cache (dev-loop) · P-8 Python 3.12 venv · P-9 calib-window sweep pruning | ms/frame + dev-loop speed | done two were bit-identical (goldens 3/3 + GPU parity green); P-3/P-4 re-baseline goldens; P-8 re-verify GPU wheels |
+| **Perf backlog (opportunistic, replay-gated):** ~~P-1 mono-aware gray path~~ ✅ + ~~P-2 persistent motion-feed worker~~ ✅ **done 2026-06-23** (P-1: IDS `mono_raw` fast path takes the single channel — bit-identical since R==G==B; P-2: one `ThreadPoolExecutor` worker replaces the per-frame `threading.Thread`). Remaining: P-3 frame-diff resolution cap · P-4 blur-after-downscale · P-7 tiered motion cache (dev-loop) · P-8 Python 3.12 venv · P-9 calib-window sweep pruning | ms/frame + dev-loop speed | done two were bit-identical (goldens 3/3 + GPU parity green); P-3/P-4 re-baseline goldens; P-8 re-verify GPU wheels |
+| **P-5 OSC bundling** — ⏸ **PARKED** (consumer-gated) | One timestamped bundle/frame → TouchDesigner gets an atomic frame instead of 1+4n datagrams | Needs the TouchDesigner patch to accept OSC bundles (out of reach now). Internally bit-identical; revisit when the consumer side can change |
 | **`install.sh` cu130 fallback footgun** | Driver reports CUDA True while ops crash → fallback never triggers | Low-priority hardening |
 
 ---
 
-## 5. Open bugs (still live)
+## 5. Open bugs
 
-Full prose: [ENGINEERING_RECORD §8](archives/ENGINEERING_RECORD.md). The unresolved ones:
+Full prose: [ENGINEERING_RECORD §8](archives/ENGINEERING_RECORD.md). **The §5 cluster is now clear.**
 
-| # | Severity | Issue |
-|---|----------|-------|
-| 3 | 🟡 Cosmetic | `_extract_transfer_timing` assigned inside the per-detection loop → stale on zero-detection frames. |
-| 12a | Low | `_execute_project_switch` step 7 compares `new_imgsz != settings.imgsz` *after* step 6 assigned it — always False (masked by the TRT special-case). |
-| 12b | Low | Contradictory Calib1 toasts: servo path says "keep the stage clear", non-IDS path says "keep dancers in frame" — resolve per the calib correctness fixes (§3.1). |
-| 12f | Low | Profile-switch reuses `_apply_config_without_model` with a partial bundle; the unconditional ROI block shows the contract is fragile — document or split. |
+*Fixed 2026-06-23 (bit-identical; goldens 3/3 byte-identical):*
+- **#3** — `_extract_transfer_timing` now reset at the top of `_extract_detections`, so a
+  zero-detection frame reports no stale GPU→CPU transfer timing.
+- **#12a** — removed the dead `new_imgsz != settings.imgsz` reload term in `_execute_project_switch`
+  (always False; PT applies imgsz at call time, TRT is force-reloaded below).
+- **#12b** — the scene-calibration toast now says "keep the stage clear" (Aim is a clear-stage pass;
+  height is Calib2-owned), consistent with the servo toast.
+- **#12f** — the ROI-rect re-application in `_apply_config_without_model` is now guarded on ROI-key
+  presence, so a partial profile-bundle apply (profile switch) leaves the shared ROI untouched.
 
-*(Fixed 2026-06-22 in this pass: #12d — the `config.py` OSC comment now matches the wire format
-`/walldance/dancer/centroid [id,x,y]`.)*
+*(Earlier: #12d — the `config.py` OSC comment matches the wire format `/walldance/dancer/centroid
+[id,x,y]`, fixed 2026-06-22.)*
 
 ---
 

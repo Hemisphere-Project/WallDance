@@ -205,10 +205,13 @@ class ConfigManager:
         self.settings.imgsz = new_imgsz
         self.models.model_manager.set_imgsz(new_imgsz)
 
-        # 7. Determine if we need to reload the model
+        # 7. Determine if we need to reload the model.
+        # (#12a) imgsz is NOT a reload trigger here: PT applies imgsz at call
+        # time, and any TRT path is force-reloaded just below (engines are
+        # size-specific).  The old `new_imgsz != self.settings.imgsz` term was
+        # dead code — step 6 above already set the two equal.
         need_model_reload = (
             base_name != self.models.current_model_name or
-            new_imgsz != self.settings.imgsz or
             use_trt != self.models.model_manager.is_using_tensorrt()
         )
 

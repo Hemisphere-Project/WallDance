@@ -1193,25 +1193,30 @@ class WallDanceApp:
 
         if "roi_enabled" in config:
             self.settings.roi_enabled = bool(config["roi_enabled"])
+        # (#12f) ROI is a SHARED setting, not per-profile.  Only re-apply the
+        # rect when the config actually carries ROI data (a full project load) —
+        # so a partial profile-bundle apply (profile switch) leaves ROI untouched
+        # instead of re-normalizing it against possibly-stale source dims.
         # Use the frame size that was active when the config was saved so
         # that _normalize_roi_rect clamps against the correct dimensions
         # (not the current _roi_source_size which may be stale/default).
-        roi_frame_w = int(config.get("roi_source_w", self.roi.state.source_size[0]))
-        roi_frame_h = int(config.get("roi_source_h", self.roi.state.source_size[1]))
-        roi_x = int(config.get("roi_x", self.settings.roi_x))
-        roi_y = int(config.get("roi_y", self.settings.roi_y))
-        roi_w = int(config.get("roi_w", self.settings.roi_w or roi_frame_w))
-        roi_h = int(config.get("roi_h", self.settings.roi_h or roi_frame_h))
-        self.roi._set_roi_rect(
-            roi_x,
-            roi_y,
-            roi_w,
-            roi_h,
-            frame_w=roi_frame_w,
-            frame_h=roi_frame_h,
-            sync_ui=False,
-            request_reprocess=False,
-        )
+        if any(k in config for k in ("roi_x", "roi_y", "roi_w", "roi_h")):
+            roi_frame_w = int(config.get("roi_source_w", self.roi.state.source_size[0]))
+            roi_frame_h = int(config.get("roi_source_h", self.roi.state.source_size[1]))
+            roi_x = int(config.get("roi_x", self.settings.roi_x))
+            roi_y = int(config.get("roi_y", self.settings.roi_y))
+            roi_w = int(config.get("roi_w", self.settings.roi_w or roi_frame_w))
+            roi_h = int(config.get("roi_h", self.settings.roi_h or roi_frame_h))
+            self.roi._set_roi_rect(
+                roi_x,
+                roi_y,
+                roi_w,
+                roi_h,
+                frame_w=roi_frame_w,
+                frame_h=roi_frame_h,
+                sync_ui=False,
+                request_reprocess=False,
+            )
         self.roi.roi_edit_mode = False
         self.roi._sync_roi_ui()
 
