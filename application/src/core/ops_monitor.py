@@ -112,7 +112,8 @@ def check_camera(*, is_open: bool, reconnecting: bool, source: str, fps: float,
 
 def check_tensorrt(*, trt_requested: bool, trt_active: bool,
                    fallback_reason: Optional[str] = None,
-                   gpu_fallback_reason: str = "") -> CheckResult:
+                   gpu_fallback_reason: str = "",
+                   engine_present: Optional[bool] = None) -> CheckResult:
     if trt_active:
         detail = "engine active"
         if gpu_fallback_reason:
@@ -120,9 +121,18 @@ def check_tensorrt(*, trt_requested: bool, trt_active: bool,
                                detail + f" (GPU path degraded: {gpu_fallback_reason})")
         return CheckResult("tensorrt", "ok", detail)
     if trt_requested:
+        # Track P (GPU-only): TRT is the show path — running PyTorch instead is a
+        # pre-show FAIL (slower, and not what the goldens/calibration were tuned
+        # on).  Still non-blocking: the operator may knowingly proceed on PyTorch.
+        if engine_present is False:
+            return CheckResult("tensorrt", "fail",
+                               "requested but the engine is MISSING — running "
+                               "PyTorch (slower, not the show path). Build the "
+                               "engine (Model panel) before the show.")
         reason = fallback_reason or "unknown reason"
-        return CheckResult("tensorrt", "warn",
-                           f"requested but running PyTorch ({reason})")
+        return CheckResult("tensorrt", "fail",
+                           f"requested but running PyTorch ({reason}) — not the "
+                           "show path; rebuild/repair the engine.")
     return CheckResult("tensorrt", "ok", "not requested (PyTorch)")
 
 

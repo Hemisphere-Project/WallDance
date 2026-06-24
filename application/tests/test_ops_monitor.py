@@ -49,9 +49,13 @@ def test_check_camera_ok_warn_fail():
 
 def test_check_tensorrt_states():
     assert check_tensorrt(trt_requested=True, trt_active=True).status == "ok"
+    # Track P: TRT requested but inactive is now a pre-show FAIL (no CPU path).
     fb = check_tensorrt(trt_requested=True, trt_active=False,
                         fallback_reason="no engine for imgsz 1280")
-    assert fb.status == "warn" and "no engine" in fb.detail
+    assert fb.status == "fail" and "no engine" in fb.detail
+    missing = check_tensorrt(trt_requested=True, trt_active=False,
+                             engine_present=False)
+    assert missing.status == "fail" and "MISSING" in missing.detail
     assert check_tensorrt(trt_requested=False, trt_active=False).status == "ok"
     degraded = check_tensorrt(trt_requested=True, trt_active=True,
                               gpu_fallback_reason="kornia unavailable")

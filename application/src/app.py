@@ -1788,11 +1788,17 @@ class WallDanceApp:
             source=str(self.camera.state.source),
             fps=self.fps, min_fps=OPS_MIN_SHOW_FPS,
             ids_frames=ids_frames, ids_dropped=ids_dropped))
+        try:
+            engine_present = self.models.model_manager.engine_exists(
+                self.models.current_model_name)
+        except Exception:
+            engine_present = None
         results.append(check_tensorrt(
             trt_requested=bool(self.models._trt_requested),
             trt_active=self.models.model_manager.is_using_tensorrt(),
             fallback_reason=self.models.model_manager.get_tensorrt_fallback_reason(),
-            gpu_fallback_reason=self.processor.gpu_fallback_reason or ""))
+            gpu_fallback_reason=self.processor.gpu_fallback_reason or "",
+            engine_present=engine_present))
         results.append(check_osc(
             enabled=self.osc_enabled, ip=self.osc_ip, port=self.osc_port,
             timeout_s=OPS_OSC_PROBE_TIMEOUT_S))
