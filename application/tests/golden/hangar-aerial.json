@@ -6,13 +6,13 @@
   "frames_processed": 300,
   "real_tracks": 1,
   "marginal_tracks": 3,
-  "ghost_tracks": 4,
-  "total_tracks": 8,
+  "ghost_tracks": 2,
+  "total_tracks": 6,
   "swap_count": 0,
-  "gate_rejections": 51,
-  "dormant_count": 6,
+  "gate_rejections": 79,
+  "dormant_count": 3,
   "resurrect_count": 1,
   "zero_detection_frames": 16,
-  "avg_detections": 1.093,
-  "path": "cpu"
+  "avg_detections": 1.117,
+  "path": "trt"
 }

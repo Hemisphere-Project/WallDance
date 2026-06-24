@@ -12,7 +12,7 @@
   "gate_rejections": 0,
   "dormant_count": 0,
   "resurrect_count": 0,
-  "zero_detection_frames": 49,
-  "avg_detections": 0.837,
-  "path": "cpu"
+  "zero_detection_frames": 50,
+  "avg_detections": 0.833,
+  "path": "trt"
 }

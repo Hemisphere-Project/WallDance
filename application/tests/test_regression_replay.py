@@ -2,8 +2,11 @@
 
 Replays recorded sessions through the real pipeline and compares drop/ghost/
 swap/track metrics to committed goldens, so a motion-subsystem refactor is
-*measurable* rather than judged by eye.  Verified deterministic run-to-run on
-the dev box (RTX 3090, fp32).
+*measurable* rather than judged by eye.  Runs the **GPU+TRT show path** (Track P,
+2026-06-24): "test what you ship".  Verified byte-stable run-to-run on a fixed
+engine; the goldens are now **engine/driver-locked** — re-baseline on any
+TensorRT or GPU-driver bump (`replay.py --trt --out`); cross-machine = tolerance
+only.
 
 Opt-in -- it needs GPU + model weights + the recordings and takes ~30s/fixture:
 
@@ -13,7 +16,7 @@ Workflow across P3:
 * Stage 2 (mechanical refactor, single MOG2): metrics must stay within
   tolerance -- proves the rewrite didn't change detection behavior.
 * Stage 3 (full collapse of the crossval/bridge trees): metrics WILL move;
-  the diff *is* the measured effect.  Re-baseline with ``replay.py --out``
+  the diff *is* the measured effect.  Re-baseline with ``replay.py --trt --out``
   and commit the new goldens alongside the change, noting the delta.
 
 The fixtures are the corpus-re-founding golden trio (2026-06-10, see
@@ -76,9 +79,12 @@ def _skip_reasons(fix):
     if not golden.exists():
         reasons.append(f"missing golden {golden.name}")
     else:
-        model = json.loads(golden.read_text()).get("model", "yolo11x-pose")
-        if not (MODELS_DIR / f"{model}.pt").exists():
-            reasons.append(f"missing model weights {model}.pt")
+        gj = json.loads(golden.read_text())
+        model = gj.get("model", "yolo11x-pose")
+        imgsz = gj.get("imgsz", 1280)
+        # Track P: the golden is the TRT show path → needs the matching engine.
+        if not (MODELS_DIR / f"{model}_{imgsz}.engine").exists():
+            reasons.append(f"missing TRT engine {model}_{imgsz}.engine")
     if _recording(fix["project"], fix["slot"]) is None:
         reasons.append(f"missing recording {fix['project']} slot {fix['slot']}")
     return reasons
@@ -97,6 +103,7 @@ def test_replay_matches_golden(fix):
         proc = subprocess.run(
             [sys.executable, str(REPLAY),
              "--scenario", str(fix["scenario"]),
+             "--trt",                       # Track P: golden = GPU+TRT show path
              "--out", str(out)],
             capture_output=True, text=True, timeout=900,
         )
