@@ -68,24 +68,27 @@ class ScenarioEnv:
         """Resolve (build on demand, memoise) the cache for this merged config."""
         model = config.get("model", self.base_config.get("model", "yolo11x-pose"))
         imgsz = int(config.get("yolo_imgsz", self.base_config.get("yolo_imgsz", 1280)))
+        # Track P: the search runs on the GPU+TRT show-path cache, so a
+        # post-YOLO search is "test what you ship" (no CPU↔TRT proxy gap — the
+        # G1 finding that θ_m/bridge knobs mis-estimate on the CPU cache).
         key = detect_cache.cache_key(
             config, Path(self.video).name,
-            self.manifest["start"], self.manifest["frames"], model, imgsz)
+            self.manifest["start"], self.manifest["frames"], model, imgsz, path="trt")
         cpath = detect_cache.cache_path_for(key)
         if cpath not in self._registry:
             if not cpath.exists():
                 print(f"  [build cache] {self.manifest['name']} -> {cpath.name}")
-                detect_cache.build_cache(
+                detect_cache.build_cache_gpu(
                     self.video, config, model_name=model, imgsz=imgsz,
                     start_frame=self.manifest["start"],
-                    max_frames=self.manifest["frames"], out_path=cpath)
+                    max_frames=self.manifest["frames"], out_path=cpath, use_trt=True)
             self._registry[cpath] = detect_cache.load_cache(cpath)
         return self._registry[cpath]
 
     def timeline(self, overrides: dict, frame_skip: int = 1) -> Tuple[dict, List[dict]]:
         config = {**self.base_config, **overrides}
         cache = self._cache_for(config)   # cache built full; stride applied at replay
-        summary = detect_cache.replay_from_cache(
+        summary = detect_cache.replay_from_cache_gpu(
             cache, config, reuse_grays=True, frame_skip=frame_skip)
         return self.manifest, summary["per_frame"]
 
