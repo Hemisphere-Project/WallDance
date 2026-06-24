@@ -161,7 +161,7 @@ UI), and consider duplicate-track merging for the moving-duplicate residual
 
 | Tool | What | Invocation |
 |------|------|-----------|
-| [tests/replay.py](../application/tests/replay.py) | Headless replay of a recording through the real CPU `process()` path → drop/ghost/swap/track metrics (via `analyze_session.collect_stats`). Applies the project's tuned config like `_apply_config_without_model`. Self-bootstraps `LD_LIBRARY_PATH` (system cuDNN shadows torch's and aborts otherwise). | `python tests/replay.py --project residence1-solo --slot 4 --start 1500 --frames 300 [--var 16] --out /tmp/x.json` |
+| [tests/replay.py](../application/tests/replay.py) | Headless replay of a recording through the real GPU `process()` path (Track P: GPU-only; pass `--trt` for the show path) → drop/ghost/swap/track metrics (via `analyze_session.collect_stats`). Applies the project's tuned config like `_apply_config_without_model`. Self-bootstraps `LD_LIBRARY_PATH` (system cuDNN shadows torch's and aborts otherwise). | `python tests/replay.py --project residence1-solo --slot 4 --start 1500 --frames 300 [--var 16] --out /tmp/x.json` |
 | [tests/test_regression_replay.py](../application/tests/test_regression_replay.py) | Opt-in golden regression (slots 3 & 4). | `WD_RUN_REPLAY=1 python -m pytest tests/test_regression_replay.py` |
 | [analyze_session.py](../application/analyze_session.py) | JSONL session log → stats/report (`collect_stats`, `classify_tracks`: real ≥20 hits / marginal 5–19 / ghost <5). | `python analyze_session.py <session_dir> --json` |
 | `tests/golden/*.json` | Golden metric snapshots (the current "intended behavior" baseline). | — |

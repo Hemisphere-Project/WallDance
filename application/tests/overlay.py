@@ -128,13 +128,13 @@ def render(scenario_path: str, overrides: dict, out_dir: str, *,
     # 1. Authoritative tracks (with spatial detail).
     if use_cache:
         key = detect_cache.cache_key(config, Path(video).name, manifest["start"],
-                                     manifest["frames"], model, imgsz)
+                                     manifest["frames"], model, imgsz, path="trt")
         cpath = detect_cache.cache_path_for(key)
         if not cpath.exists():
-            detect_cache.build_cache(str(video), config, model_name=model, imgsz=imgsz,
-                                     start_frame=manifest["start"],
-                                     max_frames=manifest["frames"], out_path=cpath)
-        summary = detect_cache.replay_from_cache(
+            detect_cache.build_cache_gpu(str(video), config, model_name=model, imgsz=imgsz,
+                                         start_frame=manifest["start"],
+                                         max_frames=manifest["frames"], out_path=cpath)
+        summary = detect_cache.replay_from_cache_gpu(
             detect_cache.load_cache(cpath), config, track_details=True)
     else:
         summary = replay.replay_recording(

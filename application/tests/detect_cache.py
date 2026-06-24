@@ -4,18 +4,17 @@
 YOLO (yolo11x-pose @1280 ≈ 65 ms/frame) dominates a replay; the gate, motion
 and tracker tuning we actually search over does NOT change YOLO's output.  So:
 
-  B1 build_cache:  run the full CPU path ONCE over a window, capturing the raw
-                   post-offset / pre-gate detections + the per-frame motion gray
-                   (via FrameProcessor._cache_capture).
-  B2 replay_from_cache:  rebuild only a tracker/gate/motion processor (no model
-                   loaded) and re-run _track_detections from the cache, skipping
-                   YOLO entirely → an order of magnitude faster, making a search
-                   interactive.
+  B1 build_cache_gpu:  run the GPU/TRT show path ONCE over a window, capturing
+                   the letterbox-space detections + the _TrackerSpace + the
+                   per-frame motion gray (via FrameProcessor._cache_capture_gpu).
+  B2 replay_from_cache_gpu:  rebuild only a tracker/gate/motion processor (no
+                   model loaded) and re-run _post_yolo_chain via
+                   FrameProcessor.replay_gpu_cached, skipping YOLO → an order of
+                   magnitude faster, making a search interactive.
 
-Because both the build and the replay reuse the *same* pipeline methods
-(_process_cpu for the front-end capture, _track_detections for the back-end),
-cache replay is bit-identical to a live replay for any config that leaves the
-YOLO front-end unchanged.  Front-end params (model, imgsz, confidence, enhance,
+Track P (2026-06): the harness runs the GPU+TRT show path (the CPU detect-cache
+was removed).  Cache replay equals a direct `replay.py --trt` run (proven by
+tests/test_gpu_cache_fidelity.py).  Front-end params (model, imgsz, confidence, enhance,
 greyscale, gamma/clahe, ROI, bg-subtract) are baked into the cache KEY — change
 one and you need a fresh cache.  Everything in _track_detections + motion (gate
 θ_s/θ_m, exclusion, mog2 scale/var, person height, tracker params) is tunable
@@ -94,166 +93,12 @@ def cache_path_for(key: dict) -> Path:
     return CACHE_DIR / f"{stem}.pkl"
 
 
-# --------------------------------------------------------------------------- #
-# Build
-# --------------------------------------------------------------------------- #
-def build_cache(
-    video_path: str,
-    config: dict,
-    *,
-    model_name: str = "yolo11x-pose",
-    imgsz: int = 1280,
-    start_frame: int = 0,
-    max_frames: Optional[int] = None,
-    out_path: Optional[Path] = None,
-) -> Path:
-    """Run the full CPU path once, capturing per-frame (detections, motion gray)."""
-    import replay
-    key = cache_key(config, Path(video_path).name, start_frame,
-                    max_frames or 0, model_name, imgsz)
-    out_path = Path(out_path) if out_path else cache_path_for(key)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    proc = replay._build_processor(config, model_name, imgsz, load_model=True)
-    proc.tracker.reset()  # deterministic track IDs (global counter)
-
-    captured: List[dict] = []
-
-    def _capture(detections, gray, roi_x, roi_y, ow, oh):
-        # PNG-encode the gray (grayscale, compresses well); keep detection
-        # arrays as-is (copied — process() reuses buffers downstream).
-        ok, png = cv2.imencode(".png", gray)
-        captured.append({
-            "dets": [(k.copy(), c.copy(), b.copy()) for (k, c, b) in detections],
-            "gray_png": png.tobytes(),
-            "roi_x": int(roi_x), "roi_y": int(roi_y),
-            "ow": int(ow), "oh": int(oh),
-        })
-
-    proc._cache_capture = _capture
-
-    tmp = tempfile.mkdtemp(prefix="wd_cachebuild_")
-    proc.tracker.logger.start_session(tmp)
-
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise RuntimeError(f"cannot open video: {video_path}")
-    if start_frame:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-
-    t0 = time.time()
-    processed = 0
-    try:
-        while True:
-            if max_frames is not None and processed >= max_frames:
-                break
-            ok, frame = cap.read()
-            if not ok:
-                break
-            proc.process(frame, need_preview=False, frame_number=processed)
-            processed += 1
-    finally:
-        cap.release()
-        proc.tracker.logger.close()
-    build_s = time.time() - t0
-
-    payload = {
-        "format": CACHE_FORMAT,
-        "key": key,
-        "meta": {
-            "video": Path(video_path).name,
-            "model": model_name,
-            "imgsz": imgsz,
-            "start_frame": start_frame,
-            "frames": processed,
-            "build_seconds": round(build_s, 2),
-        },
-        "frames": captured,
-    }
-    with open(out_path, "wb") as f:
-        pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
-    size_mb = out_path.stat().st_size / 1e6
-    print(f"built cache: {out_path.name}  ({processed} frames, "
-          f"{build_s:.1f}s, {size_mb:.1f} MB)")
-    return out_path
-
-
 def load_cache(path: Path) -> dict:
     with open(path, "rb") as f:
         payload = pickle.load(f)
     if payload.get("format") != CACHE_FORMAT:
         raise ValueError(f"cache format {payload.get('format')} != {CACHE_FORMAT}")
     return payload
-
-
-# --------------------------------------------------------------------------- #
-# Replay from cache
-# --------------------------------------------------------------------------- #
-def replay_from_cache(
-    cache: dict,
-    config: dict,
-    *,
-    log_dir: Optional[str] = None,
-    reuse_grays: bool = False,
-    track_details: bool = False,
-    frame_skip: int = 1,
-) -> Dict:
-    """Re-run gate + motion + tracker from a cache, skipping YOLO.
-
-    ``config`` supplies the tunable (post-YOLO) params; the YOLO front-end is
-    already baked into the cache.  Returns the same summary dict (incl.
-    ``per_frame``) as ``replay.replay_recording`` so it is directly comparable.
-
-    ``reuse_grays``: memoise the PNG-decoded motion grays on the cache dict
-    (``cache["_decoded"]``) so a search re-using one cache across many evals pays
-    the ~12 ms/frame imdecode once.  Costs ~one extra decoded gray set in RAM.
-
-    ``frame_skip``: stride N -- replay every Nth cached frame (the cache itself
-    is built full, so the stride is applied here, skipping entries).  N=1 is
-    byte-identical to a full cache replay; N>1 mirrors ``replay_recording``'s
-    frame-skip for cheap Track-G exploration.
-    """
-    import replay
-    meta = cache["meta"]
-    # No model needed — we only drive _track_detections.
-    proc = replay._build_processor(
-        config, meta["model"], meta["imgsz"], load_model=False)
-    proc.tracker.reset()  # deterministic track IDs across build+replay / search
-
-    tmp = log_dir or tempfile.mkdtemp(prefix="wd_cachereplay_")
-    proc.tracker.logger.start_session(tmp)
-
-    grays = None
-    if reuse_grays:
-        grays = cache.get("_decoded")
-        if grays is None:
-            grays = [cv2.imdecode(np.frombuffer(fr["gray_png"], np.uint8),
-                                  cv2.IMREAD_GRAYSCALE) for fr in cache["frames"]]
-            cache["_decoded"] = grays
-
-    stride = max(1, int(frame_skip))
-    per_frame = []
-    kept = 0           # logical index of frames actually replayed (contiguous)
-    for i, fr in enumerate(cache["frames"]):
-        # Frame-skip: drop the cache entries between strides.  stride==1 keeps
-        # every frame (kept == i throughout) -> byte-identical to a full replay.
-        if stride > 1 and (i % stride) != 0:
-            continue
-        gray = grays[i] if grays is not None else cv2.imdecode(
-            np.frombuffer(fr["gray_png"], np.uint8), cv2.IMREAD_GRAYSCALE)
-        proc._feed_motion_detectors(gray)
-        dets = [(k, c, b) for (k, c, b) in fr["dets"]]
-        timing: Dict[str, float] = {}
-        tracks = proc._track_detections(
-            dets, fr["roi_x"], fr["roi_y"], fr["ow"], fr["oh"], kept, timing)
-        per_frame.append(replay.per_frame_record(
-            kept, meta["start_frame"] + i, tracks, track_details))
-        kept += 1
-    proc.tracker.logger.close()
-
-    return replay._summary_from_log(
-        tmp, meta["video"], meta["model"], meta["imgsz"],
-        meta["start_frame"], kept, per_frame)
 
 
 # --------------------------------------------------------------------------- #
@@ -460,13 +305,13 @@ def main():
 
     scenario, config, video, model_name, imgsz = _resolve(args)
     key = cache_key(config, Path(video).name, args.start, args.frames or 0,
-                    model_name, imgsz)
+                    model_name, imgsz, path="trt")
     path = cache_path_for(key)
 
     if args.cmd == "build":
-        build_cache(video, config, model_name=model_name, imgsz=imgsz,
-                    start_frame=args.start, max_frames=args.frames,
-                    out_path=path)
+        build_cache_gpu(video, config, model_name=model_name, imgsz=imgsz,
+                        start_frame=args.start, max_frames=args.frames,
+                        out_path=path)
         return
 
     # replay
@@ -474,7 +319,7 @@ def main():
         sys.exit(f"no cache at {path} — run `build` first")
     cache = load_cache(path)
     t0 = time.time()
-    summary = replay_from_cache(cache, config)
+    summary = replay_from_cache_gpu(cache, config)
     dt = time.time() - t0
     per_frame = summary.pop("per_frame", [])
     print(json.dumps(summary, indent=2))

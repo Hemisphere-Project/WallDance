@@ -186,23 +186,9 @@ def test_exclusion_norm_xy_roi_local_vs_global_differ_by_offset():
 
 
 # ---------------------------------------------------------------------------
-# Box-conf map (⑤a): the per-frame bbox→conf map must follow the bboxes
-# through the ROI offset, or the calib2 seed silently loses every sample
-# whenever an ROI is active on the CPU path.
+# Box-conf map (⑤a): the per-frame bbox→conf value key.  (Track P removed the
+# CPU ROI-offset path; the GPU path keys box confs in letterbox space directly.)
 # ---------------------------------------------------------------------------
-def test_box_conf_map_survives_roi_offset():
-    key_fn = FrameProcessor._bbox_conf_key
-    stub = types.SimpleNamespace(
-        _last_box_confs={key_fn((10.0, 20.0, 50.0, 100.0)): 0.77},
-        _bbox_conf_key=key_fn,
-    )
-    dets = [(np.zeros((17, 2)), np.zeros(17),
-             np.array([10.0, 20.0, 50.0, 100.0]))]
-    out = FrameProcessor._offset_detections(stub, dets, 300, 150)
-    assert out[0][2][0] == 310.0 and out[0][2][1] == 170.0
-    assert stub._last_box_confs[key_fn(out[0][2])] == 0.77
-
-
 def test_box_conf_key_recovers_track_match():
     # DancerTrack.update stores the matched bbox verbatim (np.array(bbox)),
     # so the value key on the track side equals the detection-side key.

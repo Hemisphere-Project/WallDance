@@ -1,12 +1,6 @@
 @echo off
 setlocal EnableExtensions
 
-set "FORCE_CPU="
-if /I "%~1"=="--cpu" (
-    set "FORCE_CPU=1"
-    shift
-)
-
 set "ROOT_DIR=%~dp0"
 cd /d "%ROOT_DIR%application" || (
     echo ERROR: Could not open application directory.
@@ -20,11 +14,6 @@ if not defined UV_CMD (
     echo ERROR: uv is missing or not callable.
     echo Hint: run install.bat first.
     exit /b 1
-)
-
-if defined FORCE_CPU (
-    echo [WallDance] CPU mode enabled ^(--cpu^).
-    set "CUDA_VISIBLE_DEVICES=-1"
 )
 
 if not exist ".venv\" (

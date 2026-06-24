@@ -49,8 +49,8 @@ def _skip_reasons():
         reasons.append("set WD_RUN_REPLAY=1 to run the GPU cache-equivalence test")
     if _recording(PROJECT, SLOT) is None:
         reasons.append(f"missing recording {PROJECT} slot {SLOT}")
-    if not list(MODELS_DIR.glob("yolo11x-pose.pt")):
-        reasons.append("missing model weights yolo11x-pose.pt")
+    if not (MODELS_DIR / "yolo11x-pose_1280.engine").exists():
+        reasons.append("missing TRT engine yolo11x-pose_1280.engine")
     return reasons
 
 
@@ -97,9 +97,11 @@ def test_cache_replay_matches_full_replay():
     if reasons:
         pytest.skip("; ".join(reasons))
 
+    # Track P: both run the GPU+TRT show path (byte-stable run-to-run); --cache
+    # must reproduce the full --trt run frame-for-frame.
     with tempfile.TemporaryDirectory() as td:
-        full_sum, full_tl = _run_replay(td, "full", [])
-        cache_sum, cache_tl = _run_replay(td, "cache", ["--cache"])
+        full_sum, full_tl = _run_replay(td, "full", ["--trt"])
+        cache_sum, cache_tl = _run_replay(td, "cache", ["--cache", "--trt"])
 
     # Frame-for-frame identical reported timeline.
     assert cache_tl == full_tl

@@ -81,19 +81,9 @@ def test_last_yolo_size_refreshes_on_real_skeleton_not_cold_blob():
 
 
 # ---------------------------------------------------------------------------
-# Pipeline finalize wiring (CPU identity + GPU letterbox), self=None like the
-# transform tests (the finalize methods never touch self for the clamp).
+# Pipeline finalize wiring (GPU letterbox), self=None like the transform tests
+# (the finalize method never touches self for the clamp).
 # ---------------------------------------------------------------------------
-def test_cpu_finalize_applies_clamp_flag():
-    t = _make_track([10, 20, 50, 80])
-    t.predict()  # gap frame
-    on = FrameProcessor._identity_scaled_track(t, True)
-    off = FrameProcessor._identity_scaled_track(t, False)
-    np.testing.assert_allclose(on.bbox, [75, 160, 50, 80])
-    np.testing.assert_allclose(off.bbox, [10, 20, 50, 80])
-    np.testing.assert_allclose(t.bbox, [10, 20, 50, 80])  # not mutated
-
-
 def test_gpu_finalize_clamps_in_tracker_space_then_unscales():
     """clamp happens in tracker space, so the letterbox unscale applies to the
     clamped box just like the raw one (identity transform here)."""

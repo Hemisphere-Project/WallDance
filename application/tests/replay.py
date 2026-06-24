@@ -14,12 +14,9 @@ Importable: ``replay_recording(...) -> dict`` for the regression test.
 
 Notes
 -----
-* Forces ``use_gpu_path=False`` (the CPU ``_process_cpu`` path) and
-  ``use_fp16=False`` for determinism -- numbers won't match the user's
-  TensorRT/fp16 production run, but they are reproducible on *this* harness,
-  which is what a regression baseline needs.
-* The YOLO model itself still runs on CUDA if available; that's fine and
-  deterministic enough in fp32 (the test compares with tolerances).
+* Track P (2026-06): the CPU path was removed — replays run on the GPU pipeline.
+  Pass ``--trt`` for the production show path (TensorRT FP16, byte-stable
+  run-to-run on a fixed engine); without it the GPU + PyTorch-FP32 backend runs.
 """
 from __future__ import annotations
 
@@ -320,7 +317,7 @@ def replay_recording(
     max_frames: Optional[int] = None,
     log_dir: Optional[str] = None,
     track_details: bool = False,
-    use_gpu_path: bool = False,
+    use_gpu_path: bool = True,    # Track P: GPU-only (CPU path removed)
     use_trt: bool = False,
     frame_skip: int = 1,
 ) -> Dict:
@@ -542,23 +539,25 @@ def main():
         # Detect-pass cache path (TUNING Phase B): skip YOLO, replay the tunable
         # gate/motion/tracker back-end from cached detections + motion grays.
         import detect_cache
+        path_tag = "trt" if args.trt else "gpu"   # Track P: GPU show-path cache
         key = detect_cache.cache_key(
             config, Path(video).name, args.start, args.frames or 0,
-            model_name, imgsz)
+            model_name, imgsz, path=path_tag)
         cpath = detect_cache.cache_path_for(key)
         if args.rebuild_cache or not cpath.exists():
             # Cache is built full (stride-independent, reusable); the stride is
             # applied at replay time below.
-            detect_cache.build_cache(
+            detect_cache.build_cache_gpu(
                 str(video), config, model_name=model_name, imgsz=imgsz,
-                start_frame=args.start, max_frames=args.frames, out_path=cpath)
-        summary = detect_cache.replay_from_cache(
+                start_frame=args.start, max_frames=args.frames, out_path=cpath,
+                use_trt=args.trt)
+        summary = detect_cache.replay_from_cache_gpu(
             detect_cache.load_cache(cpath), config, frame_skip=args.frame_skip)
     else:
         summary = replay_recording(
             str(video), config, model_name=model_name, imgsz=imgsz,
             start_frame=args.start, max_frames=args.frames,
-            track_details=args.details, use_gpu_path=args.gpu_path or args.trt,
+            track_details=args.details, use_gpu_path=True,   # Track P: GPU-only
             use_trt=args.trt, log_dir=args.log_dir, frame_skip=args.frame_skip,
         )
 

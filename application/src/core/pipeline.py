@@ -266,91 +266,6 @@ class _LetterboxMotionProxy:
         )
 
 
-class _OffsetMotionProxy:
-    """Proxy that offsets blob coords from ROI-local space to full-frame space."""
-
-    def __init__(self, detector, offset_x: int, offset_y: int):
-        self._detector = detector
-        self._offset_x = offset_x
-        self._offset_y = offset_y
-
-    def detect(self, person_height: int, **detect_kwargs):
-        blobs = self._detector.detect(person_height, **detect_kwargs)
-        if blobs and (self._offset_x or self._offset_y):
-            for blob in blobs:
-                blob.bbox[0] += self._offset_x
-                blob.bbox[1] += self._offset_y
-                blob.centroid[0] += self._offset_x
-                blob.centroid[1] += self._offset_y
-        return blobs
-
-    def extract_local_motion_blob(self, x: float, y: float, w: float, h: float,
-                                  target_centroid=None, **kwargs):
-        target = None
-        if target_centroid is not None:
-            target = np.array([
-                target_centroid[0] - self._offset_x,
-                target_centroid[1] - self._offset_y,
-            ], dtype=np.float64)
-        blob, motion_ratio = self._detector.extract_local_motion_blob(
-            x - self._offset_x,
-            y - self._offset_y,
-            w,
-            h,
-            target_centroid=target,
-            **kwargs,
-        )
-        if blob is not None and (self._offset_x or self._offset_y):
-            blob.bbox[0] += self._offset_x
-            blob.bbox[1] += self._offset_y
-            blob.centroid[0] += self._offset_x
-            blob.centroid[1] += self._offset_y
-        return blob, motion_ratio
-
-    def motion_ratio_in_bbox(self, x: float, y: float, w: float, h: float,
-                             **kwargs) -> float:
-        return self._detector.motion_ratio_in_bbox(
-            x - self._offset_x,
-            y - self._offset_y,
-            w,
-            h,
-            **kwargs,
-        )
-
-    def frame_diff_blob_in_bbox(self, x: float, y: float, w: float, h: float,
-                                target_centroid=None, **kwargs):
-        target = None
-        if target_centroid is not None:
-            target = np.array([
-                target_centroid[0] - self._offset_x,
-                target_centroid[1] - self._offset_y,
-            ], dtype=np.float64)
-        blob, ratio = self._detector.frame_diff_blob_in_bbox(
-            x - self._offset_x,
-            y - self._offset_y,
-            w,
-            h,
-            target_centroid=target,
-            **kwargs,
-        )
-        if blob is not None and (self._offset_x or self._offset_y):
-            blob.bbox[0] += self._offset_x
-            blob.bbox[1] += self._offset_y
-            blob.centroid[0] += self._offset_x
-            blob.centroid[1] += self._offset_y
-        return blob, ratio
-
-    def bridge_diagnostics(self, x: float, y: float, w: float, h: float,
-                           **kwargs) -> dict:
-        return self._detector.bridge_diagnostics(
-            x - self._offset_x,
-            y - self._offset_y,
-            w,
-            h,
-            **kwargs,
-        )
-
-
 @dataclass
 class _TrackerSpace:
     """How the tracker's coordinate space relates to the motion model's
@@ -417,8 +332,7 @@ class FrameProcessor:
         # Optional callback(detections, gray_for_motion, roi_x, roi_y,
         # original_w, original_h) used by the detect-pass cache builder (TUNING
         # Phase B).  None on the live path.
-        self._cache_capture = None
-        self._cache_capture_gpu = None   # Track P Stage 1: GPU/TRT detect-cache hook
+        self._cache_capture_gpu = None   # Track P: GPU/TRT detect-cache hook
 
         # Background subtraction
         self.bg_subtractor = BackgroundSubtractor()
@@ -498,33 +412,6 @@ class FrameProcessor:
             print("[Pipeline] CUDA not available - all processing on CPU")
             self._gpu_fallback_reason = "CUDA not available - PyTorch was built without GPU support or no compatible GPU found."
 
-    @staticmethod
-    def _is_cuda_kernel_compat_error(exc: Exception) -> bool:
-        msg = str(exc).lower()
-        return (
-            "no kernel image is available for execution on the device" in msg
-            or "cuda error: no kernel image" in msg
-        )
-
-    def _disable_gpu_path_and_fallback(self, reason: str):
-        if self._gpu_fallback_reason is not None:
-            return
-
-        self._gpu_fallback_reason = reason
-        self._gpu_path_active = False
-        self._gpu_pipeline = None
-        self.settings.use_gpu_path = False
-        self.settings.use_fp16 = False
-
-        try:
-            if hasattr(self.model, "to"):
-                self.model.to("cpu")
-        except Exception as e:
-            print(f"[Pipeline] Warning: could not move model to CPU: {e}")
-
-        print("[Pipeline] GPU path disabled due to CUDA runtime incompatibility; falling back to CPU processing.")
-        print(f"[Pipeline] Reason: {reason}")
-
     # ------------------------------------------------------------------
     # Configuration management
     # ------------------------------------------------------------------
@@ -566,15 +453,13 @@ class FrameProcessor:
         Returns:
             (tracked, enhanced_frame, timing, latency_ms)
         """
-        if self._gpu_path_active and self._gpu_pipeline is not None:
-            try:
-                return self._process_gpu(frame, need_preview, frame_number=frame_number)
-            except RuntimeError as e:
-                if self._is_cuda_kernel_compat_error(e):
-                    self._disable_gpu_path_and_fallback(str(e))
-                    return self._process_cpu(frame, frame_number=frame_number)
-                raise
-        return self._process_cpu(frame, frame_number=frame_number)
+        # Track P: GPU-only.  The CPU path was removed — there is no non-GPU
+        # machine, and YOLO-on-CPU is unusably slow.
+        if not (self._gpu_path_active and self._gpu_pipeline is not None):
+            raise RuntimeError(
+                "GPU pipeline required (Track P removed the CPU fallback path); "
+                "no GPU pipeline is active.")
+        return self._process_gpu(frame, need_preview, frame_number=frame_number)
     
     def _process_gpu(self, frame: np.ndarray, need_preview: bool = True, frame_number: int | None = None) -> Tuple[List[ScaledTrack], np.ndarray, Dict[str, float], float]:
         """GPU pipeline: zero-copy enhancement + YOLO."""
@@ -622,42 +507,33 @@ class FrameProcessor:
         if not self._gpu_path_active or self._gpu_pipeline is None:
             raise RuntimeError("GPU path not active, cannot use process_gpu_direct")
 
-        try:
-            frame_start = time.time()
-            _, _, original_h, original_w = gpu_tensor.shape
-            timing: Dict[str, float] = {}
+        # Track P: GPU-only — no CPU fallback (a CUDA error now propagates).
+        frame_start = time.time()
+        _, _, original_h, original_w = gpu_tensor.shape
+        timing: Dict[str, float] = {}
 
-            # Sync GPU pipeline settings
-            self._sync_gpu_settings()
+        # Sync GPU pipeline settings
+        self._sync_gpu_settings()
 
-            # 1. GPU Pipeline: process_gpu_tensor (skip upload, already on GPU)
-            yolo_tensor, preview_frame, gpu_timing = self._gpu_pipeline.process_gpu_tensor(
-                gpu_tensor, preview_enabled=need_preview
-            )
+        # 1. GPU Pipeline: process_gpu_tensor (skip upload, already on GPU)
+        yolo_tensor, preview_frame, gpu_timing = self._gpu_pipeline.process_gpu_tensor(
+            gpu_tensor, preview_enabled=need_preview
+        )
 
-            # Merge GPU timing
-            timing.update(gpu_timing)
-            timing["path_enhance"] = "gpu-direct"
+        # Merge GPU timing
+        timing.update(gpu_timing)
+        timing["path_enhance"] = "gpu-direct"
 
-            # 2-6. YOLO → Track → OSC.  This is the IDS-only path: the camera
-            # delivers mono frames expanded to BGR (R==G==B), so the motion feed
-            # can take the single channel directly (P-1, mono_raw=True).
-            scaled_tracks = self._run_yolo_and_track(yolo_tensor, gpu_timing, timing, original_w, original_h, frame_number=frame_number, raw_frame=raw_frame, mono_raw=True)
+        # 2-6. YOLO → Track → OSC.  This is the IDS-only path: the camera
+        # delivers mono frames expanded to BGR (R==G==B), so the motion feed
+        # can take the single channel directly (P-1, mono_raw=True).
+        scaled_tracks = self._run_yolo_and_track(yolo_tensor, gpu_timing, timing, original_w, original_h, frame_number=frame_number, raw_frame=raw_frame, mono_raw=True)
 
-            latency_ms = (time.time() - frame_start) * 1000
-            timing["total"] = latency_ms
-            self._timing = timing
+        latency_ms = (time.time() - frame_start) * 1000
+        timing["total"] = latency_ms
+        self._timing = timing
 
-            return scaled_tracks, preview_frame, timing, latency_ms
-        except RuntimeError as e:
-            if not self._is_cuda_kernel_compat_error(e):
-                raise
-
-            self._disable_gpu_path_and_fallback(str(e))
-
-            cpu_rgb = gpu_tensor.squeeze(0).detach().clamp(0, 1).permute(1, 2, 0).cpu().numpy()
-            cpu_bgr = cv2.cvtColor((cpu_rgb * 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
-            return self._process_cpu(cpu_bgr, frame_number=frame_number)
+        return scaled_tracks, preview_frame, timing, latency_ms
 
     def _run_yolo_and_track(
         self,
@@ -860,48 +736,6 @@ class FrameProcessor:
         y2 = max(y + 1, min(frame_h, y + h))
         return x, y, x2, y2
 
-    def _offset_detections(
-        self,
-        detections: List[Tuple[np.ndarray, np.ndarray, np.ndarray]],
-        offset_x: int,
-        offset_y: int,
-    ) -> List[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
-        """Offset detections from ROI-local coordinates back into full-frame space."""
-        if not detections or (offset_x == 0 and offset_y == 0):
-            return detections
-
-        offset_xy = np.array([offset_x, offset_y])
-        offset_bbox = np.array([offset_x, offset_y, 0.0, 0.0])
-        shifted = []
-        for keypoints, confidence, bbox in detections:
-            shifted.append((keypoints + offset_xy, confidence, bbox + offset_bbox))
-        # Keep the box-conf map keyed by the bboxes the tracker will see.
-        if self._last_box_confs:
-            self._last_box_confs = {
-                self._bbox_conf_key((k[0] + offset_x, k[1] + offset_y,
-                                     k[2], k[3])): v
-                for k, v in self._last_box_confs.items()
-            }
-        return shifted
-    
-    def set_preview_size(self, width: int, height: int):
-        """Set preview dimensions for GPU pipeline."""
-        if self._gpu_pipeline is not None:
-            self._gpu_pipeline.settings.preview_width = width
-            self._gpu_pipeline.settings.preview_height = height
-            self._gpu_pipeline._cached_preview = None
-    
-    def set_preview_fps_cap(self, fps_cap: Optional[float]):
-        """Set preview FPS cap for GPU pipeline rate limiting."""
-        if self._gpu_pipeline is not None:
-            self._gpu_pipeline.settings.preview_fps_cap = fps_cap
-            self._gpu_pipeline.update_settings(self._gpu_pipeline.settings)
-
-    def invalidate_preview_cache(self):
-        """Drop any cached GPU preview so the next preview reflects current settings."""
-        if self._gpu_pipeline is not None:
-            self._gpu_pipeline._cached_preview = None
-    
     def _post_yolo_chain(
         self,
         detections,
@@ -1111,188 +945,6 @@ class FrameProcessor:
         if len(ema) != len(seen):
             for tid in [t for t in ema if t not in seen]:
                 del ema[tid]
-
-    @staticmethod
-    def _identity_scaled_track(t: DancerTrack,
-                              clamp_to_yolo_size: bool = False) -> ScaledTrack:
-        """CPU-path finalize: tracker space == original space, copy verbatim.
-
-        ``clamp_to_yolo_size`` routes the bbox through the output box-clamp
-        (Track X) — output-only, never touches ``t.bbox``."""
-        bbox = (t.reported_bbox(True) if clamp_to_yolo_size else t.bbox.copy())
-        # Output-only smoother signals (Track X §2).  Guarded so non-DancerTrack
-        # stubs (e.g. transform unit tests) still finalize cleanly.
-        get_raw = getattr(t, 'get_centroid', None)
-        centroid_raw = get_raw().copy() if callable(get_raw) else None
-        return ScaledTrack(
-            track_id=t.track_id,
-            keypoints=t.keypoints.copy(),
-            confidence=t.confidence.copy(),
-            bbox=bbox,
-            history=[pt.copy() for pt in t.history],
-            velocity=t.get_velocity().copy(),
-            smoothed_centroid=t.get_smoothed_centroid().copy(),
-            is_bridged=getattr(t, 'is_bridged', False),
-            frames_since_skeleton=getattr(t, '_frames_since_skeleton', None),
-            centroid_raw=centroid_raw,
-        )
-
-    def _track_detections(
-        self,
-        detections,
-        roi_x: int,
-        roi_y: int,
-        original_w: int,
-        original_h: int,
-        frame_number: int | None,
-        timing: Dict[str, float],
-    ) -> List[ScaledTrack]:
-        """Post-YOLO CPU path: the shared chain in full-frame original coords.
-
-        Split out of ``_process_cpu`` so the detect-pass cache replay (TUNING
-        Phase B) drives the *exact same* gate/motion/tracker logic without
-        re-running YOLO — guaranteeing cache replay is bit-identical to the live
-        path.  The motion detectors must already have been fed this frame's gray
-        (``_feed_motion_detectors``); ``detections`` are post-offset, pre-gate
-        (original-frame coords).  ``timing`` is mutated in place.
-        """
-        space = _TrackerSpace(
-            person_height=self.settings.person_height_px,
-            roi_x=roi_x,
-            roi_y=roi_y,
-            frame_width=original_w,
-        )
-        motion_detector = self.bridge_motion_detector
-        if motion_detector is not None and (roi_x or roi_y):
-            motion_detector = _OffsetMotionProxy(motion_detector, roi_x, roi_y)
-        clamp = self.settings.box_clamp_enabled
-        return self._post_yolo_chain(
-            detections, space, motion_detector,
-            lambda t: self._identity_scaled_track(t, clamp),
-            original_w, original_h, frame_number, timing)
-
-    def _process_cpu(self, frame: np.ndarray, frame_number: int | None = None) -> Tuple[List[ScaledTrack], np.ndarray, Dict[str, float], float]:
-        """CPU pipeline: traditional enhancement + YOLO."""
-        frame_start = time.time()
-        original_h, original_w = frame.shape[:2]
-        timing: Dict[str, float] = {}
-
-        # 0. Background subtraction (before enhancement)
-        if self.settings.bg_subtract_enabled and self.bg_subtractor.has_reference:
-            t0 = time.time()
-            frame = self.bg_subtractor.apply_cpu(frame, self.settings.bg_subtract_sensitivity)
-            timing["bg_subtract"] = (time.time() - t0) * 1000
-            timing["bg_fg_ratio"] = self.bg_subtractor.foreground_ratio
-            timing["bg_mismatched"] = self.bg_subtractor.is_mismatched
-        else:
-            timing["bg_subtract"] = 0.0
-
-        roi = self._resolve_roi(original_w, original_h)
-        if roi is not None:
-            roi_x, roi_y, roi_x2, roi_y2 = roi
-            frame = frame[roi_y:roi_y2, roi_x:roi_x2]
-            timing["roi"] = {
-                "enabled": True,
-                "x": roi_x,
-                "y": roi_y,
-                "w": roi_x2 - roi_x,
-                "h": roi_y2 - roi_y,
-            }
-        else:
-            roi_x = 0
-            roi_y = 0
-            timing["roi"] = {
-                "enabled": False,
-                "x": 0,
-                "y": 0,
-                "w": original_w,
-                "h": original_h,
-            }
-
-        # 1. Enhancement
-        t0 = time.time()
-        
-        brightness = 0.0
-        should_enhance = self.settings.enhance_enabled
-        if should_enhance and not self.settings.enhance_lite and not self.settings.enhance_force:
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            brightness = float(np.mean(gray))
-            if brightness >= self.settings.brightness_threshold:
-                should_enhance = False
-        
-        if should_enhance:
-            if self.settings.enhance_lite:
-                enhanced = self.enhancer.enhance_simple(frame)
-            else:
-                enhanced, _ = self.enhancer.enhance(frame)
-            enhance_on_gpu = getattr(self.enhancer, 'last_used_gpu', False)
-        else:
-            enhanced = frame
-            enhance_on_gpu = False
-            
-        timing["enhance"] = (time.time() - t0) * 1000
-        timing["path_enhance"] = "gpu" if enhance_on_gpu else "cpu"
-        timing["brightness"] = brightness
-
-        # Start MOG2 feed on the persistent worker — runs on CPU while YOLO uses GPU
-        motion_submitted = False
-        t_mog_start = None
-        gray_for_motion = None
-        if self.bridge_motion_detector is not None or self.crossval_motion_detector is not None:
-            t_mog_start = time.time()
-            gray_for_motion = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            timing["mog2_cvt"] = (time.time() - t_mog_start) * 1000
-            self._submit_motion_feed(gray_for_motion)  # P-2
-            motion_submitted = True
-
-        # 2. YOLO inference (GPU) — runs in parallel with MOG2 feed (CPU)
-        t0 = time.time()
-        results = self.model(
-            enhanced,
-            imgsz=self.settings.imgsz,
-            conf=self.settings.confidence,
-            iou=YOLO_IOU_THRESHOLD,
-            half=self.settings.use_fp16,
-            verbose=False,
-        )
-        timing["yolo"] = (time.time() - t0) * 1000
-        timing["path_yolo"] = "gpu"
-
-        # 3. Extract detections
-        t0 = time.time()
-        detections = self._extract_detections(results)
-        # Raw det heights before the size gate (ROI crop is unscaled, so these
-        # are original-space px) — height-staleness alarm input (⑤d).
-        self.last_raw_det_heights = [float(d[2][3]) for d in detections]
-        detections = self._filter_duplicate_detections(detections)
-        detections = self._offset_detections(detections, roi_x, roi_y)
-        timing["extract"] = (time.time() - t0) * 1000
-        timing.update(self._extract_transfer_timing)
-
-        # Block on the MOG2 feed before tracker needs blobs (same sync point)
-        if motion_submitted:
-            self._await_motion_feed()
-            timing["mog2_feed"] = (time.time() - t_mog_start) * 1000 - timing.get("mog2_cvt", 0)
-
-        # Capture hook for the detect-pass cache (TUNING Phase B): record the
-        # post-offset, pre-gate detections + the raw motion gray so a search can
-        # re-run the gate/motion/tracker without re-running YOLO.  No cost on the
-        # live path (attribute is None).
-        if self._cache_capture is not None:
-            self._cache_capture(
-                detections, gray_for_motion, roi_x, roi_y,
-                original_w, original_h)
-
-        # Post-YOLO: scored gate -> exclusion -> cold blobs -> tracker -> OSC.
-        # Shared with the detect-cache replay so the two paths stay identical.
-        scaled_tracks = self._track_detections(
-            detections, roi_x, roi_y, original_w, original_h,
-            frame_number, timing)
-
-        latency_ms = (time.time() - frame_start) * 1000
-        timing["total"] = latency_ms
-        self._timing = timing
-        return scaled_tracks, enhanced, timing, latency_ms
 
     def _configure_motion_detectors(self):
         """Apply the mode-specific learning rate to the single motion model.

@@ -60,13 +60,7 @@ set WALLDANCE_SKIP_TORCH_AUTOFIX=1
 install.bat
 ```
 
-If you intentionally run on CPU, use:
-
-```bat
-run.bat --cpu
-```
-
-Requirements: Python 3.10+, `uv` installed (`pip install uv` if missing), a webcam or capture card, and optional CUDA GPU for best performance. Model weights live in `models/` (some are included in the repo; others may be downloaded by Ultralytics depending on configuration).
+Requirements: Python 3.10+, `uv` installed (`pip install uv` if missing), a webcam or capture card, and a **CUDA GPU** (required — the CPU processing path was removed in the GPU-only migration). Model weights live in `models/` (some are included in the repo; others may be downloaded by Ultralytics depending on configuration).
 
 ## Extra Scripts
 
