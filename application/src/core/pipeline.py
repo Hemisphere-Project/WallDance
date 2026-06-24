@@ -418,6 +418,7 @@ class FrameProcessor:
         # original_w, original_h) used by the detect-pass cache builder (TUNING
         # Phase B).  None on the live path.
         self._cache_capture = None
+        self._cache_capture_gpu = None   # Track P Stage 1: GPU/TRT detect-cache hook
 
         # Background subtraction
         self.bg_subtractor = BackgroundSubtractor()
@@ -680,6 +681,7 @@ class FrameProcessor:
 
         # Start MOG2 feed on the persistent worker — runs on CPU while YOLO uses GPU
         motion_submitted = False
+        gray_for_motion = None
         if (self.bridge_motion_detector is not None
                 or self.crossval_motion_detector is not None) and raw_frame is not None:
             t_mog_start = time.time()
@@ -765,8 +767,49 @@ class FrameProcessor:
                 track, lb_scale, pad_x, pad_y, roi_x=roi_x, roi_y=roi_y,
                 clamp_to_yolo_size=clamp)
 
+        # Track P Stage 1: capture the GPU/TRT detect-pass (letterbox-space
+        # detections + the tracker space + the motion gray) so a search can
+        # re-run the post-YOLO chain from a TRT cache.  No cost on the live path.
+        if self._cache_capture_gpu is not None:
+            self._cache_capture_gpu(detections, space, gray_for_motion,
+                                    original_w, original_h)
+
         return self._post_yolo_chain(
             detections, space, lb_motion, finalize,
+            original_w, original_h, frame_number, timing)
+
+    def replay_gpu_cached(self, dets, space_dict, gray, original_w, original_h,
+                          frame_number, timing):
+        """Track P Stage 1: re-run the GPU post-YOLO chain from a cached
+        detect-pass (letterbox-space ``dets`` + the ``_TrackerSpace`` fields +
+        the motion ``gray``), skipping YOLO.  Mirrors the live
+        ``_run_yolo_and_track`` tail so a cache replay equals a direct GPU run
+        for any post-YOLO config change."""
+        if gray is not None:
+            self._feed_motion_detectors(gray)
+        space = _TrackerSpace(
+            person_height=int(space_dict["person_height"]),
+            scale=float(space_dict["scale"]),
+            pad_x=float(space_dict["pad_x"]),
+            pad_y=float(space_dict["pad_y"]),
+            roi_x=int(space_dict["roi_x"]),
+            roi_y=int(space_dict["roi_y"]),
+            roi_local=True,
+            frame_width=int(space_dict["frame_width"]),
+        )
+        self._motion_lb_scale = space.scale
+        self._motion_pad_x = space.pad_x
+        self._motion_pad_y = space.pad_y
+        lb_motion = self._get_letterbox_motion_detector()
+        clamp = self.settings.box_clamp_enabled
+
+        def finalize(track):
+            return self._unscale_letterbox(
+                track, space.scale, space.pad_x, space.pad_y,
+                roi_x=space.roi_x, roi_y=space.roi_y, clamp_to_yolo_size=clamp)
+
+        return self._post_yolo_chain(
+            dets, space, lb_motion, finalize,
             original_w, original_h, frame_number, timing)
 
     def _sync_gpu_settings(self):

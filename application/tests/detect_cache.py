@@ -67,14 +67,20 @@ REBUILD_KEYS = (
 
 
 def cache_key(config: dict, video_name: str, start: int, frames: int,
-              model_name: str, imgsz: int) -> dict:
-    """Deterministic key dict describing what the cache's YOLO output depends on."""
+              model_name: str, imgsz: int, path: str = "cpu") -> dict:
+    """Deterministic key dict describing what the cache's YOLO output depends on.
+
+    ``path`` distinguishes the CPU detect-pass from the GPU/TRT one (Track P
+    Stage 1) — they produce different detections.  Default "cpu" omits the key
+    so existing CPU cache hashes are unchanged."""
     sub = {k: config.get(k) for k in REBUILD_KEYS}
     sub["model"] = model_name
     sub["yolo_imgsz"] = imgsz
     sub["_video"] = video_name
     sub["_start"] = start
     sub["_frames"] = frames
+    if path != "cpu":
+        sub["_path"] = path
     return sub
 
 
@@ -240,6 +246,161 @@ def replay_from_cache(
         timing: Dict[str, float] = {}
         tracks = proc._track_detections(
             dets, fr["roi_x"], fr["roi_y"], fr["ow"], fr["oh"], kept, timing)
+        per_frame.append(replay.per_frame_record(
+            kept, meta["start_frame"] + i, tracks, track_details))
+        kept += 1
+    proc.tracker.logger.close()
+
+    return replay._summary_from_log(
+        tmp, meta["video"], meta["model"], meta["imgsz"],
+        meta["start_frame"], kept, per_frame)
+
+
+# --------------------------------------------------------------------------- #
+# GPU/TRT detect-pass cache (Track P Stage 1) — the show-path equivalent of the
+# CPU functions above.  Captures letterbox-space detections + the _TrackerSpace
+# + motion gray from the GPU front-end, replays through _post_yolo_chain.
+# --------------------------------------------------------------------------- #
+def build_cache_gpu(
+    video_path: str,
+    config: dict,
+    *,
+    model_name: str = "yolo11x-pose",
+    imgsz: int = 1280,
+    start_frame: int = 0,
+    max_frames: Optional[int] = None,
+    out_path: Optional[Path] = None,
+    use_trt: bool = True,
+) -> Path:
+    """Run the GPU/TRT path once, capturing per-frame the letterbox-space
+    detections + tracker space + motion gray (the show-path detect-pass)."""
+    import replay
+    path_tag = "trt" if use_trt else "gpu"
+    key = cache_key(config, Path(video_path).name, start_frame,
+                    max_frames or 0, model_name, imgsz, path=path_tag)
+    out_path = Path(out_path) if out_path else cache_path_for(key)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    proc = replay._build_processor(config, model_name, imgsz, load_model=True,
+                                   use_gpu_path=True, use_trt=use_trt)
+    proc.tracker.reset()  # deterministic track IDs (global counter)
+
+    captured: List[dict] = []
+
+    def _capture(dets, space, gray, ow, oh):
+        gray_png = None
+        if gray is not None:
+            ok, png = cv2.imencode(".png", gray)
+            gray_png = png.tobytes()
+        captured.append({
+            "dets": [(k.copy(), c.copy(), b.copy()) for (k, c, b) in dets],
+            "gray_png": gray_png,
+            "space": {
+                "person_height": int(space.person_height),
+                "scale": float(space.scale),
+                "pad_x": float(space.pad_x),
+                "pad_y": float(space.pad_y),
+                "roi_x": int(space.roi_x),
+                "roi_y": int(space.roi_y),
+                "frame_width": int(space.frame_width),
+            },
+            "ow": int(ow), "oh": int(oh),
+        })
+
+    proc._cache_capture_gpu = _capture
+
+    tmp = tempfile.mkdtemp(prefix="wd_gpucachebuild_")
+    proc.tracker.logger.start_session(tmp)
+
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"cannot open video: {video_path}")
+    if start_frame:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+    t0 = time.time()
+    processed = 0
+    try:
+        while True:
+            if max_frames is not None and processed >= max_frames:
+                break
+            ok, frame = cap.read()
+            if not ok:
+                break
+            proc.process(frame, need_preview=False, frame_number=processed)
+            processed += 1
+    finally:
+        cap.release()
+        proc.tracker.logger.close()
+    build_s = time.time() - t0
+
+    payload = {
+        "format": CACHE_FORMAT,
+        "key": key,
+        "meta": {
+            "video": Path(video_path).name,
+            "model": model_name,
+            "imgsz": imgsz,
+            "start_frame": start_frame,
+            "frames": processed,
+            "build_seconds": round(build_s, 2),
+            "path": path_tag,
+        },
+        "frames": captured,
+    }
+    with open(out_path, "wb") as f:
+        pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
+    size_mb = out_path.stat().st_size / 1e6
+    print(f"built GPU cache ({path_tag}): {out_path.name}  ({processed} frames, "
+          f"{build_s:.1f}s, {size_mb:.1f} MB)")
+    return out_path
+
+
+def replay_from_cache_gpu(
+    cache: dict,
+    config: dict,
+    *,
+    log_dir: Optional[str] = None,
+    reuse_grays: bool = False,
+    track_details: bool = False,
+    frame_skip: int = 1,
+) -> Dict:
+    """Re-run the GPU post-YOLO chain from a TRT cache, skipping YOLO.  Mirrors
+    ``replay_from_cache`` but drives ``proc.replay_gpu_cached`` (letterbox space)
+    instead of ``_track_detections`` (full-frame CPU)."""
+    import replay
+    meta = cache["meta"]
+    proc = replay._build_processor(
+        config, meta["model"], meta["imgsz"], load_model=False)
+    proc.tracker.reset()  # deterministic track IDs across build+replay / search
+
+    tmp = log_dir or tempfile.mkdtemp(prefix="wd_gpucachereplay_")
+    proc.tracker.logger.start_session(tmp)
+
+    def _decode(fr):
+        if fr["gray_png"] is None:
+            return None
+        return cv2.imdecode(np.frombuffer(fr["gray_png"], np.uint8),
+                            cv2.IMREAD_GRAYSCALE)
+
+    grays = None
+    if reuse_grays:
+        grays = cache.get("_decoded")
+        if grays is None:
+            grays = [_decode(fr) for fr in cache["frames"]]
+            cache["_decoded"] = grays
+
+    stride = max(1, int(frame_skip))
+    per_frame = []
+    kept = 0
+    for i, fr in enumerate(cache["frames"]):
+        if stride > 1 and (i % stride) != 0:
+            continue
+        gray = grays[i] if grays is not None else _decode(fr)
+        dets = [(k, c, b) for (k, c, b) in fr["dets"]]
+        timing: Dict[str, float] = {}
+        tracks = proc.replay_gpu_cached(
+            dets, fr["space"], gray, fr["ow"], fr["oh"], kept, timing)
         per_frame.append(replay.per_frame_record(
             kept, meta["start_frame"] + i, tracks, track_details))
         kept += 1
