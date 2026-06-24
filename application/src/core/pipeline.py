@@ -736,6 +736,24 @@ class FrameProcessor:
         y2 = max(y + 1, min(frame_h, y + h))
         return x, y, x2, y2
 
+    def set_preview_size(self, width: int, height: int):
+        """Set preview dimensions for GPU pipeline."""
+        if self._gpu_pipeline is not None:
+            self._gpu_pipeline.settings.preview_width = width
+            self._gpu_pipeline.settings.preview_height = height
+            self._gpu_pipeline._cached_preview = None
+
+    def set_preview_fps_cap(self, fps_cap: Optional[float]):
+        """Set preview FPS cap for GPU pipeline rate limiting."""
+        if self._gpu_pipeline is not None:
+            self._gpu_pipeline.settings.preview_fps_cap = fps_cap
+            self._gpu_pipeline.update_settings(self._gpu_pipeline.settings)
+
+    def invalidate_preview_cache(self):
+        """Drop any cached GPU preview so the next preview reflects current settings."""
+        if self._gpu_pipeline is not None:
+            self._gpu_pipeline._cached_preview = None
+
     def _post_yolo_chain(
         self,
         detections,
