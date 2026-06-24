@@ -326,3 +326,40 @@ def test_advisory_absent_without_table_or_model():
         == (None, None)
     assert calib2.advise_model(_TABLE, "yolo26m-pose", 960, [(40.0, 960)]) \
         == (None, None)
+
+
+# --- K3: imgsz dark-probe supersedes the sigma>4 heuristic --------------------
+def test_aggregate_imgsz_probe_overrides_sigma_toward_dark():
+    # sigma says NOT dark (low noise) -> would pick the normal 1280; but the
+    # probe finds the smaller dark pick (640) detects MORE -> the probe wins.
+    run = _make_run(n=60, height=200.0)
+    prop = aggregate([run], 1920.0, noise_sigma=2.0,
+                     imgsz_probe=lambda szs: {640: 5.0, 1280: 2.0})
+    assert prop.imgsz == 640 and prop.imgsz_dark_mode
+    assert prop.imgsz_probe == {640: 5.0, 1280: 2.0}
+
+
+def test_aggregate_imgsz_probe_overrides_sigma_toward_normal():
+    # sigma says dark (high noise) -> would pick 640; the probe finds the larger
+    # normal pick (1280) detects more -> the probe wins.
+    run = _make_run(n=60, height=200.0)
+    prop = aggregate([run], 1920.0, noise_sigma=6.0,
+                     imgsz_probe=lambda szs: {640: 2.0, 1280: 5.0})
+    assert prop.imgsz == 1280 and not prop.imgsz_dark_mode
+
+
+def test_aggregate_imgsz_probe_error_falls_back_to_sigma():
+    run = _make_run(n=60, height=200.0)
+    def boom(szs):
+        raise RuntimeError("no frames")
+    prop = aggregate([run], 1920.0, noise_sigma=6.0, imgsz_probe=boom)
+    assert prop.imgsz == 640 and prop.imgsz_dark_mode   # sigma fallback (dark)
+    assert prop.imgsz_probe is None
+
+
+def test_probe_detection_counts_means():
+    from core.calib2 import probe_detection_counts
+    counts = probe_detection_counts(
+        lambda frame, sz, conf: {640: 4, 1280: 1}[sz],
+        frames=[0, 1, 2], imgszs=[640, 1280])
+    assert counts == {640: 4.0, 1280: 1.0}

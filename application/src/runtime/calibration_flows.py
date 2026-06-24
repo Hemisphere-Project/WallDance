@@ -17,6 +17,7 @@ verbatim.
 """
 from __future__ import annotations
 
+import glob
 import os
 import time
 from typing import Callable, Optional, Protocol
@@ -24,7 +25,8 @@ from typing import Callable, Optional, Protocol
 import cv2
 import numpy as np
 
-from core.calib2 import SubjectCollector, SubjectPool, load_fps_table
+from core.calib2 import (SubjectCollector, SubjectPool, load_fps_table,
+                         probe_detection_counts)
 from core.calib2 import aggregate as calib2_aggregate
 from core.calibration import (ExposureServo, SceneCalibrator,
                               cap_gamma_for_noise, seed_gamma)
@@ -496,10 +498,50 @@ class CalibrationFlows:
                 self.ui.set_calibrate_status(None)
             self._show_calib2_dialog()
 
-    def _calib2_aggregate(self, runs, roi_long_side):
+    def _make_imgsz_probe(self, runs):
+        """K3: a probe(imgszs) -> {imgsz: mean detections/frame} over the saved
+        Calib2 frames, or None.  Best-effort and PyTorch-only — a TRT engine is
+        fixed-imgsz, so a cross-imgsz probe is unreliable (-> None -> aggregate
+        falls back to the σ>4 heuristic).  Runs YOLO at a low conf floor; the
+        preset that detects more of the known dancers reads the scene better
+        (Phase 2b: downscale denoises dark scenes)."""
+        try:
+            if self.models.model_manager.is_using_tensorrt():
+                return None
+        except Exception:
+            return None
+        model = getattr(self.processor, "model", None)
+        if model is None:
+            return None
+        pool = self._calib2_pool()
+        frames = []
+        for run in runs:
+            try:
+                for fp in sorted(glob.glob(os.path.join(pool.frames_dir(run), "*.jpg"))):
+                    img = cv2.imread(fp)
+                    if img is not None:
+                        frames.append(img)
+            except Exception:
+                continue
+        if not frames:
+            return None
+
+        def detect_fn(frame, imgsz, conf):
+            try:
+                res = model(frame, imgsz=int(imgsz), conf=float(conf), verbose=False)
+                boxes = res[0].boxes if res else None
+                return len(boxes) if boxes is not None else 0
+            except Exception:
+                return 0
+
+        return lambda imgszs: probe_detection_counts(detect_fn, frames, imgszs)
+
+    def _calib2_aggregate(self, runs, roi_long_side, with_probe: bool = False):
         """calib2.aggregate with the live calib-time context: MOG2-input noise
         sigma (dark-target switch), the per-rig engine fps table and the
-        current model (P-6 cost curve + report-only model advisory)."""
+        current model (P-6 cost curve + report-only model advisory).  On the
+        explicit apply (``with_probe``) the K3 imgsz probe supersedes the σ
+        heuristic; previews/toggles stay cheap (σ only)."""
         # Track C (noise-σ unify): if Aim ran recently, reuse its clean-scene
         # window σ (same MOG2-input-gray statistic) — a fresh Calib2 pass has
         # dancers in frame, which biases a live motion_model.noise_sigma() read
@@ -517,8 +559,10 @@ class CalibrationFlows:
                     noise = None
         table = load_fps_table(os.path.join(MODELS_DIR, "fps_table.json"))
         current = getattr(self.models, "current_model_name", "") or ""
+        probe = self._make_imgsz_probe(runs) if with_probe else None
         return calib2_aggregate(runs, roi_long_side, noise_sigma=noise,
-                                fps_table=table, current_model=current)
+                                fps_table=table, current_model=current,
+                                imgsz_probe=probe)
 
     def _show_calib2_dialog(self):
         """Open the evidence-pool dialog with all stored runs + a proposal preview."""
@@ -565,7 +609,10 @@ class CalibrationFlows:
         chosen = [run for path, run in pool.load_runs() if path in set(selected_paths)]
         frame_w, frame_h = self.roi_source_size()
         roi = self.get_effective_roi(frame_w, frame_h)
-        prop = self._calib2_aggregate(chosen, max(roi[2], roi[3]))
+        # K3: probe the imgsz empirically only on the real commit (not quiet
+        # toggles, which stay cheap).
+        prop = self._calib2_aggregate(chosen, max(roi[2], roi[3]),
+                                      with_probe=not quiet)
         if not prop.ok:
             if self.ui.available:
                 if quiet:                       # show why in-place, don't pop a toast

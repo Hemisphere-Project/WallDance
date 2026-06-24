@@ -81,7 +81,7 @@ def _calib2_flows_with(prop):
     flows.ui = MagicMock(available=True)
     flows.imgsz_change = MagicMock()
     flows._calib2_pool = lambda: MagicMock(load_runs=lambda: [("p1", object())])
-    flows._calib2_aggregate = lambda chosen, roi_long: prop
+    flows._calib2_aggregate = lambda chosen, roi_long, with_probe=False: prop
     return flows, settings
 
 
@@ -150,3 +150,17 @@ def test_calibration_state_survives_config_roundtrip():
     back = config_schema.flatten(structured)
     validated, _warnings = config_schema.validate_flat(back)
     assert validated.get("calibration_state") == state
+
+
+# --- K3: imgsz dark-probe builder guards (headless) ---------------------------
+def test_make_imgsz_probe_none_when_trt():
+    flows, _ = _flows()
+    flows.models.model_manager.is_using_tensorrt.return_value = True
+    assert flows._make_imgsz_probe([]) is None       # TRT engine = fixed imgsz
+
+
+def test_make_imgsz_probe_none_when_no_model():
+    flows, _ = _flows()
+    flows.models.model_manager.is_using_tensorrt.return_value = False
+    flows.processor.model = None
+    assert flows._make_imgsz_probe([]) is None

@@ -22,7 +22,7 @@ import os
 import time
 
 from dataclasses import dataclass, field, asdict
-from typing import List, Optional, Sequence, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -182,6 +182,7 @@ class SubjectProposal:
     net_height_px: float = 0.0        # dancer height in net-input px at the chosen imgsz
     net_target_px: float = AUTOCAL2_NET_HEIGHT_TARGET  # target used for the pick
     imgsz_dark_mode: bool = False     # True when the high-noise (dark) target applied
+    imgsz_probe: Optional[dict] = None  # K3: {imgsz: mean detections} when probed
     model_advisory: str = ""          # P-6 fps-table model suggestion (report-only)
     confidence: Optional[float] = None
     blur_budget_ms: Optional[float] = None
@@ -265,6 +266,22 @@ def select_imgsz(person_height_px: float, roi_long_side: float,
     target_met_beyond_budget = fps_capped and any(
         net(q) >= target_net_px for q in presets if q not in allowed)
     return int(p), False, net(p), target_met_beyond_budget
+
+
+def probe_detection_counts(detect_fn: Callable[[object, int, float], int],
+                           frames: Sequence, imgszs: Sequence[int],
+                           conf: float = 0.05) -> dict:
+    """K3: mean YOLO detections/frame at each candidate imgsz over the saved
+    calibration frames.  ``detect_fn(frame, imgsz, conf) -> int`` is the per-frame
+    detection count at one preset.  The preset that detects MORE of the known
+    dancers reads the scene better — an empirical stand-in for the σ>4 dark
+    heuristic (Phase 2b: downscale denoises dark/noisy scenes, so the smaller
+    preset can win there)."""
+    out: dict = {}
+    for sz in imgszs:
+        counts = [int(detect_fn(f, int(sz), conf)) for f in frames]
+        out[int(sz)] = float(np.mean(counts)) if counts else 0.0
+    return out
 
 
 def load_fps_table(path: str) -> Optional[dict]:
@@ -351,7 +368,9 @@ def advise_model(fps_table: Optional[dict], current_model: str, imgsz: int,
 def aggregate(runs: Sequence[SubjectRun], roi_long_side: float,
               noise_sigma: Optional[float] = None,
               fps_table: Optional[dict] = None,
-              current_model: str = "") -> SubjectProposal:
+              current_model: str = "",
+              imgsz_probe: Optional[Callable[[Sequence[int]], dict]] = None
+              ) -> SubjectProposal:
     """Pool the included runs into a proposal (provisional rules, UX_PLAN §6).
 
     ``noise_sigma`` (live MOG2-input temporal noise, same definition as
@@ -397,17 +416,29 @@ def aggregate(runs: Sequence[SubjectRun], roi_long_side: float,
         def fps_model(p: int) -> float:
             return float(np.median([f * (i / p) ** 2 for f, i in fps_base]))
 
-    # Dark/noisy regime: the imgsz quality curve inverts (Phase 2b) — aim at
-    # the small dark-scene target instead of the standard pose target.
-    dark = bool(noise_sigma is not None
-                and noise_sigma > AUTOCAL_CLAHE_NOISE_SIGMA)
+    # Dark/noisy regime: the imgsz quality curve inverts (Phase 2b) — the small
+    # dark-scene target can beat the standard pose target.  K3: an empirical
+    # probe on the calibration frames (YOLO at the two candidate presets; more
+    # detections of the known dancers wins) supersedes the σ>4 heuristic; σ is
+    # the fallback (no probe / equal picks / probe error).
+    norm = select_imgsz(median_h, roi_long_side, AUTOCAL2_NET_HEIGHT_TARGET,
+                        fps_model=fps_model, fps_budget=AUTOCAL2_FPS_BUDGET)
+    drk = select_imgsz(median_h, roi_long_side, AUTOCAL2_NET_HEIGHT_TARGET_DARK,
+                       fps_model=fps_model, fps_budget=AUTOCAL2_FPS_BUDGET)
+    dark = bool(noise_sigma is not None and noise_sigma > AUTOCAL_CLAHE_NOISE_SIGMA)
+    if imgsz_probe is not None and norm[0] != drk[0]:
+        try:
+            counts = imgsz_probe([norm[0], drk[0]])
+        except Exception:
+            counts = None
+        if counts:
+            prop.imgsz_probe = {int(k): round(float(v), 3) for k, v in counts.items()}
+            dark = counts.get(drk[0], 0.0) > counts.get(norm[0], 0.0)
     target = AUTOCAL2_NET_HEIGHT_TARGET_DARK if dark else AUTOCAL2_NET_HEIGHT_TARGET
     prop.imgsz_dark_mode = dark
     prop.net_target_px = target
-
     prop.imgsz, prop.imgsz_satisfied, prop.net_height_px, prop.imgsz_fps_limited = \
-        select_imgsz(median_h, roi_long_side, target_net_px=target,
-                     fps_model=fps_model, fps_budget=AUTOCAL2_FPS_BUDGET)
+        drk if dark else norm
     if fps_model is not None and prop.imgsz:
         prop.imgsz_pred_fps = round(fps_model(prop.imgsz), 1)
 
