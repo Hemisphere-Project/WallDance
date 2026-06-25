@@ -1,10 +1,12 @@
 # WallDance — Auto-tune / auto-detection / settings-exposure design
 
-> **📘 Reference / partly historical (updated 2026-06-22).** The knob-determinability analysis
-> (§1–§4) is still useful reference. Two of its §5 "gaps" have since **shipped** (in-app CLAHE×conf
-> sweep `_cb_run_calib_sweep`; `tracker_intermittent_confirm` wired at `app.py:1125`) — marked
-> below. The remaining live gaps (θ_s/θ_m calibration writer, the known-N tuning build) are tracked
-> forward in **[ROADMAP.md](ROADMAP.md) §3.2**. Don't plan from §5–§7 without checking ROADMAP.
+> **📘 Reference / largely historical (updated 2026-06-25).** The knob-determinability analysis
+> (§1–§4) is still useful reference. Its §5 "gaps" have since **all shipped**: in-app CLAHE×conf
+> sweep (`_cb_run_calib_sweep`), `tracker_intermittent_confirm` (`app.py:1125`), and — 2026-06-24/25
+> — the **known-N tuning build + the θ_s/θ_m/`tracker_max_age` per-scene writer + the imgsz
+> dark-probe** (`tests/known_n.py` K1, `calib2.aggregate` `imgsz_probe` K3, the phase-④ "Tune
+> (known-N)" button). **[ROADMAP.md](ROADMAP.md) §3.2 marks known-N COMPLETE.** Don't plan from
+> §5–§7 without checking ROADMAP.
 
 **Date:** 2026-06-16 · **Status:** DRAFT for operator decision. Grounded in the
 12-corpus Track-G findings, the calibration code, and the 2026-06-16 per-project
@@ -85,7 +87,7 @@ Ordered by the **coupling chain** (each tier depends on the ones above). "Set by
 ### Tier 6 — Per-scene tracker gates (known-N class — internal)
 | Param | Set by | Expose? |
 |-------|--------|---------|
-| **tracker_max_age, θ_s (skel_min_kpts), θ_m (motion_min_ratio)** | **Sweep**, only matter on multi-dancer/occlusion/static-sitter (G4); set by a future Phase-3 known-N search | No — internal; **θ_s/θ_m have no calib writer yet (gap)** |
+| **tracker_max_age, θ_s (skel_min_kpts), θ_m (motion_min_ratio)** | **Sweep**, only matter on multi-dancer/occlusion/static-sitter (G4); set per-scene by the **known-N search** (`tests/known_n.py`, K1) | No — internal; ✅ **writer shipped** (known-N writes them per project; phase-④ "Tune (known-N)" button) |
 | **tracker_intermittent_confirm** | per-scene switch — **documented but unwired** (reads the global) | No — internal; **wiring gap (Track C)** |
 | **tracker_swap_correctors** | default off; per-scene re-enable | No — internal |
 
@@ -210,9 +212,10 @@ already computed or cheap. The proposed contrast/edge/motion routers are dropped
    CLAHE×confidence pass-line sweep runs from the Calibrate UI (`app.py` `_cb_run_calib_sweep` →
    `_run_calib_sweep` → `tests/calibrate_segment.py` subprocess). The crude noise seed
    (`seed_clahe`) remains the *pre*-sweep starting point only.
-2. **θ_s / θ_m have no calibration writer or UI** — exposed on settings, read in
-   the gate, but nothing sets them per scene (the Phase-3 known-N search). **(Still open →
-   ROADMAP §3.2.)**
+2. ~~**θ_s / θ_m have no calibration writer or UI**~~ — ✅ **SHIPPED (2026-06-24/25)**: the known-N
+   search (`tests/known_n.py`, K1) sets θ_s / θ_m / `tracker_max_age` per scene against the
+   labelled scenarios and writes them into the project (shared keys); reachable from the phase-④
+   **"Tune (known-N)"** button. ROADMAP §3.2 (known-N COMPLETE).
 3. ~~**`tracker_intermittent_confirm` is unwired**~~ — ✅ **SHIPPED since**: wired through project
    config at `app.py:1125-1126` (→ `self.tracker.intermittent_confirm`) + in `PROFILE_KEYS`. The
    aerial/dark win is now reachable per scene.
@@ -233,8 +236,9 @@ already computed or cheap. The proposed contrast/edge/motion routers are dropped
   (conditionally) Dial B; everything else becomes auto status + Advanced.
 - **(D) Unified condition-aware Calibrate** — fold Calib1/Calib2 into the single
   routed pass (§3). *Biggest, the C-next engine refactor.*
-- **(E) Phase-3 known-N tuning + wire θ_s/θ_m + intermittent_confirm** — the
-  multi-dancer/occlusion gates. *Helps the failing duo projects.*
+- ~~**(E) Phase-3 known-N tuning + wire θ_s/θ_m + intermittent_confirm**~~ — ✅ **SHIPPED**
+  (`tests/known_n.py` K1 + imgsz dark-probe K3 + the phase-④ GUI button; θ_s/θ_m/max_age written
+  per scene). *Validated on the duo projects (texturedbg 0.61→0.51).*
 
 ---
 

@@ -86,9 +86,10 @@ engine, tracker core, OSC contract) need a heads-up + explicit go before code.
 
 ### 3.2 NEXT — deliberate, larger
 
-> **▶ Active sequence (decided 2026-06-23): Track P → known-N (K1).** Known-N's search must
-> optimize the *show* path; on the CPU cache it mis-estimates the bridge/motion knobs it tunes
-> (the G1 finding). So **Track P goes first** (gives a GPU+TRT evidence base), then K1 builds on it.
+> **✅ Sequence complete (2026-06-24/25): Track P → known-N.** Track P gave the GPU+TRT evidence
+> base (the CPU cache mis-estimated the bridge/motion knobs known-N tunes — the G1 finding), then
+> known-N (K1 search + K3 dark-probe + GUI) built on it. **Both rows below are done**; the next
+> deliberate item is the **Unified calibration engine** (C-next).
 
 | Item | Track | Notes |
 |------|-------|-------|

@@ -40,7 +40,7 @@ Everything else is reference, operator procedure, or archived design.
 | [CORPUS_ANALYSIS.md](CORPUS_ANALYSIS.md) | Measured scene physics + the re-founded regression corpus (12 manifests) | 📘 Reference |
 | [TUNING.md](TUNING.md) | The replay / tune / scoring toolchain (Phases A–F) | 📘 Reference |
 | [OPTICS.md](OPTICS.md) | Camera + lens working envelopes (distance / dancer-px) | 📘 Reference |
-| [AUTOTUNE_DESIGN.md](AUTOTUNE_DESIGN.md) | Knob-determinability analysis (design rationale; live gaps → ROADMAP §3.2) | 📘 Reference, partly historical |
+| [AUTOTUNE_DESIGN.md](AUTOTUNE_DESIGN.md) | Knob-determinability analysis (design rationale; its §5 gaps have all since shipped — see ROADMAP §3.2) | 📘 Reference, largely historical |
 | [GUI_STACK_AUDIT.md](GUI_STACK_AUDIT.md) | Stay-Python / keep-DearPyGui decision (no PySide6) | 📘 Decision record |
 
 ## Historical / archived (`archives/`)

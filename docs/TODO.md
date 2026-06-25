@@ -2,7 +2,7 @@
 
 > Granular build / hardware checklist. For strategy, the forward plan, and the shipped-detection record see **[ROADMAP.md](ROADMAP.md)** (the single roadmap; doc index in [README.md](README.md)).
 
-Last reviewed 2026-06-10 (full code review). Phases 1–6 are shipped (inventory below); active work is **Phases 7–9 + hardware**, sequenced by **[ROADMAP.md §4.1](ROADMAP.md)**: ① labeled-footage **corpus** on the IDS rig ② calibration-persistence bug fixes (✅ done 2026-06-10) ③ signal fixes (✅ done 2026-06-10) ④ GPU/CPU path unification (✅ done 2026-06-10) ⑤ **Phase 7 ops cluster (elevated)** ⑥ performance backlog.
+Last reviewed 2026-06-10; **the forward software plan is superseded by [ROADMAP.md](ROADMAP.md) §3** — treat this file as the hardware / procurement + phase-inventory checklist. Phases 1–6 shipped (inventory below). Since this review the software backlog advanced well past it: calibration + signal fixes, the GPU/CPU **path collapse to GPU-only** (Track P, 2026-06-24 — superseded the old "unification": the CPU path is now *deleted*), and **known-N calibration** (K1 search + K3 dark-probe + phase-④ GUI, 2026-06-25) are all done in ROADMAP §3.2. The live items still owned here: the **on-rig labelled corpus**, the **Phase 7 ops cluster**, and hardware.
 
 > **Operator UX track (U0–U5) shipped** — expert mode, lighting profiles (Show/Rehearsal), the CALIBRATE (scene) + DANCERS (subject) two-pass calibration, and the one-dial sensitivity macro. Full design in **[archives/UX_PLAN.md](archives/UX_PLAN.md)**; numeric calibration rules are provisional pending an annotated-footage re-fit.
 

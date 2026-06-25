@@ -96,7 +96,8 @@ To score a single case (e.g. one that failed):
    skeletons / box in TouchDesigner.
 3. **We nudge one lever** and re-score the same case:
    - losing the dancer (drops too high) → raise **Dial A** / **Dial B**, or for
-     dark scenes the real fix is **CLAHE** (see roadmap — auto-tune being built).
+     dark scenes the real fix is **CLAHE** (the in-app auto-tune is built: ④ Calibrate
+     → *Calculate (auto-tune)*; per-scene gate/track-age tuning via *Tune (known-N)*).
    - too many ghosts → lower **Dial A**, or **paint a mask** over the dead spot.
    - You can test a knob without touching the UI via replay:
      `... --set confidence=0.4 --set motion_sensitivity=0.7 --score`
