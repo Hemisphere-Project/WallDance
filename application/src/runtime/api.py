@@ -156,6 +156,21 @@ class ApplyCalibSweep(Command):
 
 
 @dataclass(frozen=True)
+class RunKnownNTune(Command):
+    """Phase-④ known-N auto-tune (K1): joint coord-descent over the per-scene
+    detection knobs (τ / θ_s / θ_m / tracker_max_age) against the current
+    project's labelled scenarios, on the GPU+TRT cache. Runs offline in a
+    subprocess (several minutes); reports a KnownNResult, does NOT save (Apply)."""
+    pass
+
+
+@dataclass(frozen=True)
+class ApplyKnownNTune(Command):
+    """Phase-④: save the last known-N tune result into the project + push live."""
+    pass
+
+
+@dataclass(frozen=True)
 class SetPersonHeight(Command):
     value: int
 
@@ -542,6 +557,14 @@ class DryRunResult(Event):
 class CalibSweepResult(Event):
     """Phase-④ auto-tune sweep result: {clahe_curve, best_clahe, conf_curve,
     best_conf, derived, merged_config} or an error."""
+    result: Dict[str, Any]
+    error: str = ""
+
+
+@dataclass(frozen=True)
+class KnownNResult(Event):
+    """Phase-④ known-N tune result: {project, baseline_score, tuned_score, delta,
+    final, changed, evals} or an error."""
     result: Dict[str, Any]
     error: str = ""
 

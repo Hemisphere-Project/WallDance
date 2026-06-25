@@ -186,6 +186,7 @@ EVENT_SAMPLES = {
         {"name": "osc", "status": "warn", "detail": "probe sent (UDP)"}]),
     api.DryRunResult: dict(summary={"frames_processed": 300, "real_tracks": 1}),
     api.CalibSweepResult: dict(result={"best_clahe": 6.0, "best_conf": 0.5}),
+    api.KnownNResult: dict(result={"baseline_score": 0.6, "tuned_score": 0.5}),
     api.DialBVisible: dict(visible=False),
     api.Alert: dict(kind="fps_low", message="FPS 9.8", data={"fps": 9.8}),
     api.IssueReportContext: dict(context={"frame": 12, "slot": 3}),

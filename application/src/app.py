@@ -772,6 +772,8 @@ class WallDanceApp:
         reg(api.RunDryRunReplay, lambda c: self._cb_run_dry_run())
         reg(api.RunCalibSweep, lambda c: self._cb_run_calib_sweep(c.n, c.slot))
         reg(api.ApplyCalibSweep, lambda c: self._cb_apply_calib_sweep())
+        reg(api.RunKnownNTune, lambda c: self._cb_run_known_n())
+        reg(api.ApplyKnownNTune, lambda c: self._cb_apply_known_n())
         # detection / sensitivity
         reg(api.SetSensitivity, lambda c: self._cb_sensitivity_change(c.value))
         reg(api.SetConfidence, lambda c: self._cb_confidence_change(c.value))
@@ -2062,6 +2064,84 @@ class WallDanceApp:
         self.bus.publish(api.Toast(
             f"Auto-tune applied: CLAHE {cfg.get('clahe_clip')} conf "
             f"{cfg.get('confidence')} + saved.{imgsz_note}", 7.0, (120, 220, 140)))
+
+    # ------------------------------------------------------------------
+    # Known-N auto-tune (K1) — phase ④ advanced
+    # ------------------------------------------------------------------
+    def _cb_run_known_n(self):
+        """Phase-④ known-N auto-tune: joint coord-descent over the per-scene
+        detection knobs (τ / θ_s / θ_m / tracker_max_age) against this project's
+        labelled scenarios, on the GPU+TRT cache. Runs in a SEPARATE process on a
+        daemon thread, posting a KnownNResult. STANDBY-gated (a live RUN keeps the
+        GPU/model). Several minutes (it rebuilds the τ-sweep caches)."""
+        if self.system_state == SystemState.RUN:
+            self.bus.publish(api.Toast(
+                "Known-N tune runs in STANDBY (stop the show first).", 4.0,
+                (255, 200, 100)))
+            return
+        threading.Thread(target=self._run_known_n, name="KnownNTune",
+                         daemon=True).start()
+        self.bus.publish(api.Toast(
+            "Known-N tune: searching vs known counts (several min)...", 5.0,
+            (120, 170, 220)))
+
+    def _run_known_n(self):
+        """Background worker: subprocess known_n.py --dry-run on the current
+        project, posting a KnownNResult and stashing the tuned knobs for Apply."""
+        import subprocess
+        import tempfile
+        from pathlib import Path
+        try:
+            project = self.configs._current_project
+            kn_py = Path(__file__).resolve().parent.parent / "tests" / "known_n.py"
+            with tempfile.TemporaryDirectory() as td:
+                out = Path(td) / "known_n.json"
+                proc = subprocess.run(
+                    [sys.executable, str(kn_py), "--project", project,
+                     "--dry-run", "--out", str(out)],
+                    capture_output=True, text=True, timeout=2400)
+                if not out.exists():
+                    tail = (proc.stderr or proc.stdout or "")[-400:]
+                    self.bus.publish(api.KnownNResult(
+                        {}, error=f"known-N failed (rc={proc.returncode}): {tail}"))
+                    return
+                result = json.loads(out.read_text())
+            self._known_n_tuned = result.get("final")
+            self.bus.publish(api.KnownNResult(result))
+            self.bus.publish(api.Toast(
+                f"Known-N done: {result.get('baseline_score')}→"
+                f"{result.get('tuned_score')} ({result.get('delta'):+.3f}) "
+                "— review + Apply", 8.0, (120, 220, 140)))
+        except subprocess.TimeoutExpired:
+            self.bus.publish(api.KnownNResult({}, error="known-N timed out (>40 min)"))
+        except Exception as e:  # noqa: BLE001
+            print(f"[KnownN] failed: {e}")
+            self.bus.publish(api.KnownNResult({}, error=str(e)[:200]))
+
+    def _cb_apply_known_n(self):
+        """Apply the last known-N tune: a profile-aware timestamped SAVE
+        (confidence → active profile; θ_s/θ_m/tracker_max_age → shared) plus a
+        live push of the tuned keys onto the running session."""
+        from core import config_schema
+        knobs = getattr(self, "_known_n_tuned", None)
+        if not knobs:
+            self.bus.publish(api.Toast(
+                "No known-N result to apply yet — run it first.", 3.0,
+                (255, 180, 80)))
+            return
+        project = self.configs._current_project
+        latest = self.configs.config_store.latest_for_project(project)
+        base = self.configs.config_store.load(latest) if latest else {}
+        structured = config_schema.migrate(base or {})
+        active = structured.get("active_profile", config_schema.DEFAULT_PROFILE)
+        prof = structured.setdefault("profiles", {}).setdefault(active, {})
+        for k, v in knobs.items():
+            (prof if k in config_schema.PROFILE_KEYS else structured)[k] = v
+        path = self.configs.config_store.save(project, structured)
+        self._apply_config_without_model(dict(knobs))
+        print(f"[KnownN] applied tune live + saved -> {path}")
+        self.bus.publish(api.Toast(
+            f"Known-N applied + saved ({', '.join(knobs)}).", 7.0, (120, 220, 140)))
 
     # Keyboard shortcuts live in ui/adapter.py (_handle_key) since Phase 3:
     # runtime effects arrive as commands, GUI-local toggles stay in the adapter.

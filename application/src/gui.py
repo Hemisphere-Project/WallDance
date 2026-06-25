@@ -622,6 +622,14 @@ class WallDanceGUI:
         if 'on_calib_sweep_apply' in self.callbacks:
             self.callbacks['on_calib_sweep_apply']()
 
+    def _on_known_n(self, *args):
+        if 'on_known_n' in self.callbacks:
+            self.callbacks['on_known_n']()
+
+    def _on_known_n_apply(self, *args):
+        if 'on_known_n_apply' in self.callbacks:
+            self.callbacks['on_known_n_apply']()
+
     def _on_max_persons_change(self, sender, value):
         if 'on_max_persons_change' in self.callbacks:
             self.callbacks['on_max_persons_change'](value)
@@ -2762,6 +2770,38 @@ class WallDanceGUI:
         dpg.configure_item(tag, color=TEXT_NORMAL)
         if dpg.does_item_exist("calib_sweep_apply_btn"):
             dpg.configure_item("calib_sweep_apply_btn", show=True)
+
+    def show_known_n_result(self, result, error=""):
+        """Render the phase-④ known-N tune (before/after score + tuned knobs) and
+        reveal the Apply button. set_value/configure_item only (posted from a
+        background thread, like the sweep)."""
+        tag = "known_n_result_text"
+        if not dpg.does_item_exist(tag):
+            return
+        if error:
+            dpg.set_value(tag, f"Known-N tune failed: {error}")
+            dpg.configure_item(tag, color=ALERT_RED)
+            if dpg.does_item_exist("known_n_apply_btn"):
+                dpg.configure_item("known_n_apply_btn", show=False)
+            return
+        r = result or {}
+        knobs = r.get("final", {}) or {}
+        knobs_str = "  ".join(f"{k}={v}" for k, v in knobs.items()) or "-"
+        changed = r.get("changed", {}) or {}
+        try:
+            delta = float(r.get("delta", 0.0))
+        except Exception:  # noqa: BLE001
+            delta = 0.0
+        lines = [
+            f"Score: {r.get('baseline_score', '?')} -> {r.get('tuned_score', '?')} "
+            f"({delta:+.3f}, lower=better) over {r.get('evals', '?')} evals",
+            f"Tuned knobs: {knobs_str}",
+            f"Changed vs base: {changed or '(none - already optimal)'}",
+        ]
+        dpg.set_value(tag, "\n".join(lines))
+        dpg.configure_item(tag, color=TEXT_NORMAL)
+        if dpg.does_item_exist("known_n_apply_btn"):
+            dpg.configure_item("known_n_apply_btn", show=True)
 
     def set_dial_b_visible(self, visible):
         """Show/hide Dial B (gap-bridging) on the live surface. Calibration hides

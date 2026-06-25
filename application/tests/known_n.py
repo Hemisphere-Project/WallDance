@@ -121,6 +121,8 @@ def main():
                     help="evaluate every Nth frame (Track-G stride; N=1 = all)")
     ap.add_argument("--dry-run", action="store_true",
                     help="search + report, do NOT write the project save")
+    ap.add_argument("--out", default=None,
+                    help="write the result (scores + knobs) as JSON here (GUI hook)")
     args = ap.parse_args()
 
     scen_paths = list(args.scenarios)
@@ -166,12 +168,24 @@ def main():
     print(f"  final knobs : {final}")
     print(f"  changed     : {changed or '(none — base already optimal in this space)'}")
 
+    result = {
+        "project": project,
+        "scenarios": [Path(s).stem for s in scen_paths],
+        "baseline_score": round(base_score, 5),
+        "tuned_score": round(best_score, 5),
+        "delta": round(best_score - base_score, 5),
+        "final": final,
+        "changed": changed,
+        "evals": tuner.n_evals,
+    }
     if args.dry_run:
         print("\n--dry-run: not saving.")
-        return
-    store = cs.ConfigStore()
-    path = save_into_project(project, final, store)
-    print(f"\nwrote known-N config -> {path}")
+    else:
+        result["saved_path"] = save_into_project(project, final, cs.ConfigStore())
+        print(f"\nwrote known-N config -> {result['saved_path']}")
+    if args.out:
+        Path(args.out).write_text(json.dumps(result, indent=2))
+        print(f"wrote result -> {args.out}")
 
 
 if __name__ == "__main__":

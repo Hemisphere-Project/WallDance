@@ -796,6 +796,38 @@ def build_phase_calibrate(gui: Any):
             dpg.add_text("Save the auto-tuned values into the project (profile-aware).\n"
                          "Reload the project to run with them.")
 
+        # Known-N tune (K1) — heavier offline search over the per-scene detection
+        # knobs vs the project's labelled scenarios.
+        dpg.add_spacer(height=scaled(10))
+        dpg.add_separator()
+        dpg.add_spacer(height=scaled(6))
+        dpg.add_text("Known-N tune (per-scene detection knobs)", color=TEXT_NORMAL)
+        dpg.add_text("Joint search over confidence / detection gates / track-age "
+                     "against this project's labelled scenarios (known dancer "
+                     "counts), on the show path. Needs verified scenarios for the "
+                     "project. STANDBY only; several minutes.",
+                     color=TEXT_MUTED, wrap=scaled(_PHASE_WRAP))
+        dpg.add_spacer(height=scaled(4))
+        kn_btn = dpg.add_button(
+            label="Tune (known-N)", tag="known_n_btn",
+            width=scaled(200), height=scaled(30), callback=gui._on_known_n)
+        dpg.bind_item_theme(kn_btn, gui._btn_standby_theme)
+        with dpg.tooltip(kn_btn):
+            dpg.add_text("Offline joint coord-descent (separate process) over the\n"
+                         "per-scene known-N knobs vs the project's labelled scenarios.\n"
+                         "Reports before/after; review, then Apply. STANDBY, several min.")
+        dpg.add_spacer(height=scaled(6))
+        dpg.add_text("", tag="known_n_result_text", color=TEXT_MUTED,
+                     wrap=scaled(_PHASE_WRAP))
+        dpg.add_spacer(height=scaled(4))
+        kn_apply = dpg.add_button(
+            label="Apply tune", tag="known_n_apply_btn", show=False,
+            width=scaled(140), height=scaled(28), callback=gui._on_known_n_apply)
+        dpg.bind_item_theme(kn_apply, gui._btn_standby_theme)
+        with dpg.tooltip(kn_apply):
+            dpg.add_text("Save the tuned knobs into the project (profile-aware) and\n"
+                         "push them onto the running session.")
+
 
 def build_phase_verify(gui: Any):
     """⑤ Verify — Go-Live readiness glance (+ dry-run on the last recording)."""

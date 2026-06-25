@@ -150,6 +150,8 @@ class DpgUiAdapter:
             "on_dryrun": lambda: submit(api.RunDryRunReplay()),
             "on_calib_sweep": lambda n, slot=-1: submit(api.RunCalibSweep(int(n), int(slot))),
             "on_calib_sweep_apply": lambda: submit(api.ApplyCalibSweep()),
+            "on_known_n": lambda: submit(api.RunKnownNTune()),
+            "on_known_n_apply": lambda: submit(api.ApplyKnownNTune()),
             "on_model_change": lambda name: submit(api.LoadModel(name)),
             "on_trt_toggle": lambda v: submit(api.ToggleTrt(bool(v))),
             "on_trt_rebuild": lambda: submit(api.RebuildTrt()),
@@ -298,6 +300,8 @@ class DpgUiAdapter:
             api.DryRunResult: lambda e: self.gui.show_dryrun_result(
                 e.summary, e.error),
             api.CalibSweepResult: lambda e: self.gui.show_calib_sweep_result(
+                e.result, e.error),
+            api.KnownNResult: lambda e: self.gui.show_known_n_result(
                 e.result, e.error),
             api.DialBVisible: lambda e: self.gui.set_dial_b_visible(e.visible),
             api.Alert: lambda e: self.gui.show_toast(

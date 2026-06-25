@@ -25,6 +25,8 @@ def test_phase_calibrate_builds_and_renders_sweep_result():
             _on_calib2=noop,
             _on_calib_sweep=noop,
             _on_calib_sweep_apply=noop,
+            _on_known_n=noop,
+            _on_known_n_apply=noop,
             _btn_standby_theme=th,
         )
         with dpg.window(label="smoke"):
@@ -56,5 +58,21 @@ def test_phase_calibrate_builds_and_renders_sweep_result():
         WallDanceGUI.show_calib_sweep_result(None, {}, error="no recordings found")
         assert "Auto-tune failed" in dpg.get_value("calib_sweep_result_text")
         assert dpg.get_item_configuration("calib_sweep_apply_btn")["show"] is False
+
+        # Known-N tune (K1) widgets + result rendering.
+        assert dpg.does_item_exist("known_n_btn")
+        assert dpg.does_item_exist("known_n_result_text")
+        assert dpg.does_item_exist("known_n_apply_btn")
+        assert dpg.get_item_configuration("known_n_apply_btn")["show"] is False
+        WallDanceGUI.show_known_n_result(None, {
+            "baseline_score": 0.61, "tuned_score": 0.51, "delta": -0.10, "evals": 34,
+            "final": {"confidence": 0.15, "tracker_max_age": 60},
+            "changed": {"tracker_max_age": 60}})
+        kn_txt = dpg.get_value("known_n_result_text")
+        assert "0.61" in kn_txt and "tracker_max_age=60" in kn_txt
+        assert dpg.get_item_configuration("known_n_apply_btn")["show"] is True
+        WallDanceGUI.show_known_n_result(None, {}, error="no scenarios")
+        assert "Known-N tune failed" in dpg.get_value("known_n_result_text")
+        assert dpg.get_item_configuration("known_n_apply_btn")["show"] is False
     finally:
         dpg.destroy_context()
