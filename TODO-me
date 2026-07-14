@@ -1,8 +1,12 @@
 
 TODO =
-+ mirror horizontal camera (+ rotate 90°)
-++ Motion detect fallback avant Yolo (pour petits guguss sur fond fixe)
++++ Charger des vidéos dans les slots   
++++ Mode d'emploi      
 +++ issues on merging tracks (yolo AND motion)
+++ Motion detect fallback avant Yolo (pour petits guguss sur fond fixe)
++ mirror horizontal camera (+ rotate 90°)
+- Desactiver mise à jour auto Windows
+- cleanup menu
 
 
 DONE =
