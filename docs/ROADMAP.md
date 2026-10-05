@@ -3,6 +3,16 @@
 **Date:** 2026-06-22 · **Status:** Single source of truth for *forward work*. Index of all docs:
 **[README.md](README.md)**.
 
+> ⚠ **Superseded-in-review (2026-10-05).** The field-test audit **[AUDIT_2026-10.md](AUDIT_2026-10.md)** proposes
+> **[ROADMAP_v2_DRAFT.md](ROADMAP_v2_DRAFT.md)**. Notable corrections to this file:
+> - bugs #3/#12a/#12b/#12f are fixed (§6 is stale);
+> - CI does not pass;
+> - `TrackingMode` is live in 4/12 projects;
+> - the shipped launcher exe predates the update-safety fix;
+> - the markers are now ankles + wrists.
+>
+> This file stays canonical for code-comment anchors until v2 is accepted.
+
 This is the one place for "what's next." It merges and supersedes the forward content of the old
 `OPERATOR_V2.md` (Tracks O/X/C/S/G/D/P), the `TODO.md` build/hardware phases, the open
 `AUTOTUNE_DESIGN.md` gaps, and the `TRACKING_ROBUSTNESS.md` IR-marker direction. The detailed

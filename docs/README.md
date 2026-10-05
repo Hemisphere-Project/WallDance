@@ -9,6 +9,11 @@ IR for live shows and emits their positions over OSC. Project root code lives in
 shipped history lives in **[archives/ENGINEERING_RECORD.md](archives/ENGINEERING_RECORD.md)**.
 Everything else is reference, operator procedure, or archived design.
 
+> **2026-10-05 — field-test audit:** **[AUDIT_2026-10.md](AUDIT_2026-10.md)** (continuity, IR markers on
+> ankles + wrists, architecture, performance, docs; stream reports in [audit-2026-10/](audit-2026-10/)) and the
+> proposed **[ROADMAP_v2_DRAFT.md](ROADMAP_v2_DRAFT.md)**, both pending Thomas's review. Until it is accepted,
+> ROADMAP.md stays canonical.
+
 ---
 
 ## Start here
