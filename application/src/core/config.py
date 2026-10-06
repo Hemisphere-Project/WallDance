@@ -392,6 +392,11 @@ TRACKER_CLOSE_IOU_WEIGHT = 0.05          # IoU cost weight in crowded zones.
 OSC_ENABLED = True                  # Enable OSC output
 OSC_IP = "127.0.0.1"                # Target IP address
 OSC_PORT = 9000                     # Target port
+OSC_SEND_ERROR_ALERT_INTERVAL_S = 10.0  # A failing send (unreachable host, a
+                                    # broadcast target, full socket buffer) is
+                                    # dropped and the show goes on; console +
+                                    # operator alert at most once per interval
+                                    # (audit 2026-10 ARCH-6)
 
 # OSC message format (canonical wire contract: docs/OSC_CONTRACT.md).
 # id is the FIRST arg of each /dancer message (one flat stream, not per-id addresses):
@@ -915,3 +920,11 @@ OPS_GPU_POLL_S = 5.0                # GPU stats poll cadence inside the health t
 OPS_ALERT_COOLDOWN_S = 120.0        # Per-alert-kind re-fire interval
 OPS_WATCHDOG_HANG_S = 10.0          # Heartbeat age that counts as a main-loop hang
 OPS_WATCHDOG_POLL_S = 1.0
+# Main-loop exception boundary (audit 2026-10 ARCH-6). A CUDA/TRT/tracker/OSC
+# error on one frame skips that frame (alert + traceback in the log) instead of
+# ending the show. This many CONSECUTIVE failures (~2.5 s at 20 fps) mean a
+# persistent fault (e.g. a dead CUDA context): the session stops cleanly --
+# recordings finalised, logs flushed, logs/last_crash.json for the next start
+# -- with exit code 3, so the launcher offers Restart.
+OPS_TICK_ERROR_EXIT_STREAK = 50
+OPS_TICK_ERROR_ALERT_INTERVAL_S = 10.0  # traceback + operator alert at most this often
