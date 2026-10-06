@@ -19,7 +19,7 @@ writes into the scratch dir.
 
 Quick start::
 
-    python extra/wdremote.py setup --host wd-prod --root C:/WallDance/WallDance
+    python extra/wdremote.py --host tango@100.106.250.59 --root C:/WallDance/WallDance setup --identity ~/.ssh/mgr-26
     python extra/wdremote.py doctor
     python extra/wdremote.py inventory            # git state, stack, engines, projects
     python extra/wdremote.py probe                # measure the link (Mbit/s)
@@ -153,7 +153,7 @@ def load_remote(path: Path = DEFAULT_CONFIG, **overrides) -> Remote:
             data.setdefault(key, os.environ[env_key])
     if not data.get("host") or not data.get("root"):
         raise SystemExit("wdremote: no remote configured. Run "
-                         "`wdremote setup --host <tailnet-host> --root <checkout path>`.")
+                         "`wdremote --host <user@tailnet-ip> --root <checkout path> setup`.")
     known = {f for f in Remote.__dataclass_fields__}
     return Remote(**{k: v for k, v in data.items() if k in known})
 
@@ -746,6 +746,14 @@ def cmd_doctor(tr, remote: Remote, a) -> int:
     p = tr.run(test, timeout=60)
     print(f"  python: {exe} -> rc={p.returncode} {(p.stdout or b'').decode().strip()}")
     ok &= p.returncode == 0
+    err = (p.stderr or b"").decode(errors="replace")
+    if p.returncode != 0 and remote.win and "No Python at" in err:
+        # Windows 11 24H2+: an SSH session refuses junctions made by a non-elevated
+        # process ("untrusted mount point"); uv's cpython-3.X junction is one.
+        print("  -> the venv's base python sits behind uv's cpython-3.X junction, which this"
+              " SSH session\n     treats as an untrusted mount point. Recreate it from an"
+              " ADMIN PowerShell\n     (docs/REMOTE_OPS.md §1 step 5):\n     "
+              + err.strip().splitlines()[-1][:200])
     p = tr.run(remote.shell(["git", "--version"]), timeout=30)
     print(f"  git CLI: {'yes ' + (p.stdout or b'').decode().strip() if p.returncode == 0 else 'NO (bundle falls back to a .git zip)'}")
     return 0 if ok else 1

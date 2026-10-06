@@ -31,12 +31,24 @@ venues it is slow 4G tethering, where syncing GBs of FFV1 recordings is impracti
    `>`/`Out-File` (UTF-16, which sshd rejects), and lock the admin file down:
    `icacls <file> /inheritance:r /grant Administrators:F /grant SYSTEM:F`.
 4. Leave the default shell as **cmd.exe**: `wdremote` builds cmd.exe command lines.
+5. **uv's Python junction** (Windows 11 24H2+). An SSH session refuses to follow a junction made by a
+   non-elevated process ("point de montage non approuvé" / untrusted mount point), and the venv's base
+   Python is reached through uv's `cpython-3.12-windows-x86_64-none` junction. `doctor` then shows
+   `python … rc=103` ("No Python at …"). Recreate that junction from an **admin** PowerShell (same target;
+   nothing changes for the desktop session). uv recreates it, untrusted again, when it installs a new 3.12
+   patch release:
+   ```powershell
+   cd $env:APPDATA\uv\python
+   cmd /c rmdir cpython-3.12-windows-x86_64-none
+   cmd /c mklink /J cpython-3.12-windows-x86_64-none "$env:APPDATA\uv\python\cpython-3.12.12-windows-x86_64-none"
+   ```
+   Junctions that `wdremote deploy` creates from the SSH session (DEV slot) are trusted.
 
 ## 2. One-time setup on the dev box
 
 ```bash
-python extra/wdremote.py setup --host <user>@<tailnet ip> --root C:/WallDance/WallDance \
-    --identity ~/.ssh/mgr-26        # root = the launcher's checkout
+python extra/wdremote.py --host <user>@<tailnet ip> --root C:/WallDance/WallDance \
+    setup --identity ~/.ssh/mgr-26  # root = the launcher's checkout
 python extra/wdremote.py doctor        # ssh, shell, venv python, git CLI present?
 python extra/wdremote.py inventory     # git state, stack versions, engines, projects (saved as JSON)
 ```
