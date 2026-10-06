@@ -66,6 +66,7 @@ def test_recordings_bar_is_inline_one_line_no_toggle():
             _on_playback_prev_frame=noop,
             _on_playback_next_frame=noop,
             _on_report_issue=noop,
+            _on_import_video=noop,
         )
         # build_drawer_bar IS the recordings bar now (controls inline on one line).
         with dpg.window(label="smoke"):
@@ -83,8 +84,14 @@ def test_recordings_bar_is_inline_one_line_no_toggle():
                     "rec_report_issue_btn", "source_status_group",
                     "source_playback_group"):
             assert dpg.does_item_exist(tag), tag
-        for slot in range(1, 11):
+        # 9 slots, like VideoRecorder.NUM_SLOTS (a dead 10th button used to be drawn).
+        from core.video_recorder import VideoRecorder
+        assert VideoRecorder.NUM_SLOTS == 9
+        for slot in range(1, VideoRecorder.NUM_SLOTS + 1):
             assert dpg.does_item_exist(f"rec_slot_{slot}_btn"), slot
+        assert not dpg.does_item_exist("rec_slot_10_btn")
+        # REQ-1: the IMPORT button sits on the same bar.
+        assert dpg.does_item_exist("rec_import_btn")
         # The transport sub-group stays hidden until playback (update_recording_ui).
         assert dpg.get_item_configuration("source_playback_group")["show"] is False
     finally:

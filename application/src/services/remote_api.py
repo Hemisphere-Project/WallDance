@@ -75,10 +75,12 @@ POLICY: Dict[str, str] = {
     "ApplyCalib2": CONTROL, "ClearCalib2Pool": CONTROL, "ApplyCalibSweep": CONTROL,
     "ApplyKnownNTune": CONTROL, "SaveConfig": CONTROL, "SwitchProfile": CONTROL,
     "LoadSafeDefaults": CONTROL, "SelectConfigVersion": CONTROL,
+    "SetInputTransform": CONTROL,
     # heavy: STANDBY only
     "RunDryRunReplay": HEAVY, "RunCalibSweep": HEAVY, "RunKnownNTune": HEAVY,
     "RebuildTrt": HEAVY, "LoadModel": HEAVY, "SetImgsz": HEAVY, "ToggleTrt": HEAVY,
     "LaunchProject": HEAVY, "SelectProject": HEAVY, "LoadConfig": HEAVY,
+    "ImportVideoToSlot": HEAVY,   # multi-GB disk copy / transcode
     # never: destructive, or a GUI dialog nobody is there to answer
     "Quit": NEVER, "DeleteProject": NEVER, "RenameProject": NEVER,
     "StartBlankProject": NEVER, "SaveSafeDefaults": NEVER, "SaveConfigAs": NEVER,
@@ -253,6 +255,11 @@ class RemoteApi:
             args = dict(args, **{key: str(resolved)})
         if type_name == "SetRigSheet":
             args = dict(args, echo=True)
+        if type_name == "ImportVideoToSlot":
+            src, err = self.resolve_import_source(str(args.get("path", "")))
+            if err:
+                return 400, {"error": err}
+            args = dict(args, path=src)
         ctype = getattr(api, type_name)
         try:
             command = ctype(**args)
@@ -282,6 +289,28 @@ class RemoteApi:
             if cand == root or root in cand.parents:
                 return cand
         return None
+
+    def resolve_import_source(self, path: str) -> Tuple[Optional[str], Optional[str]]:
+        """(real path, None) or (None, reason) for a video to import (REQ-1).
+
+        A file already on the show machine: an absolute path anywhere, or
+        'projects/...' (any shared root). It must be an existing regular
+        file with a video extension -- validated here so a bad path is a
+        400 on the call, not a toast nobody sees."""
+        from core.video_import import VideoImportError, validate_source
+        if not path:
+            return None, "path is required"
+        p = Path(path).expanduser()
+        if not p.is_absolute():
+            under = self.resolve(path)
+            if under is None:
+                return None, (f"path must be absolute, or relative to a shared root "
+                              f"{sorted(self.roots)}")
+            p = under
+        try:
+            return validate_source(str(p)), None
+        except VideoImportError as e:
+            return None, str(e)
 
     def listing(self, rel: str) -> Tuple[int, Dict]:
         if not rel:

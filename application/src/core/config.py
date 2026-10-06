@@ -612,10 +612,21 @@ PROJECT_PICKER_ON_START = True
 #
 RECORDING_CODEC = "FFV1"
 
+# Number of recording slots per project (recordings bar buttons 1..N; the
+# command validators in runtime/api.py hard-code the same 1-9 range).
+RECORDING_SLOTS = 9
+
 # MJPG quality (1-100). Only affects MJPG codec; ignored for FFV1/mp4v.
 # Default OpenCV is ~95 which causes visible artifacts in dark scenes.
 # 98-100 is near-lossless but produces larger files (~3-5× vs default).
 RECORDING_QUALITY = 100
+
+# Video import into slots (REQ-1). .avi/.mp4 are byte-copied; other containers
+# (.mov/.mkv/...) are transcoded with OpenCV's built-in MJPG encoder (present in
+# every build, unlike FFV1/H.264) so the slot list and replay tools can read
+# them. 98 keeps dark scenes clean at ~1/2-1/3 the size of 100.
+IMPORT_TRANSCODE_CODEC = "MJPG"
+IMPORT_TRANSCODE_QUALITY = 98
 
 # Take provenance (MRK-0): every recording's .meta carries the camera settings
 # at start/stop, app version, the project config and the rig sheet; while a take

@@ -5,6 +5,7 @@ Provides real-time parameter adjustment with sliders, checkboxes, and buttons.
 
 import os, sys
 import subprocess
+import threading
 import time
 from typing import Any, Callable, Dict, Optional
 
@@ -13,6 +14,9 @@ import dearpygui.dearpygui as dpg
 import numpy as np
 
 from gui_builder import build_ui, create_texture, setup_theme, load_icon_font, SystemState, scaled, CONTROL_PANEL_WIDTH
+from gui_builder import rotation_from_label, rotation_label
+from core.config import RECORDING_SLOTS
+from core.video_import import IMPORTABLE_EXTS
 from gui_constants import (
     TEXT_NORMAL, TEXT_MUTED, TEXT_DIM, TEXT_HINT, TEXT_FAINT,
     HEADING_GREEN, OK_GREEN, BRIGHT_GREEN, WARN_AMBER, WARN_ORANGE,
@@ -52,6 +56,34 @@ def get_gpu_stats() -> dict:
         return {'util': util.gpu, 'temp': temp, 'power': power_w, 'vram_pct': vram_pct}
     except Exception:
         return {'util': -1, 'temp': -1, 'power': -1, 'vram_pct': -1}
+
+
+def ask_video_file_native(initial_dir: str) -> Optional[str]:
+    """Native OS "open file" dialog (tkinter) for the slot import (REQ-1).
+
+    Blocking: call it on its own thread, never the main loop or the DPG
+    callback thread. Returns the chosen path, or None when cancelled. Raises
+    when tkinter / a display is unavailable (the caller falls back to the
+    DearPyGui file dialog)."""
+    import tkinter as tk
+    from tkinter import filedialog
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        try:
+            root.attributes("-topmost", True)   # above the fullscreen DPG viewport
+            root.lift()
+            root.focus_force()
+        except Exception:
+            pass
+        patterns = " ".join(f"*{ext}" for ext in IMPORTABLE_EXTS)
+        path = filedialog.askopenfilename(
+            parent=root, title="Import a video into a slot",
+            initialdir=initial_dir or os.path.expanduser("~"),
+            filetypes=[("Video files", patterns), ("All files", "*.*")])
+    finally:
+        root.destroy()
+    return str(path) if path else None
 
 
 def get_display_scale() -> float:
@@ -263,6 +295,12 @@ class WallDanceGUI:
         # Toast expiry deadline; expired by render_frame() on the main
         # thread only — DPG is not thread-safe.
         self._toast_deadline = 0.0
+
+        # REQ-1 import: last slot fill state (for the slot picker), the
+        # last folder a video was picked from, and a one-dialog-at-a-time flag.
+        self._last_slots_info: list = []
+        self._import_last_dir: str = ""
+        self._import_dialog_open: bool = False
 
         # Modals registered for live centering: tag -> (width, height)
         self._centered_modals: Dict[str, tuple] = {}
@@ -844,6 +882,107 @@ class WallDanceGUI:
         if 'on_rig_field' in self.callbacks and user_data:
             self.callbacks['on_rig_field'](user_data, value)
 
+    # === Input transform (REQ-5) ===
+
+    def _on_input_mirror_toggle(self, sender=None, value=None, user_data=None):
+        if 'on_input_mirror_toggle' in self.callbacks:
+            self.callbacks['on_input_mirror_toggle'](bool(value))
+
+    def _on_input_rotation_change(self, sender=None, value=None, user_data=None):
+        deg = rotation_from_label(value)
+        if deg is not None and 'on_input_rotation_change' in self.callbacks:
+            self.callbacks['on_input_rotation_change'](deg)
+
+    # === Video import into a slot (REQ-1) ===
+
+    def _on_import_video(self, sender=None, app_data=None):
+        """IMPORT button: pick the slot first, then the file (STANDBY only,
+        like the other heavy jobs; the runtime enforces it too)."""
+        if self._system_state == SystemState.RUN:
+            self.show_toast("Switch to STANDBY to import a video", duration=3.0,
+                            color=WARN_AMBER)
+            return
+        self.show_import_slot_picker()
+
+    def show_import_slot_picker(self):
+        """Popup: 'Import a video into slot: [1]..[9]' (filled slots tinted)."""
+        tag = "import_slot_picker"
+        if dpg.does_item_exist(tag):
+            dpg.delete_item(tag)
+        filled = {sid for sid, has in (self._last_slots_info or []) if has}
+        with dpg.window(label="Import a video", tag=tag, popup=True,
+                        no_title_bar=True, autosize=True):
+            dpg.add_text("Import a video into slot:", color=TEXT_NORMAL)
+            with dpg.group(horizontal=True):
+                for slot in range(1, RECORDING_SLOTS + 1):
+                    btn = dpg.add_button(
+                        label=str(slot), tag=f"import_slot_{slot}_btn",
+                        width=scaled(26), user_data=slot,
+                        callback=lambda s, a, u: self._pick_import_file(u))
+                    dpg.bind_item_theme(btn, self._slot_has_recording_theme
+                                        if slot in filled else self._slot_empty_theme)
+            dpg.add_text("A filled slot keeps its older takes (Ctrl+click history).",
+                         color=TEXT_HINT)
+
+    def _pick_import_file(self, slot: int):
+        """Slot chosen: open the native file dialog on its own thread (it
+        blocks); fall back to the DearPyGui file dialog without tkinter."""
+        if dpg.does_item_exist("import_slot_picker"):
+            dpg.delete_item("import_slot_picker")
+        if self._import_dialog_open:
+            return
+        self._import_dialog_open = True
+        start_dir = self._import_last_dir or os.path.expanduser("~")
+
+        def worker():
+            try:
+                path = ask_video_file_native(start_dir)
+            except Exception as e:  # noqa: BLE001 - no tkinter / no display
+                print(f"[Import] native file dialog unavailable ({e}); "
+                      "using the built-in one")
+                self._import_dialog_open = False
+                self._show_import_file_dialog(slot, start_dir)
+                return
+            self._import_dialog_open = False
+            if path:
+                self._submit_import(slot, path)
+
+        threading.Thread(target=worker, name="ImportFileDialog", daemon=True).start()
+
+    def _show_import_file_dialog(self, slot: int, start_dir: str):
+        """DearPyGui fallback file dialog (no tkinter on this Python)."""
+        tag = "import_file_dialog"
+        if dpg.does_item_exist(tag):
+            dpg.delete_item(tag)
+
+        def _chosen(sender, app_data):
+            path = (app_data or {}).get("file_path_name") or ""
+            selections = (app_data or {}).get("selections") or {}
+            if selections:
+                path = next(iter(selections.values()))
+            if dpg.does_item_exist(tag):
+                dpg.delete_item(tag)
+            if path:
+                self._submit_import(slot, path)
+
+        def _cancel(sender, app_data):
+            if dpg.does_item_exist(tag):
+                dpg.delete_item(tag)
+
+        with dpg.file_dialog(tag=tag, label=f"Import a video into slot {slot}",
+                             directory_selector=False, show=True, modal=True,
+                             default_path=start_dir, callback=_chosen,
+                             cancel_callback=_cancel,
+                             width=scaled(720), height=scaled(460)):
+            dpg.add_file_extension("Videos{" + ",".join(IMPORTABLE_EXTS) + "}",
+                                   color=(120, 200, 255, 255))
+            dpg.add_file_extension(".*")
+
+    def _submit_import(self, slot: int, path: str):
+        self._import_last_dir = os.path.dirname(path)
+        if 'on_import_video' in self.callbacks:
+            self.callbacks['on_import_video'](int(slot), str(path))
+
     def _on_osc_config_change(self, sender=None, value=None):
         if 'on_osc_config' in self.callbacks:
             ip = dpg.get_value("osc_ip_input")
@@ -1008,6 +1147,7 @@ class WallDanceGUI:
                 dpg.set_value("rec_frame_counter", "")
         
         # Update slot buttons
+        self._last_slots_info = list(slots_info)
         for slot_id, has_recordings in slots_info:
             tag = f"rec_slot_{slot_id}_btn"
             if dpg.does_item_exist(tag):
@@ -1672,6 +1812,7 @@ class WallDanceGUI:
             'osc': ['osc_checkbox'],
             'bg_enable': ['bg_enable_checkbox'],
             'roi_enable': ['adv_roi_enable_checkbox'],
+            'input_mirror': ['input_mirror_checkbox'],
         }
         # Visualization toggles - update toolbar button themes instead of checkboxes
         vis_toggles = ['skeleton', 'keypoints', 'bbox', 'trails', 'ids']
@@ -1745,7 +1886,10 @@ class WallDanceGUI:
             'model': ['adv_model_combo'],
             'imgsz': ['adv_imgsz_combo'],
             'camera': ['adv_camera_combo'],
+            'input_rotation': ['input_rotation_combo'],
         }
+        if name == 'input_rotation':
+            value = rotation_label(value)
         if name in tag_map:
             for tag in tag_map[name]:
                 if dpg.does_item_exist(tag):

@@ -14,6 +14,7 @@ from typing import Any, Tuple
 import dearpygui.dearpygui as dpg
 import numpy as np
 
+from core.config import RECORDING_SLOTS
 from gui_icons import Icons
 from gui_constants import (
     TEXT_NORMAL, TEXT_MUTED, TEXT_DIM, TEXT_HINT, TEXT_FAINT,
@@ -24,6 +25,28 @@ from gui_constants import (
 # runtime owns the authoritative state; re-exported here for the existing
 # `from gui_builder import SystemState` sites.
 from runtime.api import SystemState
+
+
+# Input transform (REQ-5) rotation combo: clockwise quarter turns.
+INPUT_ROTATION_LABELS = ("0\u00b0", "90\u00b0", "180\u00b0", "270\u00b0")
+
+
+def rotation_label(degrees) -> str:
+    """0/90/180/270 -> the combo label ('90°')."""
+    try:
+        deg = int(float(str(degrees).rstrip("\u00b0").strip())) % 360
+    except (TypeError, ValueError):
+        deg = 0
+    return f"{deg}\u00b0" if deg in (0, 90, 180, 270) else INPUT_ROTATION_LABELS[0]
+
+
+def rotation_from_label(label):
+    """The combo label ('90°') -> 90; None when it is not a quarter turn."""
+    try:
+        deg = int(float(str(label).rstrip("\u00b0").strip()))
+    except (TypeError, ValueError):
+        return None
+    return deg if deg in (0, 90, 180, 270) else None
 
 
 # State badge colors: (text_color, bg_color)
@@ -1065,7 +1088,7 @@ def build_alerts_strip(gui: Any):
 
 
 def build_drawer_bar(gui: Any):
-    """Recordings bar — LIVE/REC + 10 slots + status + transport, inline on ONE
+    """Recordings bar — LIVE/REC + 9 slots + IMPORT + status + transport, inline on ONE
     line, always visible (no toggle button).  (Advanced is on the phase rail.)"""
     dpg.add_separator()
     with dpg.group(horizontal=True):
@@ -1085,10 +1108,10 @@ def build_advanced_drawer(gui: Any):
 
 def build_recordings_content(gui: Any):
     """Recordings controls laid out inline on the recordings bar's single line:
-    LIVE/REC + 10 slots + dynamic status + playback transport.  Emitted directly
+    LIVE/REC + 9 slots + IMPORT + dynamic status + playback transport.  Emitted directly
     into the caller's horizontal group (no wrapper) so it sits on one line; all
     widget tags are preserved so gui.update_recording_ui drives them unchanged."""
-    # LIVE / REC + 10 slot buttons
+    # LIVE / REC + slot buttons (RECORDING_SLOTS = VideoRecorder.NUM_SLOTS)
     live_btn = dpg.add_button(
         label="LIVE",
         tag="rec_live_btn",
@@ -1104,7 +1127,7 @@ def build_recordings_content(gui: Any):
     )
     dpg.bind_item_theme(rec_btn, gui._rec_btn_theme)
     dpg.add_spacer(width=scaled(4))
-    for slot in range(1, 11):
+    for slot in range(1, RECORDING_SLOTS + 1):
         slot_btn = dpg.add_button(
             label=str(slot),
             tag=f"rec_slot_{slot}_btn",
@@ -1113,6 +1136,19 @@ def build_recordings_content(gui: Any):
             user_data=slot,
         )
         dpg.bind_item_theme(slot_btn, gui._slot_empty_theme)
+
+    # REQ-1: load an external video file into a slot (slot picker -> file dialog).
+    dpg.add_spacer(width=scaled(4))
+    dpg.add_button(
+        label="IMPORT",
+        tag="rec_import_btn",
+        width=scaled(58),
+        callback=gui._on_import_video,
+    )
+    with dpg.tooltip("rec_import_btn"):
+        dpg.add_text("Load a video file (.avi .mp4 .mov .mkv ...) into a slot.\n"
+                     "It becomes the slot's newest take; older takes stay\n"
+                     "in the slot's Ctrl+click history.")
 
     dpg.add_spacer(width=scaled(10))
 
@@ -1519,6 +1555,32 @@ def build_input_section(gui: Any):
             )
             if gui._icon_font:
                 dpg.bind_item_font(settings_btn, gui._icon_font)
+
+        # REQ-5: mirror / rotate the image where it enters the app (camera AND
+        # slot playback), so ROI, mask and calibration live in that space.
+        dpg.add_spacer(height=scaled(4))
+        with dpg.group(horizontal=True, tag="input_transform_group"):
+            dpg.add_checkbox(
+                label="Mirror",
+                tag="input_mirror_checkbox",
+                default_value=bool(gui.config.get("input_mirror", False)),
+                callback=gui._on_input_mirror_toggle,
+            )
+            dpg.add_spacer(width=scaled(10))
+            dpg.add_text("Rotate", color=TEXT_NORMAL)
+            dpg.add_combo(
+                items=list(INPUT_ROTATION_LABELS),
+                tag="input_rotation_combo",
+                default_value=rotation_label(gui.config.get("input_rotation", 0)),
+                width=scaled(70),
+                callback=gui._on_input_rotation_change,
+            )
+        with dpg.tooltip("input_transform_group"):
+            dpg.add_text("Mirror = swap left/right. Rotate = clockwise.\n"
+                         "Applied to the live camera AND to slot playback,\n"
+                         "before ROI / mask / detection. Changing it moves the\n"
+                         "ROI and mask with the image. Saved with the project\n"
+                         "(Save). Recordings stay raw: playback re-applies it.")
 
         dpg.add_spacer(height=scaled(4))
         dpg.add_checkbox(

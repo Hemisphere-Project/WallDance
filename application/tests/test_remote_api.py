@@ -3,6 +3,7 @@ loopback: auth, the guarded command policy, events, files (Range/gzip), logs,
 clip jobs. Plus the app-log tee (services/app_log.py)."""
 import gzip
 import io
+import os
 import json
 import time
 import urllib.error
@@ -199,3 +200,80 @@ def test_app_log_tee_survives_dead_console(tmp_path):
     app_log._prune(tmp_path, keep=2, current=tmp_path / "walldance_0.log")
     assert sorted(p.name for p in tmp_path.glob("walldance_*.log")) == \
         ["walldance_0.log", "walldance_3.log", "walldance_4.log"]
+
+
+def test_every_command_is_classified():
+    """A new command must be put in a policy class (unlisted = denied, which
+    is only intended for the operator-only SetRemoteControl)."""
+    commands = {n for n, c in vars(api).items()
+                if isinstance(c, type) and issubclass(c, api.Command) and c is not api.Command}
+    assert commands - set(POLICY) == {"SetRemoteControl"}
+    assert set(POLICY) <= commands
+    assert POLICY["ImportVideoToSlot"] == "heavy"
+    assert POLICY["SetInputTransform"] == "control"
+
+
+def test_import_video_policy_and_path_validation(server, tmp_path):
+    runtime, state, remote = server["runtime"], server["state"], server["remote"]
+    got = []
+    runtime.register(api.ImportVideoToSlot, got.append)
+    outside = tmp_path / "Downloads" / "phone take.MOV"     # anywhere on the machine
+    outside.parent.mkdir()
+    w = cv2.VideoWriter(str(outside), cv2.VideoWriter_fourcc(*"mp4v"), 20.0, (64, 48))
+    for _ in range(5):
+        w.write(np.zeros((48, 64, 3), np.uint8))
+    w.release()
+    # STANDBY: absolute path anywhere, resolved to its real path
+    code, body = _json(server, "/api/v1/command",
+                       {"type": "ImportVideoToSlot", "args": {"slot": 3, "path": str(outside)}})
+    assert code == 200, body
+    runtime.drain()
+    assert got[-1] == api.ImportVideoToSlot(3, os.path.realpath(outside))
+    # a path under a shared root works relative too
+    rel = "projects/p/recordings/" + server["vid"].name
+    code, body = _json(server, "/api/v1/command",
+                       {"type": "ImportVideoToSlot", "args": {"slot": 9, "path": rel,
+                                                              "mode": "copy"}})
+    assert code == 200 and body["args"]["path"] == os.path.realpath(server["vid"])
+    # validation: missing file / a directory / relative outside the roots /
+    # empty / not a video
+    (tmp_path / "notes.txt").write_text("x")
+    bad = [{"slot": 3, "path": str(tmp_path / "nope.mp4")},
+           {"slot": 3, "path": str(tmp_path / "Downloads")},
+           {"slot": 3, "path": "elsewhere/clip.mp4"},
+           {"slot": 3, "path": ""},
+           {"slot": 3, "path": str(tmp_path / "notes.txt")}]
+    for args in bad:
+        code, body = _json(server, "/api/v1/command",
+                           {"type": "ImportVideoToSlot", "args": args})
+        assert code == 400, (args, body)
+    assert _json(server, "/api/v1/command",
+                 {"type": "ImportVideoToSlot", "args": {"slot": 0, "path": str(outside)}})[0] == 400
+    assert _json(server, "/api/v1/command",
+                 {"type": "ImportVideoToSlot",
+                  "args": {"slot": 3, "path": str(outside), "mode": "move"}})[0] == 400
+    # heavy: refused in RUN even when the operator allows remote control
+    state["v"] = "run"
+    remote.control_enabled = True
+    code, body = _json(server, "/api/v1/command",
+                       {"type": "ImportVideoToSlot", "args": {"slot": 3, "path": str(outside)}})
+    assert code == 403 and "STANDBY-only" in body["error"]
+
+
+def test_set_input_transform_policy(server):
+    """control: free in STANDBY, in RUN only once the operator allows it."""
+    runtime, state, remote = server["runtime"], server["state"], server["remote"]
+    got = []
+    runtime.register(api.SetInputTransform, got.append)
+    assert _json(server, "/api/v1/command",
+                 {"type": "SetInputTransform", "args": {"rotation": 90}})[0] == 200
+    assert _json(server, "/api/v1/command",
+                 {"type": "SetInputTransform", "args": {"rotation": 45}})[0] == 400
+    state["v"] = "run"
+    assert _json(server, "/api/v1/command",
+                 {"type": "SetInputTransform", "args": {"mirror": True}})[0] == 403
+    remote.control_enabled = True
+    assert _json(server, "/api/v1/command",
+                 {"type": "SetInputTransform", "args": {"mirror": True}})[0] == 200
+    runtime.drain()
+    assert got == [api.SetInputTransform(rotation=90), api.SetInputTransform(mirror=True)]

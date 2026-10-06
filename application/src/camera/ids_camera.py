@@ -38,6 +38,8 @@ from typing import Callable, List, Optional, Tuple
 import cv2
 import numpy as np
 
+from core.input_transform import IDENTITY, InputTransform
+
 try:
     from core.config import CAMERA_WIDTH as APP_CAMERA_WIDTH, CAMERA_HEIGHT as APP_CAMERA_HEIGHT, CAMERA_FPS as APP_CAMERA_FPS
     from core.config import IDS_MAX_FPS as APP_IDS_MAX_FPS
@@ -1216,6 +1218,12 @@ class IDSCamera:
     # ------------------------------------------------------------------
     # Frame Reading
     # ------------------------------------------------------------------
+    # Input transform (REQ-5): mirror/rotate applied to the mono8 frame in
+    # read()/read_gpu() -- before the GPU upload AND the cached CPU preview
+    # frame, so both agree. The recording callback stays raw (upstream).
+    # Identity returns the same array: the default path is byte-identical.
+    input_transform: InputTransform = IDENTITY
+
     # CPU frame cache for zero-download preview (Strategy B+).
     # read_gpu() populates this with the CPU BGR frame produced from the
     # same mono8 used for the GPU upload.  The main loop can retrieve it
@@ -1253,6 +1261,7 @@ class IDSCamera:
                 self._frame_ready = False
         
         # Convert to BGR8 outside lock
+        frame_mono8 = self.input_transform.apply(frame_mono8)
         bgr = self._mono_to_bgr_cpu(frame_mono8)
         self._last_nonempty_read_time = time.perf_counter()
         return True, bgr
@@ -1287,6 +1296,10 @@ class IDSCamera:
             if self.settings.newest_only:
                 self._frame_ready = False
         
+        # Input transform on the mono8 (cheapest point; identity = no-op), so
+        # the GPU tensor and the cached CPU preview frame are transformed alike.
+        frame_mono8 = self.input_transform.apply(frame_mono8)
+
         # Convert Mono (8/16-bit) → GPU tensor (1, 3, H, W) outside lock
         gpu_tensor = self._mono_to_gpu_bgr(frame_mono8)
         
@@ -1639,11 +1652,32 @@ class UnifiedCamera:
         self._cv_camera = None  # Will be CameraManager if needed
         self._source_type: Optional[CameraSource] = None
         
-        # State
+        # State. width/height are what read()/read_gpu() deliver, i.e. AFTER
+        # the input transform; sensor_size is the raw size (recordings).
         self.is_open: bool = False
         self.width: int = 0
         self.height: int = 0
+        self.sensor_size: Tuple[int, int] = (0, 0)
         self.fps: float = 0.0
+        self._input_transform: InputTransform = IDENTITY
+
+    @property
+    def input_transform(self) -> InputTransform:
+        return self._input_transform
+
+    def set_input_transform(self, transform: InputTransform) -> None:
+        """Mirror/rotate the frames this camera hands out (REQ-5). Takes
+        effect on the next read; width/height follow."""
+        self._input_transform = transform
+        if self._ids_camera is not None:
+            self._ids_camera.input_transform = transform
+        if self._cv_camera is not None:
+            self._cv_camera.set_input_transform(transform)
+        self._set_sensor_size(*self.sensor_size)
+
+    def _set_sensor_size(self, width: int, height: int) -> None:
+        self.sensor_size = (int(width), int(height))
+        self.width, self.height = self._input_transform.output_size(*self.sensor_size)
     
     def open(self, source: str = "ids") -> bool:
         """Open camera.
@@ -1683,6 +1717,7 @@ class UnifiedCamera:
                 auto_exposure_limit_us=float(APP_IDS_AUTO_EXPOSURE_LIMIT_US),
             )
             self._ids_camera = IDSCamera(settings)
+            self._ids_camera.input_transform = self._input_transform
             
             if not self._ids_camera.open(None):
                 self._ids_camera = None
@@ -1695,8 +1730,8 @@ class UnifiedCamera:
             
             self._source_type = CameraSource.IDS_PEAK
             self.is_open = True
-            self.width = self._ids_camera.state.width
-            self.height = self._ids_camera.state.height
+            self._set_sensor_size(self._ids_camera.state.width,
+                                  self._ids_camera.state.height)
             self.fps = self._ids_camera.state.fps
             
             print(f"[UnifiedCamera] Opened IDS camera: {self.width}x{self.height} @ {self.fps:.1f}fps")
@@ -1757,8 +1792,10 @@ class UnifiedCamera:
 
             self._source_type = CameraSource.OPENCV
             self.is_open = True
-            self.width = self._cv_camera.state.width
-            self.height = self._cv_camera.state.height
+            self._cv_camera.set_input_transform(self._input_transform)
+            self._set_sensor_size(*(self._cv_camera.raw_size
+                                    or (self._cv_camera.state.width,
+                                        self._cv_camera.state.height)))
             self.fps = 30.0  # Assumed
 
             print(f"[UnifiedCamera] Opened OpenCV camera: {self.width}x{self.height}")
@@ -1886,8 +1923,8 @@ class UnifiedCamera:
             return False
         ok = self._ids_camera.update_crop_ratio(ratio)
         if ok:
-            self.width = self._ids_camera.state.width
-            self.height = self._ids_camera.state.height
+            self._set_sensor_size(self._ids_camera.state.width,
+                                  self._ids_camera.state.height)
         return ok
 
     # Diagnostics helpers (no-op values for non-IDS sources)

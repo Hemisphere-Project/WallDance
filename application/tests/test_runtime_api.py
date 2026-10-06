@@ -135,6 +135,13 @@ def test_bus_ui_ready_default_false():
     lambda: api.ToggleOverlay("halo"),
     lambda: api.PlaybackControl("rewind"),
     lambda: api.ControlSync("dial", "x", 1),
+    lambda: api.ImportVideoToSlot(0, "/v/a.mp4"),
+    lambda: api.ImportVideoToSlot(10, "/v/a.mp4"),
+    lambda: api.ImportVideoToSlot(3, ""),
+    lambda: api.ImportVideoToSlot(3, "/v/a.mp4", mode="move"),
+    lambda: api.ImportProgress("paused", 1, "/v/a.mp4"),
+    lambda: api.SetInputTransform(rotation=45),
+    lambda: api.SetInputTransform(mirror="yes"),
 ])
 def test_member_validation(bad):
     with pytest.raises(ValueError):
@@ -180,6 +187,8 @@ EVENT_SAMPLES = {
     api.RecordingUi: dict(payload={"state": "live", "current_slot": 0,
                                    "slots_info": [(1, True)]}),
     api.SlotHistory: dict(slot=3, recordings=[("today", "/r/x.avi")]),
+    api.ImportProgress: dict(state="progress", slot=4, source="/v/take.mov",
+                             message="Import slot 4: 40%", progress=0.4),
     api.BgStatus: dict(has_reference=True, enabled=True),
     api.ControlSync: dict(kind="slider", name="confidence", value=0.35),
     api.Toast: dict(message="hello"),
