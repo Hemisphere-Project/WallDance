@@ -123,14 +123,68 @@ Each `slot_N_<stamp>.avi.meta` holds:
 `slot_N_<stamp>.avi.camlog.jsonl` samples exposure, gain, AE/AG and temperature about once a second during the
 take, because auto-exposure drifts within takes.
 
-## 7. Getting this code onto the laptop (decision D1: release branch)
+## 7. Delivery: DEV slot, release channel, launcher (decision D1)
 
-Nothing is pushed from dev boxes. The sequence, once the laptop is on the tailnet:
-1. `wdremote inventory` + `wdremote bundle`: back up the laptop's git state first (ARCH-1).
-2. Reconcile any laptop-only commits into the dev branch.
-3. Rebuild the launcher so it tracks the **release** branch, keeps a backup ref before any reset, and uses real
-   "Keep local / Discard" buttons (ARCH-2/19). It is built on Windows over SSH and replaces the 2026-03-26 exe.
-4. Thomas pushes the release branch himself. The new launcher fast-forwards the laptop at the next start.
+Two code trees on the laptop:
 
-**Until step 3, never push `main`**: the old exe treats any difference from `origin/main` as an update and
-hard-resets the checkout.
+| Slot | Path | Managed by | Purpose |
+|---|---|---|---|
+| **LIVE** | `<launcher dir>\WallDance` | the launcher (git, `release` branch) | what the operator runs for shows |
+| **DEV** | `<launcher dir>\WallDance-dev` | `wdremote deploy` (plain files + `DEPLOYED.json`) | try any branch within minutes |
+
+DEV shares LIVE's venv, `models/` and `projects/` through junctions. A deploy only sends the tracked files
+that changed: a full first deploy is about 300 files / 1.3 MB, and a typical branch update is a few KB.
+Recordings and configs saved from DEV are real project data; `deploy --isolated-projects` avoids that.
+
+```bash
+python extra/wdremote.py deploy <branch|sha> [--dry-run]     # rollback = deploy the previous ref
+python extra/wdremote.py --slot dev pytest -x                # tests with the laptop's own stack
+python extra/wdremote.py --slot dev replay hangar-aerial --trt --score
+python extra/wdremote.py slot run --slot dev -- --project <p> --slot 3    # GUI on the laptop desktop
+python extra/wdremote.py status ; python extra/wdremote.py events -f      # drive / watch (API)
+python extra/wdremote.py slot stop --slot dev                # STANDBY -> graceful quit
+python extra/wdremote.py slot status                         # LIVE commit, DEV ref, running apps
+python extra/wdremote.py release-check <ref> --tests         # promotion preview + push command
+python extra/wdremote.py launcher status|build --ref <ref>|install
+```
+
+- **Interactive start.** `slot run` starts the app through an *interactive scheduled task*, because SSH
+  sessions cannot show a GUI. The SSH user must be the logged-on desktop user. Only one app runs at a time
+  (camera and ports are exclusive).
+- **Control in RUN.** DEV runs start with remote control during RUN enabled and graceful remote quit allowed.
+  LIVE runs never allow remote quit and start gated by the operator toggle.
+- **Promotion.** `release-check` shows commits ahead/behind (fast-forward or diverged for the launcher) and
+  flags reinstall triggers (`install.bat`, `pyproject.toml`), launcher source, OSC contract and tracking-core
+  changes. Thomas then runs the printed `git push origin <sha>:refs/heads/release`. The launcher
+  fast-forwards LIVE at its next start, or immediately with `slot run --slot live --via-launcher`.
+
+## 8. Online-window playbook
+
+**The first window (in this order: the 2026-03-26 exe hard-resets LIVE on any difference from `origin/main`):**
+
+| # | Step | Command | Time on 4G / fast |
+|---|---|---|---|
+| 0 | Thomas: Tailscale up, OpenSSH (§1), key in | — | 5 min once |
+| 1 | Connect + sanity | `setup …`, `doctor` | 1 min |
+| 2 | **What is there** (git state, stack, engines, launcher) | `inventory --freeze`, `launcher status` | 1 min |
+| 3 | **Back up LIVE** | `bundle` (≈ .git size, tens of MB) | 5–15 min / 1 min |
+| 4 | Pull state + text (configs, sessions, issues, logs) | `plan --probe`, `pull --tier P0` | depends; compressed |
+| 5 | **Replace the launcher** (pinned build on the laptop, `.bak` kept, `launcher.json` → release) | `launcher build --ref <tested ref>`, `launcher install` | 5–10 min (downloads ~50 MB of build deps on the laptop) |
+| 6 | Try the new code without touching LIVE | `deploy <ref>`, `--slot dev pytest`, `--slot dev replay … --trt --score` | 1 min + run time |
+| 7 | GUI check on the laptop | `slot run --slot dev -- …`, `status`, `cmd CheckReadiness`, `logs`, `slot stop` | 5 min |
+| 8 | Marker takes (if shot) | analyse on the laptop (`py tmp_analysis/marker_eval.py …`) or `pull --tier P1` on a fast link | — |
+
+After step 5, a push to `main` can no longer reset the laptop. Until Thomas publishes `release`, the new
+launcher simply reports "channel not found" and starts LIVE as it is.
+
+**Later short windows (≈ 15 min):** `slot status` → `deploy <ref>` → `--slot dev pytest -x` → the one
+replay/check that matters → `pull --tier P0 --since <date>`. Prepare refs and commands *before* the window
+opens; nothing is built or decided while connected.
+
+**If LIVE has laptop-only edits** (step 2 shows a dirty tree): the new launcher refuses to update over them,
+which is safe. Commit them on the laptop (`run -- git commit -am "field edits"`), bundle, reconcile on dev37,
+and release a version that contains them.
+
+**First-time Windows checks** (cannot be tested on dev37): cmd.exe quoting of `run`/`replay`, sftp
+`/C:/…` paths, junction creation, the interactive task actually showing the GUI, the launcher's new
+two-button dialog, and IDS node reads into `.meta` on the real camera.
