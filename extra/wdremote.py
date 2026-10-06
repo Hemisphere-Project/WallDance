@@ -701,6 +701,7 @@ def pull_files(tr, remote: Remote, files: List[dict], dest: Path, *,
         else:
             try:
                 os.utime(local, (f["mtime"], f["mtime"]))
+                os.chmod(local, 0o644)      # sftp applies the Windows mode (o+w / o+x)
             except OSError:
                 pass
     summary["failed"] = bad
