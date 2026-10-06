@@ -10,6 +10,10 @@ Knobs (G4 + AUTOTUNE gap #2), scene-dependent and never a user dial:
   - ``crossval_skel_min_kpts`` (θ_s)      -> shared (per-project)
   - ``crossval_motion_min_ratio`` (θ_m)   -> shared
   - ``tracker_max_age``                   -> shared
+  - ``tracker_intermittent_confirm``      -> shared (bug #14's intermittent
+    confirmation path; until CONT-1 nothing ever enabled it, audit BUG-4)
+  - ``tracker_ghost_skeleton_age``        -> shared (frozen-ghost report gate:
+    frames without a real skeleton before the speed test applies; default 3)
 τ is oracle-seeded from the Phase-2b analysis when available (it is a front-end
 key, so each value rebuilds the cache — the seed keeps the sweep short).
 
@@ -42,14 +46,20 @@ REPO = HERE.parent.parent
 SCEN_DIR = HERE / "scenarios"
 ORACLE = REPO / "tmp_analysis" / "phase2b" / "analysis.json"
 
-# The known-N (per-scene) search space.  θ_s/θ_m/max_age are post-YOLO (one cache
-# per scenario, fast); confidence/τ is a front-end key (cache rebuilds per value,
-# so it is oracle-seeded to keep the sweep short).
+# The known-N (per-scene) search space.  θ_s/θ_m/max_age and the two report-gate
+# switches are post-YOLO (one cache per scenario, fast); confidence/τ is a
+# front-end key (cache rebuilds per value, so it is oracle-seeded to keep the
+# sweep short).  The report-gate knobs come from the 2026-10 continuity audit
+# (01-continuity §3.4: intermittent alone 57.5 -> 73.9 % coverage on the floor
+# take; skeleton age 15 is part of the aerial 94.2 -> 99.5 % combo, but raises
+# duplicate frames, so it is searched, not defaulted).
 KNOWN_N_SPACE = {
     "confidence": [0.15, 0.25, 0.35, 0.45, 0.55, 0.65],
     "crossval_skel_min_kpts": [6, 8, 10, 12],
     "crossval_motion_min_ratio": [0.01, 0.02, 0.04, 0.07],
     "tracker_max_age": [30, 45, 60, 90],
+    "tracker_intermittent_confirm": [False, True],
+    "tracker_ghost_skeleton_age": [3, 6, 10, 15],
 }
 
 

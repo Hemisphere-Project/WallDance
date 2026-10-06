@@ -237,12 +237,12 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
 
     tracker = DancerTracker()
     tracker.set_person_height(settings.person_height_px)
-    if "tracker_max_age" in config:
-        tracker.max_age = config["tracker_max_age"]
     if "tracker_smoothing" in config:
         tracker.smoothing_depth = config["tracker_smoothing"]
     if "tracker_intermittent_confirm" in config:
         tracker.intermittent_confirm = bool(config["tracker_intermittent_confirm"])
+    if "tracker_ghost_skeleton_age" in config:
+        tracker.ghost_skeleton_age = int(config["tracker_ghost_skeleton_age"])
     if "tracker_swap_correctors" in config:
         tracker.swap_correctors = bool(config["tracker_swap_correctors"])
     if "max_persons" in config:
@@ -258,6 +258,13 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
         mode = TrackingMode.YOLO_FIRST
     tracker.set_tracking_mode(mode)
     proc.set_tracking_mode(mode)
+    # tracker_max_age AFTER the mode, as app._apply_config_without_model does
+    # (CONT-1 / BUG-3): set_tracking_mode(MOTION_FIRST) resets max_age to
+    # MOTION_FIRST_BRIDGE_MAX_FRAMES (60), which silently overrode the project
+    # value in replays of motion_first projects.  yolo_first is unaffected
+    # (the mode switch is a no-op from the default mode).
+    if "tracker_max_age" in config:
+        tracker.max_age = config["tracker_max_age"]
 
     if "mog2_scale" in config and proc.motion_detector is not None:
         proc.set_motion_scale(config["mog2_scale"])

@@ -1100,6 +1100,10 @@ class WallDanceApp:
             "tracker_max_age": self.tracker.max_age,
             "tracker_smoothing": self.tracker.smoothing_depth,
             "max_persons": self.tracker.max_persons,
+            # Known-N per-scene tracker knobs: persisted so a manual save after
+            # a known-N Apply does not silently drop them (CONT-1 / BUG-4).
+            "tracker_intermittent_confirm": self.tracker.intermittent_confirm,
+            "tracker_ghost_skeleton_age": self.tracker.ghost_skeleton_age,
             "motion_sensitivity": self.processor.get_motion_sensitivity(),
             "osc_enabled": self.osc_enabled,
             "osc_ip": self.osc_ip,
@@ -1268,6 +1272,8 @@ class WallDanceApp:
         # for projects that explicitly set it.
         if "tracker_intermittent_confirm" in config:
             self.tracker.intermittent_confirm = bool(config["tracker_intermittent_confirm"])
+        if "tracker_ghost_skeleton_age" in config:   # frozen-gate age (known-N, CONT-1)
+            self.tracker.ghost_skeleton_age = int(config["tracker_ghost_skeleton_age"])
         if "tracker_swap_correctors" in config:
             self.tracker.swap_correctors = bool(config["tracker_swap_correctors"])
         # Per-scene crossval gates (θ_s / θ_m — the known-N tier, G4). Applied in

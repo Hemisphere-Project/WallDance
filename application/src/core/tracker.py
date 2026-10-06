@@ -97,7 +97,7 @@ class DormantSnapshot:
                  'last_match_frame', 'last_occluded_frame',
                  'occlusion_start_frame', 'last_reacquired_frame',
                  'last_merge_frame', 'merge_episode_start_frame',
-                 'merge_episode_id')
+                 'merge_episode_id', 'was_reported')
 
     def __init__(self, track: 'DancerTrack', exited_from_edge: bool = True,
                  was_ghost: bool = False):
@@ -111,6 +111,10 @@ class DormantSnapshot:
         self.was_occluded: bool = getattr(track, '_occluded', False)
         self.exited_from_edge: bool = exited_from_edge
         self.was_ghost: bool = was_ghost
+        # Was this id ever emitted to OSC?  Only such ids get their warm-up
+        # restored on resurrect (CONT-1 / BUG-1): restoring it for never-
+        # emitted scenery tracks re-emits ghosts (audit: ids 25 -> 29).
+        self.was_reported: bool = bool(getattr(track, '_ever_reported', False))
         self.hits: int = int(track.hits)
         self.track_age: int = int(track.age)
         self.vx_history = [float(v) for v in track._vx_history]
@@ -211,6 +215,11 @@ class DancerTrack:
         # predict() increments it each frame; update() resets it on a real pose.
         self._frames_since_skeleton: int = (
             0 if np.any(confidence > KEYPOINT_CONFIDENCE) else 999)
+
+        # True once this id has been emitted (passed _collect_confirmed_tracks).
+        # Carried into the DormantSnapshot so a resurrect knows whether the
+        # consumer has already seen this id (BUG-1).
+        self._ever_reported: bool = False
 
         self._last_match_frame = -1
         self._last_occluded_frame = -1
@@ -825,6 +834,11 @@ class DancerTracker:
         # config key `tracker_intermittent_confirm` enables it on scenes
         # where intermittent detection dominates (aerial, very dark).
         self.intermittent_confirm = TRACK_WARMUP_INTERMITTENT_ENABLED
+        # Frozen-ghost report gate: frames without a real skeleton before the
+        # "frozen" speed test applies.  Per-scene config key
+        # `tracker_ghost_skeleton_age` (searched by known-N, CONT-1/BUG-4);
+        # the default is the shipped constant, so behaviour is unchanged.
+        self.ghost_skeleton_age = TRACKER_GHOST_SKELETON_AGE
         # Report cap (bug 12c): at most this many tracks are exposed per
         # frame (top-K by hits).  <=0 disables the cap.  Per-project config
         # key `max_persons`; internal tracks are never capped.
@@ -2061,8 +2075,14 @@ class DancerTracker:
         3. Shape (when >= 3 co-visible keypoints): mean keypoint distance
            < gate * 0.5.
 
-        Resurrected tracks are **immediately confirmed** (hits set to
-        ``min_hits``) so they appear without the usual warm-up delay.
+        A resurrected track gets ``hits`` back (at least ``min_hits``).  Its
+        warm-up integral is restored to the confirmation threshold **only if
+        the id had been emitted before** (``snap.was_reported``): the consumer
+        already knows that id, so it reappears on the resurrect frame instead
+        of re-warming for ~14 frames.  A never-emitted snapshot (typically a
+        scenery ghost) restarts from the fresh-track warm-up like any new id
+        (CONT-1 / BUG-1; restoring blindly re-emits ghosts, ids 25 -> 29 on
+        the hangar aerial take).
 
         Returns:
             A resurrected ``DancerTrack`` or ``None``.
@@ -2167,7 +2187,12 @@ class DancerTracker:
         DancerTrack._id_counter = max(saved_counter, new_track.track_id)
         new_track.restore_continuity(snap)
         new_track.note_match_event(self.frame_count, merge_frame=False)
-        new_track.hits = max(self.min_hits, snap.hits)  # immediately confirmed
+        new_track.hits = max(self.min_hits, snap.hits)
+        if snap.was_reported:
+            # Previously emitted id: confirmed again on this frame (BUG-1).
+            new_track._warmup_score = max(new_track._warmup_score,
+                                          TRACK_WARMUP_THRESHOLD)
+            new_track._ever_reported = True
 
         self.logger.log("RESURRECT", {
             "track_id": snap.track_id,
@@ -2175,6 +2200,7 @@ class DancerTracker:
             "score": round(best_score, 1),
             "was_occluded": snap.was_occluded,
             "edge_exit": snap.exited_from_edge,
+            "was_reported": snap.was_reported,
         })
         if TRACKER_DEBUG:
             print(f"[TRACKER] Resurrected track #{snap.track_id} from dormant "
@@ -3037,12 +3063,19 @@ class DancerTracker:
         return False
 
     def _apply_fractional_occlusion_aging(self, track: DancerTrack):
-        """Undo full predict aging and reapply slowed occlusion aging."""
+        """Undo full predict aging and reapply slowed occlusion aging.
+
+        ``time_since_update`` is clamped at 0 (CONT-1 / BUG-2): a track that a
+        motion bridge reset to 0 earlier in this same frame has no predict
+        increment left to undo.  ``-1`` reached the lifecycle/report stage and
+        the FRAME_SUMMARY ``t_miss``, and left the track at tsu 0 after the
+        next predict() -- looking freshly matched, so it skipped that frame's
+        bridge candidacy and aged one frame behind."""
         track._fractional_age = (
             track._fractional_age
             + TRACKER_OCCLUSION_AGE_FACTOR
         )
-        track.time_since_update -= 1
+        track.time_since_update = max(0, track.time_since_update - 1)
         if track._fractional_age >= 1.0:
             increments = int(track._fractional_age)
             track.time_since_update += increments
@@ -3173,7 +3206,7 @@ class DancerTracker:
                     # fixed wall spot.  A real gap-bridged dancer is moving and a
                     # still dancer keeps getting skeletons, so both are spared.
                     if (TRACKER_REPORT_REQUIRES_SKELETON
-                            and track._frames_since_skeleton > TRACKER_GHOST_SKELETON_AGE):
+                            and track._frames_since_skeleton > self.ghost_skeleton_age):
                         speed = float(np.linalg.norm(track.get_velocity()))
                         if speed < TRACKER_GHOST_FROZEN_SPEED_RATIO * self._person_height_px:
                             self.logger.log("GHOST_FROZEN_SUPPRESSED", {
@@ -3230,6 +3263,8 @@ class DancerTracker:
                                if t.track_id not in keep],
             })
             confirmed = [t for t in confirmed if t.track_id in keep]
+        for track in confirmed:
+            track._ever_reported = True   # BUG-1: remembered by DormantSnapshot
         return confirmed
 
     def _log_frame_summary(self, detections, matched_pairs_log):
