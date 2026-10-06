@@ -142,7 +142,10 @@ def _rect(k: int) -> np.ndarray:
     return cv2.getStructuringElement(cv2.MORPH_RECT, (k, k))
 
 
-def _blob_from_moments(m: np.ndarray, p: BeltParams) -> BeltBlob:
+def _blob_from_moments(arr: np.ndarray, p: BeltParams, m: Optional[list] = None) -> BeltBlob:
+    """Moment sums -> features. ``m`` = the same sums as a list (plain-float
+    arithmetic is cheaper than numpy scalars); ``arr`` is kept for merging."""
+    m = arr.tolist() if m is None else m
     area = float(m[_A])
     sw = max(float(m[_SW]), 1e-9)
     cx, cy = m[_SWX] / sw, m[_SWY] / sw
@@ -162,7 +165,7 @@ def _blob_from_moments(m: np.ndarray, p: BeltParams) -> BeltBlob:
                     elong=float(w / h), peak=int(m[_PK]), mean=float(mean), area=int(area),
                     bg=float(bg), contrast=float(mean / max(bg, 1.0)),
                     sat_frac=float(m[_NSAT] / area), score=0.0,
-                    bbox=(int(m[_X0]), int(m[_Y0]), int(m[_X1]), int(m[_Y1])), _m=m)
+                    bbox=(int(m[_X0]), int(m[_Y0]), int(m[_X1]), int(m[_Y1])), _m=arr)
 
 
 def _merge(b1: BeltBlob, b2: BeltBlob, p: BeltParams) -> BeltBlob:
@@ -365,7 +368,7 @@ class BeltDetector:
         for pi, (key, x, y, gate, bw) in enumerate(preds):
             gate = max(float(gate), p.gate_min_px)
             bw = float(bw) if bw else None
-            kb = int(np.clip(0.75 * bw, 11, 41)) if bw else p.bg_kernel
+            kb = int(min(41.0, max(11.0, 0.75 * bw))) if bw else p.bg_kernel
             hx = gate + (0.6 * bw if bw else 0.5 * kb) + kb // 2 + 2
             hy = gate + (0.25 * bw if bw else 0.0) + kb // 2 + 2
             x0, x1 = int(max(0, x - hx)), int(min(W, x + hx + 1))
@@ -463,32 +466,33 @@ class BeltDetector:
         # label on a 3x3-closed mask (joins noise holes), features on the real pixels
         mc = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
         n, lab, st, _cen = cv2.connectedComponentsWithStatsWithAlgorithm(mc, 8, cv2.CV_32S, cv2.CCL_GRANA)
-        area_cc = st[:, cv2.CC_STAT_AREA]
-        thick = np.minimum(st[:, cv2.CC_STAT_WIDTH], st[:, cv2.CC_STAT_HEIGHT]) * s
-        keep = area_cc >= min_area
-        keep[0] = False
-        small = int(n - 1 - keep[1:].sum())
-        if small:
+        # component triage on plain ints (numpy calls on tiny arrays cost more than the work)
+        s2 = float(s * s)
+        keep, small, big = [], 0, 0
+        for i, (bx, by, bw, bh, ba) in enumerate(st.tolist()):
+            if i == 0:
+                continue
+            if ba < min_area:
+                small += 1
+            elif min(bw, bh) * s > 2 * p.max_band_h or ba * s2 > 4 * p.max_area:
+                big += 1                       # obviously not a band: skip the feature pass
+            else:
+                keep.append((i, bx, by, bw, bh))
+        if small or big:
             r = self.last.setdefault("rejected", {})
-            r["small"] = r.get("small", 0) + small
-        big = keep & ((thick > 2 * p.max_band_h) | (area_cc * s * s > 4 * p.max_area))
-        if big.any():                     # obviously not a band: skip the feature pass
-            r = self.last.setdefault("rejected", {})
-            r["too_big"] = r.get("too_big", 0) + int(big.sum())
-            keep &= ~big
-        if not keep.any():
-            return []
+            if small:
+                r["small"] = r.get("small", 0) + small
+            if big:
+                r["too_big"] = r.get("too_big", 0) + big
         # per kept component: cv2 moments on its bbox crop, grown by 1 px so no
         # crop is a 1-px line (cv2 reads a (k, 1) array of <= 4 values as a scalar)
-        s2 = float(s * s)
         hh, ww = c.shape[:2]
         out = []
-        for i in np.nonzero(keep)[0]:
-            cx0, cy0 = max(0, int(st[i, 0]) - 1), max(0, int(st[i, 1]) - 1)
-            cx1 = min(ww, int(st[i, 0] + st[i, 2]) + 1)
-            cy1 = min(hh, int(st[i, 1] + st[i, 3]) + 1)
+        for i, bx, by, bw, bh in keep:
+            cx0, cy0 = max(0, bx - 1), max(0, by - 1)
+            cx1, cy1 = min(ww, bx + bw + 1), min(hh, by + bh + 1)
             cc, bb = c[cy0:cy1, cx0:cx1], bg[cy0:cy1, cx0:cx1]
-            mk = cv2.bitwise_and(cv2.compare(lab[cy0:cy1, cx0:cx1], int(i), cv2.CMP_EQ), m[cy0:cy1, cx0:cx1])
+            mk = cv2.bitwise_and(cv2.compare(lab[cy0:cy1, cx0:cx1], i, cv2.CMP_EQ), m[cy0:cy1, cx0:cx1])
             mo = cv2.moments(mk, binaryImage=True)
             a0 = mo["m00"]
             if a0 * s2 < p.min_area:
@@ -502,25 +506,22 @@ class BeltDetector:
             # crop px (u, v) -> full-frame X = s*u + ox; a downscaled pixel stands for s*s
             ox, oy = x0 + s * cx0 + 0.5 * (s - 1), y0 + s * cy0 + 0.5 * (s - 1)
             su, sv = s * mo["m10"], s * mo["m01"]
-            M = np.zeros(17)
-            M[_A] = a0 * s2
-            M[_SX], M[_SY] = s2 * (su + ox * a0), s2 * (sv + oy * a0)
+            A = a0 * s2
+            SX, SY = s2 * (su + ox * a0), s2 * (sv + oy * a0)
+            sw = wo["m00"]
+            if sw > 0:
+                SW, SWX, SWY = s2 * sw, s2 * (s * wo["m10"] + ox * sw), s2 * (s * wo["m01"] + oy * sw)
+            else:
+                SW, SWX, SWY = A, SX, SY
+            M = [0.0] * 17
+            M[_A], M[_SW], M[_SWX], M[_SWY], M[_SX], M[_SY] = A, SW, SWX, SWY, SX, SY
             M[_SXX] = s2 * (s * s * mo["m20"] + 2 * ox * su + ox * ox * a0)
             M[_SYY] = s2 * (s * s * mo["m02"] + 2 * oy * sv + oy * oy * a0)
             M[_SXY] = s2 * (s * s * mo["m11"] + ox * sv + oy * su + ox * oy * a0)
-            sw = wo["m00"]
-            if sw > 0:
-                M[_SW] = s2 * sw
-                M[_SWX], M[_SWY] = s2 * (s * wo["m10"] + ox * sw), s2 * (s * wo["m01"] + oy * sw)
-            else:
-                M[_SW], M[_SWX], M[_SWY] = M[_A], M[_SX], M[_SY]
-            M[_NSAT] = s2 * nsat
-            M[_SV] = mean * M[_A]
-            M[_SBG] = bgm * M[_A]
-            M[_PK] = pk
-            M[_X0], M[_Y0] = st[i, 0] * s + x0, st[i, 1] * s + y0
-            M[_X1], M[_Y1] = (st[i, 0] + st[i, 2]) * s - 1 + x0, (st[i, 1] + st[i, 3]) * s - 1 + y0
-            out.append(_blob_from_moments(M, p))
+            M[_NSAT], M[_SV], M[_SBG], M[_PK] = s2 * nsat, mean * A, bgm * A, pk
+            M[_X0], M[_Y0] = bx * s + x0, by * s + y0
+            M[_X1], M[_Y1] = (bx + bw) * s - 1 + x0, (by + bh) * s - 1 + y0
+            out.append(_blob_from_moments(np.array(M), p, M))
         return out
 
     def _finish(self, blobs: List[BeltBlob], g: np.ndarray, hint_w: Optional[float]) -> List[BeltBlob]:
