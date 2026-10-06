@@ -22,6 +22,7 @@ résultats et des images). Rien à envoyer, sauf le nom du projet et la photo de
 4. **Feuille papier** : pour chaque slot, noter le contenu de la prise, l'heure et tout changement (lumière,
    réglage, incident). Prendre une photo de la feuille à la fin.
 5. Disque : ~1 Go par minute de prise (codec FFV1). Il y a 1,6 To libres, pas de souci.
+6. **Portable en mode Performance** : sur secteur, mode **Performance** du portable (Lenovo Vantage, ou Fn+Q jusqu'au mode Performance), et mode d'alimentation Windows **« Meilleures performances »**. Surélever l'arrière du portable pour qu'il respire (ce matin la carte graphique chauffait à 87 °C et ralentissait).
 
 ## 1. Lancer la version de test
 
