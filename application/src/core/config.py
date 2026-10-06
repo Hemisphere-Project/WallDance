@@ -287,9 +287,15 @@ BOX_SIZE_OUTPUT_SMOOTHING = 0.5         # EMA alpha at L=1 (~1 frame group delay
 # TRACKING EVENT LOG (Phase 0 — diagnostics)
 # =============================================================================
 TRACKER_EVENT_LOG_ENABLED = True        # Write structured JSONL event log
-TRACKER_EVENT_LOG_FILE = "tracking_events.jsonl"  # Output file (in working dir)
+# No working-dir file any more (CONT-10): playback/replay runs log into their
+# session dir, live runs into a per-show folder projects/<p>/sessions/<stamp>_live
+# (core/tracking_logger.py).  The old ./tracking_events.jsonl appended forever.
+TRACKER_EVENT_LOG_FILE = None
 TRACKER_EVENT_LOG_MAX_ENTRIES = 3000    # Rolling in-memory buffer size
 TRACKER_EVENT_LOG_FLUSH_INTERVAL = 2.0  # Seconds between auto-flushes
+TRACKER_EVENT_LOG_SEGMENT_MB = 64       # rotate a session's JSONL past this size
+TRACKER_EVENT_LOG_MAX_SEGMENTS = 32     # per session (~2 GB); oldest dropped beyond
+TRACKER_EVENT_LOG_KEEP_LIVE = 30        # newest live-show folders kept per project
 
 # =============================================================================
 # PHASE 1 — HARDENED ASSOCIATION
