@@ -9,10 +9,11 @@ IR for live shows and emits their positions over OSC. Project root code lives in
 shipped history lives in **[archives/ENGINEERING_RECORD.md](archives/ENGINEERING_RECORD.md)**.
 Everything else is reference, operator procedure, or archived design.
 
-> **2026-10-05 — field-test audit:** **[AUDIT_2026-10.md](AUDIT_2026-10.md)** (continuity, IR markers on
-> ankles + wrists, architecture, performance, docs; stream reports in [audit-2026-10/](audit-2026-10/)) and the
-> proposed **[ROADMAP_v2_DRAFT.md](ROADMAP_v2_DRAFT.md)**, both pending Thomas's review. Until it is accepted,
-> ROADMAP.md stays canonical.
+> **2026-10-06 — ROADMAP v2 is live:** **[ROADMAP.md](ROADMAP.md)** (priority: a continuous two-point stream at the
+> 25 m hangar setup with the current IR, then scaling, then id consistency / skeleton). The measured critical review is
+> **[ROADMAP_v2_REVIEW.md](ROADMAP_v2_REVIEW.md)**, this week's plan **[PLAN_25M_2026-10.md](PLAN_25M_2026-10.md)**, the
+> audit **[AUDIT_2026-10.md](AUDIT_2026-10.md)** (stream reports in [audit-2026-10/](audit-2026-10/)). The June roadmap and
+> the v2 draft are archived (code-comment anchors resolve there, ROADMAP.md Appendix A).
 
 ---
 
@@ -20,10 +21,11 @@ Everything else is reference, operator procedure, or archived design.
 
 | If you want to… | Read |
 |------------------|------|
-| Know what's next / the plan | **[ROADMAP.md](ROADMAP.md)** — single source of truth (Now / Next / Later / Simplification / Hardware) |
+| Know what's next / the plan | **[ROADMAP.md](ROADMAP.md)** (v2) and this week's **[PLAN_25M_2026-10.md](PLAN_25M_2026-10.md)** |
 | Run a real show | **[NEW_SHOW.md](NEW_SHOW.md)** — operator field playbook (the ①→⑥ phase rail) |
 | Understand the OSC output | **[OSC_CONTRACT.md](OSC_CONTRACT.md)** — wire-level `/walldance/*` contract |
-| See the big bet | **[TRACKING_ROBUSTNESS.md](TRACKING_ROBUSTNESS.md)** — IR retroreflective markers (the next leap) |
+| Work on the prod laptop remotely | **[REMOTE_OPS.md](REMOTE_OPS.md)** — `wdremote`, DEV slot, release delivery |
+| See what the measurements say | **[ROADMAP_v2_REVIEW.md](ROADMAP_v2_REVIEW.md)** — slots, belt, lag, perf, production gap |
 
 ---
 
@@ -31,9 +33,13 @@ Everything else is reference, operator procedure, or archived design.
 
 | Doc | Role | Status |
 |-----|------|--------|
-| [ROADMAP.md](ROADMAP.md) | **The roadmap** — forward plan + condensed shipped index | 🟢 Live (2026-06-22) |
+| [ROADMAP.md](ROADMAP.md) | **The roadmap v2** — north star, NOW (25 m demo) / NEXT (scaling) / LATER, decisions, legacy anchors | 🟢 Live (2026-10-06) |
+| [PLAN_25M_2026-10.md](PLAN_25M_2026-10.md) | This week's plan: offline work on dev37 + the laptop-window playbook, the demo KPI | 🟢 Live (2026-10-06) |
+| [ROADMAP_v2_REVIEW.md](ROADMAP_v2_REVIEW.md) | Measured critical review of what shipped 2026-10-06 (replays, sweeps, belt, perf, release path) | 🟢 Live (2026-10-06) |
+| [REMOTE_OPS.md](REMOTE_OPS.md) | Working on the prod laptop over the tailnet: `wdremote`, in-app API, DEV slot, delivery | 🟢 Live (2026-10-06) |
+| [TOURNAGE_2026-10-06_FR.md](TOURNAGE_2026-10-06_FR.md) · [TERRAIN_2026-10-07_FR.md](TERRAIN_2026-10-07_FR.md) | Operator session notes (FR) | 🟢 Live |
 | [TODO.md](TODO.md) | Build / hardware checklist (phase inventory + procurement) | 🟢 Live |
-| [TRACKING_ROBUSTNESS.md](TRACKING_ROBUSTNESS.md) | IR-marker direction; gated on a physical spike (Phase 0a) | 🟢 Live, not built |
+| [TRACKING_ROBUSTNESS.md](TRACKING_ROBUSTNESS.md) | IR-marker direction (June: ankles + wrists); the field chose a waist belt — see ROADMAP §5/§7 | 📘 Reference, direction changed |
 | [OSC_CONTRACT.md](OSC_CONTRACT.md) | Canonical `/walldance/*` output contract (box-clamp, L-driven stream, latency) | 🟢 Live |
 | [NEW_SHOW.md](NEW_SHOW.md) | Operator field playbook from the spine | 🟢 Live |
 | [CHECK_TEST.md](CHECK_TEST.md) | Pre-show + recorded-case test procedure | 🟢 Live |
@@ -56,7 +62,8 @@ provenance. **Do not plan new work from these.**
 
 | Doc | Was | Superseded by |
 |-----|-----|---------------|
-| [archives/ENGINEERING_RECORD.md](archives/ENGINEERING_RECORD.md) | Full shipped-detection record (P0–P4, corpus phases, bugs #1–14, tracker lessons, env findings) | the index in ROADMAP §6 |
+| [archives/ROADMAP_2026-06.md](archives/ROADMAP_2026-06.md) · [archives/ROADMAP_v2_DRAFT_2026-10-05.md](archives/ROADMAP_v2_DRAFT_2026-10-05.md) | The June roadmap (verbatim; code-comment anchors) · the v2 draft before the measured review | ROADMAP.md v2 |
+| [archives/ENGINEERING_RECORD.md](archives/ENGINEERING_RECORD.md) | Full shipped-detection record (P0–P4, corpus phases, bugs #1–14, tracker lessons, env findings) | the index in archives/ROADMAP_2026-06.md §6 |
 | [archives/OPERATOR_V2.md](archives/OPERATOR_V2.md) | The operator/calibration/output forward plan (Tracks O/X/C/S/G/D/P) | folded into ROADMAP §3 |
 | [archives/UX_PLAN.md](archives/UX_PLAN.md) | Shipped section-panel UX + two-pass calibration rationale (U0–U5) | ROADMAP / OPERATOR_V2 (phase rail) |
 | [archives/DECOMPOSITION_PLAN.md](archives/DECOMPOSITION_PLAN.md) | `app.py` → core/runtime/ui/camera/services decomposition (Phases 0–4 done) | done; shim deletion → ROADMAP §4 |

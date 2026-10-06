@@ -1,7 +1,7 @@
 # ROADMAP v2 — critical review and revised plan
 
 **Date:** 2026-10-06 (evening) · **Status:** 🟡 for Thomas's review · **Scope:** what remains of
-[ROADMAP_v2_DRAFT.md](ROADMAP_v2_DRAFT.md) after the 2026-10-06 work on `remote-ops` (`da66a9a`), challenged
+[ROADMAP_v2_DRAFT_2026-10-05.md](archives/ROADMAP_v2_DRAFT_2026-10-05.md) (superseded by [ROADMAP.md](ROADMAP.md) v2) after the 2026-10-06 work on `remote-ops` (`da66a9a`), challenged
 with replays run today on dev37.
 **Evidence base:** the audit ([AUDIT_2026-10.md](AUDIT_2026-10.md), [audit-2026-10/](audit-2026-10/)), the
 2026-10-06 commits (CONT-6 identity slots + One-Euro + belt fallback, CONT-1/10, TEST-1, PERF pass, MRK-0/1/2,
@@ -28,8 +28,9 @@ belt · easy on-site settings.
    time and binds a second slot to wall stains. **Ghost control and the tracker's YOLO-vs-motion merge (CONT-2/3)
    are still the real fixes; the slot layer is the safety net under them.**
 3. **The belt contributed nothing on the 2026-10-05 takes** (belt on = belt off, state `belt` on < 0.2 % of frames,
-   one 33-frame false hold on an off-axis take). At ~190 px dancers the belt peaked at ~30 DN, below the 60 DN
-   detector floor; only dancers ≥ 350 px lit it. The IR budget says a 120 DN belt at 25 ms needs **×3.6 of today's
+   one 33-frame false hold on an off-axis take). Those takes are mixed tests (off-axis light, blur, the operator near
+   the lens, unknown dancer count), so they are not a verdict on the show setup; what they do show is that at
+   ~190 px the belt peaked at ~30 DN, below the 60 DN detector floor, and only the close body (≥ 350 px) lit it. The IR budget says a 120 DN belt at 25 ms needs **×3.6 of today's
    light at 25 m and ×9 at 40 m**, and that is optimistic. **Tonight's projector-offset take (slot 8 vs 4) decides
    whether the belt is a real second source or an opportunistic one** (§1.6, D19).
 4. **Lag is the next output-quality lever, and it is cheap.** Feeding the One-Euro with the raw Kalman centroid
@@ -211,7 +212,11 @@ jitter). State `belt` fired on 4, 1, 0 and 33 frames respectively; the 33-frame 
 | slot 6 (show-like, 120–350 px dancers 0 % hits) | 7.1 % | 1.4 % | 0.014 | belt window peak ~31 DN at 120–200 px, torso 9 DN |
 | slot 7 | 1.6 % | 1.3 % | 0.0 | |
 
-**At show distance the belt was below the detector floor (60 DN) on 2026-10-05.** Whether that is the projector
+**Caution on these takes (Thomas, 2026-10-06 evening):** they are mixed tests — some with the IR light deliberately
+off-axis (no belt return expected), some blurry, slot 5's close body is the operator near the camera (not the use
+case), and the dancer count per take is unknown. They say what the detector does on such frames; they are **not**
+a measurement of the show setup. **At show distance the belt was below the detector floor (60 DN) on the takes
+that have a far dancer.** Whether that is the projector
 offset (the retro return falls ~30× between 0.3° and 1.5° of observation angle, i.e. 14 cm vs 65 cm off the lens
 axis at 25 m), the material, or both, is exactly what tonight's slot 8 ("projecteur à son emplacement habituel"
 vs glued to the lens) answers. The IR budget from the close-dancer samples (optimistic: it attributes them to 25 m):
@@ -221,7 +226,9 @@ vs glued to the lens) answers. The IR budget from the close-dancer samples (opti
 | belt peak ≥ 120 DN | **×3.6** of today's IR (≈ 8 PIR130) | ×5.1 (11) | **×9.1 (19)** |
 | body ≥ 20 DN (YOLO) | ×0.85–2.5 | ×1.2–3.6 | ×2.2–6.3 |
 
-Detector cost is not the issue (gated mode 0.05–0.7 ms p50, ≤ 3.6 ms p95 per frame on dev37 with 2 threads).
+The budget's samples are mostly the close body (the operator near the lens), attributed to 25 m: read it as
+"this far from feasible with today's rig", not as a sizing. Detector cost is not the issue (gated mode 0.05–0.7 ms
+p50, ≤ 3.6 ms p95 per frame on dev37 with 2 threads).
 The pipeline also runs it with `static=None`: no glint map, so a fixed bright spot near a coasting slot's
 predicted waist can hold it for up to 8 s (`belt_max_s`); the `belt_min_learn = 5` consistency rule is the only
 guard. **Verdict:** the belt is a measured hypothesis, not a shipped capability. Keep it ON (it costs nothing
