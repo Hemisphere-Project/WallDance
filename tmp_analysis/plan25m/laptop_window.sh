@@ -10,6 +10,8 @@ REL=$(git rev-parse --short remote-ops)        # the release candidate
 # ---- B0 (5 min): connect, state, pull text --------------------------------------------
 $W doctor && $W status && $W inventory
 $W pull --tier P0 --since 2026-10-06           # configs, rig sheet, .meta v2 + camlog, sessions, logs (KB)
+# operator note v2 (FR) on the laptop desktop (the shell's real Desktop: OneDrive / "Bureau" handled)
+$W py --with tmp_analysis/field/TERRAIN_2026-10-07_FR.pdf tmp_analysis/plan25m/to_desktop.py -- TERRAIN_2026-10-07_FR.pdf
 
 # ---- B1 (5 min): what each take is (provenance + sheets to check the dancer count) -----
 $W py --with tmp_analysis/marker_evallib.py --with application/src/core/marker_model.py \
@@ -43,6 +45,12 @@ done
 #   cd application && .venv/bin/python ../tmp_analysis/plan25m/kpi.py --n 2 <tmp_analysis/remote-runs/<stamp>/timeline.json>
 #   and the same take with the project's own settings (no $REC) for the before/after.
 
+# ---- B3c (5 min): ghost spots on the EMPTY-wall take (slot 1) -> exclusion proposals ---------------------
+$W --slot dev replay --timeline -- --project $P --slot 1 --model yolo11x-pose --imgsz 1280 --trt --quality --set confidence=0.10
+#   python3 tmp_analysis/plan25m/ghost_spots.py tmp_analysis/remote-runs/<stamp>/timeline.json --empty
+#   -> prints ExcludeAt commands; check each spot on the take sheet / snapshot: NEVER on a dancer's path.
+#   Re-run B3 with --set exclusion_cells=... (or after ExcludeAt + SaveConfig) to measure the spare-slot ghost.
+
 # ---- B3b (10-15 min): clean-plate foreground N-lock (BRAINSTORM §3.2), slot 1 = the empty-wall plate --------
 # one shot on the laptop: decodes the plate + each take (ROI from the project), finds B3's replay timeline per take
 # in tmp_analysis/remote/, runs nlock.py --variant fg --bg plate; one JSON line per take comes back (~1 KB).
@@ -57,6 +65,7 @@ $W ls logs
 $W run -- nvidia-smi --query-gpu=clocks.sm,power.draw,temperature.gpu,clocks_throttle_reasons.active --format=csv
 
 # ---- B6 (10 min): settings for the day (STANDBY, or RUN with "Allow remote control") -----
+$W cmd SetImgsz value=1280                     # HEAVY (STANDBY only): a new project defaults to 800; x@1280 is the working default
 $W cmd SetTrackingMode value=yolo_first
 $W cmd SetConfidence value=0.15
 $W cmd SetIntermittentConfirm enabled=true

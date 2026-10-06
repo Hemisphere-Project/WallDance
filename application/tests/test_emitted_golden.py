@@ -21,6 +21,10 @@ def _golden(name):
 
 @pytest.mark.parametrize("name", FIXTURES)
 def test_emitted_stream_matches_golden(name):
+    g = _golden(name)
+    if g.get("env") and g["env"] != eg.env_versions():
+        pytest.skip(f"exact golden built with {g['env']}, here {eg.env_versions()}: "
+                    "KPI floors still apply (test_emitted_kpi_floor)")
     rows, kpi = eg.simulate(eg.load_fixture(name))
     got = eg.stream_of(rows)
     want = _golden(name)["stream"]

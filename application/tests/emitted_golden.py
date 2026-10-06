@@ -128,11 +128,22 @@ def stream_of(rows):
                           for t in r["emitted"]["tracks"]]] for r in rows]
 
 
+def env_versions():
+    """Library versions the exact golden depends on (float paths, Hungarian tie-breaks)."""
+    import numpy
+    try:
+        import scipy
+        sv = scipy.__version__
+    except Exception:  # pragma: no cover
+        sv = None
+    return {"numpy": numpy.__version__, "scipy": sv}
+
+
 def write_golden(name):
     fx = load_fixture(name)
     rows, kpi = simulate(fx)
     g = {"fixture": name, "params": dataclasses.asdict(dataclasses.replace(shipped_params(), max_dancers=int(fx["max_dancers"]))),
-         "kpi": kpi, "stream": stream_of(rows)}
+         "kpi": kpi, "env": env_versions(), "stream": stream_of(rows)}
     (DIR / f"{name}.golden.json").write_text(json.dumps(g, separators=(",", ":")))
     print(f"golden {name}: " + ", ".join(f"{k.split('.')[1]}={v}" for k, v in kpi.items()))
 
