@@ -536,7 +536,7 @@ def cmd_launcher(tr, remote, a) -> int:
         local_tgz.parent.mkdir(parents=True, exist_ok=True)
         local_tgz.write_bytes(blob)
         bremote = wr.Remote(**{**wr.asdict(remote), "root": build_rel_root})
-        lines = wr.sftp_mkdirs(bremote, "src")
+        lines = [f'-mkdir "{bremote.sftp_path("")}"'] + wr.sftp_mkdirs(bremote, "src")
         lines.append(f'put "{local_tgz}" "{bremote.sftp_path("src/launcher.tgz")}"')
         tr.sftp_batch(lines)
         unpack = ("import tarfile,sys,shutil,os; d=sys.argv[1]; "
