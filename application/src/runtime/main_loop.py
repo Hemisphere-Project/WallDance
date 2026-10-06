@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import time
+from pathlib import Path
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Protocol
@@ -38,6 +39,11 @@ from core.config import (
     OPS_HEIGHT_MIN_SAMPLES,
     OPS_HEIGHT_WINDOW_S,
     PROJECT_PICKER_ON_START,
+    REMOTE_API_ENABLED,
+    REMOTE_API_HOST,
+    REMOTE_API_PORT,
+    REMOTE_API_STATUS_INTERVAL_S,
+    REMOTE_API_TOKEN_FILE,
     WEB_MONITOR_ENABLED,
     WEB_MONITOR_HOST,
     WEB_MONITOR_JPEG_QUALITY,
@@ -50,6 +56,10 @@ from core.visualization import draw_dancer
 from runtime import api
 from runtime.api import SystemState
 from services.web_monitor import WebMonitor
+from services import app_log
+from services.remote_api import RemoteApi, load_or_create_token
+from core.config_store import PROJECTS_DIR
+from core.version import app_version
 
 
 class UiClientPort(Protocol):
@@ -276,6 +286,27 @@ class MainLoop:
                 print(f"[WebMonitor] disabled (startup error): {e}")
                 app._web_monitor = None
 
+        # Remote ops API (REMOTE_OPS): loopback-only, reached over an SSH
+        # tunnel. Best-effort like the monitor: never blocks the show.
+        if REMOTE_API_ENABLED:
+            try:
+                repo = Path(__file__).resolve().parents[3]
+                app._remote = RemoteApi(
+                    app.api, app.bus,
+                    token=load_or_create_token(Path(REMOTE_API_TOKEN_FILE)),
+                    roots={"projects": Path(PROJECTS_DIR), "logs": repo / "logs"},
+                    state_fn=lambda: app.system_state.name.lower(),
+                    log_path_fn=app_log.current_log_path,
+                    snapshot_fn=lambda: (app._web_monitor.get_jpeg()
+                                         if app._web_monitor is not None else None),
+                    host=REMOTE_API_HOST, port=REMOTE_API_PORT,
+                    version=app_version())
+                if not app._remote.start():
+                    app._remote = None
+            except Exception as e:  # noqa: BLE001 - remote API is non-critical
+                print(f"[RemoteApi] disabled (startup error): {e}")
+                app._remote = None
+
         return True
 
     def _shutdown(self):
@@ -289,6 +320,9 @@ class MainLoop:
         if app._web_monitor is not None:
             app._web_monitor.stop()
             app._web_monitor = None
+        if getattr(app, "_remote", None) is not None:
+            app._remote.stop()
+            app._remote = None
         app.recorder.close()
         if app.camera.cap is not None:
             app.camera.cap.release()
@@ -304,6 +338,7 @@ class MainLoop:
         # The single command execution point (Phase 3 seam): everything
         # the UI queued since the last tick runs here, on this thread.
         app.api.drain()
+        self._tick_remote()
         if self._tick_pumps():
             return
         self._tick_ui_input()
@@ -317,6 +352,27 @@ class MainLoop:
         self._tick_events(t)
         self._tick_record()
         self._tick_render(t)
+
+    def _tick_remote(self) -> None:
+        """~2 Hz: snapshot runtime state for the remote API's /status and
+        keep the operator's REMOTE chip in sync. Cheap, never raises."""
+        app = self.app
+        remote = getattr(app, "_remote", None)
+        if remote is None:
+            return
+        now = time.monotonic()
+        if now - getattr(self, "_remote_t", 0.0) < REMOTE_API_STATUS_INTERVAL_S:
+            return
+        self._remote_t = now
+        try:
+            remote.publish_status(app._remote_status())
+            active, who = remote.client_active()
+            key = (active, remote.control_enabled)
+            if key != getattr(self, "_remote_chip", None):
+                self._remote_chip = key
+                app.bus.publish(api.RemoteStatus(active, remote.control_enabled, who))
+        except Exception as e:  # noqa: BLE001 - observation must not stop the show
+            print(f"[RemoteApi] status snapshot failed: {e}")
 
     def _tick_pumps(self) -> bool:
         """Deferred-work pumps (project switch, playback event, camera

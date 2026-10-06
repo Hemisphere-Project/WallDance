@@ -554,6 +554,13 @@ class ShowQr(Command):
     pass
 
 
+@dataclass(frozen=True)
+class SetRemoteControl(Command):
+    """Operator-only (phase 6 Live checkbox): allow the remote API's control
+    commands while in RUN. Deliberately NOT on the remote allowlist."""
+    enabled: bool
+
+
 # ======================================================================
 # Events (runtime -> UI)
 # ======================================================================
@@ -819,6 +826,14 @@ class Alert(Event):
 @dataclass(frozen=True)
 class IssueReportContext(Event):
     context: Dict[str, Any]
+
+
+@dataclass(frozen=True)
+class RemoteStatus(Event):
+    """Remote API state for the top-bar REMOTE chip + Live checkbox."""
+    active: bool            # an authenticated client in the last few seconds
+    control_enabled: bool
+    client: str = ""
 
 
 @dataclass(frozen=True)

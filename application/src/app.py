@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 import threading
 import time
 from dataclasses import dataclass
@@ -621,6 +622,8 @@ class WallDanceApp:
         self.latency_ms = 0.0
         self.running = False
         self._web_monitor: Optional[WebMonitor] = None  # smartphone focus/lighting monitor
+        self._remote = None  # services.remote_api.RemoteApi; created by MainLoop._startup()
+        self._started_at = time.time()
         # Sensitivity macro (UX_PLAN U5): one operator dial; 50 = calibrated seed.
         self.sensitivity: float = 50.0
         self._sensitivity_conf_seed: float = YOLO_CONFIDENCE
@@ -805,6 +808,7 @@ class WallDanceApp:
         reg(api.SetState, self._cmd_set_state)
         reg(api.Quit, lambda c: self._cb_quit())
         reg(api.ShowQr, lambda c: self._show_qr())
+        reg(api.SetRemoteControl, self._cmd_set_remote_control)
         reg(api.CheckReadiness, lambda c: self._cb_check_readiness())
         reg(api.RunDryRunReplay, lambda c: self._cb_run_dry_run())
         reg(api.RunCalibSweep, lambda c: self._cb_run_calib_sweep(c.n, c.slot))
@@ -913,6 +917,54 @@ class WallDanceApp:
             print(f"[Rig] {warning}")
         if c.echo:   # never echo GUI keystrokes back (would fight the cursor)
             self._sync("input", f"rig.{c.field}", value)
+
+    def _cmd_set_remote_control(self, c: api.SetRemoteControl):
+        """Operator toggle (phase 6 Live): remote control commands while in
+        RUN. GUI-only -- the remote API cannot submit this command."""
+        if self._remote is None:
+            return
+        self._remote.control_enabled = bool(c.enabled)
+        active, who = self._remote.client_active()
+        self.bus.publish(api.RemoteStatus(active, self._remote.control_enabled, who))
+        print(f"[RemoteApi] remote control during RUN: "
+              f"{'ALLOWED' if c.enabled else 'blocked'} (operator)")
+
+    def _remote_status(self) -> Dict:
+        """Snapshot for the remote API's /status (main thread, ~2 Hz)."""
+        rec = self.recorder.status
+        cam = self.camera.state
+        try:
+            trt_active = bool(self.models.model_manager.is_using_tensorrt())
+        except Exception:
+            trt_active = None
+        cfg_path = self.configs.current_config_path
+        return {
+            "t": round(time.time(), 3),
+            "uptime_s": round(time.time() - self._started_at, 1),
+            "app": app_version(),
+            "state": self.system_state.name.lower(),
+            "project": self.configs._current_project,
+            "profile": self.configs._active_profile,
+            "config_file": os.path.basename(cfg_path) if cfg_path else None,
+            "fps": round(float(getattr(self, "fps", 0.0) or 0.0), 2),
+            "tracks": [t.track_id for t in self.last_tracked],
+            "camera": {"source": cam.source, "open": bool(getattr(cam, "is_open", False)),
+                       "type": self._ui_camera_type,
+                       "size": [cam.width, cam.height]},
+            "engine": {"model": self.models.current_model_name,
+                       "imgsz": self.settings.imgsz,
+                       "trt_requested": self.models._trt_requested,
+                       "trt_active": trt_active},
+            "recorder": {"state": rec.state.value, "slot": rec.current_slot,
+                         "recording_frames": rec.recording_frames,
+                         "playback_frame": rec.playback_frame,
+                         "playback_total": rec.playback_total,
+                         "playback_file": (os.path.basename(self.recorder.playback_path)
+                                           if self.recorder.playback_path else None)},
+            "osc": {"enabled": self.osc_enabled, "target": f"{self.osc_ip}:{self.osc_port}"},
+            "sensitivity": self.sensitivity,
+            "rig": dict(self.rig_sheet),
+        }
 
     def _sync_rig_sheet(self):
         for field in config_schema.RIG_FIELDS:
@@ -2235,6 +2287,18 @@ class WallDanceApp:
 
 
 def main():
+    # Persistent log first, so everything after it (incl. a native crash via
+    # faulthandler) survives the launcher window and is readable remotely.
+    from core.config import APP_LOG_ENABLED, APP_LOG_KEEP
+    if APP_LOG_ENABLED:
+        try:
+            from services import app_log
+            repo = Path(__file__).resolve().parents[2]
+            app_log.install(repo / "logs", keep=APP_LOG_KEEP,
+                            header=f"[AppLog] WallDance start {time.strftime('%Y-%m-%d %H:%M:%S')} "
+                                   f"{app_version()} argv={sys.argv[1:]}")
+        except Exception as e:  # noqa: BLE001 - logging must never stop the app
+            print(f"[AppLog] disabled: {e}")
     parser = argparse.ArgumentParser(description="WallDance")
     parser.add_argument("--project", help="Load the latest config for this project at startup")
     parser.add_argument("--config", help="Load a specific config file at startup")

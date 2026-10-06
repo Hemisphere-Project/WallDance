@@ -422,6 +422,22 @@ WEB_MONITOR_HOST = "0.0.0.0"        # Bind address (0.0.0.0 = all interfaces)
 WEB_MONITOR_JPEG_QUALITY = 70       # MJPEG quality (1-100); lower = less bandwidth
 WEB_MONITOR_MAX_FPS = 15            # Cap stream frame rate (phone-friendly)
 
+# Remote ops API (services/remote_api.py, docs/REMOTE_OPS.md): the second client
+# of the command/event seam, for a dev box driving the prod laptop over the
+# tailnet. Binds LOOPBACK ONLY -- reached through an SSH port-forward
+# (extra/wdremote.py), so nothing listens on the venue LAN. Bearer token in
+# REMOTE_API_TOKEN_FILE (created on first start, readable over SSH).
+REMOTE_API_ENABLED = True
+REMOTE_API_HOST = "127.0.0.1"
+REMOTE_API_PORT = 8765
+REMOTE_API_TOKEN_FILE = "~/.walldance/remote_token"
+REMOTE_API_STATUS_INTERVAL_S = 0.5  # main loop -> /status snapshot cadence
+
+# Persistent app log (services/app_log.py): stdout/stderr teed to
+# <repo>/logs/walldance_<stamp>.log (gitignored); newest APP_LOG_KEEP kept.
+APP_LOG_ENABLED = True
+APP_LOG_KEEP = 40
+
 # =============================================================================
 # GO-LIVE SCENE CALIBRATION (one explicit, logged calibration — P2)
 # =============================================================================

@@ -178,6 +178,7 @@ class DpgUiAdapter:
             "on_osc_toggle": lambda v: submit(api.ToggleOsc(bool(v))),
             "on_osc_config": lambda ip, port: submit(api.SetOscTarget(ip, port)),
             "on_rig_field": lambda field, value: submit(api.SetRigSheet(field, value)),
+            "on_remote_control": lambda enabled: submit(api.SetRemoteControl(bool(enabled))),
             "on_preview_toggle": lambda v: submit(api.TogglePreview(bool(v))),
             "on_input_fps_cap_toggle": lambda v: submit(api.ToggleInputFpsCap(bool(v))),
             "on_preview_cap_toggle": lambda v: submit(api.TogglePreviewCap(bool(v))),
@@ -295,6 +296,8 @@ class DpgUiAdapter:
         submit = self.api.submit
         return {
             api.ControlSync: self._sync_control,
+            api.RemoteStatus: lambda e: self.gui.update_remote_status(
+                e.active, e.control_enabled, e.client),
             api.Toast: lambda e: self.gui.show_toast(
                 e.message, duration=e.duration, color=tuple(e.color)),
             api.ReadinessResult: lambda e: self.gui.show_readiness_rows(e.rows),

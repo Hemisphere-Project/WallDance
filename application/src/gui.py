@@ -823,6 +823,23 @@ class WallDanceGUI:
         if 'on_osc_toggle' in self.callbacks:
             self.callbacks['on_osc_toggle'](value)
     
+    def _on_remote_control_toggle(self, sender, value):
+        if 'on_remote_control' in self.callbacks:
+            self.callbacks['on_remote_control'](bool(value))
+
+    def update_remote_status(self, active: bool, control_enabled: bool, client: str = ""):
+        """REMOTE chip (top bar) + phase-6 status line + checkbox mirror."""
+        if dpg.does_item_exist("badge_remote"):
+            dpg.configure_item("badge_remote", show=bool(active))
+            dpg.set_value("badge_remote", "REMOTE*" if control_enabled else "REMOTE")
+        if dpg.does_item_exist("remote_status_text"):
+            who = f" ({client})" if client else ""
+            dpg.set_value("remote_status_text",
+                          (f"remote: connected{who}" if active else "remote: idle")
+                          + (" - control in RUN allowed" if control_enabled else ""))
+        if dpg.does_item_exist("remote_control_checkbox"):
+            dpg.set_value("remote_control_checkbox", bool(control_enabled))
+
     def _on_rig_field(self, sender, value, user_data=None):
         if 'on_rig_field' in self.callbacks and user_data:
             self.callbacks['on_rig_field'](user_data, value)

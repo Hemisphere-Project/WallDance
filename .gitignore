@@ -43,6 +43,8 @@ Thumbs.db
 # Runtime-generated logs (written to the working dir wherever the app runs)
 tracking_events.jsonl
 merge_dbg.log
+# Persistent app log (services/app_log.py): logs/walldance_<stamp>.log
+/logs/
 
 # TUNING Phase B: YOLO detect-pass caches (large, regenerable)
 application/tests/cache/

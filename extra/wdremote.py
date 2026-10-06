@@ -30,6 +30,20 @@ Quick start::
     python extra/wdremote.py py tmp_analysis/audit-2026-10/continuity/drive.py -- build ...
     python extra/wdremote.py bundle               # git bundle --all (or a .git zip) -> local
 
+Live app (the app's loopback remote API, reached through an SSH tunnel per call;
+the token is read over SSH once and cached)::
+
+    python extra/wdremote.py status               # state, project, fps, tracks, engine, recorder
+    python extra/wdremote.py events -f            # toasts, alerts, readiness, calibration...
+    python extra/wdremote.py record start --slot 3 ; ... record stop
+    python extra/wdremote.py cmd SetRigSheet field=f_number value=2.8
+    python extra/wdremote.py cmd CheckReadiness ; python extra/wdremote.py commands
+    python extra/wdremote.py logs -f --tail 50 ; python extra/wdremote.py snapshot
+    python extra/wdremote.py clip projects/p/recordings/slot_3_x.avi --start 900 --frames 200 --pull
+
+Control commands are refused while the app is in RUN unless the operator ticked
+"Allow remote control during RUN" (phase 6 Live); heavy jobs are STANDBY-only.
+
 Remote layout: `<root>` is the launcher's checkout (`<launcher dir>\\WallDance`).
 Scratch work goes to `<root>/tmp_analysis/remote/<stamp>/`, which is gitignored, so
 the launcher's dirty-tree check never sees it. Local results land in
@@ -74,6 +88,7 @@ class Remote:
     os: str = "windows"             # windows | posix
     python: str = ""                # override; default = the app venv's python
     bwlimit_kbit: int = 0           # sftp -l (0 = unlimited)
+    api_port: int = 8765            # the app's loopback remote API (REMOTE_API_PORT)
     ssh_opts: List[str] = field(default_factory=list)
 
     @property
@@ -993,6 +1008,285 @@ def cmd_bundle(tr, remote: Remote, a) -> int:
     return rc
 
 
+
+# ---------------------------------------------------------------------------
+# Live app control: the in-app remote API over an SSH port-forward
+# ---------------------------------------------------------------------------
+
+import socket
+import urllib.error
+import urllib.request
+import gzip as _gzip
+
+
+def _token_cache(remote: Remote) -> Path:
+    return DEFAULT_CONFIG.parent / f"remote_token.{remote.host}"
+
+
+def get_token(tr, remote: Remote, refresh: bool = False) -> str:
+    """The app's bearer token, read over SSH once and cached locally (0600)."""
+    cache = _token_cache(remote)
+    if cache.exists() and not refresh:
+        return cache.read_text().strip()
+    if isinstance(tr, LocalTransport):
+        token = Path("~/.walldance/remote_token").expanduser().read_text().strip()
+    else:
+        cmd = ('type "%USERPROFILE%\\.walldance\\remote_token"' if remote.win
+               else "cat ~/.walldance/remote_token")
+        p = tr.run(cmd, timeout=30)
+        token = (p.stdout or b"").decode().strip()
+        if p.returncode != 0 or len(token) < 16:
+            raise SystemExit("wdremote: no API token on the laptop yet -- has the app been "
+                             "started once with REMOTE_API_ENABLED? "
+                             f"({(p.stderr or b'').decode().strip()})")
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_text(token + "\n")
+    try:
+        os.chmod(cache, 0o600)
+    except OSError:
+        pass
+    return token
+
+
+class ApiSession:
+    """Context manager: SSH -L tunnel to the laptop's 127.0.0.1:<api_port>
+    (no tunnel in --local mode) + bearer-token JSON helpers."""
+
+    def __init__(self, tr, remote: Remote):
+        self.tr, self.remote = tr, remote
+        self.proc: Optional[subprocess.Popen] = None
+        self.base = ""
+        self.token = ""
+
+    def __enter__(self) -> "ApiSession":
+        self.token = get_token(self.tr, self.remote)
+        if isinstance(self.tr, LocalTransport):
+            self.base = f"http://127.0.0.1:{self.remote.api_port}"
+            return self
+        with socket.socket() as sk:
+            sk.bind(("127.0.0.1", 0))
+            lport = sk.getsockname()[1]
+        argv = ["ssh", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes",
+                "-N", "-L", f"{lport}:127.0.0.1:{self.remote.api_port}",
+                *self.remote.ssh_opts, self.remote.host]
+        self.proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL)
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            if self.proc.poll() is not None:
+                raise SystemExit("wdremote: ssh tunnel failed (is sshd up? key auth?)")
+            try:
+                with socket.create_connection(("127.0.0.1", lport), timeout=0.5):
+                    break
+            except OSError:
+                time.sleep(0.2)
+        self.base = f"http://127.0.0.1:{lport}"
+        return self
+
+    def __exit__(self, *exc) -> None:
+        if self.proc is not None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+
+    def request(self, path: str, body: Optional[dict] = None, raw: bool = False,
+                timeout: float = 70.0):
+        req = urllib.request.Request(
+            self.base + path, data=None if body is None else json.dumps(body).encode(),
+            method="GET" if body is None else "POST",
+            headers={"Authorization": f"Bearer {self.token}", "Accept-Encoding": "gzip",
+                     "Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                data = r.read()
+                if r.headers.get("Content-Encoding") == "gzip":
+                    data = _gzip.decompress(data)
+                code = r.status
+        except urllib.error.HTTPError as e:
+            data, code = e.read(), e.code
+            if e.headers.get("Content-Encoding") == "gzip":
+                data = _gzip.decompress(data)
+        except urllib.error.URLError as e:
+            raise SystemExit(f"wdremote: API unreachable ({e.reason}) -- is the app running "
+                             "on the laptop with REMOTE_API_ENABLED?")
+        if raw:
+            return code, data
+        try:
+            return code, json.loads(data or b"{}")
+        except json.JSONDecodeError:
+            return code, {"raw": data[:500].decode(errors="replace")}
+
+
+def _print_json(obj) -> None:
+    print(json.dumps(obj, indent=2, default=str))
+
+
+def _parse_kv(items: Sequence[str]) -> Dict:
+    out = {}
+    for it in items:
+        if "=" not in it:
+            raise SystemExit(f"wdremote: expected key=value, got {it!r}")
+        k, v = it.split("=", 1)
+        try:
+            out[k] = json.loads(v)
+        except json.JSONDecodeError:
+            out[k] = v
+    return out
+
+
+def cmd_token(tr, remote: Remote, a) -> int:
+    tok = get_token(tr, remote, refresh=True)
+    print(f"[token] cached in {_token_cache(remote)} ({len(tok)} chars)")
+    return 0
+
+
+def cmd_status(tr, remote: Remote, a) -> int:
+    with ApiSession(tr, remote) as s:
+        code, st = s.request("/api/v1/status")
+    if code != 200 or a.json:
+        _print_json(st)
+        return 0 if code == 200 else 1
+    rec = st.get("recorder", {})
+    eng = st.get("engine", {})
+    print(f"{st.get('state', '?').upper():8} project={st.get('project')} profile={st.get('profile')} "
+          f"config={st.get('config_file')}  app={st.get('app', {}).get('commit')}")
+    print(f"  fps={st.get('fps')} tracks={st.get('tracks')}  camera={st.get('camera')}")
+    print(f"  engine={eng.get('model')}@{eng.get('imgsz')} trt={eng.get('trt_active')} "
+          f"(requested {eng.get('trt_requested')})  osc={st.get('osc')}")
+    print(f"  recorder={rec.get('state')} slot={rec.get('slot')} rec_frames={rec.get('recording_frames')} "
+          f"play={rec.get('playback_frame')}/{rec.get('playback_total')} {rec.get('playback_file') or ''}")
+    print(f"  remote control in RUN: {st.get('remote', {}).get('control_enabled')}  "
+          f"uptime={st.get('uptime_s')} s")
+    return 0
+
+
+def cmd_events(tr, remote: Remote, a) -> int:
+    with ApiSession(tr, remote) as s:
+        since = a.since
+        if since is None:
+            since = s.request("/api/v1/status")[1].get("event_seq", 0) if a.follow else 0
+        types = f"&types={a.types}" if a.types else ""
+        while True:
+            code, ev = s.request(f"/api/v1/events?since={since}&wait={25 if a.follow else 0}{types}")
+            if code != 200:
+                _print_json(ev)
+                return 1
+            for e in ev["events"]:
+                t = time.strftime("%H:%M:%S", time.localtime(e.pop("t")))
+                seq, typ = e.pop("seq"), e.pop("type")
+                print(f"{t} #{seq} {typ} {json.dumps(e, default=str)}", flush=True)
+            since = ev["next"]
+            if not a.follow:
+                return 0
+
+
+def cmd_commands(tr, remote: Remote, a) -> int:
+    with ApiSession(tr, remote) as s:
+        code, sc = s.request("/api/v1/commands")
+    for name, info in sc.items():
+        fields = ", ".join(f"{k}{'' if v['required'] else '?'}" for k, v in info["fields"].items())
+        print(f"  {info['policy']:7} {name}({fields})  {info.get('doc', '')}")
+    return 0
+
+
+def _submit(s: "ApiSession", typ: str, args: Dict) -> int:
+    code, res = s.request("/api/v1/command", {"type": typ, "args": args})
+    print(f"[cmd] {typ} {args} -> {code} {res.get('error') or 'queued'}")
+    return 0 if code == 200 else 1
+
+
+def cmd_cmd(tr, remote: Remote, a) -> int:
+    with ApiSession(tr, remote) as s:
+        return _submit(s, a.type, _parse_kv(a.kv))
+
+
+def cmd_record(tr, remote: Remote, a) -> int:
+    with ApiSession(tr, remote) as s:
+        if a.action == "start":
+            if not a.slot:
+                raise SystemExit("wdremote record start --slot N")
+            return _submit(s, "StartRecordingSlot", {"slot": a.slot})
+        return _submit(s, "StopRecording", {})
+
+
+def cmd_state(tr, remote: Remote, a) -> int:
+    with ApiSession(tr, remote) as s:
+        return _submit(s, "SetState", {"state": a.state})
+
+
+def cmd_logs(tr, remote: Remote, a) -> int:
+    with ApiSession(tr, remote) as s:
+        last: Optional[str] = None
+        while True:
+            code, lg = s.request(f"/api/v1/logs?tail={a.tail}")
+            if code != 200:
+                _print_json(lg)
+                return 1
+            lines = lg["lines"]
+            new = lines
+            if last is not None and last in lines:
+                new = lines[len(lines) - lines[::-1].index(last):]
+            for line in new:
+                print(line, flush=True)
+            if lines:
+                last = lines[-1]
+            if not a.follow:
+                return 0
+            time.sleep(2.0)
+
+
+def cmd_snapshot(tr, remote: Remote, a) -> int:
+    with ApiSession(tr, remote) as s:
+        code, data = s.request("/api/v1/snapshot.jpg", raw=True)
+    if code != 200:
+        print(data[:300].decode(errors="replace"))
+        return 1
+    out = Path(a.out or RUNS_DIR / f"snapshot-{new_stamp()}.jpg")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(data)
+    print(f"[snapshot] {len(data)} B -> {_rel(out)}")
+    return 0
+
+
+def cmd_ls(tr, remote: Remote, a) -> int:
+    with ApiSession(tr, remote) as s:
+        code, res = s.request(f"/api/v1/files?path={urllib.request.quote(a.path or '')}")
+    if code != 200:
+        _print_json(res)
+        return 1
+    for d in res.get("dirs", []):
+        print(f"  {'<dir>':>10}  {d['name']}/")
+    for f in res.get("files", []):
+        print(f"  {fmt_bytes(f['size']):>10}  {time.strftime('%Y-%m-%d %H:%M', time.localtime(f['mtime']))}  {f['name']}")
+    for r in res.get("roots", []):
+        print(f"  {r}/")
+    return 0
+
+
+def cmd_clip(tr, remote: Remote, a) -> int:
+    """Cut a small excerpt on the laptop (STANDBY), then pull just that."""
+    with ApiSession(tr, remote) as s:
+        code, job = s.request("/api/v1/clip", {"path": a.path, "start": a.start,
+                                               "frames": a.frames, "scale": a.scale,
+                                               "codec": a.codec})
+        if code != 200:
+            _print_json(job)
+            return 1
+        while job.get("state") == "running":
+            time.sleep(1.0)
+            _, job = s.request(f"/api/v1/jobs/{job['id']}")
+            print(f"[clip] {job.get('state')} {int(100 * job.get('progress', 0))} %", flush=True)
+    if job.get("state") != "done":
+        _print_json(job)
+        return 1
+    print(f"[clip] {job['output']} ({fmt_bytes(job.get('size', 0))}, {job.get('frames')} frames)")
+    if a.pull:
+        man = run_agent(tr, remote, "manifest", {"paths": [job["output"]]})
+        pull_files(tr, remote, man["files"], REPO)
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -1065,6 +1359,38 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--set", action="append", metavar="KEY=VALUE")
 
     sub.add_parser("bundle", help="git bundle --all (or .git zip) of the laptop checkout -> local")
+
+    # -- live app (in-app remote API over an SSH tunnel) --
+    sub.add_parser("token", help="(re)fetch the app's API token over ssh")
+    s = sub.add_parser("status", help="live app status")
+    s.add_argument("--json", action="store_true")
+    s = sub.add_parser("events", help="event stream (toasts, alerts, calibration, readiness...)")
+    s.add_argument("--follow", "-f", action="store_true")
+    s.add_argument("--since", type=int)
+    s.add_argument("--types", help="comma list, e.g. Alert,Toast,ReadinessResult")
+    sub.add_parser("commands", help="remote command allowlist with policy classes")
+    s = sub.add_parser("cmd", help="submit one command: cmd SetSensitivity value=55")
+    s.add_argument("type")
+    s.add_argument("kv", nargs="*", metavar="key=value")
+    s = sub.add_parser("record", help="record start --slot N | record stop")
+    s.add_argument("action", choices=["start", "stop"])
+    s.add_argument("--slot", type=int)
+    s = sub.add_parser("state", help="state run | standby")
+    s.add_argument("state", choices=["run", "standby"])
+    s = sub.add_parser("logs", help="tail the app log")
+    s.add_argument("--tail", type=int, default=100)
+    s.add_argument("--follow", "-f", action="store_true")
+    s = sub.add_parser("snapshot", help="save the current preview JPEG")
+    s.add_argument("-o", "--out")
+    s = sub.add_parser("ls", help="list shared files via the API (projects/, logs/)")
+    s.add_argument("path", nargs="?", default="")
+    s = sub.add_parser("clip", help="cut an excerpt on the laptop, optionally pull it")
+    s.add_argument("path", help="projects/<p>/recordings/<file>")
+    s.add_argument("--start", type=int, default=0)
+    s.add_argument("--frames", type=int, default=300)
+    s.add_argument("--scale", type=float, default=0.5)
+    s.add_argument("--codec", default="mp4v", choices=["mp4v", "MJPG", "FFV1"])
+    s.add_argument("--pull", action="store_true")
     return ap
 
 
@@ -1078,6 +1404,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "doctor": cmd_doctor, "inventory": cmd_inventory, "probe": cmd_probe,
         "plan": cmd_plan, "pull": cmd_pull, "run": cmd_run, "pytest": cmd_pytest,
         "py": cmd_py, "replay": cmd_replay, "bundle": cmd_bundle,
+        "token": cmd_token, "status": cmd_status, "events": cmd_events,
+        "commands": cmd_commands, "cmd": cmd_cmd, "record": cmd_record, "state": cmd_state,
+        "logs": cmd_logs, "snapshot": cmd_snapshot, "ls": cmd_ls, "clip": cmd_clip,
     }
     return handlers[a.cmd](tr, remote, a)
 

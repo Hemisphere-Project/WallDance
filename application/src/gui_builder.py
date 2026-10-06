@@ -403,6 +403,12 @@ def build_top_bar(gui: Any):
                 osc_badge = dpg.add_text("OFF", tag="badge_osc", color=ERROR_SOFT)
                 with dpg.tooltip(osc_badge):
                     dpg.add_text("OSC output status: ON (green) or OFF (red)")
+                remote_badge = dpg.add_text("REMOTE", tag="badge_remote",
+                                            color=WARN_ORANGE, show=False)
+                with dpg.tooltip(remote_badge):
+                    dpg.add_text("A remote session (SSH tunnel) is talking to the app.\n"
+                                 "Control during RUN only if allowed in 6 Live.",
+                                 tag="badge_remote_tip")
                 dpg.add_spacer(width=scaled(6))
                 dpg.add_text("--", tag="badge_model", color=(150, 200, 255))
                 dpg.add_spacer(width=scaled(3))
@@ -1028,6 +1034,18 @@ def build_phase_live(gui: Any):
                          "late (smoother + retroactively gap-corrected), with\n"
                          "/walldance/meta/latency_ms published. Output-only.")
         dpg.add_text("output: live (L=1, 0 ms)", tag="lagged_latency_text", color=TEXT_DIM)
+        dpg.add_spacer(height=scaled(12))
+        # Remote ops API (REMOTE_OPS): operator-owned gate for control during RUN.
+        dpg.add_text("Remote", color=TEXT_NORMAL)
+        rc_chk = dpg.add_checkbox(label="Allow remote control during RUN",
+                                  tag="remote_control_checkbox", default_value=False,
+                                  callback=gui._on_remote_control_toggle)
+        with dpg.tooltip(rc_chk):
+            dpg.add_text("Off: a remote session can watch, pull files and act in\n"
+                         "STANDBY, but not change anything while in RUN.\n"
+                         "On: it may also record / switch state / nudge dials in RUN.\n"
+                         "Heavy jobs (tunes, model loads) are never allowed in RUN.")
+        dpg.add_text("remote: idle", tag="remote_status_text", color=TEXT_DIM)
         dpg.add_spacer(height=scaled(12))
         build_visualization_toolbar(gui)    # promoted: View S/K/B/T/I
 

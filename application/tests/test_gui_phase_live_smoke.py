@@ -28,6 +28,7 @@ def test_phase_live_builds_with_output_controls():
             _on_gap_bridging_change=noop,
             _on_box_clamp_toggle=noop,
             _on_output_smoothing_change=noop,
+            _on_remote_control_toggle=noop,
             _btn_standby_theme=th1,
             _btn_run_active_theme=th2,
         )
@@ -46,6 +47,8 @@ def test_phase_live_builds_with_output_controls():
         assert dpg.does_item_exist("gap_bridging_slider")       # Dial B
         assert dpg.does_item_exist("box_clamp_checkbox")
         assert dpg.does_item_exist("output_smoothing_slider")
+        assert dpg.does_item_exist("remote_control_checkbox")   # REMOTE_OPS gate
+        assert dpg.get_value("remote_control_checkbox") is False  # off by default
         assert dpg.does_item_exist("lagged_latency_text")
         # The lagged-tap + case-2 suppression checkboxes were removed (2026-06):
         # the single /walldance/dancer/* stream is selected by L alone.
