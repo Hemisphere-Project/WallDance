@@ -92,6 +92,7 @@ EMITTING_STATES = (STATE_LIVE, STATE_BELT, STATE_COASTING)
 STABILITY_MIN_CUTOFF = (3.0, 0.2)
 STABILITY_BETA = (8.0, 2.0)
 D_CUTOFF_HZ = 1.0              # derivative low-pass, fixed
+HIP_MIN_CONF = 0.3             # YOLO hip keypoint confidence to anchor the belt search
 SIZE_MIN_CUTOFF_HZ = 0.4       # box size: calm, follows real size changes slowly
 SIZE_BETA = 0.0
 
@@ -160,7 +161,13 @@ class OneEuro2D:
 
 class BeltMeasure(Protocol):
     """IR waist-belt hook: look for the belt near ``(x, y)`` (full-frame px)
-    within ``gate_px``; return ``(x, y, quality)`` of the belt or None."""
+    within ``gate_px``; return ``(x, y, quality)`` of the belt or None.
+
+    Optional ``batch(queries) -> {slot_id: (x, y, quality) | None}`` with
+    ``queries = [(slot_id, x, y, gate_px, band_w_px | None), ...]``: all of a
+    frame's queries at once, so one belt answers at most one slot
+    (``BeltDetector.detect_near``).  Without it the slot layer calls the hook
+    once per slot."""
 
     def __call__(self, slot_id: int, x: float, y: float,
                  gate_px: float) -> Optional[Tuple[float, float, float]]: ...
@@ -181,6 +188,7 @@ class SlotCandidate:
     src: Optional[str] = None
     zone_ok: bool = True         # outside the exclusion mask / inside the ROI
     payload: Any = None          # the ScaledTrack (keypoints for the output)
+    hip: Optional[Tuple[float, float]] = None   # YOLO hip midpoint (belt height)
 
 
 @dataclass
@@ -219,10 +227,14 @@ class SlotParams:
     vel_decay_tau_s: float = 0.25
     vel_alpha: float = 0.5
     max_dt_s: float = 0.25       # clamp for prediction / filters (stalls)
-    # -- belt --
+    # -- belt (IR retroreflective waist belt, worn at the hips) --
     belt_offset_alpha: float = 0.1
-    belt_gate_h: float = 0.6
-    belt_max_s: float = 10.0
+    belt_gate_h: float = 0.6     # search radius around the predicted belt, x h
+    belt_hip_gate_h: float = 0.25   # ... around the YOLO hips while live
+    belt_band_w_h: float = 0.22  # expected band width hint (25-35 px at 25 m)
+    belt_min_learn: int = 5      # consistent live sightings before the belt may hold a slot
+    belt_learn_tol_h: float = 0.15
+    belt_max_s: float = 8.0      # belt-only hold cap (a glint must not hold a slot forever)
     belt_min_quality: float = 0.0
 
 
@@ -257,6 +269,7 @@ class _Slot:
     bound_since: float = 0.0
     belt_since: Optional[float] = None
     belt_offset: Optional[np.ndarray] = None
+    belt_seen: int = 0                     # consistent live belt sightings
     fss: Optional[int] = None
     payload: Any = None
     ever: bool = False
@@ -378,6 +391,7 @@ class IdentitySlots:
             s.size_filt.reset()
             s.vel = np.zeros(2)
             s.belt_offset = None
+            s.belt_seen = 0
             self.counters["entries"] += 1
         else:
             s.vel = np.zeros(2)          # a rebind is a new trajectory
@@ -601,12 +615,14 @@ class IdentitySlots:
                 measured[s.sid] = (np.array([c.x, c.y], dtype=np.float64),
                                    np.array([c.w, c.h], dtype=np.float64), c)
 
-        # 5. apply measurements; belt / coast / lost for the rest
+        # 5. belt queries (one batch: a belt answers at most one slot), then
+        # apply measurements; belt / coast / lost for the rest
+        belt_res = self._belt_round(belt, measured, pred, t) if belt is not None else {}
         for s in self._slots:
             if s.sid in measured:
                 xy, wh, c = measured[s.sid]
-                if belt is not None:
-                    self._learn_belt(s, xy, wh, belt)
+                if s.sid in belt_res:
+                    self._learn_belt(s, xy, belt_res[s.sid])
                 self._measure(s, xy, wh, t, dt, STATE_LIVE)
                 s.fss = c.fss
                 s.payload = c.payload
@@ -615,9 +631,9 @@ class IdentitySlots:
             if s.state == STATE_LOST:
                 continue
             got = None
-            if belt is not None and s.belt_offset is not None and s.wh is not None:
-                if s.belt_since is None or t - s.belt_since <= p.belt_max_s:
-                    got = self._ask_belt(s, pred[s.sid], belt)
+            res = belt_res.get(s.sid)
+            if res is not None:
+                got = np.array(res[:2], dtype=np.float64) + s.belt_offset
             if got is not None:
                 if s.belt_since is None:
                     s.belt_since = t
@@ -709,37 +725,74 @@ class IdentitySlots:
             if pair not in seen:
                 self._close_since.pop(pair, None)
 
-    def _learn_belt(self, s: _Slot, xy: np.ndarray, wh: np.ndarray,
-                    belt: BeltMeasure) -> None:
-        base = xy if s.belt_offset is None else xy - s.belt_offset
-        res = self._call_belt(belt, s, base, float(wh[1]))
-        if res is None:
-            return
-        bxy = np.array(res[:2], dtype=np.float64)
-        off = xy - bxy
-        a = self.p.belt_offset_alpha
-        s.belt_offset = off if s.belt_offset is None else a * off + (1.0 - a) * s.belt_offset
-
-    def _ask_belt(self, s: _Slot, at: np.ndarray, belt: BeltMeasure) -> Optional[np.ndarray]:
-        res = self._call_belt(belt, s, at - s.belt_offset, float(s.wh[1]))
-        if res is None:
-            return None
-        return np.array(res[:2], dtype=np.float64) + s.belt_offset
-
-    def _call_belt(self, belt: BeltMeasure, s: _Slot, at: np.ndarray,
-                   h: float) -> Optional[Tuple[float, float, float]]:
+    def _belt_round(self, belt: BeltMeasure, measured: dict, pred: dict,
+                    t: float) -> Dict[int, Optional[Tuple[float, float, float]]]:
+        """This frame's belt queries: a live slot looks at its YOLO hips (else
+        at centroid - learned offset) to learn the belt->centroid offset; a
+        slot about to coast looks around its predicted belt position (only
+        once the offset is confirmed, and for at most ``belt_max_s``)."""
+        p = self.p
+        queries = []
+        for s in self._slots:
+            if s.sid in measured:
+                xy, wh, c = measured[s.sid]
+                h = max(1.0, float(wh[1]))
+                if c.hip is not None:
+                    at, gate = np.asarray(c.hip, dtype=np.float64), p.belt_hip_gate_h * h
+                elif s.belt_offset is not None:
+                    at, gate = xy - s.belt_offset, p.belt_gate_h * h
+                else:   # no hips yet: the belt sits a little below the centroid
+                    at, gate = xy + np.array([0.0, 0.1 * h]), p.belt_gate_h * h
+            elif (s.state != STATE_LOST and s.belt_offset is not None and s.wh is not None
+                  and s.belt_seen >= p.belt_min_learn and s.sid in pred
+                  and (s.belt_since is None or t - s.belt_since <= p.belt_max_s)):
+                h = max(1.0, float(s.wh[1]))
+                at, gate = pred[s.sid] - s.belt_offset, p.belt_gate_h * h
+            else:
+                continue
+            queries.append((s.sid, float(at[0]), float(at[1]), float(gate),
+                            p.belt_band_w_h * h))
+        if not queries:
+            return {}
+        raw: Dict[int, Any] = {}
         try:
-            res = belt(s.sid, float(at[0]), float(at[1]),
-                       self.p.belt_gate_h * max(1.0, h))
+            batch = getattr(belt, "batch", None)
+            if callable(batch):
+                raw = dict(batch(queries) or {})
+            else:
+                for sid, x, y, gate, _bw in queries:
+                    raw[sid] = belt(sid, x, y, gate)
         except Exception:   # a hook failure must never stop the show
-            return None
-        if res is None:
-            return None
-        x, y = float(res[0]), float(res[1])
-        q = float(res[2]) if len(res) > 2 else 1.0
-        if not (np.isfinite(x) and np.isfinite(y)) or q < self.p.belt_min_quality:
-            return None
-        return x, y, q
+            return {}
+        out = {}
+        for sid, *_rest in queries:
+            res = raw.get(sid)
+            if res is None:
+                continue
+            try:
+                x, y = float(res[0]), float(res[1])
+                q = float(res[2]) if len(res) > 2 else 1.0
+            except (TypeError, ValueError, IndexError):
+                continue
+            if np.isfinite(x) and np.isfinite(y) and q >= p.belt_min_quality:
+                out[sid] = (x, y, q)
+        return out
+
+    def _learn_belt(self, s: _Slot, xy: np.ndarray, res) -> None:
+        """Belt->centroid offset (EMA) from a live sighting.  A sighting far
+        from the learned offset resets the confirmation count (a glint near a
+        moving dancer does not keep a consistent offset)."""
+        off = xy - np.array(res[:2], dtype=np.float64)
+        h = max(1.0, float(s.wh[1]) if s.wh is not None else 1.0)
+        if s.belt_offset is None:
+            s.belt_offset, s.belt_seen = off, 1
+            return
+        if float(np.linalg.norm(off - s.belt_offset)) > self.p.belt_learn_tol_h * h:
+            s.belt_seen = 0
+        else:
+            s.belt_seen += 1
+        a = self.p.belt_offset_alpha
+        s.belt_offset = a * off + (1.0 - a) * s.belt_offset
 
 
 def candidate_from_track(st, zone_ok: bool = True,
@@ -761,6 +814,14 @@ def candidate_from_track(st, zone_ok: bool = True,
     if xy is None:
         xy = (bbox[0] + bbox[2] / 2.0, bbox[1] + bbox[3] / 2.0)
     fss = getattr(st, "frames_since_skeleton", None)
+    hip = None
+    kp = getattr(st, "keypoints", None)
+    kc = getattr(st, "confidence", None)
+    if kp is not None and kc is not None and fss == 0 and len(kc) > 12:
+        idx = [i for i in (11, 12) if float(kc[i]) > HIP_MIN_CONF]
+        if idx:
+            hip = (float(np.mean([kp[i][0] for i in idx])),
+                   float(np.mean([kp[i][1] for i in idx])))
     return SlotCandidate(
         key=int(st.track_id), x=float(xy[0]), y=float(xy[1]),
         w=float(bbox[2]), h=float(bbox[3]),
@@ -768,7 +829,7 @@ def candidate_from_track(st, zone_ok: bool = True,
         age=int(getattr(st, "age", None) or 0),
         fss=None if fss is None else int(fss),
         tsu=int(getattr(st, "time_since_update", None) or 0),
-        src=getattr(st, "feed_src", None), zone_ok=bool(zone_ok), payload=st)
+        src=getattr(st, "feed_src", None), zone_ok=bool(zone_ok), payload=st, hip=hip)
 
 
 def params_from_config(cfg: Dict[str, Any], base: Optional[SlotParams] = None) -> SlotParams:

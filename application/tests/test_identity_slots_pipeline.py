@@ -103,23 +103,64 @@ def test_belt_hook_from_a_fake_module(proc, monkeypatch):
             self.cx, self.cy, self.w, self.h, self.peak, self.score = cx, cy, 20, 8, 250, 0.9
 
     class BeltDetector:
+        def __init__(self, params=None, static=None):
+            pass
+
         def detect_near(self, gray, predictions):
             calls.append(predictions)
             # ROI-local coords in, the belt 0.3 h under the dancer at (500, 400)
             return {key: Blob(500 - 100, 400 + 0.3 * H - 50) for key, *_ in predictions}
 
     monkeypatch.setitem(sys.modules, "core.belt_detector",
-                        types.SimpleNamespace(BeltDetector=BeltDetector))
+                        types.SimpleNamespace(BeltDetector=BeltDetector,
+                                              BeltParams=lambda: None))
     proc._belt_gray = np.zeros((10, 10), np.uint8)
     proc._belt_gray_offset = (100, 50)                # ROI origin in the frame
     for i in range(20):
         _step(proc, [_st(7, 500, 400)])
     assert proc.belt_status == "ready" and calls
-    _key, x, y, gate, _w = calls[-1][0]
-    assert (x, y) == pytest.approx((400.0, 400 + 0.3 * H - 50), abs=2.0)   # ROI-local query
+    # live: one batched detect_near per frame, searching at the YOLO hips
+    # (ROI-local px), a tight gate and the band-width hint
+    _key, x, y, gate, bw = calls[-1][0]
+    assert (x, y) == pytest.approx((400.0, 350.0), abs=1.0)
+    assert gate == pytest.approx(0.25 * H) and bw == pytest.approx(0.22 * H)
     out = [_step(proc, []) for _ in range(40)]        # no track: the belt holds it
     assert all(f and f[0].slot_state == "belt" for f in out)
     assert out[-1][0].smoothed_centroid == pytest.approx([500, 400], abs=2.0)
+
+
+def test_real_belt_detector_holds_a_dancer_yolo_lost(proc):
+    """The real core.belt_detector (gated detect_near) on a synthetic IR frame:
+    a dim dancer with a bright waist band.  While YOLO sees the dancer the
+    hips->centroid offset is learned; when the tracker loses it, the slot is
+    held by the belt at the dancer's centroid instead of coasting."""
+    cv2 = pytest.importorskip("cv2")
+    pytest.importorskip("core.belt_detector")
+    h = 150.0
+    cx, cy = 700.0, 560.0                      # emitted centroid (chest-ish)
+    hip_y = cy + 0.15 * h                      # belt at the hips
+    gray = np.full((1000, 1400), 14, np.uint8)
+    cv2.rectangle(gray, (int(cx - 20), int(cy - 0.45 * h)), (int(cx + 20), int(cy + 0.5 * h)), 30, -1)
+    cv2.rectangle(gray, (int(cx - 15), int(hip_y - 2)), (int(cx + 15), int(hip_y + 2)), 200, -1)
+    proc._belt_gray = gray
+    proc._belt_gray_offset = (0, 0)
+
+    def st(fss=0):
+        t = _st(9, cx, cy, fss=fss)
+        t.bbox = np.array([cx - 30, cy - h / 2, 60, h])
+        t.keypoints[11] = (cx - 12, hip_y)
+        t.keypoints[12] = (cx + 12, hip_y)
+        return t
+    for _ in range(20):
+        _step(proc, [st()])
+    assert proc.belt_status == "ready"
+    s = proc._slots.slots[0]
+    assert s.belt_seen >= 5 and s.belt_offset[1] == pytest.approx(cy - hip_y, abs=3)
+    out = [_step(proc, []) for _ in range(30)]          # YOLO / tracker lost it
+    assert all(f and f[0].slot_state == "belt" for f in out)
+    assert out[-1][0].smoothed_centroid == pytest.approx([cx, cy], abs=3)
+    gray[:] = 14                                         # belt gone too -> plain coasting
+    assert _step(proc, [])[0].slot_state == "coasting"
 
 
 def test_missing_belt_module_is_a_no_op(proc, monkeypatch):

@@ -240,6 +240,52 @@ def test_belt_keeps_a_slot_alive_at_the_learned_offset():
     assert outs[0][0].state == STATE_COASTING and outs[-1] == []
 
 
+class BatchBelt:
+    """One fixed belt; ``batch`` gives it to the nearest query only (as
+    BeltDetector.detect_near does)."""
+
+    def __init__(self, bx, by):
+        self.bx, self.by, self.batches = bx, by, 0
+
+    def batch(self, queries):
+        self.batches += 1
+        best = min(queries, key=lambda q: math.hypot(q[1] - self.bx, q[2] - self.by))
+        sid, x, y, gate, bw = best
+        if math.hypot(x - self.bx, y - self.by) > gate:
+            return {}
+        return {sid: (self.bx, self.by, 0.9)}
+
+    def __call__(self, *a):           # pragma: no cover - batch is preferred
+        raise AssertionError("per-slot call while batch exists")
+
+
+def test_belt_queries_are_batched_one_belt_one_slot():
+    p = SlotParams(max_dancers=2, coast_s=0.5, min_streak=1, entry_min_streak=1)
+    s = IdentitySlots(p)
+    belt = BatchBelt(400, 360)
+    for i in range(20):
+        s.update([cand(1, 400, 300), cand(2, 1200, 300)], i / FPS, belt=belt)
+    assert belt.batches == 20                        # one call per frame
+    a, b = s.slots
+    assert a.belt_seen >= 5 and b.belt_offset is None   # only slot 1 owns the belt
+    outs = s.update([cand(2, 1200, 300)], 20 / FPS, belt=belt)
+    assert by_id(outs)[1].state == STATE_BELT and by_id(outs)[2].state == STATE_LIVE
+
+
+def test_glint_with_inconsistent_offset_never_holds_a_slot():
+    """A fixed bright spot near a MOVING dancer: the offset never settles, so
+    the belt is never trusted to hold the slot."""
+    p = SlotParams(max_dancers=1, coast_s=0.5, min_streak=1, entry_min_streak=1,
+                   belt_gate_h=2.0)
+    s = IdentitySlots(p)
+    glint = FakeBelt(500, 300 - 0.3 * H)             # 'belt' fixed at (500, 300)
+    for i in range(30):
+        s.update([cand(1, 400 + 8 * i, 300)], i / FPS, belt=glint)
+    assert s.slots[0].belt_seen < p.belt_min_learn
+    outs = s.update([], 30 / FPS, belt=glint)
+    assert outs[0].state == STATE_COASTING
+
+
 def test_failing_belt_hook_is_a_no_op():
     s = IdentitySlots(SlotParams(max_dancers=1, min_streak=1, entry_min_streak=1))
 

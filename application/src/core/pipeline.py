@@ -349,6 +349,36 @@ class _TrackerSpace:
         return blobs
 
 
+class _BeltHook:
+    """Per-frame adapter: identity-slot belt queries (full-frame px) ->
+    ``BeltDetector.detect_near`` on the ROI gray (ROI-local px)."""
+
+    def __init__(self, proc, det, gray, ox, oy):
+        self._proc, self._det, self._gray = proc, det, gray
+        self._ox, self._oy = float(ox), float(oy)
+
+    def batch(self, queries):
+        preds = [(sid, float(x) - self._ox, float(y) - self._oy, float(gate),
+                  None if bw is None else float(bw))
+                 for sid, x, y, gate, bw in queries]
+        try:
+            res = self._det.detect_near(self._gray, preds)
+        except Exception as exc:  # noqa: BLE001 - never stop the show
+            self._proc._belt_state = "unavailable"
+            print(f"[Slots] IR belt detector failed, disabled: {exc}")
+            return {}
+        out = {}
+        for sid, *_rest in queries:
+            blob = res.get(sid) if isinstance(res, dict) else None
+            if blob is not None and getattr(blob, "reason", None) is None:
+                out[sid] = (float(blob.cx) + self._ox, float(blob.cy) + self._oy,
+                            float(getattr(blob, "score", 1.0)))
+        return out
+
+    def __call__(self, slot_id, x, y, gate_px):
+        return self.batch([(slot_id, x, y, gate_px, None)]).get(slot_id)
+
+
 class FrameProcessor:
     """Encapsulates the main video processing steps."""
 
@@ -1028,15 +1058,21 @@ class FrameProcessor:
         return self._belt_state
 
     def _belt_hook(self):
-        """The per-slot belt measure callable for this frame, or None.  Lazily
-        imports ``core.belt_detector`` (written in parallel); any import /
-        construction / call failure turns the hook into a logged no-op."""
+        """This frame's belt hook (``identity_slots.BeltMeasure``), or None.
+
+        Lazily builds ``core.belt_detector.BeltDetector`` (gated mode,
+        ``detect_near``: ~0.3 ms per prediction, one belt answers at most one
+        slot -- the global ``detect()`` has false positives on lit arms/shoes
+        and is never used live).  The gray is the raw ROI crop fed to the
+        motion model, so queries are shifted by the ROI origin.  Any import /
+        construction / call failure turns the hook into a logged no-op: plain
+        coasting stays the base behaviour."""
         if not self.settings.use_ir_belt or self._belt_state == "unavailable":
             return None
         if self._belt_state == "unloaded":
             try:
-                from core.belt_detector import BeltDetector
-                self._belt_detector = BeltDetector()
+                from core.belt_detector import BeltDetector, BeltParams
+                self._belt_detector = BeltDetector(BeltParams(), static=None)
                 self._belt_state = "ready"
                 print("[Slots] IR belt detector ready")
             except Exception as exc:  # noqa: BLE001 - optional module
@@ -1046,23 +1082,7 @@ class FrameProcessor:
         gray = self._belt_gray
         if gray is None:
             return None
-        ox, oy = self._belt_gray_offset
-        det = self._belt_detector
-
-        def measure(slot_id, x, y, gate_px):
-            try:
-                res = det.detect_near(gray, [(slot_id, float(x) - ox, float(y) - oy,
-                                              float(gate_px), None)])
-            except Exception as exc:  # noqa: BLE001 - never stop the show
-                self._belt_state = "unavailable"
-                print(f"[Slots] IR belt detector failed, disabled: {exc}")
-                return None
-            blob = res.get(slot_id) if isinstance(res, dict) else None
-            if blob is None:
-                return None
-            return (float(blob.cx) + ox, float(blob.cy) + oy,
-                    float(getattr(blob, "score", 1.0)))
-        return measure
+        return _BeltHook(self, self._belt_detector, gray, *self._belt_gray_offset)
 
     def _zone_ok_fn(self, original_w: int, original_h: int):
         """Original-px point -> outside the exclusion mask (normalized over the

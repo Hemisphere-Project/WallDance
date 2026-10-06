@@ -5,7 +5,8 @@ WallDance's OSC output (box-clamp + L-driven output smoother shipped on `main`).
 what `/walldance/*` emits is an explicit, operator-confirmed change to this document.
 
 Documents (A) what `/walldance/*` emits **today, as shipped** (`core/osc_output.py`), and
-(B) the **output-domain controls** — box-clamp and the L-driven output smoother. **Locked
+(B) the **output-domain controls** — box-clamp and the L-driven output smoother, and (D) the
+**identity-slot layer** (stable ids 1..N, coasting, `/walldance/dancer/state`; 2026-10). **Locked
 defaults: box-clamp ON, smoothing L = 1.** The output is a **single stream** selected by `L`:
 `L = 1` is causal/live; `L > 1` is the fixed-lag RTS-smoothed stream, released `L` frames late, on
 the **same** `/walldance/dancer/*` namespace. (The earlier "dual tap" `/walldance/dancer_lagged/*`
@@ -116,6 +117,11 @@ reappears under a **new, higher** id after its warm-up. With `L > 1` the RTS smo
 any reporting gap (`output_smoother.py`), so it does not bridge these gaps either.
 The FRAME_SUMMARY log records, per frame, the emitted id set and each track's hide reason
 (`warmup` / `frozen` / `slow_dup` / `cap`) — CONT-10.
+
+> **Since 2026-10 (CONT-6) this section describes the tracker's *internal* ids.** With the
+> identity-slot layer ON (the default), the ids on the wire are **slot ids `1..max_dancers`**,
+> stable for the whole show, and a lost dancer **coasts** instead of vanishing — see **§D**.
+> Turning "Stable IDs" off restores the behaviour above.
 
 ---
 
@@ -241,3 +247,54 @@ box-clamp (§B.1). Its source is selected by `L` alone (no second namespace, no 
   (output-only). Run the golden replay suite.
 - **Reported bbox visibly stable** on a bridged clip (`replay.py --trt`, `hangar-aerial`):
   `/bbox` size no longer flickers through the aerial detection gaps.
+
+---
+
+## D. Identity slots + `/walldance/dancer/state` (2026-10, CONT-6) — additive
+
+**Source:** `application/src/core/identity_slots.py` (pure, unit-tested), wired in
+`FrameProcessor._post_yolo_chain` after `finalize`, before `OSCSender.send_frame`. Output-only:
+the tracker and the replay summaries are unchanged (the returned / preview tracks are
+byte-identical with slots on or off).
+
+### D.1 What changes on the wire (slots ON, the default)
+- **Ids are slot ids `1..max_dancers`**, stable for the whole show. Every `/walldance/dancer/*`
+  message and `/walldance/count` carries them; message **shapes, addresses, types and cadence are
+  unchanged** (§A.3). `/count` lists the emitted slot ids (never more than `max_dancers`).
+- **A lost dancer coasts**: its id keeps being sent, held at its last position (constant
+  velocity decaying in ~0.25 s), for up to `coast_s` seconds (default **2.0 s**), then it is
+  absent (state `lost`). A dancer the tracker re-finds under a new internal id gets the **same
+  slot id back** (gated around the held position; the gate grows with the coast time).
+- **A new dancer** (an established tracker track: confirmed, a few frames reported, a real
+  skeleton within 3 s, outside the exclusion mask) takes a free slot, lowest / nearest first.
+  Extra tracks beyond `max_dancers` are not sent. A track sitting on a body another slot already
+  sends never takes a slot (no two ids on one dancer).
+- **Centroid**: One-Euro filter per slot (adaptive: calm at rest, quick on fast moves), operator
+  knob **Stability** 0..1. `/bbox` is the slot's smoothed box centred on the centroid; `/keypoints`
+  are the bound track's skeleton translated onto the centroid (last skeleton while coasting);
+  `/velocity` is the filtered slot velocity (px/frame, normalized as §A.3).
+- **`L > 1`**: the RTS fixed-lag smoother now runs on the slot ids (no restart on tracker id
+  churn).
+
+### D.2 `/walldance/dancer/state` `[id, state, age_s]` — opt-in (`osc_send_state`, default OFF)
+- One message per slot **every frame, lost slots included**: `id` int32, `state` string
+  `live` (bound track updated this frame) / `belt` (held by the IR waist belt) / `coasting`
+  (holding, no measurement) / `lost` (absent from `/count`), `age_s` float32 = seconds in that
+  state. Causal: not delayed at `L > 1`.
+- Additive: consumers that ignore it are unaffected. Shared with the marker stream's proposed
+  `/dancer/source` (audit 02 §3) — one message, extended later if needed.
+
+### D.3 Defaults and how they were set (replays, dev37 PyTorch path)
+| knob (config key) | default | why |
+|---|---|---|
+| Stable IDs (`identity_slots_enabled`) | ON | TD drops its video when an id vanishes |
+| Max dancers (`max_dancers`) | 2 | this week's show: 2 dancers on the wall (a cap, not a constant) |
+| Stability (`stability`) | 0.5 | jitter at rest about halved vs the legacy EMA centroid for +15..25 ms lag on fast moves; 0 ~ legacy lag, 1 = calmest (+60..80 ms) |
+| Hold (`coast_s`) | 2.0 s | 355 of the 356 tracker losses observed over all replays + the 2026-10-05 field takes re-acquire within 2.0 s (99 % within 1.5 s, longest 2.37 s) |
+| IR belt (`use_ir_belt`) | ON | no-op unless `core/belt_detector.py` is importable; plain coasting stays the base |
+| Send state (`osc_send_state`) | OFF | opt-in |
+
+Operator knobs live in phase **6 Live → Dancer IDs** and are remote-settable
+(`SetIdentitySlots`, `SetMaxDancers`, `SetStability`, `SetCoastSeconds`, `ToggleIrBelt`,
+`ToggleOscState`; policy `control`). The FRAME_SUMMARY log carries `slots` (per slot: id,
+state, bound tracker id, age) and `emitted_slots`; `SLOT_EVENT` lines record binds and losses.
