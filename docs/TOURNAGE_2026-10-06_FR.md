@@ -70,6 +70,7 @@ prise est donc sans risque : on saura quand.
 ## 4. Les prises (une prise par slot)
 
 Pour chaque prise :
+
 1. être en **RUN** ;
 2. choisir le slot et lancer **REC** ;
 3. faire l'action ;
