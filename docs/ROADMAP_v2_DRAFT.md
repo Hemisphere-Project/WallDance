@@ -70,12 +70,22 @@ with no per-venue knob tuning.
 |---|---|---|---|---|
 | OPS-1 (ARCH-1) | **Retrieve + back up prod** (git bundle, `projects/`, freeze, engine dates, one IDS run's `[Budget]` lines) | Thomas | S | Checklist: AUDIT §3. **Never "Yes" to the launcher prompt meanwhile.** |
 | OPS-2 | Reconcile prod code with `a49d0f2`; re-validate audit file:line findings | Claude | S | after OPS-1 |
-| OPS-3 (ARCH-3) | App survives the launcher closing: `run.bat` → log file; BrokenPipe-safe stdout | Claude | S | Windows smoke |
+| OPS-3 (ARCH-3) | App survives the launcher closing: BrokenPipe-safe stdout tee + persistent `logs/walldance_<stamp>.log` + faulthandler | Claude | S | ✅ **built on `remote-ops`** (`2564ee2`); Windows smoke pending |
 | OPS-4 (ARCH-4/5, PERF-0) | **Freeze deps from prod's stack**: committed lock, `uv sync --frozen`, cu130 torch source, explicit IDS extra, `YOLO_AUTOINSTALL=0`; engines version-stamped; a mismatch is a loud rebuild prompt, not a silent PyTorch fallback | Claude | M | D3; test on a spare Windows box first |
-| OPS-5 (ARCH-2 + ARCH-19) | Launcher rebuilt from source: backup ref before any reset, real "Discard / Keep local" buttons, refuse non-main, pinned build, sha in title; **track a release channel, not `main`** | Claude + Thomas (build on Windows) | M | D1 |
+| OPS-5 (ARCH-2 + ARCH-19) | Launcher: **release channel** (D1), backup ref before any reset, only the channel branch moves, untracked collisions moved aside, real labelled buttons | Claude + Thomas (build on Windows) | M | ✅ source + tests on `remote-ops` (`26bdbdd`); **pending: pinned PyInstaller build on the laptop (over SSH), replace the 2026-03-26 exe** |
 | OPS-6 (ARCH-7) | Show-mode on Windows: block sleep, readiness rows (AC, power plan, pending reboot / Windows Update, USB selective suspend) + operator checklist (= REQ-6) | Claude | S | |
-| MRK-0 | Recorder `.meta` (exposure/gain/AE/AG/ROI/version), drain encoder tail on stop, log queue drops | Claude | S | before the marker shoot if it can reach prod; else paper take sheet |
+| MRK-0 | Recorder `.meta` (exposure/gain/AE/AG/ROI/version), drain encoder tail on stop, log queue drops | Claude | S | ✅ **built on `remote-ops`** (`195d8f1`): `.meta` v2 + camlog + rig sheet; reaches the laptop with the release |
 | — | **Marker shoot brief** to the operator (FR) | Thomas | — | AUDIT §4 |
+
+## 3b. NOW — Remote ops (Thomas, 2026-10-06: work on prod over the tailnet, fast link or 4G)
+
+| ID | Item | State |
+|---|---|---|
+| REM-1 | Laptop: Tailscale (Hemisphere) + OpenSSH Server tailnet-only + dev37 key | Thomas, when the laptop is powered ([REMOTE_OPS.md §1](REMOTE_OPS.md)) |
+| REM-2 | `extra/wdremote.py` over SSH: inventory/probe/plan/**resumable tiered pull**/bundle; run/pytest/py/replay remotely | ✅ `bd9d6d8`, usable as soon as REM-1 is done (no laptop code needed) |
+| REM-3 | In-app remote API (loopback + SSH tunnel + token), guarded policy, REMOTE chip + operator gate, clip excerpts; `wdremote status/events/record/cmd/logs/snapshot/clip` | ✅ `2564ee2`; reaches the laptop with the release |
+| REM-4 | Delivery: inventory + bundle the laptop → reconcile → rebuild launcher exe → Thomas pushes `release` | sequence in [REMOTE_OPS.md §7](REMOTE_OPS.md) |
+| REM-5 | Later: in-app job runner (replay/known-N with results over the API when SSH is unavailable); remote preview stream at low bitrate | idea |
 
 ## 4. NOW — Phase 1: measure continuity (prerequisite for tracker work)
 
@@ -106,7 +116,7 @@ with no per-venue knob tuning.
 | CONT-5 | Bound tentative-track search radius/covariance | stops ghost hijacks |
 | CONT-4 | Continuation ≠ birth confirmation; frozen gate on time-since-strong-evidence + displacement; then hold-style coasting | **unsafe without ghost control** (ships with CONT-2/3/5) |
 | SEAM-2 (ARCH-12) | Extract `core/output_stage.py` (finalize → identity → smoothing → OSC) | home of CONT-6 |
-| CONT-6 | **Identity-slot layer** (known/max N, stable ids 1..N, explicit coasting → lost); optional `/walldance/dancer/state` (opt-in, OSC_CONTRACT §D) | D4, D5; aerial sim 25 → 1 id |
+| CONT-6 | **Identity-slot layer** (stable ids 1..N_max, explicit coasting → lost); optional `/walldance/dancer/state` (opt-in, OSC_CONTRACT §D) | **D4: N is a cap, dancers enter/leave** → slots must open/close inside the budget (birth gate + exit timeout), not a fixed N. **D5: TouchDesigner drops the video when an id vanishes** → coasting through short gaps is the visible win; aerial sim 25 → 1 id |
 | CONT-11 | Re-measure the track-local bridge after CONT-3/4; retire or narrow | ids −56 % on slot 4 |
 | ARCH-10 | Single config applier shared by app and replay + parity test | removes the BUG-3 class |
 
@@ -171,11 +181,9 @@ Gate for the set: TEST-1 improves on full slots 3/4. Guards: tango-H s8 / H2 s9 
 
 ## 12. Open decisions
 
-See [AUDIT_2026-10.md §6](AUDIT_2026-10.md) (D1–D17). The blocking ones:
-- **D1:** delivery channel.
-- **D3:** dependency baseline.
-- **D4:** known N.
-- **D5:** TouchDesigner behaviour.
+See [AUDIT_2026-10.md §6](AUDIT_2026-10.md). **Answered 2026-10-06:** D1 release branch · D3 pin prod's stack
+· D4 max N known, dancers enter/leave · D5 TouchDesigner drops the video on id loss. Remaining: D2 (laptop
+facts, via `wdremote inventory`), D6–D17.
 
 ## Appendix A — legacy labels → homes
 
