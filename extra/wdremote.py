@@ -804,7 +804,7 @@ def cmd_doctor(tr, remote: Remote, a) -> int:
     exe = remote.python_exe()
     test = remote.shell([exe, "-c", "import sys; print(sys.version.split()[0])"])
     p = tr.run(test, timeout=60)
-    print(f"  python: {exe} -> rc={p.returncode} {(p.stdout or b'').decode().strip()}")
+    print(f"  python: {exe} -> rc={p.returncode} {(p.stdout or b'').decode(errors='replace').strip()}")
     ok &= p.returncode == 0
     err = (p.stderr or b"").decode(errors="replace")
     if p.returncode != 0 and remote.win and "No Python at" in err:
@@ -815,7 +815,7 @@ def cmd_doctor(tr, remote: Remote, a) -> int:
               " ADMIN PowerShell\n     (docs/REMOTE_OPS.md §1 step 5):\n     "
               + err.strip().splitlines()[-1][:200])
     p = tr.run(remote.shell(["git", "--version"]), timeout=30)
-    print(f"  git CLI: {'yes ' + (p.stdout or b'').decode().strip() if p.returncode == 0 else 'NO (bundle falls back to a .git zip)'}")
+    print(f"  git CLI: {'yes ' + (p.stdout or b'').decode(errors='replace').strip() if p.returncode == 0 else 'NO (bundle falls back to a .git zip)'}")
     return 0 if ok else 1
 
 
@@ -1167,11 +1167,11 @@ def get_token(tr, remote: Remote, refresh: bool = False) -> str:
         cmd = ('type "%USERPROFILE%\\.walldance\\remote_token"' if remote.win
                else "cat ~/.walldance/remote_token")
         p = tr.run(cmd, timeout=30)
-        token = (p.stdout or b"").decode().strip()
+        token = (p.stdout or b"").decode(errors="replace").strip()
         if p.returncode != 0 or len(token) < 16:
             raise SystemExit("wdremote: no API token on the laptop yet -- has the app been "
                              "started once with REMOTE_API_ENABLED? "
-                             f"({(p.stderr or b'').decode().strip()})")
+                             f"({(p.stderr or b'').decode(errors='replace').strip()})")
     cache.parent.mkdir(parents=True, exist_ok=True)
     cache.write_text(token + "\n")
     try:

@@ -32,6 +32,8 @@ def _write(p: Path, data: bytes, mtime: float | None = None) -> Path:
 
 @pytest.fixture
 def fake_remote(tmp_path):
+    if os.name == "nt":
+        pytest.skip("LocalTransport emulates the laptop with a posix shell (bash)")
     root = tmp_path / "prod"
     old = time.time() - 90 * 86400
     proj = root / "projects" / "1_TANGO_HANGAR-texturedbg"

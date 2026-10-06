@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -67,6 +68,8 @@ def repo(tmp_path, monkeypatch):
 
 @pytest.fixture
 def laptop(tmp_path):
+    if os.name == "nt":
+        pytest.skip("LocalTransport emulates the laptop with a posix shell (bash)")
     live = tmp_path / "laptop" / "WallDance"
     (live / "application" / ".venv").mkdir(parents=True)
     (live / "models").mkdir()
