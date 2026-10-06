@@ -174,3 +174,16 @@ def test_dash_args_pass_through(monkeypatch):
     wr.main(["slot", "run", "--", "--project", "p", "--slot", "3"])
     assert seen["pytest"] == ["-x", "-k", "rig"]
     assert seen["slot"] == ["--project", "p", "--slot", "3"]
+
+
+def test_release_check_danger_without_pin(repo, capsys):
+    r, v1, v2 = repo                      # v2 changes install.bat, no requirements-prod.txt
+    args = wr.build_parser().parse_args(["release-check", v2, "--base", v1])
+    ws.cmd_release_check(None, None, args)
+    assert "DANGER" in capsys.readouterr().out
+    (r / "application" / "requirements-prod.txt").write_text("# wd-python: 3.10.19\nnumpy==1.26.4\n")
+    _git(r, "add", "-A")
+    _git(r, "commit", "-qm", "pin")
+    args = wr.build_parser().parse_args(["release-check", "HEAD", "--base", v1])
+    ws.cmd_release_check(None, None, args)
+    assert "DANGER" not in capsys.readouterr().out

@@ -460,6 +460,11 @@ def cmd_release_check(tr, remote, a) -> int:
         print(f"  {len(names)} file(s) changed")
         for c, ns in flags.items():
             print(f"  ! {c}: {', '.join(ns[:6])}{' ...' if len(ns) > 6 else ''}")
+        reinstall = [n for n in names if n in ("install.bat", "application/pyproject.toml")]
+        if reinstall and "application/requirements-prod.txt" not in tree_files(commit):
+            print("  !! DANGER: this release makes the laptop re-run install.bat WITHOUT "
+                  "application/requirements-prod.txt -> an UNPINNED resolve (TensorRT 11, "
+                  "dead engines). Ship the pin file in the same release (wdremote freeze-lock).")
     if a.tests:
         print("[release-check] running the unit suite at the candidate (temporary worktree)...")
         wt = Path(wr.RUNS_DIR) / f"release-check-{wr.new_stamp()}"
