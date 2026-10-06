@@ -6,6 +6,7 @@ Supports full GPU pipeline for zero-copy processing (see gpu_pipeline.py).
 
 from __future__ import annotations
 
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
@@ -672,6 +673,11 @@ class FrameProcessor:
         runner = self._yolo_runner
         if runner is None or runner.model is not self.model:
             runner = self._yolo_runner = PoseRunner(self.model)
+            # Kill switch: WD_POSE_RUNNER=0 forces the regular ultralytics call
+            # (the fast path reads predictor internals; verify per ultralytics).
+            if os.environ.get("WD_POSE_RUNNER", "1") == "0":
+                runner.enabled = False
+                runner.disabled_reason = "WD_POSE_RUNNER=0"
         return runner(
             yolo_tensor,
             imgsz=self.settings.imgsz,
