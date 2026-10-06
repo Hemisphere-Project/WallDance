@@ -321,6 +321,6 @@ byte-identical with slots on or off).
 Operator knobs live in phase **6 Live → Dancer IDs** and are remote-settable
 (`SetIdentitySlots`, `SetMaxDancers`, `SetStability`, `SetCoastSeconds`, `ToggleIrBelt`,
 `ToggleOscState`, `SetStaticGhostGuard`, `SetStaticRelease`, `SetSlotFilterInput`, `SetSmartHold`; policy `control`).
-The preview draws each emitted slot as a **big ball** at exactly the position `/centroid` sends
-(solid while measured, see-through with a ring while held, state colour, slot number inside). The FRAME_SUMMARY log carries `slots` (per slot: id,
+The preview draws each emitted slot as a **ball** at exactly the position `/centroid` sends
+(white fill in every state; only the border takes the state colour). The FRAME_SUMMARY log carries `slots` (per slot: id,
 state, bound tracker id, age) and `emitted_slots`; `SLOT_EVENT` lines record binds and losses.

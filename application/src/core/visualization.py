@@ -36,48 +36,31 @@ SLOT_STATE_COLORS = {
 }
 
 
-# Output ball (2026-10-06): the emitted centroid drawn as a big ball so the operator
-# previews exactly what TouchDesigner receives (OSC /centroid = smoothed_centroid).
-OUTPUT_BALL_R_FRAC = 0.035     # radius as a fraction of the preview height (25 px at 720 p)
-OUTPUT_BALL_R_MIN = 12         # px
-OUTPUT_BALL_ALPHA = {"live": 0.85, "belt": 0.85, "coasting": 0.40, "weak": 0.40}
+# Output ball (2026-10-06): the emitted centroid drawn as a ball so the operator previews
+# exactly what TouchDesigner receives (OSC /centroid = smoothed_centroid).  The fill never
+# changes; only the border takes the slot-state colour (live / belt / coasting / weak).
+OUTPUT_BALL_R_FRAC = 0.0175    # radius as a fraction of the preview height (~13 px at 720 p)
+OUTPUT_BALL_R_MIN = 6          # px
+OUTPUT_BALL_FILL = (255, 255, 255)   # BGR, same in every state
 
 
-def draw_output_ball(frame, cx: float, cy: float, color, state: str = "live",
-                     label: str = "") -> None:
-    """A big ball at (cx, cy) in preview px: opaque-ish while measured (live / belt),
-    see-through with a solid ring while held (coasting / weak), a dark dot at the exact
-    point and the slot number inside.  Blends only a patch around the ball (cheap)."""
-    fh, fw = frame.shape[:2]
+def draw_output_ball(frame, cx: float, cy: float, border_color) -> None:
+    """A solid ball at (cx, cy) in preview px: constant fill, border in ``border_color``
+    (the slot state), thin dark outline for contrast."""
+    fh = frame.shape[0]
     r = max(OUTPUT_BALL_R_MIN, int(round(fh * OUTPUT_BALL_R_FRAC)))
     x, y = int(round(cx)), int(round(cy))
-    x0, y0, x1, y1 = max(0, x - r - 3), max(0, y - r - 3), min(fw, x + r + 4), min(fh, y + r + 4)
-    if x1 <= x0 or y1 <= y0:
-        return
-    patch = frame[y0:y1, x0:x1]
-    over = patch.copy()
-    cv2.circle(over, (x - x0, y - y0), r, color, -1, cv2.LINE_AA)
-    a = OUTPUT_BALL_ALPHA.get(state, 0.6)
-    cv2.addWeighted(over, a, patch, 1.0 - a, 0.0, dst=patch)
-    ring = max(2, r // 6)
-    cv2.circle(frame, (x, y), r, (0, 0, 0), ring + 2, cv2.LINE_AA)
-    cv2.circle(frame, (x, y), r, color, ring, cv2.LINE_AA)
-    if label:
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        fs = max(0.4, r / 22.0)
-        ft = max(1, int(round(r / 12.0)))
-        (tw, th), _ = cv2.getTextSize(label, font, fs, ft)
-        cv2.putText(frame, label, (x - tw // 2, y + th // 2), font, fs, (0, 0, 0), ft + 2, cv2.LINE_AA)
-        cv2.putText(frame, label, (x - tw // 2, y + th // 2), font, fs, (255, 255, 255), ft, cv2.LINE_AA)
-    else:
-        cv2.circle(frame, (x, y), max(2, r // 6), (0, 0, 0), -1, cv2.LINE_AA)
+    ring = max(2, int(round(r * 0.3)))
+    cv2.circle(frame, (x, y), r + 1, (0, 0, 0), -1, cv2.LINE_AA)
+    cv2.circle(frame, (x, y), r, border_color, -1, cv2.LINE_AA)
+    cv2.circle(frame, (x, y), max(1, r - ring), OUTPUT_BALL_FILL, -1, cv2.LINE_AA)
 
 
 def draw_slot(frame, track, sx: float = 1.0, sy: float = 1.0,
               thickness_scale: float = 1.0):
     """One emitted identity slot (what OSC sends): its smoothed box in the state
     colour when not live, the OUTPUT BALL on the smoothed centroid (the exact OSC
-    /centroid), and ``D<id>`` (+ state when not live).  ``sx``/``sy`` map original
+    /centroid; border = state colour), and ``D<id>`` (+ state when not live).  ``sx``/``sy`` map original
     px to the preview."""
     state = getattr(track, "slot_state", None) or "live"
     color = SLOT_STATE_COLORS.get(state, (200, 200, 200))
@@ -89,7 +72,7 @@ def draw_slot(frame, track, sx: float = 1.0, sy: float = 1.0,
     t = max(1, int(round(scale)))
     if state != "live":   # the live box is the tracker's (drawn already)
         cv2.rectangle(frame, (int(x), int(y)), (int(x + w), int(y + h)), color, t)
-    draw_output_ball(frame, cx, cy, color, state, str(track.track_id))
+    draw_output_ball(frame, cx, cy, color)
     label = f"D{track.track_id}" + ("" if state == "live" else f" {state}")
     font = cv2.FONT_HERSHEY_SIMPLEX
     fs = max(0.45, 0.8 * scale)

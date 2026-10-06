@@ -72,9 +72,9 @@ stable et un point qui saute. Elles se règlent une fois à l'installation.
 | Un point apparaît sur **l'ombre** d'un danseur | rapprocher le projecteur de l'objectif |
 | **Plus de points que de danseurs** | vérifier **Max dancers** |
 
-Dans l'aperçu, chaque point envoyé à TouchDesigner est une **grosse boule numérotée 1, 2**, exactement là où
-TouchDesigner la reçoit : **pleine** = suivi, **transparente avec un anneau** = maintenue. Couleur : **vert** = suivi
-normal, **cyan** = suivi par la ceinture, **orange** = maintenu (danseur perdu depuis moins de « Hold »).
+Dans l'aperçu, chaque point envoyé à TouchDesigner est une **boule blanche**, exactement là où TouchDesigner la
+reçoit ; seul son **bord** change de couleur selon l'état : **vert** = suivi normal, **cyan** = suivi par la ceinture,
+**orange** = maintenu (danseur perdu depuis moins de « Hold »). L'étiquette D1, D2 reste à côté du cadre.
 **Beaucoup d'orange = conditions à améliorer** (lumière, cadrage, projecteur) : le noter avec l'heure.
 
 **Smart hold** : seul un danseur bien suivi (squelette vu, un peu de mouvement) a droit au « Hold » complet ; un
