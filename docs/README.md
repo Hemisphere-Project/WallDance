@@ -37,6 +37,7 @@ Everything else is reference, operator procedure, or archived design.
 | [OSC_CONTRACT.md](OSC_CONTRACT.md) | Canonical `/walldance/*` output contract (box-clamp, L-driven stream, latency) | 🟢 Live |
 | [NEW_SHOW.md](NEW_SHOW.md) | Operator field playbook from the spine | 🟢 Live |
 | [CHECK_TEST.md](CHECK_TEST.md) | Pre-show + recorded-case test procedure | 🟢 Live |
+| [MARKERS_PHASE0A.md](MARKERS_PHASE0A.md) | IR-marker Phase 0a analysis runbook: `marker_eval.py` on the laptop over 4G, metrics M1–M7, synthetic checks (MRK-1/2) | 🟢 Live (2026-10-06) |
 
 ## Reference
 
