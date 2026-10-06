@@ -71,7 +71,7 @@ POLICY: Dict[str, str] = {
     "SetEnhanceParam": CONTROL, "BgCapture": CONTROL, "BgClear": CONTROL,
     "ToggleBgSubtract": CONTROL, "SetBgSensitivity": CONTROL,
     "TogglePreview": CONTROL, "ToggleInputFpsCap": CONTROL, "SetRoi": CONTROL,
-    "ResetRoi": CONTROL, "ClearMask": CONTROL, "ToggleOsc": CONTROL,
+    "ResetRoi": CONTROL, "ClearMask": CONTROL, "SetRoiRect": CONTROL, "ExcludeAt": CONTROL, "ToggleOsc": CONTROL,
     "SetOscTarget": CONTROL, "SetIdsParam": CONTROL, "RefreshCameras": CONTROL,
     "SelectSource": CONTROL, "StartCalibration": CONTROL, "StartDancersRun": CONTROL,
     "ApplyCalib2": CONTROL, "ClearCalib2Pool": CONTROL, "ApplyCalibSweep": CONTROL,

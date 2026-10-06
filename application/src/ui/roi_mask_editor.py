@@ -590,6 +590,40 @@ class RoiMaskEditor:
                            duration=2.5, color=(255, 180, 80))
         print("[Mask] cleared (auto + manual)")
 
+    def set_roi_norm(self, x: float, y: float, w: float, h: float):
+        """API: ROI rect from normalized source-frame coords; enables ROI."""
+        fw, fh = self.state.source_size
+        self.settings.roi_enabled = True
+        self._set_roi_rect(int(round(x * fw)), int(round(y * fh)),
+                           int(round(w * fw)), int(round(h * fh)),
+                           frame_w=fw, frame_h=fh)
+        print(f"[ROI] set remotely to x={x:.3f} y={y:.3f} w={w:.3f} h={h:.3f} (normalized)")
+
+    def exclude_at(self, x: float, y: float, radius: int = 0, include: bool = False):
+        """API: (un)mask the exclusion cell under a normalized source-frame
+        point (OSC centroid space) and ``radius`` cells around it."""
+        fw, fh = self.state.source_size
+        center = self._mask_norm_point(x * fw, y * fh, fw, fh)
+        if center is None:
+            print(f"[Mask] remote point ({x:.3f}, {y:.3f}) is outside the mask area (ROI)")
+            return
+        grid = self.processor.get_exclusion_state()[0]
+        cols, rows = (int(grid[0]), int(grid[1])) if grid else (16, 10)
+        value = not include
+        cells = set()
+        for dc in range(-radius, radius + 1):
+            for dr in range(-radius, radius + 1):
+                nx = center[0] + dc / cols
+                ny = center[1] + dr / rows
+                if 0.0 <= nx < 1.0 and 0.0 <= ny < 1.0:
+                    cell = self.processor.paint_exclusion_cell(nx, ny, value)
+                    if cell is not None:
+                        cells.add(tuple(cell))
+        self._sync_mask_ui()
+        self.request_reprocess()
+        print(f"[Mask] {'unmasked' if include else 'masked'} {len(cells)} cell(s) remotely "
+              f"at ({x:.3f}, {y:.3f}) r={radius}: {sorted(cells)}")
+
     def _sync_mask_ui(self):
         """Push the current mask cell counts to the GUI label."""
         gui = self.gui()

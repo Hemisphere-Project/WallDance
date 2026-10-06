@@ -890,6 +890,8 @@ class WallDanceApp:
         reg(api.ResetRoi, lambda c: self.roi._cb_roi_reset())
         reg(api.EditMask, lambda c: self.roi._cb_mask_edit_toggle())
         reg(api.ClearMask, lambda c: self.roi._cb_mask_clear())
+        reg(api.SetRoiRect, lambda c: self.roi.set_roi_norm(c.x, c.y, c.w, c.h))
+        reg(api.ExcludeAt, lambda c: self.roi.exclude_at(c.x, c.y, int(c.radius), bool(c.include)))
         # model / TRT
         reg(api.LoadModel, lambda c: self.models._cb_model_change(c.name))
         reg(api.ToggleTrt, lambda c: self.models._cb_trt_toggle(c.enabled))

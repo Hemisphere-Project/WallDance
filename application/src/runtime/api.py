@@ -363,6 +363,43 @@ class ClearMask(Command):
     pass
 
 
+def _check_unit(name: str, **vals) -> None:
+    for k, v in vals.items():
+        if not 0.0 <= float(v) <= 1.0:
+            raise ValueError(f"{name}.{k} must be 0..1 (normalized frame coords), got {v!r}")
+
+
+@dataclass(frozen=True)
+class SetRoiRect(Command):
+    """Set and enable the ROI rect in normalized source-frame coords (0..1),
+    the same space as the OSC centroids: remote ROI fixes without the mouse."""
+    x: float
+    y: float
+    w: float
+    h: float
+
+    def __post_init__(self):
+        _check_unit("SetRoiRect", x=self.x, y=self.y, w=self.w, h=self.h)
+        if float(self.w) <= 0.0 or float(self.h) <= 0.0:
+            raise ValueError("SetRoiRect.w and .h must be > 0")
+
+
+@dataclass(frozen=True)
+class ExcludeAt(Command):
+    """Mask (or with include=True, unmask) the exclusion cell under a
+    normalized source-frame point (an OSC centroid), plus ``radius`` cells
+    around it: remote ghost-spot fix from a snapshot / the OSC stream."""
+    x: float
+    y: float
+    radius: int = 0
+    include: bool = False
+
+    def __post_init__(self):
+        _check_unit("ExcludeAt", x=self.x, y=self.y)
+        if not 0 <= int(self.radius) <= 4:
+            raise ValueError(f"ExcludeAt.radius must be 0..4, got {self.radius!r}")
+
+
 # --- model / TRT -----------------------------------------------------------
 
 @dataclass(frozen=True)
