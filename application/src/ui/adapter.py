@@ -31,6 +31,15 @@ from runtime import api
 from ui.calibrate_all_wizard import CalibrateAllWizard
 
 
+# REQ-1 import status -> toast (duration, color) per ImportProgress.state.
+_IMPORT_TOASTS = {
+    "started": (4.0, (120, 170, 220)),
+    "progress": (3.0, (120, 170, 220)),
+    "done": (8.0, (120, 220, 140)),
+    "error": (8.0, (255, 120, 100)),
+}
+
+
 class DpgUiAdapter:
     """Owns the WallDanceGUI instance and both seam directions."""
 
@@ -209,6 +218,8 @@ class DpgUiAdapter:
             "on_rec_toggle": lambda: submit(api.PlaybackControl("record_toggle")),
             "on_rec_slot_click": lambda slot, ctrl: submit(
                 api.SelectSlot(int(slot), bool(ctrl))),
+            "on_import_video": lambda slot, path: submit(
+                api.ImportVideoToSlot(int(slot), str(path))),
             "on_playback_speed_change": lambda speed: submit(
                 api.PlaybackControl("speed", float(speed))),
             "on_playback_pause": lambda: submit(api.PlaybackControl("pause_toggle")),
@@ -295,6 +306,10 @@ class DpgUiAdapter:
         elif e.kind == "input":
             gui.sync_input(e.name, e.value)
 
+    def _show_import_progress(self, e: api.ImportProgress) -> None:
+        duration, color = _IMPORT_TOASTS.get(e.state, (4.0, (255, 200, 100)))
+        self.gui.show_toast(e.message, duration=duration, color=color)
+
     def _build_event_handlers(self) -> Dict[type, Callable]:
         submit = self.api.submit
         return {
@@ -359,6 +374,7 @@ class DpgUiAdapter:
                 e.message, e.progress, e.detail, animate=e.animate),
             api.ModelLoadModalHide: lambda e: self.gui.hide_model_loading_modal(),
             api.RecordingUi: lambda e: self.gui.update_recording_ui(**e.payload),
+            api.ImportProgress: self._show_import_progress,
             api.SlotHistory: lambda e: self.gui.show_slot_history_menu(
                 e.slot, e.recordings,
                 lambda fp, slot=e.slot: submit(api.PlaySlotRecording(slot, fp))),

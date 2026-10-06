@@ -392,6 +392,10 @@ class _RecordingUiAdapter:
         # to the same controller method on the main loop.
         self._app.bus.publish(api.SlotHistory(slot, recordings))
 
+    def show_import_status(self, state, slot, source, message, progress, dest):
+        self._app.bus.publish(api.ImportProgress(state, slot, source, message,
+                                                 progress, dest))
+
 
 class _RecordingCameraAdapter:
     """RecordingCameraPort over the app's unified/legacy camera pair."""
@@ -905,6 +909,7 @@ class WallDanceApp:
         reg(api.StartRecordingSlot,
             lambda c: self.recording.start_recording_slot(c.slot))
         reg(api.StopRecording, lambda c: self.recording.stop_recording_now())
+        reg(api.ImportVideoToSlot, self._cmd_import_video)
         reg(api.SetRigSheet, self._cmd_set_rig_sheet)
         # review / misc
         reg(api.RequestIssueReport, lambda c: self._cmd_request_issue_report())
@@ -928,6 +933,16 @@ class WallDanceApp:
             print(f"[Rig] {warning}")
         if c.echo:   # never echo GUI keystrokes back (would fight the cursor)
             self._sync("input", f"rig.{c.field}", value)
+
+    def _cmd_import_video(self, c: api.ImportVideoToSlot):
+        """REQ-1. STANDBY-gated like the other heavy jobs (dry-run, tunes): a
+        multi-GB copy / CPU transcode must not compete with a live show."""
+        if self.system_state == SystemState.RUN:
+            self.recording._import_status(
+                "error", int(c.slot), c.path,
+                "Video import runs in STANDBY (stop the show first)")
+            return
+        self.recording.import_video(int(c.slot), c.path, c.mode)
 
     def _cmd_set_remote_control(self, c: api.SetRemoteControl):
         """Operator toggle (phase 6 Live): remote control commands while in
@@ -976,6 +991,7 @@ class WallDanceApp:
             "sensitivity": self.sensitivity,
             "rig": dict(self.rig_sheet),
             "input_transform": self.input_transform.to_config(),
+            "import_running": self.recording.import_running,
         }
 
     def _sync_rig_sheet(self):

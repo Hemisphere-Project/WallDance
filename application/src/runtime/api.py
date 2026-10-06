@@ -535,6 +535,30 @@ class StopRecording(Command):
     pass
 
 
+IMPORT_MODES = ("auto", "copy", "transcode")
+
+
+@dataclass(frozen=True)
+class ImportVideoToSlot(Command):
+    """Import an external video file into recording slot ``slot`` (REQ-1).
+    Copied into the project's recordings/ as the slot's newest take (older
+    takes stay in the Ctrl+click history), with a ``.meta`` sidecar. Runs on
+    a worker thread; progress arrives as ImportProgress events.
+
+    mode: ``auto`` = byte copy for .avi/.mp4, transcode anything else
+    (.mov/.mkv/...) to MJPG .avi; ``copy`` / ``transcode`` force one."""
+    slot: int
+    path: str
+    mode: str = "auto"
+
+    def __post_init__(self):
+        if not 1 <= int(self.slot) <= 9:
+            raise ValueError(f"ImportVideoToSlot.slot must be 1-9, got {self.slot!r}")
+        if not str(self.path or "").strip():
+            raise ValueError("ImportVideoToSlot.path is empty")
+        _check_member(self.mode, IMPORT_MODES, "ImportVideoToSlot.mode")
+
+
 # --- rig sheet (MRK-0) ----------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -797,6 +821,22 @@ class ActiveProfile(Event):
 class RecordingUi(Event):
     """Payload mirrors WallDanceGUI.update_recording_ui kwargs."""
     payload: Dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ImportProgress(Event):
+    """REQ-1 video import status. state: started | progress | done | error.
+    ``progress`` in [0, 1]; ``dest`` is the new slot file once done."""
+    state: str
+    slot: int
+    source: str
+    message: str = ""
+    progress: float = 0.0
+    dest: str = ""
+
+    def __post_init__(self):
+        _check_member(self.state, ("started", "progress", "done", "error"),
+                      "ImportProgress.state")
 
 
 @dataclass(frozen=True)

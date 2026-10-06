@@ -15,14 +15,18 @@ import json
 import os
 import time
 import threading
+import traceback
 from collections import deque
 from typing import Callable, Deque, Optional, Protocol
 
 import numpy as np
 
+from core import video_import
 from core.config import CAMERA_FPS, RECORDING_CAMLOG_INTERVAL_S
 from core.tracking_logger import _json_default
 from core.video_recorder import RecorderState
+
+IMPORT_PROGRESS_INTERVAL_S = 1.0   # throttle for ImportProgress events
 
 
 class RecordingUiPort(Protocol):
@@ -42,6 +46,9 @@ class RecordingUiPort(Protocol):
     def show_toast(self, message: str, duration: float, color) -> None: ...
 
     def show_slot_history_menu(self, slot, recordings, on_pick) -> None: ...
+
+    def show_import_status(self, state: str, slot: int, source: str,
+                           message: str, progress: float, dest: str) -> None: ...
 
 
 class RecordingCameraPort(Protocol):
@@ -112,6 +119,10 @@ class RecordingController:
         self._pending_playback_events: Deque[str] = deque()
         self._pending_playback_events_lock = threading.Lock()
         self._last_camlog: float = 0.0
+        # REQ-1 video import: one worker at a time; the worker flags the slot
+        # list dirty and the main loop refreshes the slot buttons.
+        self._import_thread: Optional[threading.Thread] = None
+        self._slots_dirty: bool = False
 
         recorder.on_playback_start = self._on_playback_start_event
 
@@ -135,7 +146,14 @@ class RecordingController:
             self._pending_playback_events.append(event)
 
     def _drain_pending_playback_event(self) -> Optional[str]:
-        """Return the next deferred playback event, if any."""
+        """Return the next deferred playback event, if any.
+
+        Also the per-tick main-thread hook for a finished video import: the
+        slot buttons are refreshed here (not on the import worker thread),
+        without consuming the tick."""
+        if self._slots_dirty:
+            self._slots_dirty = False
+            self._update_recording_ui()
         with self._pending_playback_events_lock:
             if not self._pending_playback_events:
                 return None
@@ -505,7 +523,8 @@ class RecordingController:
             return
 
         status = self.recorder.status
-        slots_info = [(i, self.recorder.get_slot_info(i).has_recordings) for i in range(1, 10)]
+        slots_info = [(i, self.recorder.get_slot_info(i).has_recordings)
+                      for i in range(1, self.recorder.NUM_SLOTS + 1)]
 
         # Map state to string, including armed state
         if self._rec_armed and status.state == RecorderState.LIVE:
@@ -526,3 +545,82 @@ class RecordingController:
             paused=self.recorder.is_paused(),
             playback_speed=self.recorder._playback_speed,
         )
+
+    # ------------------------------------------------------------------
+    # Video import into a slot (REQ-1)
+    # ------------------------------------------------------------------
+    @property
+    def import_running(self) -> bool:
+        thread = self._import_thread
+        return thread is not None and thread.is_alive()
+
+    def _import_status(self, state: str, slot: int, source: str, message: str,
+                       progress: float = 0.0, dest: str = "") -> None:
+        print(f"[Import] {state}: {message}")
+        try:
+            self.ui.show_import_status(state, int(slot), str(source), message,
+                                       float(progress), dest)
+        except Exception as e:  # noqa: BLE001 - a UI hiccup must not kill the copy
+            print(f"[Import] status publish failed: {e}")
+
+    def import_video(self, slot: int, path: str, mode: str = "auto") -> bool:
+        """Start importing ``path`` into ``slot`` on a worker thread
+        (ImportVideoToSlot command; main thread). False when refused."""
+        slot = int(slot)
+        name = os.path.basename(str(path))
+        if self.import_running:
+            self._import_status("error", slot, path,
+                                "An import is already running - wait for it to finish")
+            return False
+        if self.recorder.is_recording:
+            self._import_status("error", slot, path,
+                                "Stop the recording before importing a video")
+            return False
+        try:
+            src = video_import.validate_source(path)
+            resolved = video_import.resolve_mode(src, mode)
+        except video_import.VideoImportError as e:
+            self._import_status("error", slot, path, f"Import refused: {e}")
+            return False
+        how = "copy" if resolved == "copy" else "transcode to MJPG .avi"
+        self._import_status("started", slot, src,
+                            f"Importing {name} into slot {slot} ({how})...")
+        extra = {"project": self.session.current_project}
+        thread = threading.Thread(
+            target=self._run_import, name="VideoImport", daemon=True,
+            args=(slot, src, resolved, self.recorder.recordings_dir, extra))
+        self._import_thread = thread
+        thread.start()
+        return True
+
+    def _run_import(self, slot: int, src: str, mode: str, recordings_dir: str,
+                    extra: dict) -> None:
+        name = os.path.basename(src)
+        last = [time.monotonic()]
+
+        def progress(fraction: float, text: str) -> None:
+            now = time.monotonic()
+            if now - last[0] < IMPORT_PROGRESS_INTERVAL_S:
+                return
+            last[0] = now
+            self._import_status("progress", slot, src,
+                                f"Import slot {slot}: {fraction * 100:.0f}% ({text})",
+                                fraction)
+
+        try:
+            result = video_import.import_video(src, recordings_dir, slot, mode,
+                                               progress=progress, extra_meta=extra)
+        except video_import.VideoImportError as e:
+            self._import_status("error", slot, src, f"Import failed: {e}")
+        except Exception as e:  # noqa: BLE001 - report, never crash the app
+            traceback.print_exc()
+            self._import_status("error", slot, src, f"Import failed: {e}")
+        else:
+            what = "transcoded" if result.mode == "transcode" else "copied"
+            self._import_status(
+                "done", slot, src,
+                f"Slot {slot}: {name} {what} ({result.frames} frames @ "
+                f"{result.fps:.1f} fps). Older takes: Ctrl+click the slot.",
+                1.0, result.dest)
+        finally:
+            self._slots_dirty = True

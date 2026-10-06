@@ -20,8 +20,9 @@ import cv2
 import numpy as np
 
 from core.config_store import PROJECTS_DIR, sanitize_project_name
-from core.config import RECORDING_CODEC, RECORDING_QUALITY
+from core.config import RECORDING_CODEC, RECORDING_QUALITY, RECORDING_SLOTS
 from core.input_transform import IDENTITY, InputTransform
+from core.video_import import SLOT_VIDEO_EXTS   # what the slot listing accepts
 
 
 class RecorderState(Enum):
@@ -216,7 +217,7 @@ class _RecordingJob:
 class VideoRecorder:
     """Manages video recording and playback for 9 slots per project."""
     
-    NUM_SLOTS = 9
+    NUM_SLOTS = RECORDING_SLOTS
     
     def __init__(self, projects_dir: str = PROJECTS_DIR):
         self.projects_dir = projects_dir
@@ -343,7 +344,7 @@ class VideoRecorder:
         recordings = []
         
         for filename in os.listdir(recordings_dir):
-            if filename.startswith(pattern) and filename.endswith((".avi", ".mp4")):
+            if filename.startswith(pattern) and filename.endswith(SLOT_VIDEO_EXTS):
                 filepath = os.path.join(recordings_dir, filename)
                 # Parse timestamp from filename: slot_N_YYYYMMDD_HHMMSS.<ext>
                 display = self._format_recording_display(filename)

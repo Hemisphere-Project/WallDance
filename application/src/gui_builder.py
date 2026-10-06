@@ -14,6 +14,7 @@ from typing import Any, Tuple
 import dearpygui.dearpygui as dpg
 import numpy as np
 
+from core.config import RECORDING_SLOTS
 from gui_icons import Icons
 from gui_constants import (
     TEXT_NORMAL, TEXT_MUTED, TEXT_DIM, TEXT_HINT, TEXT_FAINT,
@@ -1087,7 +1088,7 @@ def build_alerts_strip(gui: Any):
 
 
 def build_drawer_bar(gui: Any):
-    """Recordings bar — LIVE/REC + 10 slots + status + transport, inline on ONE
+    """Recordings bar — LIVE/REC + 9 slots + IMPORT + status + transport, inline on ONE
     line, always visible (no toggle button).  (Advanced is on the phase rail.)"""
     dpg.add_separator()
     with dpg.group(horizontal=True):
@@ -1107,10 +1108,10 @@ def build_advanced_drawer(gui: Any):
 
 def build_recordings_content(gui: Any):
     """Recordings controls laid out inline on the recordings bar's single line:
-    LIVE/REC + 10 slots + dynamic status + playback transport.  Emitted directly
+    LIVE/REC + 9 slots + IMPORT + dynamic status + playback transport.  Emitted directly
     into the caller's horizontal group (no wrapper) so it sits on one line; all
     widget tags are preserved so gui.update_recording_ui drives them unchanged."""
-    # LIVE / REC + 10 slot buttons
+    # LIVE / REC + slot buttons (RECORDING_SLOTS = VideoRecorder.NUM_SLOTS)
     live_btn = dpg.add_button(
         label="LIVE",
         tag="rec_live_btn",
@@ -1126,7 +1127,7 @@ def build_recordings_content(gui: Any):
     )
     dpg.bind_item_theme(rec_btn, gui._rec_btn_theme)
     dpg.add_spacer(width=scaled(4))
-    for slot in range(1, 11):
+    for slot in range(1, RECORDING_SLOTS + 1):
         slot_btn = dpg.add_button(
             label=str(slot),
             tag=f"rec_slot_{slot}_btn",
@@ -1135,6 +1136,19 @@ def build_recordings_content(gui: Any):
             user_data=slot,
         )
         dpg.bind_item_theme(slot_btn, gui._slot_empty_theme)
+
+    # REQ-1: load an external video file into a slot (slot picker -> file dialog).
+    dpg.add_spacer(width=scaled(4))
+    dpg.add_button(
+        label="IMPORT",
+        tag="rec_import_btn",
+        width=scaled(58),
+        callback=gui._on_import_video,
+    )
+    with dpg.tooltip("rec_import_btn"):
+        dpg.add_text("Load a video file (.avi .mp4 .mov .mkv ...) into a slot.\n"
+                     "It becomes the slot's newest take; older takes stay\n"
+                     "in the slot's Ctrl+click history.")
 
     dpg.add_spacer(width=scaled(10))
 
