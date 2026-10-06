@@ -322,6 +322,8 @@ def test_phase0a_aggregation_uses_the_right_takes():
     assert g["M7"]["status"] == "N/A" and g["M9"]["status"] == "MANUAL"
     res["fast"]["assoc"]["M1"] = m1(0.80, 0.95)
     assert me.aggregate_phase0a(res)["M1"]["status"] == "FAIL"
+    # auto-T is always a floor-grid value (floor, --glint-slot and phase0a agree)
+    assert me.grid_up(120) == 120 and me.grid_up(122) == 130 and me.grid_up(251) == 254
 
 
 # ---------------------------------------------------------------------------

@@ -69,6 +69,13 @@ TOOL_VERSION = "1.0"
 REMOTE_HELPERS = ("tmp_analysis/marker_evallib.py", "application/src/core/marker_model.py")
 PHASE0A_SLOTS = "floor=1,static=2,holds=3,aerial=4,fast=5,occlusion=6,duo=7,ladder=8"
 POSE_MODES = ("assoc", "centroid", "occlusion", "sweep", "all")
+FLOOR_GRID = tuple(range(100, 251, 10)) + (254,)   # floor-mode thresholds (10-DN grid)
+
+
+def grid_up(t: float) -> int:
+    """The first floor-grid threshold >= t: auto-T is always a grid value, so a
+    floor run, a --glint-slot run and phase0a all evaluate the same T."""
+    return next((g for g in FLOOR_GRID if g >= t), FLOOR_GRID[-1])
 
 try:        # importable as-is when application/src is already on sys.path (tests)
     import cv2
@@ -559,7 +566,7 @@ def build_glint(video: Path, start: int, n: int, stride: int, roi, T_lo: int, ce
     info = {"video": video.name, "frames": len(mn), "T_lo": T_lo, "cells": gm.n_cells,
             "max_natural": int(mn.max()), "max_natural_p999": int(np.percentile(mn, 99.9)),
             "T_recommended": ev.recommend_threshold(float(np.percentile(mn, 99.9)))}
-    gm.T = info["T_recommended"]
+    gm.T = info["T_used"] = grid_up(info["T_recommended"])
     return gm, info
 
 
@@ -759,7 +766,7 @@ def analyze_take(a, root: Path, video: Optional[Path], scen: Optional[dict], out
     if mode == "floor":
         # a 10-DN grid: with --threshold auto, M2 is read at the first grid value
         # >= the §2.3 recommendation, and phase0a hands that T to the other takes
-        thresholds = sorted(set(thresholds or (list(range(100, 251, 10)) + [254])) | {T})
+        thresholds = sorted(set(thresholds or FLOOR_GRID) | {T})
     elif mode == "sweep":
         thresholds = sorted(set(thresholds or [100, 130, 160, 200, 230, 250]) | {T})
     else:
@@ -944,8 +951,8 @@ def analyze_take(a, root: Path, video: Optional[Path], scen: Optional[dict], out
     if mode == "floor":
         reco = floor_sum.get("T_recommended")
         if a.threshold == "auto" and T_override is None and reco:
-            cands = [t for t in thresholds if t >= reco]
-            T_eval = min(cands) if cands else max(thresholds)
+            T_eval = grid_up(reco) if grid_up(reco) in thresholds else \
+                min([t for t in thresholds if t >= reco] or [max(thresholds)])
         d = per_T[T_eval]
         floor_sum.update(ev.fp_summary(frame_ids, d["fp_raw"], d["fp_persist"],
                                        time_bin=max(1, int(10 * fps / max(1, a.stride)))))
