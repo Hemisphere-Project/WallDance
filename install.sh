@@ -59,6 +59,31 @@ else
     PYTORCH_INDEX="https://download.pytorch.org/whl/cpu"
 fi
 
+# ── Pinned mode (ARCH-4 / decision D3) ─────────────────────────────────────
+# requirements-prod.txt = the exact package set of the field laptop's verified
+# venv (`wdremote freeze-lock`). When present, reproduce it with `uv pip sync`
+# instead of resolving the newest versions (TRT engines are version-locked).
+if [ -f requirements-prod.txt ]; then
+    PIN_PY=$(sed -n 's/^# wd-python: *//p' requirements-prod.txt | head -1)
+    PIN_INDEX=$(sed -n 's/^# wd-torch-index: *//p' requirements-prod.txt | head -1)
+    PIN_INDEX=${PIN_INDEX:-$PYTORCH_INDEX}
+    echo "[WallDance] Pinned install from requirements-prod.txt (python ${PIN_PY:-default}, torch index $PIN_INDEX)"
+    if [ ! -x .venv/bin/python ]; then
+        uv venv .venv ${PIN_PY:+--python "$PIN_PY"}
+    fi
+    # Linux dev boxes: drop Windows-only pins (pywin32 & co.) from the sync set.
+    grep -viE '^(pywin32|pywin32-ctypes|pypiwin32|winshell)==' requirements-prod.txt \
+        > .requirements-prod.platform.txt
+    uv pip sync .requirements-prod.platform.txt --python .venv/bin/python \
+        --extra-index-url "$PIN_INDEX" --index-strategy unsafe-best-match \
+        ${WALLDANCE_PIN_DRY_RUN:+--dry-run}
+    rm -f .requirements-prod.platform.txt
+    echo "[WallDance] Verifying core runtime dependencies..."
+    [ -n "${WALLDANCE_PIN_DRY_RUN:-}" ] || uv run --no-sync python -c "import cv2, torch"
+    echo "Installation complete (pinned)."
+    exit 0
+fi
+
 # ── Remove stale resolver config (old installs generated uv.toml) ───────────
 rm -f uv.toml
 
