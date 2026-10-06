@@ -123,6 +123,22 @@ Each `slot_N_<stamp>.avi.meta` holds:
 `slot_N_<stamp>.avi.camlog.jsonl` samples exposure, gain, AE/AG and temperature about once a second during the
 take, because auto-exposure drifts within takes.
 
+## 6b. Phase 0a analysis (IR-marker takes)
+
+The marker takes are analysed **on the laptop** by `tmp_analysis/marker_eval.py` (MRK-1/2). Only the
+summaries and small contact sheets come back. The full runbook is **[MARKERS_PHASE0A.md](MARKERS_PHASE0A.md)**:
+metric definitions, per-take commands, local equivalents and the pre-footage synthetic checks.
+
+```bash
+WITH="--with tmp_analysis/marker_evallib.py --with application/src/core/marker_model.py"   # --with BEFORE the script
+python extra/wdremote.py py $WITH tmp_analysis/marker_eval.py -- info --project markers-0a-<venue>        # provenance check
+python extra/wdremote.py py $WITH tmp_analysis/marker_eval.py -- phase0a --project markers-0a-<venue> \
+    --trt --threshold auto --poses-dir ../tmp_analysis/markers0a                                         # all of §6.2 -> go/no-go
+```
+
+`info` returns ~2 KB, one take ~150–300 KB, and `phase0a` ~1–1.5 MB (~200 KB with `--sheet 0 --overview 0`). On a
+flaky link, run the takes one by one (runbook §1.3): one SSH session spans the whole run.
+
 ## 7. Getting this code onto the laptop (decision D1: release branch)
 
 Nothing is pushed from dev boxes. The sequence, once the laptop is on the tailnet:
