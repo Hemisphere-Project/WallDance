@@ -59,6 +59,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tarfile
 import threading
 import time
 from dataclasses import asdict, dataclass, field
@@ -75,6 +76,22 @@ JSON_MARK = "@@WDREMOTE-JSON@@"
 # Text-like files compress ~10x over SSH; recordings (FFV1/MJPG) do not.
 TEXT_SUFFIXES = (".json", ".jsonl", ".log", ".txt", ".csv", ".meta", ".md", ".py")
 VIDEO_SUFFIXES = (".avi", ".mp4", ".mov", ".mkv")
+# Whole files up to this size travel in one tar.gz stream instead of one sftp
+# round trip each (3162 small files took 8.6 min over sftp at ~20 Mbit/s).
+SMALL_FILE_BYTES = 4 * 1024 * 1024
+
+TAR_PY = r'''
+import gzip, json, os, sys, tarfile
+def main(rels):
+    root = sys.argv[1]
+    with gzip.GzipFile(fileobj=sys.stdout.buffer, mode="wb", compresslevel=6) as gz, \
+            tarfile.open(fileobj=gz, mode="w|") as tf:
+        for rel in rels:
+            try:
+                tf.add(os.path.join(root, *rel.split("/")), arcname=rel, recursive=False)
+            except OSError:
+                pass                    # vanished since the manifest: reported as incomplete
+'''
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +202,11 @@ class SshTransport:
             return subprocess.run(argv, input=stdin, timeout=timeout)
         return subprocess.run(argv, input=stdin, capture_output=True, timeout=timeout)
 
+    def popen(self, command: str) -> subprocess.Popen:
+        """stdin/stdout pipes, for streaming a binary answer (pull's tar stream)."""
+        return subprocess.Popen(self._base("ssh", False) + [self.remote.host, command],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+
     def sftp_batch(self, lines: Sequence[str], compress: bool = False,
                    limit_kbit: int = 0) -> int:
         argv = self._base("sftp", compress) + ["-b", "-"]
@@ -209,6 +231,10 @@ class LocalTransport:
             return subprocess.run(["bash", "-c", command], input=stdin, timeout=timeout)
         return subprocess.run(["bash", "-c", command], input=stdin,
                               capture_output=True, timeout=timeout)
+
+    def popen(self, command: str) -> subprocess.Popen:
+        return subprocess.Popen(["bash", "-c", command],
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE)
 
     def sftp_batch(self, lines: Sequence[str], compress: bool = False,
                    limit_kbit: int = 0) -> int:
@@ -562,6 +588,32 @@ def _local_has_symlink(dest: Path, rel: str) -> Optional[Path]:
     return None
 
 
+def _tar_pull(tr, remote: Remote, rels: List[str], dest: Path) -> int:
+    """Fetch whole files as one tar.gz stream; only the requested names are written."""
+    wanted = set(rels)
+    script = TAR_PY + f"\nmain(json.loads({json.dumps(json.dumps(rels))}))\n"
+    proc = tr.popen(remote.shell([remote.python_exe(), "-", remote.root],
+                                 env={"PYTHONIOENCODING": "utf-8"}))
+    proc.stdin.write(script.encode())           # python reads the whole script first
+    proc.stdin.close()
+    try:
+        with tarfile.open(fileobj=proc.stdout, mode="r|gz") as tf:
+            for m in tf:
+                if not m.isfile() or m.name not in wanted:
+                    continue
+                out = dest / m.name
+                out.parent.mkdir(parents=True, exist_ok=True)
+                part = out.with_name(out.name + ".wdpart")
+                with tf.extractfile(m) as src, open(part, "wb") as fh:
+                    shutil.copyfileobj(src, fh)
+                os.replace(part, out)
+    except (tarfile.TarError, EOFError, OSError) as exc:
+        print(f"[pull] tar stream broke ({exc}); re-run to fetch the rest", file=sys.stderr)
+    finally:
+        proc.stdout.close()
+    return proc.wait()
+
+
 def pull_files(tr, remote: Remote, files: List[dict], dest: Path, *,
                compress_text: bool = True, limit_kbit: int = 0,
                follow_symlinks: bool = False, dry_run: bool = False,
@@ -596,9 +648,15 @@ def pull_files(tr, remote: Remote, files: List[dict], dest: Path, *,
     if dry_run or not todo:
         return summary
 
-    # Two sessions: text compressed, binaries not (FFV1 does not shrink).
+    # Small whole files: one tar.gz stream. The rest: two sftp sessions, text
+    # compressed, binaries not (FFV1 does not shrink); sftp also resumes partials.
+    small = [f for f in todo if f["size"] <= SMALL_FILE_BYTES
+             and (f.get("fresh") or not (dest / f["rel"]).exists())]
+    small_rels = {f["rel"] for f in small}
     groups = {True: [], False: []}
     for f in todo:
+        if f["rel"] in small_rels:
+            continue
         is_text = compress_text and f["rel"].endswith(TEXT_SUFFIXES)
         groups[is_text].append(f)
 
@@ -620,6 +678,8 @@ def pull_files(tr, remote: Remote, files: List[dict], dest: Path, *,
         th.start()
     rcs = []
     try:
+        if small:
+            rcs.append(_tar_pull(tr, remote, [f["rel"] for f in small], dest))
         for compress, group in groups.items():
             if not group:
                 continue
