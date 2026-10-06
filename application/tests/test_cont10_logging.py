@@ -267,6 +267,28 @@ def test_rotation_segments_and_cap(tmp_path):
     assert head["event"] == "SESSION_START" and head["segment"] >= 2
 
 
+def test_rotation_failure_keeps_appending_without_retrying(tmp_path, monkeypatch):
+    import core.tracking_logger as TL
+    calls = []
+
+    def deny(src, dst):
+        calls.append(dst)
+        raise PermissionError("held open by a reader")
+    monkeypatch.setattr(TL.os, "replace", deny)
+    lg = TrackingLogger(filepath=None, segment_bytes=200, flush_interval=1e9)
+    lg.start_session(str(tmp_path / "s"))
+    for i in range(10):
+        lg.log("E", {"i": i, "pad": "z" * 40})
+        lg.flush()                                       # must not raise
+    lg.close()
+    assert len(calls) == 1                               # tried once, then off
+    files = session_event_files(str(tmp_path / "s"))
+    assert [os.path.basename(f) for f in files] == ["tracking_events.jsonl"]
+    got = [json.loads(l)["data"]["i"] for l in open(files[0])
+           if json.loads(l).get("event") == "E"]
+    assert got == list(range(10))
+
+
 def test_prune_live_sessions_only_touches_old_live_folders(tmp_path):
     for n in ("20260101_000000_live", "20260102_000000_live", "20260103_000000_live",
               "20260104_000000_live", "20260101_000000_slot3", "latest_notes"):

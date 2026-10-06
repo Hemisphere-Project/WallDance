@@ -127,6 +127,7 @@ class TrackingLogger:
         self._file_handle: Optional[Any] = None
         self._session_dir: Optional[str] = None
         self._segment: int = 0                    # rotated segments so far
+        self._rotation_off: bool = False          # a rename failed this session
 
         # Live per-show folders (CONT-10): see set_live_root_provider().
         self._live_root_fn: Optional[Callable[[], Optional[str]]] = None
@@ -152,6 +153,7 @@ class TrackingLogger:
         self._session_dir = session_dir
         self._live_root = None
         self._segment = 0
+        self._rotation_off = False
         os.makedirs(session_dir, exist_ok=True)
         self.filepath = os.path.join(session_dir, EVENTS_FILE)
         self._buffer.clear()
@@ -199,6 +201,7 @@ class TrackingLogger:
         self._pending = carry
         self._live_root = root
         self._segment = 0
+        self._rotation_off = False
         stamp = time.strftime("%Y%m%d_%H%M%S")
         name, n = f"{stamp}_live", 1
         while os.path.exists(os.path.join(root, name)):
@@ -360,7 +363,7 @@ class TrackingLogger:
         ``tracking_events.jsonl`` -> ``tracking_events.<NNNN>.jsonl`` (oldest
         first) and a fresh current file.  Session files only."""
         if (self.segment_bytes <= 0 or self._session_dir is None
-                or not self._file_handle):
+                or not self._file_handle or self._rotation_off):
             return
         try:
             size = os.fstat(self._file_handle.fileno()).st_size
@@ -379,7 +382,12 @@ class TrackingLogger:
         try:
             os.replace(self.filepath, seg)
         except OSError as exc:
-            print(f"[TrackingLogger] rotation failed ({exc}); appending")
+            # e.g. a reader holds the file open on Windows: keep appending to
+            # this file and stop trying for this session (no per-flush spam).
+            print(f"[TrackingLogger] rotation failed ({exc}); "
+                  "appending, rotation off for this session")
+            self._segment -= 1
+            self._rotation_off = True
             self._open_file(mode="a")
             return
         if self.max_segments > 0:
