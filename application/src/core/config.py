@@ -627,6 +627,20 @@ PROJECT_PICKER_ON_START = True
 #
 RECORDING_CODEC = "FFV1"
 
+# Disk use per codec, GB per hour at the IDS show crop (1488x1528) and 20 fps,
+# for the readiness "disk" row ("~N h of <codec>"). Measured 2026-10 by
+# re-encoding IR-rig recordings (hangar/residence slots 3-4, tango-H/H2):
+#   FFV1  0.77 MB/frame on the show footage = 55 GB/h (brighter IR takes up to
+#         ~0.97 MB/frame = 70 GB/h). Lossless, so it barely depends on content.
+#   MJPG  (RECORDING_QUALITY 100) 0.02-0.055 MB/frame on dark IR = 1.5-4 GB/h;
+#   mp4v  0.005-0.016 MB/frame = 0.4-1.2 GB/h. Both scale with scene content:
+#         bright non-IR footage measured up to ~25 (MJPG) / ~17 (mp4v) GB/h.
+RECORDING_GB_PER_HOUR = {
+    "FFV1": 55.0,
+    "MJPG": 4.0,
+    "mp4v": 1.2,
+}
+
 # MJPG quality (1-100). Only affects MJPG codec; ignored for FFV1/mp4v.
 # Default OpenCV is ~95 which causes visible artifacts in dark scenes.
 # 98-100 is near-lossless but produces larger files (~3-5× vs default).
@@ -895,8 +909,8 @@ OPS_READINESS_ENABLED = True        # Run the show-readiness check on STANDBY->R
 OPS_OSC_PROBE_TIMEOUT_S = 0.25      # Connected-UDP probe wait (best effort)
 OPS_MIN_SHOW_FPS = 15.0             # Readiness warns if loop FPS is below this
 OPS_CALIB_AGE_WARN_H = 24.0         # Warn if the newest project save is older
-OPS_DISK_WARN_FREE_GB = 60.0        # ~1 h of MJPG recording (measured ~55 GB/h)
-OPS_DISK_FAIL_FREE_GB = 10.0        # ~10 min of recording headroom
+OPS_DISK_WARN_FREE_GB = 60.0        # ~1 h of FFV1 recording (~55 GB/h, RECORDING_GB_PER_HOUR)
+OPS_DISK_FAIL_FREE_GB = 10.0        # ~10 min of FFV1 recording headroom
 OPS_FPS_BASELINE_WINDOW_S = 60.0    # Rolling-median FPS baseline window (RUN only)
 OPS_FPS_DROP_FRACTION = 0.5         # Alert when fps < fraction * baseline ...
 OPS_FPS_DROP_SUSTAIN_S = 10.0       # ... sustained this long
