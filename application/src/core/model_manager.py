@@ -117,7 +117,17 @@ class ModelManager:
         if '_' in base_name and base_name.split('_')[-1].isdigit():
             base_name = '_'.join(base_name.split('_')[:-1])
         sz = imgsz or self.imgsz
-        return os.path.join(self.models_dir, f"{base_name}_{sz}.engine")
+        name = f"{base_name}_{sz}.engine"
+        # Per-box engines (TRT engines only load on the TRT version that built
+        # them): WD_ENGINE_DIR, relative to the repo root (e.g. models/dev37),
+        # wins when it holds this engine; same override as tests/replay.py.
+        override = os.environ.get("WD_ENGINE_DIR")
+        if override:
+            d = override if os.path.isabs(override) else os.path.join(
+                os.path.dirname(os.path.abspath(self.models_dir)), override)
+            if os.path.exists(os.path.join(d, name)):
+                return os.path.join(d, name)
+        return os.path.join(self.models_dir, name)
 
     def model_exists(self, model_name: str) -> bool:
         """Check if .pt model exists."""
