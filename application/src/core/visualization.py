@@ -37,30 +37,34 @@ SLOT_STATE_COLORS = {
 
 
 # Output ball (2026-10-06): the emitted centroid drawn as a ball so the operator previews
-# exactly what TouchDesigner receives (OSC /centroid = smoothed_centroid).  The fill never
-# changes; only the border takes the slot-state colour (live / belt / coasting / weak).
+# exactly what TouchDesigner receives (OSC /centroid = smoothed_centroid).  Centre = a solid
+# colour picked by the slot id (the dancer palette); only the slim border takes the
+# slot-state colour (live / belt / coasting / weak).  A 1 px dark line separates the two,
+# so the border stays readable when both colours match (D1 green on a live green border).
 OUTPUT_BALL_R_FRAC = 0.0175    # radius as a fraction of the preview height (~13 px at 720 p)
 OUTPUT_BALL_R_MIN = 6          # px
-OUTPUT_BALL_FILL = (255, 255, 255)   # BGR, same in every state
+OUTPUT_BALL_BORDER_FRAC = 0.15 # border width as a fraction of the radius (2 px at 720 p)
 
 
-def draw_output_ball(frame, cx: float, cy: float, border_color) -> None:
-    """A solid ball at (cx, cy) in preview px: constant fill, border in ``border_color``
-    (the slot state), thin dark outline for contrast."""
+def draw_output_ball(frame, cx: float, cy: float, border_color, fill_color) -> None:
+    """A solid ball at (cx, cy) in preview px: ``fill_color`` centre, slim border in
+    ``border_color``, dark outline outside and between the two."""
     fh = frame.shape[0]
     r = max(OUTPUT_BALL_R_MIN, int(round(fh * OUTPUT_BALL_R_FRAC)))
     x, y = int(round(cx)), int(round(cy))
-    ring = max(2, int(round(r * 0.3)))
+    border = max(2, int(round(r * OUTPUT_BALL_BORDER_FRAC)))
     cv2.circle(frame, (x, y), r + 1, (0, 0, 0), -1, cv2.LINE_AA)
     cv2.circle(frame, (x, y), r, border_color, -1, cv2.LINE_AA)
-    cv2.circle(frame, (x, y), max(1, r - ring), OUTPUT_BALL_FILL, -1, cv2.LINE_AA)
+    cv2.circle(frame, (x, y), max(1, r - border), (0, 0, 0), -1, cv2.LINE_AA)
+    cv2.circle(frame, (x, y), max(1, r - border - 1), fill_color, -1, cv2.LINE_AA)
 
 
 def draw_slot(frame, track, sx: float = 1.0, sy: float = 1.0,
               thickness_scale: float = 1.0):
     """One emitted identity slot (what OSC sends): its smoothed box in the state
     colour when not live, the OUTPUT BALL on the smoothed centroid (the exact OSC
-    /centroid; border = state colour), and ``D<id>`` (+ state when not live).  ``sx``/``sy`` map original
+    /centroid; centre = slot-id colour, border = state colour), and ``D<id>``
+    (+ state when not live).  ``sx``/``sy`` map original
     px to the preview."""
     state = getattr(track, "slot_state", None) or "live"
     color = SLOT_STATE_COLORS.get(state, (200, 200, 200))
@@ -72,7 +76,7 @@ def draw_slot(frame, track, sx: float = 1.0, sy: float = 1.0,
     t = max(1, int(round(scale)))
     if state != "live":   # the live box is the tracker's (drawn already)
         cv2.rectangle(frame, (int(x), int(y)), (int(x + w), int(y + h)), color, t)
-    draw_output_ball(frame, cx, cy, color)
+    draw_output_ball(frame, cx, cy, color, get_dancer_color(int(track.track_id)))
     label = f"D{track.track_id}" + ("" if state == "live" else f" {state}")
     font = cv2.FONT_HERSHEY_SIMPLEX
     fs = max(0.45, 0.8 * scale)
