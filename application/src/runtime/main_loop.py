@@ -303,6 +303,11 @@ class MainLoop:
                     port=int(os.environ.get("WD_REMOTE_API_PORT", REMOTE_API_PORT)),
                     version=app_version(),
                     allow_quit=os.environ.get("WD_REMOTE_ALLOW_QUIT") == "1")
+                # DEV-slot launches (wdremote slot run --slot dev) are test
+                # sessions: remote control in RUN starts enabled there. The
+                # field (LIVE) app always starts gated by the operator toggle.
+                if os.environ.get("WD_REMOTE_CONTROL") == "1":
+                    app._remote.control_enabled = True
                 if not app._remote.start():
                     app._remote = None
             except Exception as e:  # noqa: BLE001 - remote API is non-critical

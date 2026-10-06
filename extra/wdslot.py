@@ -367,6 +367,7 @@ def cmd_slot_run(tr, remote, a) -> int:
     env = {"WD_SLOT": a.slot}
     if a.slot == "dev":
         env["WD_REMOTE_ALLOW_QUIT"] = "1"    # lets `slot stop` quit gracefully
+        env["WD_REMOTE_CONTROL"] = "1"       # test session: control in RUN allowed
     if remote.win:
         if a.via_launcher and a.slot == "live":
             exe = launcher_dir(remote).replace("/", "\\") + "\\WallDanceLauncher.exe"
