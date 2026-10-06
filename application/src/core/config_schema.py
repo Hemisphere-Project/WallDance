@@ -73,6 +73,63 @@ _RANGES = {
 
 _IMGSZ_PRESETS = (640, 800, 960, 1280, 1536, 1920)
 
+# Rig sheet (MRK-0): the shooting setup the camera cannot report -- entered once
+# per project in phase 1 Rig, copied into every recording's .meta. A shared key
+# (same rig for both lighting profiles). field -> (kind, lo, hi); str = max len.
+RIG_FIELDS = {
+    "lens": ("str", 0, 80),                  # e.g. "Tamron M118FM08 (8 mm)"
+    "focal_mm": ("num", 1.0, 200.0),
+    "f_number": ("num", 0.7, 32.0),          # iris ring position (manual lens)
+    "focus_m": ("num", 0.1, 200.0),          # focus ring distance; 0/None = unknown
+    "filter": ("str", 0, 80),                # e.g. "MidOpt BP850"
+    "illuminator": ("str", 0, 120),          # model / count / power
+    "illuminator_offset_cm": ("num", 0.0, 1000.0),   # from the lens axis (retro return!)
+    "camera_distance_m": ("num", 0.1, 200.0),        # camera -> stage / wall
+    "camera_height_m": ("num", -50.0, 200.0),
+    "markers": ("str", 0, 120),              # e.g. "4 cuffs + harness, 3M 8910 5 cm"
+    "notes": ("str", 0, 500),
+}
+
+
+def sanitize_rig_value(field: str, value):
+    """(clean value, warning-or-None) for one rig field; raises KeyError on an
+    unknown field. Empty / None clears the field (returns None)."""
+    kind, lo, hi = RIG_FIELDS[field]
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None, None
+    if kind == "str":
+        text = str(value).strip()
+        if len(text) > hi:
+            return text[:hi], f"rig.{field}: truncated to {hi} chars"
+        return text, None
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None, f"rig.{field}: invalid value {value!r} dropped"
+    if num == 0.0 and lo > 0:
+        return None, None                    # 0 = "unknown" in the GUI
+    clamped = min(max(num, lo), hi)
+    return clamped, (None if clamped == num
+                     else f"rig.{field}: {num} clamped to {clamped} (range {lo}-{hi})")
+
+
+def sanitize_rig(raw) -> Tuple[Dict, List[str]]:
+    """Keep known rig fields only, typed and bounded; unknown fields dropped."""
+    out: Dict = {}
+    warnings: List[str] = []
+    if not isinstance(raw, dict):
+        return out, ([f"rig: expected an object, got {type(raw).__name__}"] if raw else [])
+    for key, value in raw.items():
+        if key not in RIG_FIELDS:
+            warnings.append(f"rig.{key}: unknown field dropped")
+            continue
+        clean, warn = sanitize_rig_value(key, value)
+        if warn:
+            warnings.append(warn)
+        if clean is not None:
+            out[key] = clean
+    return out, warnings
+
 
 def split_profile(flat: Dict) -> Tuple[Dict, Dict]:
     """Split a flat config into (shared, profile-bundle)."""
@@ -175,6 +232,10 @@ def validate_flat(flat: Dict) -> Tuple[Dict, List[str]]:
         except (TypeError, ValueError):
             warnings.append(f"yolo_imgsz: invalid value {out['yolo_imgsz']!r} dropped")
             out.pop("yolo_imgsz")
+
+    if "rig" in out:
+        out["rig"], rig_warnings = sanitize_rig(out["rig"])
+        warnings.extend(rig_warnings)
 
     _validate_cross_field(out, warnings)
     return out, warnings

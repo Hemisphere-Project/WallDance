@@ -823,6 +823,10 @@ class WallDanceGUI:
         if 'on_osc_toggle' in self.callbacks:
             self.callbacks['on_osc_toggle'](value)
     
+    def _on_rig_field(self, sender, value, user_data=None):
+        if 'on_rig_field' in self.callbacks and user_data:
+            self.callbacks['on_rig_field'](user_data, value)
+
     def _on_osc_config_change(self, sender=None, value=None):
         if 'on_osc_config' in self.callbacks:
             ip = dpg.get_value("osc_ip_input")
@@ -1860,6 +1864,13 @@ class WallDanceGUI:
             'osc_ip': 'osc_ip_input',
             'osc_port': 'osc_port_input',
         }
+        if name.startswith('rig.'):
+            tag = f"rig_{name[4:]}_input"
+            if dpg.does_item_exist(tag):
+                is_text = isinstance(dpg.get_value(tag), str)
+                dpg.set_value(tag, ("" if value is None else str(value)) if is_text
+                              else float(value or 0.0))
+            return
         if name in tag_map and dpg.does_item_exist(tag_map[name]):
             dpg.set_value(tag_map[name], value)
     

@@ -177,6 +177,7 @@ class DpgUiAdapter:
             "on_tracker_reset": lambda: submit(api.ResetTracker()),
             "on_osc_toggle": lambda v: submit(api.ToggleOsc(bool(v))),
             "on_osc_config": lambda ip, port: submit(api.SetOscTarget(ip, port)),
+            "on_rig_field": lambda field, value: submit(api.SetRigSheet(field, value)),
             "on_preview_toggle": lambda v: submit(api.TogglePreview(bool(v))),
             "on_input_fps_cap_toggle": lambda v: submit(api.ToggleInputFpsCap(bool(v))),
             "on_preview_cap_toggle": lambda v: submit(api.TogglePreviewCap(bool(v))),

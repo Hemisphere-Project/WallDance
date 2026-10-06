@@ -20,7 +20,7 @@ from typing import Callable, Deque, Optional, Protocol
 
 import numpy as np
 
-from core.config import CAMERA_FPS
+from core.config import CAMERA_FPS, RECORDING_CAMLOG_INTERVAL_S
 from core.tracking_logger import _json_default
 from core.video_recorder import RecorderState
 
@@ -61,6 +61,8 @@ class RecordingCameraPort(Protocol):
 
     def record_dimensions(self) -> tuple: ...
 
+    def capture_settings(self, fast: bool = False) -> dict: ...
+
 
 class SessionInfoPort(Protocol):
     """Facts `_start_session` records in the per-run session metadata."""
@@ -78,6 +80,8 @@ class SessionInfoPort(Protocol):
     def imgsz(self) -> int: ...
 
     def saveable_config(self) -> dict: ...
+
+    def take_provenance(self) -> dict: ...
 
 
 class RecordingController:
@@ -107,6 +111,7 @@ class RecordingController:
         self._pause_at_frame_target = startup_review.pause_at_frame
         self._pending_playback_events: Deque[str] = deque()
         self._pending_playback_events_lock = threading.Lock()
+        self._last_camlog: float = 0.0
 
         recorder.on_playback_start = self._on_playback_start_event
 
@@ -314,7 +319,7 @@ class RecordingController:
         if self.recorder.is_recording:
             # Stop recording - clear callback first
             self.camera.set_frame_callback(None)
-            filepath = self.recorder.stop_recording()
+            filepath = self.recorder.stop_recording(meta=self._take_meta_stop())
             self._pending_rec_slot = None
             self._rec_armed = False
             self._update_recording_ui()
@@ -362,7 +367,8 @@ class RecordingController:
             size = self.camera.record_dimensions()
             # Wire up camera callback BEFORE starting recording
             self.camera.set_frame_callback(self._camera_frame_callback)
-            if self.recorder.start_recording(slot, fps, size):
+            if self.recorder.start_recording(slot, fps, size,
+                                             meta=self._take_meta_start()):
                 self._rec_armed = False
                 self._pending_rec_slot = slot
                 self._update_recording_ui()
@@ -379,6 +385,62 @@ class RecordingController:
             self._start_playback_safe(slot)
         else:
             print(f"Slot {slot} is empty")
+
+    # ------------------------------------------------------------------
+    # Take provenance (MRK-0) + explicit record commands (remote API)
+    # ------------------------------------------------------------------
+    def _take_meta_start(self) -> dict:
+        """Everything known at REC: camera settings, app/config/rig provenance."""
+        meta: dict = {}
+        try:
+            meta["camera"] = self.camera.capture_settings()
+        except Exception as e:  # provenance must never block a recording
+            meta["camera"] = {"error": str(e)}
+        try:
+            meta.update(self.session.take_provenance())
+        except Exception as e:
+            meta["provenance_error"] = str(e)
+        return meta
+
+    def _take_meta_stop(self) -> dict:
+        try:
+            return {"camera": self.camera.capture_settings()}
+        except Exception as e:
+            return {"camera": {"error": str(e)}}
+
+    def _tick_camlog(self) -> None:
+        """~1 Hz camera telemetry into the running take's camlog sidecar."""
+        if not self.recorder.is_recording:
+            return
+        now = time.monotonic()
+        if now - self._last_camlog < RECORDING_CAMLOG_INTERVAL_S:
+            return
+        self._last_camlog = now
+        try:
+            sample = self.camera.capture_settings(fast=True)
+        except Exception as e:
+            sample = {"error": str(e)}
+        self.recorder.append_camlog({"t": round(time.time(), 3),
+                                     "frames": self.recorder.status.recording_frames,
+                                     **sample})
+
+    def start_recording_slot(self, slot: int) -> bool:
+        """One-shot "record into slot N" (no arm-then-click). Goes LIVE first
+        when a recording is playing back. Returns True when recording."""
+        if self.recorder.is_recording:
+            print(f"[Record] already recording slot {self.recorder.status.current_slot}")
+            return False
+        if not self.recorder.is_live:
+            self._cb_rec_live()
+        self._rec_armed = True
+        self._cb_rec_slot_click(int(slot), False)
+        return self.recorder.is_recording
+
+    def stop_recording_now(self) -> bool:
+        if not self.recorder.is_recording:
+            return False
+        self._cb_rec_toggle()
+        return True
 
     def _start_playback_safe(self, slot: int, recording_index: int = 0):
         """Start playback with proper IDS acquisition pause and transition guard.

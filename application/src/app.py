@@ -72,6 +72,7 @@ from core.config import (
     OPS_CALIB_AGE_WARN_H,
     OPS_DISK_WARN_FREE_GB,
     OPS_DISK_FAIL_FREE_GB,
+    RIG_DEFAULTS,
 )
 from core.osc_output import OSCSender
 from core.pipeline import FrameProcessor, ProcessingSettings, ScaledTrack
@@ -91,6 +92,8 @@ from core.enhancer import ImageEnhancer
 from core.tracker import DancerTracker
 from core.tracking_logger import _json_default
 from core.video_recorder import VideoRecorder
+from core.version import app_version
+import core.config_schema as config_schema
 from runtime import api
 from runtime.api import SystemState
 from runtime.main_loop import MainLoop
@@ -415,6 +418,14 @@ class _RecordingCameraAdapter:
         state = self._app.camera.state
         return (state.width, state.height)
 
+    def capture_settings(self, fast: bool = False) -> dict:
+        app = self._app
+        cam = app.unified_camera if app._use_unified_camera else None
+        if cam is not None and cam.is_open:
+            return cam.get_capture_settings(fast=fast)
+        st = app.camera.state
+        return {"source": st.source, "frame_size": [st.width, st.height]}
+
 
 class _RecordingSessionAdapter:
     """SessionInfoPort over the app's project/config/model state."""
@@ -440,6 +451,29 @@ class _RecordingSessionAdapter:
 
     def saveable_config(self) -> dict:
         return self._app._get_saveable_config()
+
+    def take_provenance(self) -> dict:
+        """Recording provenance (MRK-0): which code, project, config, profile,
+        engine and rig produced the take, plus the full live config."""
+        app = self._app
+        cfg_path = app.configs.current_config_path
+        try:
+            trt_active = bool(app.models.model_manager.is_using_tensorrt())
+        except Exception:
+            trt_active = None
+        return {
+            "app": app_version(),
+            "project": app.configs._current_project,
+            "config_file": os.path.basename(cfg_path) if cfg_path else None,
+            "profile": app.configs._active_profile,
+            "system_state": app.system_state.name.lower(),
+            "engine": {"model": app.models.current_model_name,
+                       "imgsz": app.settings.imgsz,
+                       "trt_requested": app.models._trt_requested,
+                       "trt_active": trt_active},
+            "rig": dict(app.rig_sheet),
+            "config": app._get_saveable_config(),
+        }
 
 
 class WallDanceApp:
@@ -591,6 +625,9 @@ class WallDanceApp:
         self.sensitivity: float = 50.0
         self._sensitivity_conf_seed: float = YOLO_CONFIDENCE
         self._sensitivity_var_anchor: float = self.processor.get_motion_var_threshold()
+        # Rig sheet (MRK-0): lens/aperture/focus/illuminator/distances -- what
+        # the camera cannot report; saved per project, copied into every .meta.
+        self.rig_sheet: Dict = dict(RIG_DEFAULTS)
         # Dial B "Gap bridging" (OPERATOR_V2 §2.2): 50 = the calibrated seed.
         self.gap_bridging: float = 50.0
         self._bridge_sens_seed: float = self.processor.get_motion_sensitivity()
@@ -850,11 +887,36 @@ class WallDanceApp:
             lambda c: self.recording._cb_rec_slot_click(c.slot, c.history))
         reg(api.PlaySlotRecording,
             lambda c: self.recording._play_recording(c.slot, c.path))
+        reg(api.StartRecordingSlot,
+            lambda c: self.recording.start_recording_slot(c.slot))
+        reg(api.StopRecording, lambda c: self.recording.stop_recording_now())
+        reg(api.SetRigSheet, self._cmd_set_rig_sheet)
         # review / misc
         reg(api.RequestIssueReport, lambda c: self._cmd_request_issue_report())
         reg(api.SubmitIssue,
             lambda c: self._cb_issue_submit(c.context, c.issue_type, c.note))
         reg(api.IssueDialogClosed, lambda c: self._cb_issue_dialog_closed())
+
+    def _cmd_set_rig_sheet(self, c: api.SetRigSheet):
+        """One rig-sheet field (GUI phase 1 or remote). Validated; saved with
+        the project on the next Save, copied into every new take's .meta."""
+        try:
+            value, warning = config_schema.sanitize_rig_value(c.field, c.value)
+        except KeyError:
+            print(f"[Rig] unknown rig field {c.field!r} ignored")
+            return
+        if value is None:
+            self.rig_sheet.pop(c.field, None)
+        else:
+            self.rig_sheet[c.field] = value
+        if warning:
+            print(f"[Rig] {warning}")
+        if c.echo:   # never echo GUI keystrokes back (would fight the cursor)
+            self._sync("input", f"rig.{c.field}", value)
+
+    def _sync_rig_sheet(self):
+        for field in config_schema.RIG_FIELDS:
+            self._sync("input", f"rig.{field}", self.rig_sheet.get(field))
 
     # --- command handlers that fan out / carry key-shortcut semantics ---
 
@@ -1018,13 +1080,27 @@ class WallDanceApp:
             # A shared (non-profile) key — rides through the schema untouched
             # (validate_flat only clamps numerics); restored in apply below.
             "calibration_state": dict(self.calibration.calibration_state),
+            # MRK-0: shooting setup the camera cannot report (shared key).
+            "rig": dict(self.rig_sheet),
         }
 
     def _apply_config_without_model(self, config: Dict):
         """Apply config settings except model/imgsz (those are handled separately during project switch)."""
         # Track S: restore calibration provenance (drives the Aim "Last
         # calibrated" line) before the value-applies; independent of them.
-        self.calibration.calibration_state = dict(config.get("calibration_state") or {})
+        # A lighting-profile switch applies only the profile bundle: shared
+        # keys absent from it must be left alone (they used to be wiped here --
+        # calibration_state was reset on every Show/Rehearsal switch).
+        full_config = "model" in config or "camera_source" in config
+        if "calibration_state" in config or full_config:
+            self.calibration.calibration_state = dict(config.get("calibration_state") or {})
+        # MRK-0 rig sheet: a project without one gets the known-hardware
+        # defaults (never the previous project's values).
+        if "rig" in config or full_config:
+            rig = config.get("rig")
+            self.rig_sheet = (config_schema.sanitize_rig(rig)[0] if isinstance(rig, dict)
+                              else dict(RIG_DEFAULTS))
+            self._sync_rig_sheet()
         # YOLO settings (except imgsz which is handled separately)
         if "confidence" in config:
             self.settings.confidence = config["confidence"]

@@ -104,6 +104,8 @@ class ConfigManager:
         # Empty bundles are seeded from live values on first switch.
         self._profiles: Dict[str, Dict] = {name: {} for name in config_schema.PROFILE_NAMES}
         self._active_profile: str = config_schema.DEFAULT_PROFILE
+        # Provenance (MRK-0 / remote status): the config file last loaded or saved.
+        self.current_config_path: Optional[str] = None
         self._pending_project_switch: Optional[str] = None  # Config filepath to switch to
 
     # ------------------------------------------------------------------
@@ -155,6 +157,7 @@ class ConfigManager:
         Args:
             config_filepath: Path to the config file to load
         """
+        self.current_config_path = config_filepath
         print(f"\n{'='*60}")
         print(f"[Project Switch] Starting switch to: {os.path.basename(config_filepath)}")
         print(f"{'='*60}")
@@ -358,6 +361,8 @@ class ConfigManager:
 
     def _cb_do_save_config(self, project_name: str):
         filepath = self.config_store.save(project_name, self._get_structured_config())
+        if filepath:
+            self.current_config_path = filepath
         new_project = sanitize_project_name(project_name)
         # Only switch recorder project if the name actually changed
         # (avoids stopping playback when saving to the same project)

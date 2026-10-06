@@ -634,6 +634,52 @@ def build_phase_rig(gui: Any):
         build_roi_section(gui)              # promoted from the control stack
         dpg.add_spacer(height=scaled(8))
         build_exclusion_mask_section(gui)   # promoted (manual paint, decision 5)
+        dpg.add_spacer(height=scaled(8))
+        build_rig_sheet_section(gui)        # MRK-0: shooting setup -> every take's .meta
+
+
+# (field, label, kind) -- fields/bounds are owned by core.config_schema.RIG_FIELDS.
+RIG_SHEET_ROWS = (
+    ("lens", "Lens", "text"),
+    ("focal_mm", "Focal (mm)", "float"),
+    ("f_number", "Aperture (f/)", "float"),
+    ("focus_m", "Focus ring (m)", "float"),
+    ("filter", "Filter", "text"),
+    ("illuminator", "IR light", "text"),
+    ("illuminator_offset_cm", "IR offset (cm)", "float"),
+    ("camera_distance_m", "Cam->stage (m)", "float"),
+    ("camera_height_m", "Cam height (m)", "float"),
+    ("markers", "IR markers", "text"),
+    ("notes", "Notes", "text"),
+)
+
+
+def build_rig_sheet_section(gui: Any):
+    """Rig sheet (MRK-0): what the camera cannot report -- lens, iris, focus,
+    IR light position, distances. Saved with the project (Save) and copied
+    into every recording's .meta for later analysis. 0 / empty = unknown."""
+    rig = dict(gui.config.get("rig") or {})
+    with dpg.collapsing_header(label="Rig sheet", default_open=False,
+                               tag="section_rig_sheet", closable=False):
+        dpg.add_text("Saved with the project and with every recording. "
+                     "0 / empty = unknown.", color=TEXT_MUTED,
+                     wrap=scaled(_PHASE_WRAP))
+        for field, label, kind in RIG_SHEET_ROWS:
+            with dpg.group(horizontal=True):
+                dpg.add_text(label, color=TEXT_NORMAL)
+                tag = f"rig_{field}_input"
+                if kind == "text":
+                    dpg.add_input_text(tag=tag, default_value=str(rig.get(field) or ""),
+                                       width=-1, user_data=field,
+                                       callback=gui._on_rig_field)
+                else:
+                    dpg.add_input_float(tag=tag, default_value=float(rig.get(field) or 0.0),
+                                        width=-1, step=0, format="%.2f", user_data=field,
+                                        callback=gui._on_rig_field)
+        with dpg.tooltip("section_rig_sheet"):
+            dpg.add_text("Aperture, focus and the IR light's offset from the lens\n"
+                         "decide how bright retro markers and dancers come out;\n"
+                         "the camera cannot report them. Fill once per venue.")
 
 
 def build_phase_profile(gui: Any):

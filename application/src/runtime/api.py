@@ -502,6 +502,33 @@ class PlaySlotRecording(Command):
     path: str
 
 
+@dataclass(frozen=True)
+class StartRecordingSlot(Command):
+    """Record into ``slot`` in one step (goes LIVE first if playing back) --
+    the remote API's REC; the GUI keeps its arm-then-click flow."""
+    slot: int
+
+    def __post_init__(self):
+        if not 1 <= int(self.slot) <= 9:
+            raise ValueError(f"StartRecordingSlot.slot must be 1-9, got {self.slot!r}")
+
+
+@dataclass(frozen=True)
+class StopRecording(Command):
+    pass
+
+
+# --- rig sheet (MRK-0) ----------------------------------------------------------
+
+@dataclass(frozen=True)
+class SetRigSheet(Command):
+    """One rig-sheet field (lens, f_number, illuminator offset...); validated
+    against ``core.config_schema.RIG_FIELDS`` by the handler. None clears."""
+    field: str
+    value: Any = None
+    echo: bool = False   # push the cleaned value back to the GUI (remote edits)
+
+
 # --- review / misc -----------------------------------------------------------
 
 @dataclass(frozen=True)

@@ -13,7 +13,7 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from queue import Queue, Empty
+from queue import Queue, Empty, Full
 from typing import Callable, List, Optional, Tuple
 
 import cv2
@@ -57,6 +57,161 @@ class RecorderStatus:
     playback_height: int = 0
 
 
+def _jsonable(value):
+    """Best-effort JSON coercion for provenance dicts (numpy, paths, tuples)."""
+    if isinstance(value, dict):
+        return {str(k): _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if hasattr(value, "item"):
+        try:
+            return value.item()
+        except Exception:
+            pass
+    return str(value)
+
+
+class _RecordingJob:
+    """One take: its frame queue, encoder thread, counters and sidecars.
+
+    The encoder exits only on the stop sentinel, so every queued frame is
+    written (the old loop discarded the queue tail on stop: 30 frames lost on
+    a corpus take). The ``.meta`` sidecar is written by the encoder thread
+    after the writer is released, i.e. once the file is complete.
+    """
+
+    def __init__(self, path: str, fourcc: str, fps: float,
+                 size: Tuple[int, int], slot: int, meta: dict):
+        self.path = path
+        self.fourcc = fourcc
+        self.fps = fps
+        self.size = size
+        self.slot = slot
+        self.meta_start = meta
+        self.meta_stop: dict = {}
+        self.queue: "Queue[Optional[np.ndarray]]" = Queue(maxsize=300)
+        self.frames_queued = 0
+        self.frames_dropped = 0
+        self.frames_written = 0
+        self.actual_fps = 0.0
+        self.started_at = datetime.now().isoformat(timespec="milliseconds")
+        self.stopped_at: Optional[str] = None
+        self.error: Optional[str] = None
+        self.done = threading.Event()
+        self._camlog = None
+        self._camlog_lock = threading.Lock()
+        self._thread = threading.Thread(target=self._run, name="RecordingEncoder",
+                                        daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def put(self, frame: np.ndarray) -> bool:
+        try:
+            self.queue.put_nowait(frame.copy())
+            self.frames_queued += 1
+            return True
+        except Full:
+            self.frames_dropped += 1
+            if self.frames_dropped in (1, 10, 100) or self.frames_dropped % 1000 == 0:
+                print(f"[Recorder] Queue full, dropped {self.frames_dropped} frame(s)")
+            return False
+
+    def append_camlog(self, sample: dict) -> None:
+        with self._camlog_lock:
+            try:
+                if self._camlog is None:
+                    self._camlog = open(self.path + ".camlog.jsonl", "a", encoding="utf-8")
+                self._camlog.write(json.dumps(_jsonable(sample)) + "\n")
+                self._camlog.flush()
+            except Exception as e:
+                print(f"[Recorder] camlog write failed: {e}")
+
+    def finish(self, meta_stop: dict) -> None:
+        self.meta_stop = meta_stop
+        self.stopped_at = datetime.now().isoformat(timespec="milliseconds")
+        # Blocking put: a full queue still gets its sentinel once the encoder
+        # catches up -- the frames ahead of it are written, not discarded.
+        threading.Thread(target=self.queue.put, args=(None,), daemon=True).start()
+
+    def _run(self) -> None:
+        writer = None
+        t0 = time.monotonic()
+        try:
+            # Create the VideoWriter on THIS thread - required on Windows where some
+            # codecs (MJPG, mp4v) use COM/GDI objects that are thread-affine.
+            writer = cv2.VideoWriter(self.path, cv2.VideoWriter_fourcc(*self.fourcc),
+                                     self.fps, self.size)
+            if not writer.isOpened():
+                self.error = "VideoWriter failed to open"
+                print(f"[RecorderThread] ERROR: {self.error}: {self.path}")
+                while self.queue.get() is not None:   # drain until stop
+                    pass
+                return
+            if self.fourcc == "MJPG":
+                writer.set(cv2.VIDEOWRITER_PROP_QUALITY, RECORDING_QUALITY)
+            print(f"[RecorderThread] VideoWriter opened: {self.fourcc} -> {self.path}")
+            while True:
+                frame = self.queue.get()
+                if frame is None:
+                    break
+                try:
+                    writer.write(frame)
+                    self.frames_written += 1
+                except Exception as e:
+                    self.error = f"write failed: {e}"
+                    print(f"[RecorderThread] Error writing frame: {e}")
+        finally:
+            elapsed = time.monotonic() - t0
+            if writer is not None:
+                writer.release()
+            if elapsed > 0 and self.frames_written > 1:
+                self.actual_fps = self.frames_written / elapsed
+            else:
+                self.actual_fps = self.fps
+            with self._camlog_lock:
+                if self._camlog is not None:
+                    self._camlog.close()
+                    self._camlog = None
+            self._write_meta()
+            print(f"[RecorderThread] wrote {self.frames_written} frames "
+                  f"({self.frames_dropped} dropped) at {self.actual_fps:.2f} fps -> {self.path}")
+            self.done.set()
+
+    def _write_meta(self) -> None:
+        meta = {
+            # v1 keys first: playback reads actual_fps; the scenario fingerprint
+            # reads frames (now the frames actually written = decodable).
+            "actual_fps": round(self.actual_fps, 3),
+            "frames": self.frames_written,
+            "meta_version": 2,
+            "slot": self.slot,
+            "file": os.path.basename(self.path),
+            "codec": self.fourcc,
+            "container_fps": self.fps,
+            "size": list(self.size),
+            "started_at": self.started_at,
+            "stopped_at": self.stopped_at,
+            "frames_queued": self.frames_queued,
+            "frames_dropped": self.frames_dropped,
+            "camlog": os.path.basename(self.path) + ".camlog.jsonl"
+                      if os.path.exists(self.path + ".camlog.jsonl") else None,
+            "error": self.error,
+        }
+        for key, value in self.meta_start.items():
+            meta.setdefault(key, value)
+        if self.meta_stop:
+            meta["at_stop"] = self.meta_stop
+        try:
+            with open(self.path + ".meta", "w", encoding="utf-8") as f:
+                json.dump(_jsonable(meta), f, indent=1)
+            print(f"[Recorder] Saved sidecar: {self.path}.meta (fps={self.actual_fps:.2f})")
+        except Exception as e:
+            print(f"[Recorder] Warning: could not write meta file: {e}")
+
+
 class VideoRecorder:
     """Manages video recording and playback for 9 slots per project."""
     
@@ -74,11 +229,10 @@ class VideoRecorder:
         self._recording_fps: float = 30.0
         self._recording_size: Tuple[int, int] = (1920, 1080)
         
-        # Threaded recording encoder
-        self._recording_queue: Queue[Optional[np.ndarray]] = Queue(maxsize=300)  # ~10 sec buffer at 30fps
-        self._recording_thread: Optional[threading.Thread] = None
-        self._recording_running: bool = False
-        self._actual_recording_fps: float = 0.0  # Measured real FPS (set by encoder thread)
+        # Threaded recording encoder: one _RecordingJob per take (queue +
+        # encoder thread + sidecars); stopped takes finalize in the background.
+        self._job: Optional[_RecordingJob] = None
+        self._finalizing: dict = {}
         
         # Playback state
         self._reader: Optional[cv2.VideoCapture] = None
@@ -188,80 +342,27 @@ class VideoRecorder:
     # ------------------------------------------------------------------
     # Recording
     # ------------------------------------------------------------------
-    def _recording_encoder_thread(self):
-        """Background thread that writes frames from queue to disk."""
-        print("[RecorderThread] Recording encoder thread started")
-        frames_written = 0
-        rec_start_time = time.monotonic()
+    def start_recording(self, slot: int, fps: float = 30.0,
+                        size: Tuple[int, int] = (1920, 1080),
+                        meta: Optional[dict] = None) -> bool:
+        """Start recording to a slot. Returns True if started successfully.
 
-        # Create the VideoWriter on THIS thread - required on Windows where some
-        # codecs (MJPG, mp4v) use COM/GDI objects that are thread-affine and
-        # silently fail when write() is called from a different thread than open().
-        writer = cv2.VideoWriter(
-            self._recording_path,
-            cv2.VideoWriter_fourcc(*self._recording_fourcc),
-            self._recording_fps,
-            self._recording_size,
-        )
-        if not writer.isOpened():
-            print(f"[RecorderThread] ERROR: VideoWriter failed to open in encoder thread")
-            return
-
-        # Set MJPG quality (1-100). Higher = less compression artifacts.
-        # Only effective for MJPG codec; silently ignored by others.
-        if self._recording_fourcc == "MJPG":
-            writer.set(cv2.VIDEOWRITER_PROP_QUALITY, RECORDING_QUALITY)
-            print(f"[RecorderThread] MJPG quality set to {RECORDING_QUALITY}")
-
-        print(f"[RecorderThread] VideoWriter opened: {self._recording_fourcc} -> {self._recording_path}")
-
-        while self._recording_running:
-            try:
-                frame = self._recording_queue.get(timeout=0.1)
-                
-                if frame is None:
-                    # Sentinel value - stop signal
-                    break
-                
-                writer.write(frame)
-                frames_written += 1
-                    
-            except Empty:
-                continue
-            except Exception as e:
-                print(f"[RecorderThread] Error writing frame: {e}")
-                break
-
-        # Measure actual FPS from wall-clock time
-        rec_elapsed = time.monotonic() - rec_start_time
-        if rec_elapsed > 0 and frames_written > 1:
-            self._actual_recording_fps = frames_written / rec_elapsed
-        else:
-            self._actual_recording_fps = self._recording_fps  # fallback
-        print(f"[RecorderThread] Actual recording FPS: {self._actual_recording_fps:.2f} "
-              f"({frames_written} frames in {rec_elapsed:.1f}s)")
-
-        writer.release()
-        print(f"[RecorderThread] Recording encoder thread finished, wrote {frames_written} frames")
-    
-    def start_recording(self, slot: int, fps: float = 30.0, size: Tuple[int, int] = (1920, 1080)) -> bool:
-        """Start recording to a slot. Returns True if started successfully."""
+        ``meta`` (optional) is the take's provenance known at start: camera
+        settings, rig sheet, app/config versions... (MRK-0). It is merged into
+        the ``.meta`` sidecar written when the take is finalized."""
         if not self.is_live:
             print(f"Cannot start recording: not in LIVE mode (current: {self._status.state})")
             return False
-        
+
         if slot < 1 or slot > self.NUM_SLOTS:
             print(f"Invalid slot number: {slot}")
             return False
-        
+
         # Stop any existing recording (shouldn't happen but safety)
         self.stop_recording()
-        
-        # Create recordings directory
+
         recordings_dir = self._get_recordings_dir()
         os.makedirs(recordings_dir, exist_ok=True)
-        
-        # Generate filename with timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
         # Codec / container selection driven by RECORDING_CODEC in config.py.
@@ -271,8 +372,6 @@ class VideoRecorder:
             "FFV1": ".avi",
             "mp4v": ".mp4",
         }
-        # Match case-insensitively against the known keys, but keep the
-        # original casing for the fourcc (cv2 is case-sensitive here).
         _lookup = {k.lower(): k for k in _CODEC_CONTAINER}
         codec = _lookup.get(RECORDING_CODEC.lower(), "MJPG")
         ext = _CODEC_CONTAINER[codec]
@@ -280,9 +379,6 @@ class VideoRecorder:
         filepath = os.path.join(recordings_dir, filename)
         print(f"[Recorder] Codec: {codec}  container: {ext}  -> {filename}")
 
-        # Store params for the encoder thread - VideoWriter is created there,
-        # not here. On Windows, MJPG/mp4v use COM/GDI objects that are
-        # thread-affine: open() and write() must happen on the same thread.
         self._recording_path = filepath
         self._recording_fourcc = codec
         self._recording_fps = fps
@@ -290,93 +386,68 @@ class VideoRecorder:
         self._status.state = RecorderState.RECORDING
         self._status.current_slot = slot
         self._status.recording_frames = 0
-        
-        # Clear any leftover frames in queue
-        while not self._recording_queue.empty():
-            try:
-                self._recording_queue.get_nowait()
-            except Empty:
-                break
-        
-        # Start recording thread
-        self._recording_running = True
-        self._recording_thread = threading.Thread(
-            target=self._recording_encoder_thread,
-            name="RecordingEncoder",
-            daemon=True
-        )
-        self._recording_thread.start()
-        
+
+        self._finalizing = {k: j for k, j in self._finalizing.items() if not j.done.is_set()}
+        job = _RecordingJob(filepath, codec, fps, size, slot, dict(meta or {}))
+        self._job = job
+        self._finalizing[filepath] = job
+        job.start()
         print(f"Started recording to slot {slot}: {filepath}")
         return True
-    
+
     def write_frame(self, frame: np.ndarray):
         """Queue a frame for recording (non-blocking)."""
-        if not self.is_recording:
+        job = self._job
+        if not self.is_recording or job is None:
             return
-        
-        # Resize if needed
         h, w = frame.shape[:2]
-        if (w, h) != self._recording_size:
-            frame = cv2.resize(frame, self._recording_size)
-        
-        # Make a copy since the frame buffer might be reused
-        frame_copy = frame.copy()
-        
-        try:
-            # Non-blocking put - drop frame if queue is full (better than blocking main loop)
-            self._recording_queue.put_nowait(frame_copy)
+        if (w, h) != job.size:
+            frame = cv2.resize(frame, job.size)
+        if job.put(frame):
             self._status.recording_frames += 1
-        except Exception:
-            # Queue full - drop frame rather than block
-            print(f"[Recorder] Queue full, dropped frame (queue size: {self._recording_queue.qsize()})")
-    
-    def stop_recording(self) -> Optional[str]:
-        """Stop recording and return the saved filepath."""
+
+    def append_camlog(self, sample: dict) -> None:
+        """Append one camera-telemetry sample (``<take>.camlog.jsonl``) to the
+        running take -- exposure/gain drift under AE is invisible otherwise."""
+        job = self._job
+        if job is not None and self.is_recording:
+            job.append_camlog(sample)
+
+    def is_finalizing(self, filepath: Optional[str]) -> bool:
+        """True while a stopped take is still draining to disk."""
+        job = self._finalizing.get(filepath or "")
+        return job is not None and not job.done.is_set()
+
+    def wait_finalized(self, timeout: Optional[float] = None) -> bool:
+        """Block until every stopped take is on disk with its ``.meta``."""
+        deadline = None if timeout is None else time.monotonic() + timeout
+        for job in list(self._finalizing.values()):
+            left = None if deadline is None else max(0.0, deadline - time.monotonic())
+            if not job.done.wait(left):
+                return False
+        return True
+
+    def stop_recording(self, meta: Optional[dict] = None) -> Optional[str]:
+        """Stop recording and return the saved filepath.
+
+        Returns immediately: the take's encoder drains every queued frame (no
+        tail loss, MRK-0) and writes the ``.meta`` sidecar on its own thread,
+        so the GUI never freezes on stop. ``meta`` adds facts known at stop
+        (camera settings at the end of the take)."""
         if not self.is_recording:
             return None
-        
+        job = self._job
+        self._job = None
         filepath = self._recording_path
-        
-        # Signal thread to stop
-        self._recording_running = False
-        
-        # Send sentinel to unblock the thread if waiting
-        try:
-            self._recording_queue.put_nowait(None)
-        except Exception:
-            pass
-        
-        # Wait for thread to finish (with timeout) - the thread owns and releases the writer
-        if self._recording_thread is not None:
-            self._recording_thread.join(timeout=5.0)
-            if self._recording_thread.is_alive():
-                print("[Recorder] Warning: recording thread did not finish in time")
-            self._recording_thread = None
-        
-        frames = self._status.recording_frames
-
-        # Write sidecar .meta with measured FPS so playback uses the real
-        # frame rate rather than the nominal CAMERA_FPS baked into the container.
-        actual_fps = self._actual_recording_fps
-        if filepath and actual_fps > 0:
-            meta_path = filepath + ".meta"
-            try:
-                with open(meta_path, "w") as f:
-                    json.dump({"actual_fps": round(actual_fps, 3),
-                               "frames": frames}, f)
-                print(f"[Recorder] Saved sidecar: {meta_path} (fps={actual_fps:.2f})")
-            except Exception as e:
-                print(f"[Recorder] Warning: could not write meta file: {e}")
-
+        if job is not None:
+            job.finish(dict(meta or {}))
         self._status.state = RecorderState.LIVE
         self._status.current_slot = 0
         self._status.recording_frames = 0
         self._recording_path = None
-        
-        print(f"Stopped recording: {frames} frames saved to {filepath}")
+        print(f"Stopped recording: finalizing {filepath} in the background")
         return filepath
-    
+
     # ------------------------------------------------------------------
     # Playback
     # ------------------------------------------------------------------
@@ -488,7 +559,10 @@ class VideoRecorder:
             return False
         
         filepath = slot_info.recordings[recording_index][1]
-        
+        if self.is_finalizing(filepath):
+            print(f"[Playback] {os.path.basename(filepath)} is still being written; waiting...")
+            self._finalizing[filepath].done.wait(15.0)
+
         self._reader = cv2.VideoCapture(filepath)
         if not self._reader.isOpened():
             print(f"Failed to open video: {filepath}")
@@ -748,6 +822,8 @@ class VideoRecorder:
     # Cleanup
     # ------------------------------------------------------------------
     def close(self):
-        """Clean up resources."""
+        """Clean up resources (lets a just-stopped take finish writing)."""
         self.stop_recording()
         self.stop_playback()
+        if not self.wait_finalized(timeout=60.0):
+            print("[Recorder] Warning: a take was still finalizing at shutdown")

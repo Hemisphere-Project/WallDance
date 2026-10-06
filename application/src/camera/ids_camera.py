@@ -1520,6 +1520,65 @@ class IDSCamera:
         except:
             return (0.0, 0.0)
     
+    # GenICam nodes snapshotted into recording provenance (MRK-0). The fast
+    # set is sampled ~1 Hz during a take (camlog); the full set at start/stop.
+    _CAPTURE_NODES_FAST = ("ExposureTime", "ExposureAuto", "Gain", "GainAuto",
+                           "AcquisitionFrameRate", "DeviceTemperature")
+    _CAPTURE_NODES_FULL = _CAPTURE_NODES_FAST + (
+        "PixelFormat", "Width", "Height", "OffsetX", "OffsetY",
+        "BinningHorizontal", "BinningVertical", "DecimationHorizontal",
+        "BlackLevel", "Gamma", "AutoFeatureExposureTimeUpperLimit",
+        "DeviceModelName", "DeviceSerialNumber", "DeviceFirmwareVersion",
+        "SensorName")
+
+    def _read_node(self, name: str):
+        """Best-effort GenICam read: numeric/string ``Value()`` or the
+        enumeration's symbolic entry; None when absent or unreadable."""
+        try:
+            node = self._node_map.FindNode(name)
+        except Exception:
+            return None
+        if node is None:
+            return None
+        try:
+            return node.CurrentEntry().SymbolicValue()
+        except Exception:
+            pass
+        try:
+            value = node.Value()
+        except Exception:
+            return None
+        return value if isinstance(value, (int, float, str, bool)) else str(value)
+
+    def get_capture_settings(self, fast: bool = False) -> dict:
+        """Camera settings as the sensor sees them right now (read from the
+        node map, not from what the app last asked for). ``fast`` = the
+        handful of values that drift under auto-exposure/gain."""
+        out = {"source": "ids", "open": bool(self.state.is_open)}
+        if not self.state.is_open or self._node_map is None:
+            return out
+        names = self._CAPTURE_NODES_FAST if fast else self._CAPTURE_NODES_FULL
+        nodes = {}
+        for name in names:
+            value = self._read_node(name)
+            if value is not None:
+                nodes[name] = value
+        out["nodes"] = nodes
+        out["measured_fps"] = round(float(self.state.fps or 0.0), 2)
+        out["frame_count"] = int(self.state.frame_count)
+        out["dropped_frames"] = int(self.state.dropped_frames)
+        if not fast:
+            st = self.settings
+            out["app_settings"] = {
+                "user_set": st.user_set, "crop_ratio": st.crop_ratio,
+                "crop_pixels": st.crop_pixels, "target_fps": st.target_fps,
+                "auto_exposure_limit_us": st.auto_exposure_limit_us,
+                "prefer_high_bit_depth": st.prefer_high_bit_depth,
+                "exposure_auto": st.exposure_auto, "gain_auto": st.gain_auto,
+            }
+            out["frame_size"] = [int(self.state.width), int(self.state.height)]
+        return out
+
     # ------------------------------------------------------------------
     # Status
     # ------------------------------------------------------------------
@@ -1846,6 +1905,14 @@ class UnifiedCamera:
         if self._source_type == CameraSource.IDS_PEAK and self._ids_camera is not None:
             return (int(self._ids_camera.state.frame_count), int(self._ids_camera.state.dropped_frames))
         return (0, 0)
+
+    def get_capture_settings(self, fast: bool = False) -> dict:
+        """Recording provenance: IDS node snapshot, or the OpenCV basics."""
+        if self._source_type == CameraSource.IDS_PEAK and self._ids_camera is not None:
+            return self._ids_camera.get_capture_settings(fast=fast)
+        return {"source": "opencv" if self._source_type == CameraSource.OPENCV else None,
+                "open": bool(self.is_open), "frame_size": [int(self.width), int(self.height)],
+                "measured_fps": round(float(self.fps or 0.0), 2)}
 
     def stop_acquisition(self) -> None:
         """Stop IDS acquisition (no-op for OpenCV).

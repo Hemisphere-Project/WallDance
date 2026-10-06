@@ -913,6 +913,7 @@ class MainLoop:
             self._rec_ui_update_counter = 0
             app.recording._update_recording_ui()
         app.recording._maybe_pause_at_target_frame()
+        app.recording._tick_camlog()
 
     def _tick_render(self, t: _Tick):
         """Render stage: one UI frame + GUI overhead into the timing dict."""

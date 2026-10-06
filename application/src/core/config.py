@@ -601,6 +601,21 @@ RECORDING_CODEC = "FFV1"
 # 98-100 is near-lossless but produces larger files (~3-5× vs default).
 RECORDING_QUALITY = 100
 
+# Take provenance (MRK-0): every recording's .meta carries the camera settings
+# at start/stop, app version, the project config and the rig sheet; while a take
+# records, camera telemetry (exposure, gain, AE/AG, temperature) is sampled into
+# <take>.camlog.jsonl every RECORDING_CAMLOG_INTERVAL_S (AE drifts within takes).
+RECORDING_CAMLOG_INTERVAL_S = 1.0
+
+# Rig sheet defaults for a new project (phase 1 Rig; the fields the camera cannot
+# report). Known production hardware is pre-filled; aperture/focus/distances
+# stay empty until the operator enters them. Schema: config_schema.RIG_FIELDS.
+RIG_DEFAULTS = {
+    "lens": "Tamron M118FM08 (8 mm)",
+    "focal_mm": 8.0,
+    "filter": "MidOpt BP850",
+}
+
 # =============================================================================
 # BACKGROUND SUBTRACTION
 # =============================================================================
