@@ -184,6 +184,11 @@ class ConfigManager:
             config = self.config_store.load(config_filepath)
         except Exception as e:
             print(f"[Project Switch] ERROR: Failed to load config: {e}")
+            if self.ui.available:
+                self.ui.show_toast(
+                    f"Could not load {os.path.basename(config_filepath)} "
+                    "(unreadable) - pick another save", duration=6.0,
+                    color=(255, 80, 80))
             self.models._model_loading = False
             if camera_was_open:
                 self.cameras._open_camera(self.camera.state.source)
@@ -360,7 +365,16 @@ class ConfigManager:
                                duration=2.5, color=(150, 200, 255))
 
     def _cb_do_save_config(self, project_name: str):
-        filepath = self.config_store.save(project_name, self._get_structured_config())
+        try:
+            filepath = self.config_store.save(project_name, self._get_structured_config())
+        except (OSError, TypeError, ValueError) as e:
+            # The write is atomic (ARCH-8): a failed save leaves the previous
+            # history intact; say so instead of a silent console line.
+            print(f"[Config] ERROR: save failed, previous saves untouched: {e}")
+            if self.ui.available:
+                self.ui.show_toast(f"Save FAILED: {e}", duration=6.0,
+                                   color=(255, 80, 80))
+            return
         if filepath:
             self.current_config_path = filepath
         new_project = sanitize_project_name(project_name)
