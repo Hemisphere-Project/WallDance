@@ -304,6 +304,20 @@ IDENTITY_SLOTS_STABILITY = 0.5          # 0 = responsive .. 1 = calm (One-Euro p
 IDENTITY_SLOTS_COAST_S = 2.0            # hold a vanished dancer this long: bridges 355/356
                                         # tracker losses on the 2026-10 replays + field takes
 IDENTITY_SLOTS_USE_IR_BELT = True       # use core/belt_detector.py when importable
+IDENTITY_SLOTS_STATIC_GUARD = True      # static-ghost guard + yield (a figure that never moves
+                                        # cannot take / keep a slot a moving dancer needs);
+                                        # PLAN_25M 2026-10-06: neutral on 12 replays, a ghost-
+                                        # starved dancer 0.004 -> 0.80 on-dancer
+IDENTITY_SLOTS_STATIC_RELEASE_S = 0.0   # > 0: drop a slot static this long even with no newcomer
+                                        # (OFF: at 8 s it dropped a still floor dancer)
+IDENTITY_SLOTS_FILTER_INPUT = "smoothed"  # One-Euro input: smoothed | raw | raw_skeleton (D18)
+# IR-belt static-glint map, learned online (PLAN_25M A6): every N-th frame a global
+# belt pass updates a per-cell persistence EMA, live dancers protected; a cell above
+# the threshold becomes static and the gated belt queries ignore it.  ~9 s to learn
+# a fixed glint (a floor projector, a lamp) at 20 fps.
+BELT_STATIC_EVERY_N = 10
+BELT_STATIC_ALPHA = 0.05
+BELT_STATIC_ON = 0.6
 OSC_SEND_STATE = False                  # opt-in /walldance/dancer/state [id, state, age_s]
 
 # =============================================================================

@@ -326,3 +326,24 @@ def test_app_no_longer_imports_dpg():
     assert not re.search(r"^\s*import dearpygui|^\s*from dearpygui", src,
                          re.MULTILINE), "app.py must reach dpg only via ui/adapter.py"
     assert not re.search(r"\bdpg\.", src), "app.py must reach dpg only via ui/adapter.py"
+
+
+def test_static_guard_and_filter_commands_validate():
+    import pytest as _pt
+    from runtime import api as _api
+    assert _api.SetStaticGhostGuard(True).enabled is True
+    assert _api.SetStaticRelease(15.0).value == 15.0
+    with _pt.raises(ValueError):
+        _api.SetStaticRelease(61.0)
+    assert _api.SetSlotFilterInput("raw_skeleton").value == "raw_skeleton"
+    with _pt.raises(ValueError):
+        _api.SetSlotFilterInput("kalman")
+
+
+def test_tracker_mode_and_intermittent_commands_validate():
+    import pytest as _pt
+    from runtime import api as _api
+    assert _api.SetIntermittentConfirm(True).enabled is True
+    assert _api.SetTrackingMode("yolo_first").value == "yolo_first"
+    with _pt.raises(ValueError):
+        _api.SetTrackingMode("blob_first")

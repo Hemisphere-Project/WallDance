@@ -269,8 +269,18 @@ byte-identical with slots on or off).
   skeleton within 3 s, outside the exclusion mask) takes a free slot, lowest / nearest first.
   Extra tracks beyond `max_dancers` are not sent. A track sitting on a body another slot already
   sends never takes a slot (no two ids on one dancer).
+- **Static figures** (2026-10-06, `static_ghost_guard`, default ON): a person-like shape YOLO keeps
+  confirming but that never moves (p90 spread < 0.06 h over 5 s: a coat by a door, a poster, a stain)
+  cannot take back an id it gave up and cannot re-acquire one; when every slot emits and a moving,
+  skeleton-backed dancer is left out, a slot that has not moved for 5 s gives its id to that dancer
+  (event `yield`).  Replay-measured: neutral on 12 takes, a ghost-starved dancer 0.004 -> 0.80 of the
+  frames with a point on it.  `static_release_s` (default 0 = off) would also drop a static slot with no
+  newcomer -- off because at 8 s it dropped a still floor dancer.
 - **Centroid**: One-Euro filter per slot (adaptive: calm at rest, quick on fast moves), operator
-  knob **Stability** 0..1. `/bbox` is the slot's smoothed box centred on the centroid; `/keypoints`
+  knob **Stability** 0..1.  Its input (`slot_filter_input`) is the tracker's EMA centroid
+  (`smoothed`, default); `raw_skeleton` feeds the bound track's raw Kalman centroid on frames with a
+  fresh skeleton (lag on fast moves -30..-60 ms, jitter at rest x1.3-1.5; binding unchanged), `raw` on
+  every frame (fragile on textured walls). `/bbox` is the slot's smoothed box centred on the centroid; `/keypoints`
   are the bound track's skeleton translated onto the centroid (last skeleton while coasting);
   `/velocity` is the filtered slot velocity (px/frame, normalized as §A.3).
 - **`L > 1`**: the RTS fixed-lag smoother now runs on the slot ids (no restart on tracker id
@@ -278,9 +288,10 @@ byte-identical with slots on or off).
 
 ### D.2 `/walldance/dancer/state` `[id, state, age_s]` — opt-in (`osc_send_state`, default OFF)
 - One message per slot **every frame, lost slots included**: `id` int32, `state` string
-  `live` (bound track updated this frame) / `belt` (held by the IR waist belt) / `coasting`
-  (holding, no measurement) / `lost` (absent from `/count`), `age_s` float32 = seconds in that
-  state. Causal: not delayed at `L > 1`.
+  `live` (bound track updated this frame) / `belt` (held by the IR waist belt) / `weak` (a coasting
+  slot re-found on weak evidence near its prediction; only with the `weak_enabled` slot option, off by
+  default) / `coasting` (holding, no measurement) / `lost` (absent from `/count`), `age_s` float32 =
+  seconds in that state. Causal: not delayed at `L > 1`.
 - Additive: consumers that ignore it are unaffected. Shared with the marker stream's proposed
   `/dancer/source` (audit 02 §3) — one message, extended later if needed.
 
@@ -293,8 +304,11 @@ byte-identical with slots on or off).
 | Hold (`coast_s`) | 2.0 s | 355 of the 356 tracker losses observed over all replays + the 2026-10-05 field takes re-acquire within 2.0 s (99 % within 1.5 s, longest 2.37 s) |
 | IR belt (`use_ir_belt`) | ON | no-op unless `core/belt_detector.py` is importable; plain coasting stays the base |
 | Send state (`osc_send_state`) | OFF | opt-in |
+| Ignore static figures (`static_ghost_guard`) | ON | PLAN_25M 2026-10-06 offline gate (`tmp_analysis/plan25m/slot_eval.py`) |
+| Static release (`static_release_s`) | 0 (off) | dropped a still floor dancer at 8 s |
+| Filter input (`slot_filter_input`) | `smoothed` | `raw_skeleton` to be judged by eye on TD (D18) |
 
 Operator knobs live in phase **6 Live → Dancer IDs** and are remote-settable
 (`SetIdentitySlots`, `SetMaxDancers`, `SetStability`, `SetCoastSeconds`, `ToggleIrBelt`,
-`ToggleOscState`; policy `control`). The FRAME_SUMMARY log carries `slots` (per slot: id,
+`ToggleOscState`, `SetStaticGhostGuard`, `SetStaticRelease`, `SetSlotFilterInput`; policy `control`). The FRAME_SUMMARY log carries `slots` (per slot: id,
 state, bound tracker id, age) and `emitted_slots`; `SLOT_EVENT` lines record binds and losses.

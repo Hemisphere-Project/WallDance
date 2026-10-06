@@ -166,6 +166,50 @@ class SetCoastSeconds(Command):
 
 
 @dataclass(frozen=True)
+class SetIntermittentConfirm(Command):
+    """Tracker: confirm (emit) a track on intermittent YOLO hits, not only on a
+    consecutive streak (tracker_intermittent_confirm; PLAN_25M: ON for the wall duos)."""
+    enabled: bool
+
+
+@dataclass(frozen=True)
+class SetTrackingMode(Command):
+    """Tracker priority: 'yolo_first' (default for new projects) or 'motion_first'."""
+    value: str
+
+    def __post_init__(self):
+        if self.value not in ("yolo_first", "motion_first"):
+            raise ValueError(f"SetTrackingMode.value must be yolo_first|motion_first, got {self.value!r}")
+
+
+@dataclass(frozen=True)
+class SetStaticGhostGuard(Command):
+    """Static-ghost guard: a figure that never moves cannot take or keep a slot
+    a moving dancer needs (default ON)."""
+    enabled: bool
+
+
+@dataclass(frozen=True)
+class SetStaticRelease(Command):
+    """Drop a slot that stayed static this long (seconds, 0 = off, 0..60)."""
+    value: float
+
+    def __post_init__(self):
+        if not 0.0 <= float(self.value) <= 60.0:
+            raise ValueError(f"SetStaticRelease.value must be 0..60, got {self.value!r}")
+
+
+@dataclass(frozen=True)
+class SetSlotFilterInput(Command):
+    """One-Euro input: 'smoothed' (shipped), 'raw' or 'raw_skeleton' (less lag)."""
+    value: str
+
+    def __post_init__(self):
+        if self.value not in ("smoothed", "raw", "raw_skeleton"):
+            raise ValueError(f"SetSlotFilterInput.value must be smoothed|raw|raw_skeleton, got {self.value!r}")
+
+
+@dataclass(frozen=True)
 class ToggleIrBelt(Command):
     """Use the IR waist-belt detector to keep slots alive (no-op without it)."""
     enabled: bool

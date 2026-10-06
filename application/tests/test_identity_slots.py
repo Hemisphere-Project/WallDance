@@ -325,3 +325,87 @@ def test_params_from_config_and_candidate_from_track():
     c = candidate_from_track(ST())
     assert (c.key, c.x, c.y, c.h, c.hits, c.fss) == (5, 140.0, 150.0, 200.0, 30, 2)
     assert candidate_from_track(ST(), position="raw").x == 141.0
+
+
+# --------------------------------------------------------------------------- #
+# Static-ghost guard + yield (PLAN_25M 2026-10-06)
+# --------------------------------------------------------------------------- #
+def _ghost_params(**kw):
+    base = dict(max_dancers=1, coast_s=0.5, min_streak=1, entry_min_streak=1,
+                min_hits=1, entry_min_hits=1, static_guard=True, static_yield=True,
+                static_after_s=1.0)
+    base.update(kw)
+    return SlotParams(**base)
+
+
+def _ghost(t_i, x=100.0, y=100.0):
+    """A fixed figure: sub-pixel box jitter only (0.005 h)."""
+    return cand(1, x + (t_i % 2), y, hits=t_i + 1, fss=0)
+
+
+def _dancer(t_i, i0, x0=600.0, y=400.0, step=12.0, key=2):
+    """A moving dancer entering at frame i0 (12 px/frame, fresh skeleton)."""
+    return cand(key, x0 + step * (t_i - i0), y, hits=t_i - i0 + 1, fss=0)
+
+
+def test_static_ghost_yields_its_slot_to_a_moving_dancer_and_never_takes_it_back():
+    s = IdentitySlots(_ghost_params())
+    frames = [[_ghost(i)] for i in range(40)]                         # 2 s: ghost alone
+    frames += [[_ghost(i), _dancer(i, 40)] for i in range(40, 70)]     # a dancer arrives
+    frames += [[_ghost(i)] for i in range(70, 110)]                   # the dancer leaves
+    outs = run(s, frames)
+    assert outs[39] and by_id(outs[39])[1].key == 1                   # ghost held the only slot
+    assert by_id(outs[60])[1].key == 2                                # ... then gave it away
+    assert s.counters["yields"] >= 1
+    assert all(o.key != 1 for f in outs[50:] for o in f)              # and never got it back
+    assert outs[-1] == []                                             # dancer gone: no ghost point
+
+
+def test_guard_off_keeps_the_shipped_behaviour():
+    s = IdentitySlots(_ghost_params(static_guard=False, static_yield=False))
+    frames = [[_ghost(i)] for i in range(40)]
+    frames += [[_ghost(i), _dancer(i, 40)] for i in range(40, 70)]
+    outs = run(s, frames)
+    assert by_id(outs[-1])[1].key == 1                                # ghost keeps the slot
+    assert s.counters["yields"] == 0
+
+
+def test_a_swaying_still_dancer_never_yields():
+    s = IdentitySlots(_ghost_params())
+    sway = lambda i: cand(1, 300 + 0.12 * H * math.sin(i / 3.0), 300, hits=i + 1, fss=0)
+    frames = [[sway(i)] for i in range(40)]
+    frames += [[sway(i), _dancer(i, 40, x0=900.0)] for i in range(40, 80)]
+    outs = run(s, frames)
+    assert by_id(outs[-1])[1].key == 1
+    assert s.counters["yields"] == 0
+
+
+def test_static_release_drops_a_ghost_without_a_newcomer():
+    s = IdentitySlots(_ghost_params(max_dancers=2, static_release_s=1.0))
+    outs = run(s, [[_ghost(i)] for i in range(80)])
+    assert outs[10] and outs[-1] == []                                # held, then released for good
+    assert s.counters["yields"] == 1
+
+
+def test_raw_filter_input_follows_the_raw_centroid_but_binds_on_the_smoothed_one():
+    def step(fi, fss=0):
+        s = IdentitySlots(SlotParams(max_dancers=1, min_streak=1, entry_min_streak=1,
+                                     min_hits=1, entry_min_hits=1, filter_input=fi))
+        c = lambda i: SlotCandidate(key=7, x=100.0, y=100.0, fx=130.0, fy=100.0, w=80, h=H,
+                                    hits=i + 1, fss=fss)
+        outs = run(s, [[c(i)] for i in range(60)])
+        return outs[-1][0]
+    assert abs(step("smoothed").x - 100.0) < 1.0
+    o = step("raw")
+    assert abs(o.x - 130.0) < 1.0 and abs(o.raw_x - 100.0) < 1e-6 and o.key == 7
+    assert abs(step("raw_skeleton").x - 130.0) < 1.0
+    assert abs(step("raw_skeleton", fss=4).x - 100.0) < 1.0          # no fresh skeleton: smoothed
+
+
+def test_params_from_config_static_and_filter_keys():
+    p = params_from_config({"static_ghost_guard": False, "static_release_s": 12,
+                            "slot_filter_input": "raw_skeleton"})
+    assert not p.static_guard and not p.static_yield
+    assert p.static_release_s == 12.0 and p.filter_input == "raw_skeleton"
+    p = params_from_config({"static_ghost_guard": True, "slot_filter_input": "bogus"})
+    assert p.static_guard and p.static_yield and p.filter_input == "smoothed"

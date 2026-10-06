@@ -74,6 +74,7 @@ _RANGES = {
     "max_dancers": (1, 16),
     "stability": (0.0, 1.0),
     "coast_s": (0.0, 10.0),
+    "static_release_s": (0.0, 60.0),
 }
 
 # Boolean keys: real bools pass, 0/1 and "true"/"off"-style strings are coerced,

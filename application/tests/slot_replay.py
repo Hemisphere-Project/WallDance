@@ -40,8 +40,10 @@ def candidates_from_row(row: dict, position: str = "smoothed") -> List[SlotCandi
         xy = t.get("raw") if position == "raw" else None
         if xy is None:
             xy = t.get("centroid") or [b[0] + b[2] / 2.0, b[1] + b[3] / 2.0]
+        raw = t.get("raw")
         out.append(SlotCandidate(
             key=int(t["id"]), x=float(xy[0]), y=float(xy[1]),
+            fx=None if raw is None else float(raw[0]), fy=None if raw is None else float(raw[1]),
             w=float(b[2]), h=float(b[3]), hits=int(t.get("hits", 99)),
             age=int(t.get("age", 99)), fss=t.get("fss"), tsu=int(t.get("tsu", 0)),
             src=t.get("src")))

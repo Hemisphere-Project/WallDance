@@ -81,8 +81,9 @@ except Exception:  # pragma: no cover - exercised only without scipy
 STATE_LIVE = "live"
 STATE_BELT = "belt"
 STATE_COASTING = "coasting"
+STATE_WEAK = "weak"
 STATE_LOST = "lost"
-EMITTING_STATES = (STATE_LIVE, STATE_BELT, STATE_COASTING)
+EMITTING_STATES = (STATE_LIVE, STATE_BELT, STATE_WEAK, STATE_COASTING)
 
 # Stability knob (0..1) -> One-Euro (min_cutoff [Hz], beta [Hz per h/s]),
 # interpolated geometrically.  Tuned on replays (OSC_CONTRACT.md §D.3) with
@@ -174,6 +175,15 @@ class BeltMeasure(Protocol):
 
 
 @dataclass
+class WeakMeasure:
+    """Weak evidence for a coasting slot (never binds, never opens a slot)."""
+    x: float
+    y: float
+    h: float
+    kind: str = "weak"           # "warmup" (unreported tracker track) / "subtau" (YOLO under tau)
+
+
+@dataclass
 class SlotCandidate:
     """One tracker-reported track, as the slot layer sees it (original px)."""
     key: int                     # tracker track id
@@ -189,6 +199,8 @@ class SlotCandidate:
     zone_ok: bool = True         # outside the exclusion mask / inside the ROI
     payload: Any = None          # the ScaledTrack (keypoints for the output)
     hip: Optional[Tuple[float, float]] = None   # YOLO hip midpoint (belt height)
+    fx: Optional[float] = None   # alternative One-Euro input (the tracker's raw KF centroid);
+    fy: Optional[float] = None   # binding always uses (x, y) -- see SlotParams.filter_input
 
 
 @dataclass
@@ -196,6 +208,13 @@ class SlotParams:
     max_dancers: int = 2
     coast_s: float = 2.0
     stability: float = 0.5
+    # One-Euro input while live: "smoothed" = the binding position (the tracker's EMA
+    # centroid, the shipped behaviour); "raw" = the bound track's raw Kalman centroid
+    # (candidate fx/fy): removes the EMA's ~1 frame of lag before the One-Euro (review
+    # 2026-10 §1.5: lag -30..-60 ms, jitter at rest x1.6); binding is unchanged;
+    # "raw_skeleton" = raw only on frames where the bound track has a fresh YOLO skeleton
+    # (blob-fed KF centroids jump on textured walls).
+    filter_input: str = "smoothed"
     # -- establishment (anti-ghost) --
     min_streak: int = 3          # consecutive reported frames before a (re)bind
     min_hits: int = 8
@@ -227,6 +246,45 @@ class SlotParams:
     merge_hold_s: float = 1.0        # two LIVE slots this close this long: merge ...
     merge_weak_fss: int = 5          # ... when one has no skeleton for > this many frames
     merge_coast_hold_s: float = 0.5  # a coasting/belt slot inside a live one
+    # -- static ghosts (a YOLO-confirmed figure that never moves: a coat by a door,
+    # a poster, a stain).  A reported track, or a slot since its entry, that stays
+    # within static_travel_h x h for static_after_s marks a "static spot".  With the
+    # guard on, a track at a static spot cannot enter a lost slot nor re-acquire a
+    # coasting one; with static_yield on, when every slot emits, a slot that never
+    # moved since its entry gives its id to an established, moving, skeleton-backed
+    # track nobody holds (a real dancer the ghost was starving).  Continuation and
+    # the gated rebind are never blocked, so a still dancer keeps the slot it has. --
+    static_guard: bool = False
+    static_yield: bool = False
+    static_after_s: float = 5.0
+    static_spread_h: float = 0.06    # a TRACK is static: p90 distance from its median position over the
+                                     # last static_after_s < this x h (fixed figure 0.03 h; real dancers'
+                                     # stillest 5 s windows >= 0.12 h on the corpus duos / wall-hang)
+    static_travel_h: float = 0.15    # the newcomer that takes a static slot's id must have moved this much (x h)
+    static_spot_r_h: float = 0.5
+    static_spot_ttl_s: float = 30.0  # a spot no static track has confirmed for this long is forgotten
+    yield_max_fss: int = 3           # the newcomer has a real skeleton this recent (frames)
+    # -- "look deeper" near the last known position (Thomas 2026-10-06): a coasting slot
+    # takes WEAK measurements near its prediction (a warm-up tracker track with a fresh
+    # skeleton, a YOLO box under the confidence threshold) instead of holding a stale
+    # point; the binding is unchanged, a weak-only hold is capped. --
+    weak_enabled: bool = False
+    weak_gate_h: float = 0.75
+    weak_gate_growth_h_per_s: float = 2.0
+    weak_gate_max_h: float = 2.5
+    weak_max_s: float = 3.0          # weak-only hold cap since the last strong measurement
+    # -- plausible appearances (Thomas 2026-10-06): a dancer is there from the start or
+    # enters from a side; an entry far from the ROI border AND far from every slot's last
+    # position, after the start-up window, needs a longer confirmation. --
+    entry_plausibility: bool = False
+    entry_startup_s: float = 3.0
+    entry_border_h: float = 1.0      # within this x h of the bounds = "from a side"
+    entry_near_h: float = 2.0        # within this x h of a slot's last position = a re-appearance
+    entry_far_min_streak: int = 20   # interior surprise: ~1 s of consecutive reports ...
+    entry_far_max_fss: int = 3       # ... and a fresh skeleton
+    static_release_s: float = 0.0    # > 0: a slot static this long is dropped even without a newcomer
+                                     # (the ghost point TD gets while a dancer is off the wall); OFF until
+                                     # a still-dancer take proves real dancers never look static that long
     # -- motion model --
     vel_decay_tau_s: float = 0.25
     vel_alpha: float = 0.5
@@ -266,6 +324,7 @@ class _Slot:
     state: str = STATE_LOST
     key: Optional[int] = None
     pos: Optional[np.ndarray] = None       # unsmoothed position (meas or prediction)
+    fpos: Optional[np.ndarray] = None      # this frame's One-Euro input (pos, or the raw centroid)
     vel: np.ndarray = field(default_factory=lambda: np.zeros(2))   # px/s
     wh: Optional[np.ndarray] = None
     last_meas_t: float = -1e9
@@ -280,6 +339,11 @@ class _Slot:
     last_key: Optional[int] = None         # key when the slot went lost
     anchor: Optional[np.ndarray] = None    # last position the tracker REPORTED
     hidden_since: Optional[float] = None   # following a hidden bound track since
+    entry_pos: Optional[np.ndarray] = None  # where the slot was entered (static-ghost test)
+    entry_t: float = 0.0
+    hist: List[Tuple[float, float, float]] = field(default_factory=list)   # live (t, x, y) over static_after_s
+    static_since: Optional[float] = None    # first time the slot was found static (this binding)
+    strong_t: float = -1e9                  # last LIVE / belt measurement (weak-hold cap)
     filt: Optional[OneEuro2D] = None
     size_filt: Optional[OneEuro2D] = None
 
@@ -316,10 +380,18 @@ class IdentitySlots:
         self._first_pos: Dict[int, np.ndarray] = {}
         self._max_travel: Dict[int, float] = {}
         self._close_since: Dict[Tuple[int, int], float] = {}
+        self._first_t: Dict[int, float] = {}
+        self._hist: Dict[int, List[Tuple[float, float, float]]] = {}   # key -> [(t, x, y)] over static_after_s
+        self._t0: Optional[float] = None
+        self._bounds: Optional[Tuple[float, float, float, float]] = None
+        self._entry_kind = "entry"
+        # static spots: [x, y, h, t_last, kind]; kind "static" (soft: a track or a slot that
+        # never moved) or "ghost" (hard: a static slot that had to yield to a moving dancer)
+        self._spots: List[list] = []
         self.events: List[dict] = []          # this frame's bind/drop events
         self.counters = {"binds": 0, "rebinds": 0, "entries": 0,
                          "unbind_jump": 0, "merges": 0, "belt_frames": 0,
-                         "hidden_frames": 0}
+                         "hidden_frames": 0, "yields": 0, "static_blocked": 0}
         self._resize(self.p.max_dancers)
 
     # ------------------------------------------------------------------
@@ -358,6 +430,10 @@ class IdentitySlots:
         self._first_pos.clear()
         self._max_travel.clear()
         self._close_since.clear()
+        self._first_t.clear()
+        self._hist.clear()
+        self._t0 = None
+        self._spots = []
         self.events = []
 
     @property
@@ -384,7 +460,85 @@ class IdentitySlots:
         travel = p.entry_min_travel_h if entry else p.min_travel_h
         if travel > 0 and self._max_travel.get(c.key, 0.0) < travel * max(1.0, c.h):
             return False
+        if p.static_guard and self._static_blocked(c, self._entry_kind if entry else "rebind"):
+            self.counters["static_blocked"] += 1
+            return False
+        if entry and p.entry_plausibility and self._entry_kind == "entry" and self._surprising(c):
+            if streak < p.entry_far_min_streak or (c.fss is not None and int(c.fss) > p.entry_far_max_fss):
+                self.counters["implausible_wait"] = self.counters.get("implausible_wait", 0) + 1
+                return False
         return True
+
+    def _surprising(self, c: SlotCandidate) -> bool:
+        """An entry nobody expects: after the start-up window, away from the ROI
+        border, and away from every slot's last known position."""
+        p = self.p
+        if self._t is None or self._t0 is None or self._t - self._t0 < p.entry_startup_s:
+            return False
+        h = max(1.0, c.h)
+        b = self._bounds
+        if b is not None:
+            x0, y0, x1, y1 = b
+            if min(c.x - x0, x1 - c.x, c.y - y0, y1 - c.y) <= p.entry_border_h * h:
+                return False
+        for s in self._slots:
+            if s.pos is not None and float(np.hypot(c.x - s.pos[0], c.y - s.pos[1])) <= p.entry_near_h * h:
+                return False
+        return True
+
+    # ------------------------------------------------------------------
+    # static ghosts
+    # ------------------------------------------------------------------
+    def _is_static_track(self, c: SlotCandidate, t: float) -> bool:
+        p = self.p
+        t0 = self._first_t.get(c.key)
+        if t0 is None or t - t0 < p.static_after_s:
+            return False
+        return self._spread_small(self._hist.get(c.key) or [], c.h, t)
+
+    def _is_static_slot(self, s: _Slot, t: float) -> bool:
+        """The slot has been measured (live / belt) for the whole last static_after_s and its
+        positions stayed within static_spread_h x h (p90 distance from their median)."""
+        p = self.p
+        if s.state == STATE_LOST or s.wh is None or t - s.entry_t < p.static_after_s:
+            return False
+        return self._spread_small(s.hist, float(s.wh[1]), t)
+
+    def _spread_small(self, hist, h: float, t: float) -> bool:
+        p = self.p
+        if len(hist) < 5 or t - hist[0][0] < 0.8 * p.static_after_s:
+            return False
+        a = np.asarray([(x, y) for _t, x, y in hist], dtype=np.float64)
+        med = np.median(a, axis=0)
+        d = np.hypot(a[:, 0] - med[0], a[:, 1] - med[1])
+        # enough samples over the window (a slot coasting most of the time is not "static")
+        expect = p.static_after_s / max(1e-3, (hist[-1][0] - hist[0][0]) / max(1, len(hist) - 1))
+        return len(hist) >= 0.6 * expect and float(np.percentile(d, 90)) < p.static_spread_h * max(1.0, h)
+
+    def _add_spot(self, x: float, y: float, h: float, t: float, kind: str) -> None:
+        r = self.p.static_spot_r_h
+        for sp in self._spots:
+            if math.hypot(sp[0] - x, sp[1] - y) < r * max(1.0, h, sp[2]):
+                sp[3] = t
+                if kind == "ghost":
+                    sp[4] = "ghost"
+                return
+        self._spots.append([float(x), float(y), float(h), t, kind])
+
+    def _at_spot(self, c: SlotCandidate, kinds: Tuple[str, ...]) -> bool:
+        r = self.p.static_spot_r_h
+        return any(sp[4] in kinds and math.hypot(sp[0] - c.x, sp[1] - c.y) < r * max(1.0, c.h, sp[2])
+                   for sp in self._spots)
+
+    def _static_blocked(self, c: SlotCandidate, kind: str) -> bool:
+        """Entry into a lost slot is blocked only at proven ghost spots; a re-acquire
+        anywhere or a yield takeover also at soft static spots, or by a static track."""
+        static_now = self._t is not None and self._is_static_track(c, self._t)
+        if kind == "entry":
+            return self._at_spot(c, ("ghost",)) or static_now
+        if kind == "rebind":
+            return self._at_spot(c, ("ghost",)) or static_now
+        return self._at_spot(c, ("static", "ghost")) or static_now
 
     def _event(self, kind: str, sid: int, **kw) -> None:
         self.events.append({"ev": kind, "slot": sid, **kw})
@@ -397,6 +551,11 @@ class IdentitySlots:
             s.vel = np.zeros(2)
             s.belt_offset = None
             s.belt_seen = 0
+            s.entry_pos = np.array([c.x, c.y], dtype=np.float64)
+            s.entry_t = t
+            s.hist = []
+            s.static_since = None
+            s.strong_t = t
             self.counters["entries"] += 1
         else:
             s.vel = np.zeros(2)          # a rebind is a new trajectory
@@ -417,12 +576,17 @@ class IdentitySlots:
         self._event(kind, s.sid, key=c.key, prev=prev_key)
 
     def _measure(self, s: _Slot, x: np.ndarray, wh: Optional[np.ndarray],
-                 t: float, dt: float, state: str) -> None:
-        if s.pos is not None and dt > 0 and s.state in (STATE_LIVE, STATE_BELT):
+                 t: float, dt: float, state: str, fpos: Optional[np.ndarray] = None) -> None:
+        if s.pos is not None and dt > 0 and s.state in (STATE_LIVE, STATE_BELT, STATE_WEAK):
             v = (x - s.pos) / dt
             a = self.p.vel_alpha
             s.vel = a * v + (1.0 - a) * s.vel
         s.pos = x.copy()
+        s.fpos = x.copy() if fpos is None else np.asarray(fpos, dtype=np.float64).copy()
+        if self.p.static_guard or self.p.static_yield:
+            s.hist.append((t, float(x[0]), float(x[1])))
+            while s.hist and t - s.hist[0][0] > self.p.static_after_s:
+                s.hist.pop(0)
         if wh is not None:
             s.wh = wh.copy()
         s.last_meas_t = t
@@ -441,13 +605,18 @@ class IdentitySlots:
 
     def update(self, candidates: Sequence[SlotCandidate], t: float,
                belt: Optional[BeltMeasure] = None,
-               hidden: Optional[Dict[int, SlotCandidate]] = None) -> List[SlotOutput]:
+               hidden: Optional[Dict[int, SlotCandidate]] = None,
+               weak: Optional[Sequence["WeakMeasure"]] = None,
+               bounds: Optional[Tuple[float, float, float, float]] = None) -> List[SlotOutput]:
         """One output frame.  ``candidates`` = the tracker's REPORTED tracks;
         ``hidden`` = {track id: candidate} for bound tracks the tracker kept
         alive but did not report this frame (``bound_keys``)."""
         p = self.p
         hidden = hidden or {}
         self.events = []
+        self._bounds = bounds
+        if self._t0 is None:
+            self._t0 = t
         dt_raw = 0.0 if self._t is None else max(0.0, t - self._t)
         dt = min(dt_raw, p.max_dt_s)
         self._t = t
@@ -463,12 +632,20 @@ class IdentitySlots:
             xy = np.array([c.x, c.y], dtype=np.float64)
             if k not in self._first_pos:
                 self._first_pos[k] = xy
+                self._first_t[k] = t
+            if p.static_guard or p.static_yield:
+                h = self._hist.setdefault(k, [])
+                h.append((t, float(c.x), float(c.y)))
+                while h and t - h[0][0] > p.static_after_s:
+                    h.pop(0)
             d = float(np.linalg.norm(xy - self._first_pos[k]))
             self._max_travel[k] = max(self._max_travel.get(k, 0.0), d)
         for k in list(self._first_pos):
             if k not in cands:
                 self._first_pos.pop(k, None)
                 self._max_travel.pop(k, None)
+                self._first_t.pop(k, None)
+                self._hist.pop(k, None)
 
         # 1. prediction for every non-lost slot
         decay = math.exp(-dt / p.vel_decay_tau_s) if p.vel_decay_tau_s > 0 else 0.0
@@ -607,6 +784,7 @@ class IdentitySlots:
             pool = [c for c in pool if c.key not in used]
             if not group or not pool:
                 continue
+            self._entry_kind = kind
             cost = np.full((len(group), len(pool)), np.inf)
             for i, s in enumerate(group):
                 for j, c in enumerate(pool):
@@ -626,15 +804,29 @@ class IdentitySlots:
                 measured[s.sid] = (np.array([c.x, c.y], dtype=np.float64),
                                    np.array([c.w, c.h], dtype=np.float64), c)
 
+        # 4b. static ghost yield: every slot emits, a moving skeleton-backed dancer
+        # is left out, and a slot has not moved since its entry -> it gives way
+        if p.static_yield:
+            self._static_yield_round(cands, used, measured, pred, provisional, t, is_duplicate)
+
         # 5. belt queries (one batch: a belt answers at most one slot), then
         # apply measurements; belt / coast / lost for the rest
         belt_res = self._belt_round(belt, measured, pred, t) if belt is not None else {}
+        weak_res = (self._weak_round(weak, measured, belt_res, pred, t)
+                    if (p.weak_enabled and weak) else {})
         for s in self._slots:
             if s.sid in measured:
                 xy, wh, c = measured[s.sid]
                 if s.sid in belt_res:
                     self._learn_belt(s, xy, belt_res[s.sid])
-                self._measure(s, xy, wh, t, dt, STATE_LIVE)
+                fpos = None
+                use_raw = p.filter_input == "raw" or (
+                    p.filter_input == "raw_skeleton" and c.fss is not None and int(c.fss) == 0)
+                if use_raw and c.fx is not None and c.fy is not None \
+                        and np.isfinite(c.fx) and np.isfinite(c.fy):
+                    fpos = np.array([c.fx, c.fy], dtype=np.float64)
+                self._measure(s, xy, wh, t, dt, STATE_LIVE, fpos=fpos)
+                s.strong_t = t
                 s.fss = c.fss
                 s.payload = c.payload
                 s.belt_since = None
@@ -649,11 +841,19 @@ class IdentitySlots:
                 if s.belt_since is None:
                     s.belt_since = t
                 self._measure(s, got, None, t, dt, STATE_BELT)
+                s.strong_t = t
                 s.fss = None
                 self.counters["belt_frames"] += 1
                 continue
+            w = weak_res.get(s.sid)
+            if w is not None:
+                self._measure(s, np.array([w.x, w.y], dtype=np.float64), None, t, dt, STATE_WEAK)
+                s.fss = None
+                self.counters["weak_frames"] = self.counters.get("weak_frames", 0) + 1
+                continue
             # no measurement: coast on the (decaying) prediction
             s.pos = pred[s.sid]
+            s.fpos = s.pos
             if s.state != STATE_COASTING:
                 s.state = STATE_COASTING
                 s.state_since = t
@@ -663,13 +863,32 @@ class IdentitySlots:
         # 6. never two slots on one dancer
         self._merge_converged(t)
 
+        # 6b. static spots: tracks and slots that never moved (soft evidence)
+        if p.static_guard or p.static_yield:
+            for c in cands.values():
+                if self._is_static_track(c, t):
+                    self._add_spot(c.x, c.y, c.h, t, "static")
+            for s in self._slots:
+                if s.pos is not None and self._is_static_slot(s, t):
+                    self._add_spot(float(s.pos[0]), float(s.pos[1]), float(s.wh[1]), t, "static")
+                    if s.static_since is None:
+                        s.static_since = t
+                    if p.static_release_s > 0 and t - s.static_since >= p.static_release_s:
+                        self._add_spot(float(s.pos[0]), float(s.pos[1]), float(s.wh[1]), t, "ghost")
+                        self._event("static_release", s.sid, key=s.key)
+                        self.counters["yields"] += 1
+                        self._drop(s, t, "yield")
+                elif s.state != STATE_LOST:
+                    s.static_since = None
+            self._spots = [sp for sp in self._spots if t - sp[3] <= p.static_spot_ttl_s]
+
         # 7. smoothing + outputs
         out: List[SlotOutput] = []
         for s in self._slots:
             if s.state == STATE_LOST or s.pos is None:
                 continue
             h_ref = max(1.0, float(s.wh[1]) if s.wh is not None else 1.0)
-            fx = s.filt(s.pos, t, scale=h_ref)
+            fx = s.filt(s.fpos if s.fpos is not None else s.pos, t, scale=h_ref)
             fwh = s.size_filt(s.wh if s.wh is not None else np.array([h_ref * 0.4, h_ref]),
                               t, scale=h_ref)
             v = s.filt.speed
@@ -683,11 +902,80 @@ class IdentitySlots:
         return out
 
     # ------------------------------------------------------------------
+    def _weak_round(self, weak, measured, belt_res, pred, t) -> Dict[int, "WeakMeasure"]:
+        """Coasting slots look deeper near their prediction: each weak measurement goes to
+        at most one slot (nearest, inside a gate growing with the time since the last
+        measurement), never next to another emitting slot, and a weak-only hold is capped
+        at weak_max_s since the slot's last strong measurement."""
+        p = self.p
+        seekers = [s for s in self._slots
+                   if s.state != STATE_LOST and s.sid not in measured and s.sid not in belt_res
+                   and s.sid in pred and t - s.strong_t <= p.weak_max_s]
+        if not seekers:
+            return {}
+        others = []      # positions of the other emitting slots this frame
+        for o in self._slots:
+            if o.sid in measured:
+                others.append((o.sid, measured[o.sid][0], float(measured[o.sid][1][1])))
+            elif o.state != STATE_LOST and o.sid in pred:
+                others.append((o.sid, pred[o.sid], float(o.wh[1]) if o.wh is not None else 1.0))
+        ws = list(weak)
+        cost = np.full((len(seekers), len(ws)), np.inf)
+        for i, s in enumerate(seekers):
+            h = max(1.0, float(s.wh[1]) if s.wh is not None else 1.0)
+            gate = min(p.weak_gate_max_h, p.weak_gate_h + p.weak_gate_growth_h_per_s
+                       * max(0.0, t - s.last_meas_t)) * h
+            for j, w in enumerate(ws):
+                d = float(np.hypot(w.x - pred[s.sid][0], w.y - pred[s.sid][1]))
+                if d > gate:
+                    continue
+                if any(sid != s.sid and float(np.hypot(w.x - pos[0], w.y - pos[1]))
+                       < p.dup_bind_h * max(oh, w.h, 1.0) for sid, pos, oh in others):
+                    continue
+                cost[i, j] = d / h
+        out = {}
+        for i, j in _assign(cost):
+            out[seekers[i].sid] = ws[j]
+        return out
+
+    def _static_yield_round(self, cands, used, measured, pred, provisional, t, is_duplicate) -> None:
+        p = self.p
+        if any(s.state == STATE_LOST for s in self._slots):
+            return      # a free slot exists: the entry step handles newcomers
+        self._entry_kind = "yield"
+        movers = [c for k, c in cands.items()
+                  if k not in used and c.fss is not None and int(c.fss) <= p.yield_max_fss
+                  and self._max_travel.get(k, 0.0) >= p.static_travel_h * max(1.0, c.h)
+                  and self._established(c, entry=True)]
+        if not movers:
+            return
+        static = sorted((s for s in self._slots if self._is_static_slot(s, t)),
+                        key=lambda s: s.entry_t)
+        for s in static:
+            movers = [c for c in movers if c.key not in used and not is_duplicate(c, s.sid)]
+            if not movers:
+                return
+            c = max(movers, key=lambda c: (int(c.hits or 0), -int(c.fss or 0)))
+            if s.pos is not None:
+                self._add_spot(float(s.pos[0]), float(s.pos[1]),
+                               float(s.wh[1]) if s.wh is not None else c.h, t, "ghost")
+            self._event("yield", s.sid, key=s.key, to=c.key)
+            self.counters["yields"] += 1
+            if s.key is not None:
+                used.add(s.key)              # the ghost's track stays unbound this frame
+            self._drop(s, t, "yield")
+            measured.pop(s.sid, None)
+            provisional.discard(s.sid)
+            self._bind(s, c, t, "yield_entry")
+            used.add(c.key)
+            measured[s.sid] = (np.array([c.x, c.y], dtype=np.float64),
+                               np.array([c.w, c.h], dtype=np.float64), c)
+
     def _drop(self, s: _Slot, t: float, why: str) -> None:
         self._event("lost", s.sid, why=why, key=s.key)
         s.state = STATE_LOST
         s.state_since = t
-        s.last_key = s.key if why != "merged" else None
+        s.last_key = s.key if why not in ("merged", "yield") else None
         s.key = None
         s.belt_since = None
         s.hidden_since = None
@@ -833,8 +1121,12 @@ def candidate_from_track(st, zone_ok: bool = True,
         if idx:
             hip = (float(np.mean([kp[i][0] for i in idx])),
                    float(np.mean([kp[i][1] for i in idx])))
+    raw = getattr(st, "centroid_raw", None)
+    fx = fy = None
+    if raw is not None and len(raw) >= 2 and np.all(np.isfinite(np.asarray(raw[:2], dtype=np.float64))):
+        fx, fy = float(raw[0]), float(raw[1])
     return SlotCandidate(
-        key=int(st.track_id), x=float(xy[0]), y=float(xy[1]),
+        key=int(st.track_id), x=float(xy[0]), y=float(xy[1]), fx=fx, fy=fy,
         w=float(bbox[2]), h=float(bbox[3]),
         hits=int(getattr(st, "hits", None) or 0),
         age=int(getattr(st, "age", None) or 0),
@@ -853,4 +1145,10 @@ def params_from_config(cfg: Dict[str, Any], base: Optional[SlotParams] = None) -
         p.stability = float(cfg["stability"])
     if cfg.get("coast_s") is not None:
         p.coast_s = float(cfg["coast_s"])
+    if cfg.get("static_ghost_guard") is not None:
+        p.static_guard = p.static_yield = bool(cfg["static_ghost_guard"])
+    if cfg.get("static_release_s") is not None:
+        p.static_release_s = max(0.0, float(cfg["static_release_s"]))
+    if cfg.get("slot_filter_input") in ("smoothed", "raw", "raw_skeleton"):
+        p.filter_input = str(cfg["slot_filter_input"])
     return p

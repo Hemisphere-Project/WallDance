@@ -160,6 +160,7 @@ class DpgUiAdapter:
             "on_stability_change": lambda v: submit(api.SetStability(float(v))),
             "on_coast_s_change": lambda v: submit(api.SetCoastSeconds(float(v))),
             "on_ir_belt_toggle": lambda v: submit(api.ToggleIrBelt(bool(v))),
+            "on_static_guard_toggle": lambda v: submit(api.SetStaticGhostGuard(bool(v))),
             "on_osc_state_toggle": lambda v: submit(api.ToggleOscState(bool(v))),
             "on_check_readiness": lambda: submit(api.CheckReadiness()),
             "on_dryrun": lambda: submit(api.RunDryRunReplay()),

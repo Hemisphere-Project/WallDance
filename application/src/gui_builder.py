@@ -16,6 +16,7 @@ import numpy as np
 
 from core.config import (RECORDING_SLOTS, IDENTITY_SLOTS_ENABLED, IDENTITY_SLOTS_MAX_DANCERS,
                          IDENTITY_SLOTS_STABILITY, IDENTITY_SLOTS_COAST_S,
+                         IDENTITY_SLOTS_STATIC_GUARD,
                          IDENTITY_SLOTS_USE_IR_BELT, OSC_SEND_STATE)
 from gui_icons import Icons
 from gui_constants import (
@@ -1148,6 +1149,15 @@ def build_identity_slot_controls(gui: Any):
         with dpg.tooltip(state_chk):
             dpg.add_text("Opt-in OSC /walldance/dancer/state [id, state, age_s]\n"
                          "(live / belt / coasting / lost) for every slot.")
+    guard_chk = dpg.add_checkbox(
+        label="Ignore static figures", tag="static_guard_checkbox",
+        default_value=bool(cfg.get("static_ghost_guard", IDENTITY_SLOTS_STATIC_GUARD)),
+        callback=gui._on_static_guard_toggle,
+    )
+    with dpg.tooltip(guard_chk):
+        dpg.add_text("A person-like shape that never moves (a coat, a poster, a\n"
+                     "stain) cannot keep a dancer id when a moving dancer needs it,\n"
+                     "and cannot take one back. Leave it ON.")
     dpg.add_text("ids: -", tag="identity_slots_status_text", color=TEXT_DIM)
 
 

@@ -659,6 +659,10 @@ class WallDanceGUI:
         if 'on_coast_s_change' in self.callbacks:
             self.callbacks['on_coast_s_change'](float(value))
 
+    def _on_static_guard_toggle(self, sender, value):
+        if 'on_static_guard_toggle' in self.callbacks:
+            self.callbacks['on_static_guard_toggle'](bool(value))
+
     def _on_ir_belt_toggle(self, sender, value):
         if 'on_ir_belt_toggle' in self.callbacks:
             self.callbacks['on_ir_belt_toggle'](bool(value))
@@ -1843,6 +1847,7 @@ class WallDanceGUI:
             'input_mirror': ['input_mirror_checkbox'],
             'identity_slots': ['identity_slots_checkbox'],
             'ir_belt': ['ir_belt_checkbox'],
+            'static_guard': ['static_guard_checkbox'],
             'osc_state': ['osc_state_checkbox'],
         }
         # Visualization toggles - update toolbar button themes instead of checkboxes

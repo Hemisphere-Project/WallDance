@@ -32,6 +32,7 @@ SLOT_STATE_COLORS = {
     "live": (80, 220, 80),       # green: bound track updated this frame
     "belt": (255, 200, 0),       # cyan: held by the IR belt
     "coasting": (0, 165, 255),   # orange: holding / predicting, no measurement
+    "weak": (200, 120, 255),     # pink: coasting slot re-found on weak evidence (option, off by default)
 }
 
 

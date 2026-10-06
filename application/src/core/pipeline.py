@@ -38,7 +38,9 @@ from core.config import (
     IDENTITY_SLOTS_ENABLED,
     IDENTITY_SLOTS_MAX_DANCERS,
     IDENTITY_SLOTS_STABILITY,
-    IDENTITY_SLOTS_COAST_S,
+    IDENTITY_SLOTS_COAST_S, IDENTITY_SLOTS_STATIC_GUARD,
+    IDENTITY_SLOTS_STATIC_RELEASE_S, IDENTITY_SLOTS_FILTER_INPUT,
+    BELT_STATIC_EVERY_N, BELT_STATIC_ALPHA, BELT_STATIC_ON,
     IDENTITY_SLOTS_USE_IR_BELT,
     OSC_SEND_STATE,
     TrackingMode,
@@ -137,6 +139,9 @@ class ProcessingSettings:
     max_dancers: int = IDENTITY_SLOTS_MAX_DANCERS
     stability: float = IDENTITY_SLOTS_STABILITY
     coast_s: float = IDENTITY_SLOTS_COAST_S
+    static_ghost_guard: bool = IDENTITY_SLOTS_STATIC_GUARD
+    static_release_s: float = IDENTITY_SLOTS_STATIC_RELEASE_S
+    slot_filter_input: str = IDENTITY_SLOTS_FILTER_INPUT
     use_ir_belt: bool = IDENTITY_SLOTS_USE_IR_BELT
     osc_send_state: bool = OSC_SEND_STATE
     use_gpu_path: bool = USE_GPU_PATH  # Enable GPU frame buffer
@@ -463,6 +468,10 @@ class FrameProcessor:
         self._belt_state = "unloaded"      # unloaded | ready | unavailable
         self._belt_gray: Optional[np.ndarray] = None
         self._belt_gray_offset = (0, 0)
+        # online static-glint map for the belt detector (A6): learned every N frames
+        self._belt_static = None
+        self._belt_static_ok = True
+        self._belt_frame = 0
         # Raw detection heights (original-space px) BEFORE the size gate — the
         # height-staleness alarm must see what the gate would reject (⑤d)
         self.last_raw_det_heights: List[float] = []
@@ -1017,8 +1026,10 @@ class FrameProcessor:
 
     def configure_identity_slots(self, **kw) -> None:
         """Live operator knobs: ``identity_slots_enabled``, ``max_dancers``,
-        ``stability``, ``coast_s``, ``use_ir_belt``, ``osc_send_state``."""
-        for key in ("identity_slots_enabled", "use_ir_belt", "osc_send_state"):
+        ``stability``, ``coast_s``, ``use_ir_belt``, ``osc_send_state``,
+        ``static_ghost_guard``, ``static_release_s``, ``slot_filter_input``."""
+        for key in ("identity_slots_enabled", "use_ir_belt", "osc_send_state",
+                    "static_ghost_guard"):
             if kw.get(key) is not None:
                 setattr(self.settings, key, bool(kw[key]))
         if kw.get("max_dancers") is not None:
@@ -1027,10 +1038,18 @@ class FrameProcessor:
             self.settings.stability = min(1.0, max(0.0, float(kw["stability"])))
         if kw.get("coast_s") is not None:
             self.settings.coast_s = max(0.0, float(kw["coast_s"]))
+        if kw.get("static_release_s") is not None:
+            self.settings.static_release_s = max(0.0, float(kw["static_release_s"]))
+        if kw.get("slot_filter_input") in ("smoothed", "raw", "raw_skeleton"):
+            self.settings.slot_filter_input = str(kw["slot_filter_input"])
         if self._slots is not None:
+            g = bool(self.settings.static_ghost_guard)
             self._slots.configure(max_dancers=self.settings.max_dancers,
                                   stability=self.settings.stability,
-                                  coast_s=self.settings.coast_s)
+                                  coast_s=self.settings.coast_s,
+                                  static_guard=g, static_yield=g,
+                                  static_release_s=self.settings.static_release_s,
+                                  filter_input=self.settings.slot_filter_input)
         if kw.get("identity_slots_enabled") is False:
             self.reset_output()
 
@@ -1040,6 +1059,9 @@ class FrameProcessor:
             self._slots.reset()
         self._out_last_t = None
         self.last_emitted = []
+        self._belt_static = None          # a new scene / take: relearn the glints
+        if self._belt_detector is not None:
+            self._belt_detector.static = None
 
     def slot_states(self) -> List[tuple]:
         """[(slot id, state, age_s)] for every slot (lost included)."""
@@ -1082,7 +1104,35 @@ class FrameProcessor:
         gray = self._belt_gray
         if gray is None:
             return None
+        self._belt_frame += 1
+        if self._belt_static_ok and self._belt_frame % max(1, BELT_STATIC_EVERY_N) == 0:
+            self._update_belt_static(gray, *self._belt_gray_offset)
         return _BeltHook(self, self._belt_detector, gray, *self._belt_gray_offset)
+
+    def _update_belt_static(self, gray, ox, oy) -> None:
+        """Static-glint map for the belt detector, learned online: a global belt pass
+        (every BELT_STATIC_EVERY_N frames) feeds a per-cell persistence EMA; discs
+        around LIVE slots are protected (a coasting slot is not: a glint at its
+        predicted waist is exactly what must be learned).  Any failure stops the
+        learning for the session, never the belt."""
+        try:
+            from core.belt_detector import StaticMap
+            g = gray if gray.ndim == 2 else gray[:, :, 0]
+            if self._belt_static is None or self._belt_static.shape != tuple(g.shape[:2]):
+                self._belt_static = StaticMap(g.shape[:2], cell=8)
+            blobs = [b for b in self._belt_detector.detect(g, return_all=True)
+                     if b.reason not in ("small", "static")]
+            protect = []
+            if self._slots is not None:
+                for s in self._slots.slots:
+                    if s.state == STATE_LIVE and s.pos is not None and s.wh is not None:
+                        protect.append((float(s.pos[0]) - ox, float(s.pos[1]) - oy,
+                                        0.6 * float(s.wh[1])))
+            self._belt_static.update(blobs, protect, alpha=BELT_STATIC_ALPHA, on=BELT_STATIC_ON)
+            self._belt_detector.static = self._belt_static
+        except Exception as exc:  # noqa: BLE001 - optional refinement
+            self._belt_static_ok = False
+            print(f"[Slots] belt static map disabled ({type(exc).__name__}: {exc})")
 
     def _zone_ok_fn(self, original_w: int, original_h: int):
         """Original-px point -> outside the exclusion mask (normalized over the
@@ -1101,10 +1151,14 @@ class FrameProcessor:
         """Feed the reported tracks (+ the hidden state of slot-bound ones) to
         the slot layer and return the emitted slot ScaledTracks."""
         if self._slots is None:
+            g = bool(self.settings.static_ghost_guard)
             self._slots = IdentitySlots(SlotParams(
                 max_dancers=int(self.settings.max_dancers),
                 stability=float(self.settings.stability),
-                coast_s=float(self.settings.coast_s)))
+                coast_s=float(self.settings.coast_s),
+                static_guard=g, static_yield=g,
+                static_release_s=float(self.settings.static_release_s),
+                filter_input=str(self.settings.slot_filter_input)))
         t = float(self._output_clock())
         if self._out_last_t is not None and t > self._out_last_t:
             self._out_dt = min(0.25, t - self._out_last_t)

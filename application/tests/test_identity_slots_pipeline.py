@@ -218,3 +218,38 @@ def test_state_message_wire_format():
     assert [m.address for m in msgs] == ["/walldance/dancer/state"] * 2
     assert msgs[0].params[:2] == [1, "live"] and msgs[0].params[2] == pytest.approx(2.5)
     assert msgs[1].params[:2] == [2, "lost"]
+
+
+def test_belt_static_map_learns_a_fixed_glint_but_not_a_live_dancer(proc):
+    """A6: a fixed bright band (a floor light, a lamp) is learned as static within
+    ~10 s of 20 fps and the gated belt queries stop answering with it; the belt of
+    a LIVE dancer is protected and never learned."""
+    cv2 = pytest.importorskip("cv2")
+    pytest.importorskip("core.belt_detector")
+    h = 150.0
+    cx, cy = 700.0, 560.0
+    hip_y = cy + 0.15 * h
+    gray = np.full((1000, 1400), 14, np.uint8)
+    cv2.rectangle(gray, (int(cx - 20), int(cy - 0.45 * h)), (int(cx + 20), int(cy + 0.5 * h)), 30, -1)
+    cv2.rectangle(gray, (int(cx - 15), int(hip_y - 2)), (int(cx + 15), int(hip_y + 2)), 200, -1)
+    gx, gy = 300, 850                                    # the fixed glint, far from the dancer
+    cv2.rectangle(gray, (gx - 15, gy - 2), (gx + 15, gy + 2), 220, -1)
+    proc._belt_gray = gray
+    proc._belt_gray_offset = (0, 0)
+
+    def st():
+        t = _st(9, cx, cy, fss=0)
+        t.bbox = np.array([cx - 30, cy - h / 2, 60, h])
+        t.keypoints[11] = (cx - 12, hip_y)
+        t.keypoints[12] = (cx + 12, hip_y)
+        return t
+    for _ in range(400):                                 # 20 s with the dancer live
+        _step(proc, [st()])
+    sm = proc._belt_static
+    assert sm is not None and proc._belt_detector.static is sm
+    assert sm.contains(gx, gy)                           # the glint is static ...
+    assert not sm.contains(cx, hip_y)                    # ... the live dancer's belt is not
+    res = proc._belt_detector.detect_near(gray, [("g", gx, gy, 40.0, None)])
+    assert res["g"] is None                              # gated queries ignore it now
+    proc.reset_output()                                  # a new take: relearn
+    assert proc._belt_static is None and proc._belt_detector.static is None

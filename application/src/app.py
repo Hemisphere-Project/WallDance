@@ -70,7 +70,8 @@ from core.config import (
     IDENTITY_SLOTS_ENABLED,
     IDENTITY_SLOTS_MAX_DANCERS,
     IDENTITY_SLOTS_STABILITY,
-    IDENTITY_SLOTS_COAST_S,
+    IDENTITY_SLOTS_COAST_S, IDENTITY_SLOTS_STATIC_GUARD,
+    IDENTITY_SLOTS_STATIC_RELEASE_S, IDENTITY_SLOTS_FILTER_INPUT,
     IDENTITY_SLOTS_USE_IR_BELT,
     OSC_SEND_STATE,
     YOLO_MODEL,
@@ -816,6 +817,9 @@ class WallDanceApp:
             "max_dancers": self.settings.max_dancers,
             "stability": self.settings.stability,
             "coast_s": self.settings.coast_s,
+            "static_ghost_guard": self.settings.static_ghost_guard,
+            "static_release_s": self.settings.static_release_s,
+            "slot_filter_input": self.settings.slot_filter_input,
             "use_ir_belt": self.settings.use_ir_belt,
             "osc_send_state": self.settings.osc_send_state,
         }
@@ -862,6 +866,12 @@ class WallDanceApp:
         reg(api.SetStability, lambda c: self._cb_identity_slots(stability=c.value))
         reg(api.SetCoastSeconds, lambda c: self._cb_identity_slots(coast_s=c.value))
         reg(api.ToggleIrBelt, lambda c: self._cb_identity_slots(use_ir_belt=c.enabled))
+        reg(api.SetIntermittentConfirm, lambda c: self._cb_intermittent_confirm(c.enabled))
+        reg(api.SetTrackingMode, lambda c: self._cb_tracking_mode(c.value))
+        reg(api.SetStaticGhostGuard,
+            lambda c: self._cb_identity_slots(static_ghost_guard=c.enabled))
+        reg(api.SetStaticRelease, lambda c: self._cb_identity_slots(static_release_s=c.value))
+        reg(api.SetSlotFilterInput, lambda c: self._cb_identity_slots(slot_filter_input=c.value))
         reg(api.ToggleOscState, lambda c: self._cb_identity_slots(osc_send_state=c.enabled))
         reg(api.SetPersonHeight, lambda c: self._cb_person_height_change(c.value))
         reg(api.SetImgsz, lambda c: self._cb_imgsz_change(c.value))
@@ -1234,6 +1244,9 @@ class WallDanceApp:
             "max_dancers": self.settings.max_dancers,
             "stability": self.settings.stability,
             "coast_s": self.settings.coast_s,
+            "static_ghost_guard": self.settings.static_ghost_guard,
+            "static_release_s": self.settings.static_release_s,
+            "slot_filter_input": self.settings.slot_filter_input,
             "use_ir_belt": self.settings.use_ir_belt,
             "osc_send_state": self.settings.osc_send_state,
             "motion_sensitivity": self.processor.get_motion_sensitivity(),
@@ -1439,6 +1452,9 @@ class WallDanceApp:
                              ("max_dancers", IDENTITY_SLOTS_MAX_DANCERS),
                              ("stability", IDENTITY_SLOTS_STABILITY),
                              ("coast_s", IDENTITY_SLOTS_COAST_S),
+                             ("static_ghost_guard", IDENTITY_SLOTS_STATIC_GUARD),
+                             ("static_release_s", IDENTITY_SLOTS_STATIC_RELEASE_S),
+                             ("slot_filter_input", IDENTITY_SLOTS_FILTER_INPUT),
                              ("use_ir_belt", IDENTITY_SLOTS_USE_IR_BELT),
                              ("osc_send_state", OSC_SEND_STATE)):
             if key in config or full_config:
@@ -1746,7 +1762,23 @@ class WallDanceApp:
         "coast_s": ("slider", "coast_s"),
         "use_ir_belt": ("checkbox", "ir_belt"),
         "osc_send_state": ("checkbox", "osc_state"),
+        "static_ghost_guard": ("checkbox", "static_guard"),
     }
+
+    def _cb_intermittent_confirm(self, enabled: bool):
+        """Tracker intermittent-confirm path (remote / known-N key); saved with the project."""
+        self.tracker.intermittent_confirm = bool(enabled)
+        print(f"Tracker: intermittent confirm {'ON' if enabled else 'OFF'}")
+
+    def _cb_tracking_mode(self, value: str):
+        """Tracker priority mode (remote).  Same order as a project load: the mode first
+        (it resets min_hits / max_age), then the project's max_age is put back."""
+        mode = TrackingMode(value)
+        keep_age = self.tracker.max_age
+        self.tracker.set_tracking_mode(mode)
+        self.processor.set_tracking_mode(mode)
+        self.tracker.max_age = keep_age
+        print(f"Tracker: mode {mode.value} (max_age kept at {keep_age})")
 
     def _cb_identity_slots(self, sync: bool = True, **kw):
         """Dancer-id knobs (identity slots, CONT-6; phase 6 Live + remote API).
@@ -1760,6 +1792,8 @@ class WallDanceApp:
         print(f"Dancer ids: slots={'ON' if s.identity_slots_enabled else 'OFF'} "
               f"N={s.max_dancers} stability={s.stability:.2f} hold={s.coast_s:.1f}s "
               f"belt={'on' if s.use_ir_belt else 'off'} "
+              f"ghost_guard={'on' if s.static_ghost_guard else 'off'} "
+              f"release={s.static_release_s:.0f}s filter={s.slot_filter_input} "
               f"state_msg={'on' if s.osc_send_state else 'off'}")
 
     def _cb_imgsz_change(self, value: int):
