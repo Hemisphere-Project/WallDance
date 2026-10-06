@@ -2394,13 +2394,14 @@ class WallDanceApp:
     # ------------------------------------------------------------------
     # Main loop
     # ------------------------------------------------------------------
-    def run(self):
-        """Run the session: startup → tick loop → shutdown.
+    def run(self) -> int:
+        """Run the session: startup → tick loop → shutdown. Returns the
+        process exit code (non-zero = the launcher offers Restart).
 
         The whole driver lives in runtime/main_loop.py as explicit tick
         stages (DECOMPOSITION_PLAN Phase 4); WallDanceApp is the
         composition root: wiring, command handlers, lifecycle."""
-        MainLoop(self).run()
+        return MainLoop(self).run()
 
 
 def main():
@@ -2461,7 +2462,9 @@ def main():
     )
 
     app = WallDanceApp(startup_review=startup_review)
-    app.run()
+    exit_code = app.run()
+    if exit_code:
+        sys.exit(exit_code)
 
 
 if __name__ == "__main__":

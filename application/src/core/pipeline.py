@@ -16,6 +16,7 @@ import numpy as np
 from ultralytics import YOLO
 
 from core.config import (
+    CV2_NUM_THREADS,
     BG_SUBTRACT_ENABLED,
     BG_SUBTRACT_SENSITIVITY,
     BRIGHTNESS_THRESHOLD,
@@ -77,6 +78,11 @@ except ImportError:
     TORCH_AVAILABLE = False
     GpuPipeline = None
     GpuPipelineSettings = None
+
+# PERF-1: `import ultralytics` (above) ran cv2.setNumThreads(0) process-wide,
+# leaving the CPU motion feed single-threaded. Restore a multi-threaded OpenCV
+# (motion outputs are bit-identical: tests/test_cv2_threads_bit_identity.py).
+cv2.setNumThreads(CV2_NUM_THREADS)
 
 
 @dataclass
@@ -463,7 +469,7 @@ class FrameProcessor:
     
     def _process_gpu(self, frame: np.ndarray, need_preview: bool = True, frame_number: int | None = None) -> Tuple[List[ScaledTrack], np.ndarray, Dict[str, float], float]:
         """GPU pipeline: zero-copy enhancement + YOLO."""
-        frame_start = time.time()
+        frame_start = time.perf_counter()
         original_h, original_w = frame.shape[:2]
         timing: Dict[str, float] = {}
         
@@ -482,7 +488,7 @@ class FrameProcessor:
             yolo_tensor, gpu_timing, timing, original_w, original_h,
             frame_number=frame_number, raw_frame=frame)
         
-        latency_ms = (time.time() - frame_start) * 1000
+        latency_ms = (time.perf_counter() - frame_start) * 1000
         timing["total"] = latency_ms
         self._timing = timing
         
@@ -508,7 +514,7 @@ class FrameProcessor:
             raise RuntimeError("GPU path not active, cannot use process_gpu_direct")
 
         # Track P: GPU-only — no CPU fallback (a CUDA error now propagates).
-        frame_start = time.time()
+        frame_start = time.perf_counter()
         _, _, original_h, original_w = gpu_tensor.shape
         timing: Dict[str, float] = {}
 
@@ -529,7 +535,7 @@ class FrameProcessor:
         # can take the single channel directly (P-1, mono_raw=True).
         scaled_tracks = self._run_yolo_and_track(yolo_tensor, gpu_timing, timing, original_w, original_h, frame_number=frame_number, raw_frame=raw_frame, mono_raw=True)
 
-        latency_ms = (time.time() - frame_start) * 1000
+        latency_ms = (time.perf_counter() - frame_start) * 1000
         timing["total"] = latency_ms
         self._timing = timing
 
@@ -560,7 +566,7 @@ class FrameProcessor:
         gray_for_motion = None
         if (self.bridge_motion_detector is not None
                 or self.crossval_motion_detector is not None) and raw_frame is not None:
-            t_mog_start = time.time()
+            t_mog_start = time.perf_counter()
             motion_frame = raw_frame
             if roi.get('enabled'):
                 roi_w = int(roi.get('w', 0))
@@ -573,12 +579,12 @@ class FrameProcessor:
             gray_for_motion = (np.ascontiguousarray(motion_frame[:, :, 0])
                                if mono_raw and motion_frame.ndim == 3
                                else cv2.cvtColor(motion_frame, cv2.COLOR_BGR2GRAY))
-            timing["mog2_cvt"] = (time.time() - t_mog_start) * 1000
+            timing["mog2_cvt"] = (time.perf_counter() - t_mog_start) * 1000
             self._submit_motion_feed(gray_for_motion)  # P-2
             motion_submitted = True
 
         # YOLO inference (GPU) — runs in parallel with MOG2 feed (CPU)
-        t0 = time.time()
+        t0 = time.perf_counter()
         results = self.model(
             yolo_tensor,
             imgsz=self.settings.imgsz,
@@ -587,7 +593,7 @@ class FrameProcessor:
             half=self.settings.use_fp16,
             verbose=False,
         )
-        timing["yolo"] = (time.time() - t0) * 1000
+        timing["yolo"] = (time.perf_counter() - t0) * 1000
         timing["path_yolo"] = "gpu"
 
         # Scale person_height_px from original-camera space to letterboxed
@@ -600,20 +606,20 @@ class FrameProcessor:
         scaled_person_height = max(1, int(self.settings.person_height_px * lb_scale))
 
         # Extract detections
-        t0 = time.time()
+        t0 = time.perf_counter()
         detections = self._extract_detections(results)
         # Raw det heights in ORIGINAL-space px, before the size gate — the
         # height-staleness alarm must see what the gate would reject (⑤d).
         inv_lb = 1.0 / lb_scale if lb_scale > 0 else 1.0
         self.last_raw_det_heights = [float(d[2][3]) * inv_lb for d in detections]
         detections = self._filter_duplicate_detections(detections, effective_person_height=scaled_person_height)
-        timing["extract"] = (time.time() - t0) * 1000
+        timing["extract"] = (time.perf_counter() - t0) * 1000
         timing.update(self._extract_transfer_timing)
 
         # Block on the MOG2 feed before tracker needs blobs (same sync point)
         if motion_submitted:
             self._await_motion_feed()
-            timing["mog2_feed"] = (time.time() - t_mog_start) * 1000 - timing.get("mog2_cvt", 0)
+            timing["mog2_feed"] = (time.perf_counter() - t_mog_start) * 1000 - timing.get("mog2_cvt", 0)
 
         # GPU tracker space: ROI-local letterboxed imgsz coords — content sits
         # between pad_x and imgsz - pad_x for edge-exit detection.
@@ -810,18 +816,18 @@ class FrameProcessor:
             eager_blobs = space.blobs_to_tracker(eager_blobs)
 
         # Tracking
-        t0 = time.time()
+        t0 = time.perf_counter()
         self.tracker.set_frame_dimensions(space.frame_width,
                                           pad_x=int(space.pad_x))
         self.tracker.set_person_height(space.person_height)
 
-        t_trk = time.time()
+        t_trk = time.perf_counter()
         tracked = self.tracker.update(
             detections, frame_number=frame_number,
             motion_detector=motion_proxy,
             motion_blobs=eager_blobs)
-        timing["tracker_update"] = (time.time() - t_trk) * 1000
-        timing["track"] = (time.time() - t0) * 1000
+        timing["tracker_update"] = (time.perf_counter() - t_trk) * 1000
+        timing["track"] = (time.perf_counter() - t0) * 1000
         timing["path_track"] = "cpu"
         timing["original_w"] = original_w
         timing["original_h"] = original_h

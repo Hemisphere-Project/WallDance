@@ -132,3 +132,110 @@ def test_project_with_only_safe_defaults_not_listed(store):
     assert store.latest_for_project("GhostProj") is None
     # the safe defaults themselves stay loadable (separate explicit action)
     assert store.has_safe_defaults("GhostProj")
+
+
+# ---------------------------------------------------------------------------
+# ARCH-8 durability: atomic writes, newest-valid fallback, same-second saves
+# ---------------------------------------------------------------------------
+
+def test_truncated_newest_file_falls_back_to_previous_valid(store, tmp_path):
+    good = store.save("Show", {"x": 1})
+    pdir = tmp_path / "Show"
+    # A save cut short mid-write (crash / power loss / disk full) - newest.
+    bad = pdir / "Show_29991231_235959.json"
+    bad.write_text('{"x": 2, "tracker_max_age": 4', encoding="utf-8")
+    # An empty file and a non-object are not configs either.
+    (pdir / "Show_29991231_235958.json").write_text("", encoding="utf-8")
+    (pdir / "Show_29991231_235957.json").write_text("[1, 2]", encoding="utf-8")
+    future = time.time() + 60
+    for p in pdir.glob("Show_2999*.json"):
+        os.utime(p, (future, future))
+
+    assert store.latest_for_project("Show") == good
+    assert store.load(good)["x"] == 1
+    # The broken files stay on disk (post-mortem) and in the history list.
+    assert bad.exists()
+    assert len(store.project_history("Show").configs) == 4
+
+
+def test_all_files_invalid_means_no_latest(store, tmp_path):
+    pdir = tmp_path / "Broken"
+    pdir.mkdir()
+    (pdir / "Broken_20260101_000000.json").write_text("{", encoding="utf-8")
+    assert store.latest_for_project("Broken") is None
+
+
+def test_load_rejects_non_object(store, tmp_path):
+    p = tmp_path / "x.json"
+    p.write_text("null", encoding="utf-8")
+    with pytest.raises(ValueError):
+        store.load(str(p))
+
+
+def test_same_second_saves_are_both_kept(store, monkeypatch):
+    import core.config_store as cs
+    from datetime import datetime as real_dt
+
+    class FrozenDatetime(real_dt):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 10, 6, 21, 30, 15, 123456)
+
+    monkeypatch.setattr(cs, "datetime", FrozenDatetime)
+    p1 = store.save("Twice", {"x": 1})
+    p2 = store.save("Twice", {"x": 2})
+    p3 = store.save("Twice", {"x": 3})
+
+    assert len({p1, p2, p3}) == 3
+    assert [os.path.basename(p) for p in (p1, p2, p3)] == [
+        "Twice_20261006_213015.json",
+        "Twice_20261006_213016.json",       # next free second, same format
+        "Twice_20261006_213017.json",
+    ]
+    assert [store.load(p)["x"] for p in (p1, p2, p3)] == [1, 2, 3]
+    # _meta keeps the true save time and the real filename
+    meta = store.load(p2)["_meta"]
+    assert meta["saved_at"] == "2026-10-06T21:30:15.123456"
+    assert meta["filename"] == "Twice_20261006_213016.json"
+    assert len(store.project_history("Twice").configs) == 3
+    assert store.latest_for_project("Twice") == p3
+
+
+def test_save_is_atomic_and_leaves_no_temp_files(store, tmp_path, monkeypatch):
+    import core.config_store as cs
+
+    path = store.save("Atomic", {"x": 1})
+    before = open(path, encoding="utf-8").read()
+
+    # A crash between the temp write and the publish must leave the
+    # published file untouched and no temp file behind.
+    def boom(src, dst):
+        raise OSError("simulated crash before publish")
+
+    monkeypatch.setattr(cs, "_replace", boom)
+    with pytest.raises(OSError):
+        cs.atomic_write_json(path, {"x": 999})
+    assert open(path, encoding="utf-8").read() == before
+    with pytest.raises(OSError):
+        store.save("Atomic", {"x": 2})
+    monkeypatch.undo()
+
+    leftovers = [f for f in os.listdir(tmp_path / "Atomic") if f.endswith(".tmp")]
+    assert leftovers == []
+    assert len(store.project_history("Atomic").configs) == 1
+    assert store.load(store.latest_for_project("Atomic"))["x"] == 1
+
+
+def test_unserialisable_config_never_touches_disk(store):
+    store.save("Ser", {"x": 1})
+    with pytest.raises(TypeError):
+        store.save("Ser", {"x": object()})
+    assert len(store.project_history("Ser").configs) == 1
+    assert store.load(store.latest_for_project("Ser"))["x"] == 1
+
+
+def test_last_project_pointer_written_atomically(store, tmp_path):
+    store.remember_last_project("One")
+    store.remember_last_project("Two")
+    assert store.read_last_project() == "Two"
+    assert not [f for f in os.listdir(tmp_path) if f.endswith(".tmp")]

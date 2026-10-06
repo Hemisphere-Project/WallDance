@@ -2,6 +2,14 @@
 Helpers for persisting WallDance configurations.
 - Manages per-project JSON configs stored under `projects/<project>/`.
 - Keeps track of the last project loaded.
+
+Durability (audit 2026-10 ARCH-8): every write goes to a temp file in the same
+directory, is fsynced, then ``os.replace``d over the target, so a crash or
+power cut mid-save leaves either the old file or the new one, never a
+truncated one. "Latest config" skips unreadable files and falls back to the
+newest *valid* save, and two saves within the same second never overwrite
+each other (the second takes the next free second; ``_meta.saved_at`` keeps
+the true time). The append-only history format is unchanged.
 """
 
 from __future__ import annotations
@@ -10,8 +18,11 @@ import json
 import os
 import re
 import shutil
+import sys
+import threading
+import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
 # Projects directory is at workspace root (three levels up from src/core/)
@@ -26,6 +37,75 @@ def sanitize_project_name(name: str) -> str:
     cleaned = re.sub(r"[^\w\s-]", "", name).strip()
     cleaned = re.sub(r"[\s]+", "_", cleaned)
     return cleaned if cleaned else "default"
+
+
+# Serialises "pick a free timestamped name + publish it" across threads (saves
+# come from the main loop, but tuning applies run on worker threads).
+_SAVE_LOCK = threading.Lock()
+_TIMESTAMP_FMT = "%Y%m%d_%H%M%S"
+# Windows: an antivirus / indexer can hold the target for a few ms, so
+# os.replace raises PermissionError; retry briefly before giving up.
+_REPLACE_ATTEMPTS = 6
+
+
+def _replace(src: str, dst: str) -> None:
+    for attempt in range(_REPLACE_ATTEMPTS):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if sys.platform != "win32" or attempt == _REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(0.02 * (attempt + 1))
+
+
+def atomic_write_text(path: str, text: str) -> None:
+    """Write ``text`` to ``path`` atomically: temp file in the same directory,
+    flush + fsync, then ``os.replace``. Readers (and a crash at any point)
+    see the old content or the new content, never a truncated file. The temp
+    name starts with ``.`` and ends with ``.tmp``, so the config listing
+    never picks it up even if a crash leaves it behind."""
+    directory = os.path.dirname(os.path.abspath(path))
+    tmp = os.path.join(
+        directory,
+        f".{os.path.basename(path)}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        _replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def atomic_write_json(path: str, payload) -> None:
+    """``json.dump(payload, f, indent=2)``, atomically. Serialises first, so
+    an unserialisable value raises before anything touches the disk."""
+    atomic_write_text(path, json.dumps(payload, indent=2))
+
+
+def read_config_file(filepath: str) -> Dict:
+    """Load one config file; a config must be a JSON object."""
+    with open(filepath, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError(f"{os.path.basename(filepath)}: top level is "
+                         f"{type(data).__name__}, expected a JSON object")
+    return data
+
+
+def is_valid_config_file(filepath: str) -> bool:
+    """True if the file parses as a JSON object (a truncated save does not)."""
+    try:
+        read_config_file(filepath)
+        return True
+    except (OSError, ValueError):   # JSONDecodeError / UnicodeDecodeError are ValueErrors
+        return False
 
 
 def format_config_display(filename: str) -> str:
@@ -65,11 +145,19 @@ def list_config_files(project_dir: str) -> List[str]:
 
 
 def get_latest_config_in_project(project_dir: str) -> Optional[str]:
-    """Get the most recent config file in a project directory."""
-    configs = list_config_files(project_dir)
-    if not configs:
-        return None
-    return os.path.join(project_dir, configs[0])
+    """Get the most recent *valid* config file in a project directory.
+
+    A save cut short (crash, power loss, full disk) used to be "latest" and
+    made auto-load exit with "Failed to load project" although the history
+    held a good save. Unreadable files are now skipped, newest first, and
+    reported on the console; they are left on disk for post-mortem."""
+    for name in list_config_files(project_dir):
+        path = os.path.join(project_dir, name)
+        if is_valid_config_file(path):
+            return path
+        print(f"[ConfigStore] Skipping unreadable config {name} "
+              "- falling back to the previous save")
+    return None
 
 
 @dataclass
@@ -110,27 +198,34 @@ class ConfigStore:
         project_dir = os.path.join(self.config_dir, safe_name)
         os.makedirs(project_dir, exist_ok=True)
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{safe_name}_{timestamp}.json"
-        filepath = os.path.join(project_dir, filename)
+        now = datetime.now()
+        with _SAVE_LOCK:
+            # Same-second saves used to overwrite each other (one history
+            # entry lost). Keep the `<project>_<YYYYmmdd_HHMMSS>.json` format
+            # and take the next free second instead; `_meta.saved_at` keeps
+            # the true time.
+            stamp = now
+            while True:
+                filename = f"{safe_name}_{stamp.strftime(_TIMESTAMP_FMT)}.json"
+                filepath = os.path.join(project_dir, filename)
+                if not os.path.exists(filepath):
+                    break
+                stamp += timedelta(seconds=1)
 
-        payload = dict(config)
-        payload["_meta"] = {
-            "project": safe_name,
-            "saved_at": datetime.now().isoformat(),
-            "filename": filename,
-        }
-
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2)
+            payload = dict(config)
+            payload["_meta"] = {
+                "project": safe_name,
+                "saved_at": now.isoformat(),
+                "filename": filename,
+            }
+            atomic_write_json(filepath, payload)
 
         self.remember_last_project(safe_name)
         return filepath
 
     def load(self, filepath: str) -> Dict:
-        """Load a configuration from disk."""
-        with open(filepath, "r", encoding="utf-8") as f:
-            return json.load(f)
+        """Load a configuration from disk (must be a JSON object)."""
+        return read_config_file(filepath)
 
     # ------------------------------------------------------------------
     # Project discovery
@@ -209,8 +304,7 @@ class ConfigStore:
                 meta = data.get("_meta")
                 if isinstance(meta, dict):
                     meta["project"] = new_safe
-                    with open(path, "w", encoding="utf-8") as fh:
-                        json.dump(data, fh, indent=2)
+                    atomic_write_json(path, data)
             except (OSError, ValueError):
                 pass  # leave a malformed config untouched
         if self.read_last_project() == old_name:
@@ -239,9 +333,9 @@ class ConfigStore:
     # Last project tracking
     # ------------------------------------------------------------------
     def remember_last_project(self, project: str) -> None:
-        os.makedirs(self.config_dir, exist_ok=True)
-        with open(self.last_project_file, "w", encoding="utf-8") as f:
-            f.write(project)
+        os.makedirs(os.path.dirname(os.path.abspath(self.last_project_file)),
+                    exist_ok=True)
+        atomic_write_text(self.last_project_file, project)
 
     def read_last_project(self) -> Optional[str]:
         if not os.path.exists(self.last_project_file):
@@ -279,8 +373,7 @@ class ConfigStore:
             "type": "safe_defaults",
         }
 
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2)
+        atomic_write_json(filepath, payload)
 
         return filepath
 
@@ -289,8 +382,7 @@ class ConfigStore:
         safe_name = sanitize_project_name(project_name)
         filepath = os.path.join(self.config_dir, safe_name, "_safe_defaults.json")
         if os.path.exists(filepath):
-            with open(filepath, "r", encoding="utf-8") as f:
-                return json.load(f)
+            return read_config_file(filepath)
         return None
 
     def has_safe_defaults(self, project_name: str) -> bool:

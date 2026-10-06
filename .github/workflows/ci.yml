@@ -1,12 +1,13 @@
 name: CI
 
-# Run the unit tests on every push to main and on every pull request.
-# The suite is import-light (cv2 + numpy only — no torch/IDS/dearpygui), so CI
-# installs a minimal dependency set rather than the full CUDA/IDS stack.
-# dulwich (pure-python) covers the launcher git-update safety tests.
+# Unit tests on every push to main / release and on every pull request.
+# The suite is import-light (cv2 + numpy + scipy/filterpy for the tracker +
+# python-osc + dulwich for the launcher; see .github/requirements-ci.txt).
+# GPU / torch / ultralytics / IDS / DearPyGui tests skip themselves, so CI
+# never installs the CUDA stack. Goldens (WD_RUN_REPLAY) stay on the rig.
 on:
   push:
-    branches: [main]
+    branches: [main, release]
   pull_request:
 
 concurrency:
@@ -14,8 +15,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  unit:
+    name: unit (ubuntu, py${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -28,9 +31,35 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
+          cache-dependency-path: .github/requirements-ci.txt
 
       - name: Install test dependencies
-        run: python -m pip install --upgrade pip numpy opencv-python-headless pytest dulwich
+        run: python -m pip install -r .github/requirements-ci.txt
 
       - name: Run tests
-        run: python -m pytest application/tests -q
+        run: python -m pytest application/tests -q -rs
+
+  windows:
+    # The show laptop and the launcher (field updater) are Windows-only:
+    # run the launcher's git-update safety tests and the unit suite there.
+    name: windows (launcher + unit, py3.12)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: .github/requirements-ci.txt
+
+      - name: Install test dependencies
+        run: python -m pip install -r .github/requirements-ci.txt
+
+      - name: Launcher git-manager tests (dulwich)
+        run: python -m pytest application/tests/test_launcher_git_manager.py -q -rs
+
+      - name: Unit tests
+        run: python -m pytest application/tests -q -rs --ignore=application/tests/test_launcher_git_manager.py

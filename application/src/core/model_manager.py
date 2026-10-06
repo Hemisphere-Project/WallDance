@@ -10,7 +10,14 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Optional
 
+import cv2
 from ultralytics import YOLO
+
+from core.config import CV2_NUM_THREADS
+
+# PERF-1: `import ultralytics` runs cv2.setNumThreads(0) process-wide; undo it
+# here too in case this module is the first importer (see core/pipeline.py).
+cv2.setNumThreads(CV2_NUM_THREADS)
 
 # Check if TensorRT is available
 _TENSORRT_AVAILABLE = False

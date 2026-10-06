@@ -1,13 +1,24 @@
 """
 OSC output for WallDance.
 Sends dancer tracking data to OSC receivers (VJ software, lighting, etc.)
+
+Send failures never stop the show (audit 2026-10 ARCH-6): every datagram goes
+through ``_send``, which drops it on ``OSError`` (unreachable network, a
+``255.255.255.255`` target without broadcast permission, a full non-blocking
+socket buffer, ...), counts it, and raises a console line + a pending operator
+alert at most once every ``OSC_SEND_ERROR_ALERT_INTERVAL_S``. The main loop
+collects that alert with ``take_alert()``. Datagrams are byte-identical.
 """
+
+import time
+from typing import Optional
 
 from pythonosc import udp_client
 from pythonosc.osc_bundle_builder import OscBundleBuilder, IMMEDIATELY
 from pythonosc.osc_message_builder import OscMessageBuilder
 import numpy as np
-from core.config import OSC_IP, OSC_PORT, OSC_ENABLED
+from core.config import (OSC_IP, OSC_PORT, OSC_ENABLED,
+                         OSC_SEND_ERROR_ALERT_INTERVAL_S)
 
 
 class OSCSender:
@@ -18,6 +29,12 @@ class OSCSender:
         self.ip = ip
         self.port = port
         self.client = None
+        # Send-failure accounting (ARCH-6): totals + a rate-limited alert.
+        self.send_errors = 0
+        self.alert_interval_s = OSC_SEND_ERROR_ALERT_INTERVAL_S
+        self._errors_since_report = 0
+        self._last_report: Optional[float] = None
+        self._pending_alert: Optional[str] = None
         
         if self.enabled:
             try:
@@ -26,6 +43,38 @@ class OSCSender:
             except Exception as e:
                 print(f"OSC: Failed to initialize - {e}")
                 self.enabled = False
+
+    # ------------------------------------------------------------------
+    # Guarded send (ARCH-6)
+    # ------------------------------------------------------------------
+    def _send(self, address, args) -> bool:
+        """Send one message; on a socket error drop it and keep going."""
+        try:
+            self.client.send_message(address, args)
+            return True
+        except OSError as exc:
+            self._on_send_error(exc)
+            return False
+
+    def _on_send_error(self, exc: OSError) -> None:
+        self.send_errors += 1
+        self._errors_since_report += 1
+        now = time.monotonic()
+        if (self._last_report is not None
+                and now - self._last_report < self.alert_interval_s):
+            return
+        msg = (f"OSC send to {self.ip}:{self.port} failing "
+               f"({type(exc).__name__}: {exc}) - {self._errors_since_report} "
+               f"message(s) dropped; output continues")
+        print(f"[OSC] {msg}")
+        self._pending_alert = msg
+        self._last_report = now
+        self._errors_since_report = 0
+
+    def take_alert(self) -> Optional[str]:
+        """The pending (rate-limited) send-failure alert, once; else None."""
+        msg, self._pending_alert = self._pending_alert, None
+        return msg
     
     def send_dancer(self, track, frame_width, frame_height,
                     prefix="/walldance/dancer"):
@@ -62,11 +111,11 @@ class OSCSender:
         else:
             centroid_x = bbox[0] + bbox[2] / 2
             centroid_y = bbox[1] + bbox[3] / 2
-        self.client.send_message(f"{prefix}/centroid",
-                                  [dancer_id, norm_x(centroid_x), norm_y(centroid_y)])
+        self._send(f"{prefix}/centroid",
+                   [dancer_id, norm_x(centroid_x), norm_y(centroid_y)])
 
         # Bounding box (normalized)
-        self.client.send_message(f"{prefix}/bbox", [
+        self._send(f"{prefix}/bbox", [
             dancer_id,
             norm_x(bbox[0]),
             norm_y(bbox[1]),
@@ -81,8 +130,8 @@ class OSCSender:
         vel_y = float(np.clip(vel[1], -1e6, 1e6))
         if not (np.isfinite(vel_x) and np.isfinite(vel_y)):
             vel_x, vel_y = 0.0, 0.0
-        self.client.send_message(f"{prefix}/velocity",
-                                  [dancer_id, norm_x(vel_x), norm_y(vel_y)])
+        self._send(f"{prefix}/velocity",
+                   [dancer_id, norm_x(vel_x), norm_y(vel_y)])
 
         # All keypoints as flat list: [id, x0, y0, c0, x1, y1, c1, ...]
         keypoints_flat = [dancer_id]
@@ -91,14 +140,14 @@ class OSCSender:
             c = float(track.confidence[i])
             keypoints_flat.extend([norm_x(x), norm_y(y), c])
 
-        self.client.send_message(f"{prefix}/keypoints", keypoints_flat)
+        self._send(f"{prefix}/keypoints", keypoints_flat)
 
     def send_count(self, count, track_ids, address="/walldance/count"):
         """Send total dancer count followed by active track IDs."""
         if not self.enabled or not self.client:
             return
 
-        self.client.send_message(address, [count] + list(track_ids))
+        self._send(address, [count] + list(track_ids))
 
     def send_latency_ms(self, latency_ms):
         """Publish the active output latency (Track X / OSC_CONTRACT §B).
@@ -109,8 +158,7 @@ class OSCSender:
         if not self.enabled or not self.client:
             return
 
-        self.client.send_message("/walldance/meta/latency_ms",
-                                 [float(latency_ms)])
+        self._send("/walldance/meta/latency_ms", [float(latency_ms)])
 
     def send_frame(self, tracks, frame_width, frame_height):
         """Send all tracking data for the current frame on the single
@@ -131,4 +179,4 @@ class OSCSender:
         if not self.enabled or not self.client:
             return
         
-        self.client.send_message("/walldance/clear", [1])
+        self._send("/walldance/clear", [1])

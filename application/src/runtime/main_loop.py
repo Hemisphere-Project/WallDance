@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import os
 import time
+import traceback
 from pathlib import Path
 from collections import deque
 from dataclasses import dataclass, field
@@ -38,6 +39,8 @@ from core.config import (
     IDS_USE_GPU_DIRECT,
     OPS_HEIGHT_MIN_SAMPLES,
     OPS_HEIGHT_WINDOW_S,
+    OPS_TICK_ERROR_ALERT_INTERVAL_S,
+    OPS_TICK_ERROR_EXIT_STREAK,
     PROJECT_PICKER_ON_START,
     REMOTE_API_ENABLED,
     REMOTE_API_HOST,
@@ -59,7 +62,19 @@ from services.web_monitor import WebMonitor
 from services import app_log
 from services.remote_api import RemoteApi, load_or_create_token
 from core.config_store import PROJECTS_DIR
+from core.ops_monitor import Alert
 from core.version import app_version
+from services import crash_marker
+
+_REPO = Path(__file__).resolve().parents[3]
+
+
+def _safe(fn, default=None):
+    """Call ``fn()`` for best-effort diagnostics; never raises."""
+    try:
+        return fn()
+    except Exception:  # noqa: BLE001
+        return default
 
 
 class UiClientPort(Protocol):
@@ -172,12 +187,17 @@ class _Tick:
     display_frame: Optional[np.ndarray] = None
     tracked: List[ScaledTrack] = field(default_factory=list)
     gui_stats_ms: float = 0.0
+    # Set by the preview stage when this tick's timing should feed the
+    # [Budget]/[PerfSpike] log; the render stage prints it once dpg_render /
+    # gui_stats are in the dict (PERF-11: printing in the preview stage meant
+    # the GUI tail was never reported -- the next tick overwrote it first).
+    log_timing: bool = False
 
 
 class MainLoop:
     """Runs one WallDance session against a ``LoopHost``."""
 
-    def __init__(self, app: LoopHost):
+    def __init__(self, app: LoopHost, logs_dir: Optional[Path] = None):
         self.app = app
         # Loop-internal cadence/diagnostic state (moved from
         # WallDanceApp.__init__ in Phase 4 -- nothing else touches it).
@@ -193,20 +213,72 @@ class MainLoop:
         # Rolling (t, raw det height px) samples for the staleness alarm (⑤d)
         self._height_samples: deque = deque()
         self._rec_ui_update_counter = 0
+        # Crash hygiene (audit 2026-10 ARCH-6): <repo>/logs holds the crash
+        # marker; consecutive-failure streaks decide "transient, skip the
+        # frame" vs "persistent, exit cleanly".
+        self._logs_dir = Path(logs_dir) if logs_dir is not None else _REPO / "logs"
+        self._proc_fail_streak = 0       # consecutive frame-processing failures
+        self._tick_fail_streak = 0       # consecutive failures in other stages
+        self._failures_since_report = 0
+        self._last_failure_report: Optional[float] = None
+        self._last_failure: Optional[tuple] = None   # (where, exception text, traceback)
+        self._fatal: Optional[str] = None            # set => clean exit, marker written
+        self._previous_crash: Optional[Dict] = None
+        self._marker_project: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
-    def run(self):
+    def run(self) -> int:
+        """Run one session; returns the process exit code (0 = normal quit,
+        2 = startup failed, 3 = stopped after a persistent tick failure).
+
+        Shutdown (recordings finalised, servers stopped, tracker log
+        flushed) runs on EVERY exit path, including an uncaught exception,
+        which additionally leaves ``logs/last_crash.json`` for the next start.
+        """
         app = self.app
-        if not self._startup():
-            return
-        print("Starting main loop...")
-        app.running = True
-        app._watchdog.start()
-        while app.running and app.ui.is_running():
+        self._previous_crash = crash_marker.begin_session(
+            self._logs_dir, log_path=app_log.current_log_path(),
+            version=_safe(app_version))
+        if self._previous_crash is not None:
+            print(crash_marker.format_report(self._previous_crash)[0])
+        exit_code = 0
+        try:
+            if not self._startup():
+                return 2
+            print("Starting main loop...")
+            app.running = True
+            app._watchdog.start()
+            while app.running and app.ui.is_running():
+                self._guarded_tick()
+            if self._fatal is not None:
+                where, exc_text, tb = self._last_failure or ("", "", "")
+                self._write_crash_marker(self._fatal, exc_text, tb)
+                exit_code = 3
+        except BaseException as exc:
+            if not isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                self._write_crash_marker(
+                    "uncaught exception in the main loop",
+                    f"{type(exc).__name__}: {exc}", traceback.format_exc())
+            raise
+        finally:
+            self._shutdown()
+            crash_marker.end_session(self._logs_dir)
+        return exit_code
+
+    def _guarded_tick(self) -> None:
+        """One tick inside the exception boundary (ARCH-6). A failure in any
+        stage outside frame processing (pumps, preview, events, record,
+        render) is reported and the rest of the tick skipped; only a
+        persistent streak ends the session (cleanly)."""
+        try:
             self._tick()
-        self._shutdown()
+        except Exception as exc:  # noqa: BLE001 - the boundary is the point
+            self._tick_fail_streak += 1
+            self._on_failure("tick", exc, self._tick_fail_streak)
+        else:
+            self._tick_fail_streak = 0
 
     def _startup(self) -> bool:
         """Bring the session up: camera -> GUI -> project -> recording UI ->
@@ -314,27 +386,113 @@ class MainLoop:
                 print(f"[RemoteApi] disabled (startup error): {e}")
                 app._remote = None
 
+        # After the project load, so the toast lands on the live UI.
+        self._toast_previous_crash()
         return True
 
     def _shutdown(self):
-        """Tear the session down (order preserved from run())."""
+        """Tear the session down (order preserved from run()).
+
+        Runs from ``run()``'s ``finally`` -- also after a crash or a startup
+        failure -- so every step is isolated: one failing teardown must not
+        skip the next (above all the recording finalise)."""
         app = self.app
+
+        def step(name, fn):
+            try:
+                fn()
+            except Exception as e:  # noqa: BLE001 - keep tearing down
+                print(f"[Shutdown] {name} failed: {type(e).__name__}: {e}")
+
+        def stop_web_monitor():
+            if app._web_monitor is not None:
+                app._web_monitor.stop()
+                app._web_monitor = None
+
+        def stop_remote():
+            if getattr(app, "_remote", None) is not None:
+                app._remote.stop()
+                app._remote = None
+
+        def release_camera():
+            if app.camera.cap is not None:
+                app.camera.cap.release()
+
         # Final drain: commands queued during the last frame (notably Quit,
         # which flushes/closes the tracker logger) must still execute --
         # gui.stop() ends the dpg loop before the next tick would drain them.
-        app.api.drain()
-        app._watchdog.stop()
-        if app._web_monitor is not None:
-            app._web_monitor.stop()
-            app._web_monitor = None
-        if getattr(app, "_remote", None) is not None:
-            app._remote.stop()
-            app._remote = None
-        app.recorder.close()
-        if app.camera.cap is not None:
-            app.camera.cap.release()
-        app.ui.destroy()
+        step("command drain", app.api.drain)
+        # Crash path: Quit never ran, so flush/close the tracker JSONL here
+        # (idempotent after Quit).
+        step("tracker log flush", lambda: app.tracker.logger.close())
+        step("watchdog stop", app._watchdog.stop)
+        step("web monitor stop", stop_web_monitor)
+        step("remote API stop", stop_remote)
+        step("recorder close", app.recorder.close)
+        step("camera release", release_camera)
+        step("UI destroy", app.ui.destroy)
         print("WallDance stopped.")
+
+    # ------------------------------------------------------------------
+    # Crash hygiene (ARCH-6)
+    # ------------------------------------------------------------------
+    def _on_frame_error(self, exc: BaseException) -> bool:
+        """Frame-processing boundary: a CUDA/TRT/tracker/OSC error on one
+        frame skips that frame instead of ending the show. Returns False
+        (ends the tick, like the other early-return paths). A persistent
+        fault (e.g. a dead CUDA context) still ends the session, cleanly,
+        after OPS_TICK_ERROR_EXIT_STREAK consecutive failures."""
+        self._proc_fail_streak += 1
+        self._on_failure("frame processing", exc, self._proc_fail_streak)
+        try:
+            self.app.ui.render_frame()   # keep the UI (and the alert) alive
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+
+    def _on_failure(self, where: str, exc: BaseException, streak: int) -> None:
+        """Account one failure: remember it for the crash marker, report it
+        (console traceback + operator alert, rate-limited), and request a
+        clean exit once the streak says the fault is persistent."""
+        tb = traceback.format_exc()
+        exc_text = f"{type(exc).__name__}: {exc}"
+        self._last_failure = (where, exc_text, tb)
+        self._failures_since_report += 1
+        now = time.monotonic()
+        if (self._last_failure_report is None
+                or now - self._last_failure_report >= OPS_TICK_ERROR_ALERT_INTERVAL_S):
+            n = self._failures_since_report
+            self._failures_since_report = 0
+            self._last_failure_report = now
+            print(f"[Error] {where} failed ({n} since the last report, "
+                  f"{streak} in a row) - skipping this frame:\n{tb.rstrip()}")
+            short = exc_text if len(exc_text) <= 120 else exc_text[:117] + "..."
+            self._emit_ops_alert(Alert(
+                "frame_error" if where == "frame processing" else "tick_error",
+                f"{where} error, frame skipped: {short}",
+                {"where": where, "streak": streak, "count": n}))
+        if streak >= OPS_TICK_ERROR_EXIT_STREAK and self._fatal is None:
+            self._fatal = (f"persistent {where} failure: {streak} consecutive "
+                           f"errors (last: {exc_text})")
+            print(f"[Fatal] {self._fatal} - stopping cleanly (recordings "
+                  "finalised, logs flushed, crash marker written)")
+            self.app.running = False
+
+    def _toast_previous_crash(self) -> None:
+        if self._previous_crash is not None:
+            toast = crash_marker.format_report(self._previous_crash)[1]
+            self.app.bus.publish(api.Toast(toast, 15.0, (255, 80, 80)))
+
+    def _write_crash_marker(self, reason: str, exc_text: str, tb: str) -> None:
+        app = self.app
+        state = _safe(lambda: app.system_state.name)
+        project = _safe(lambda: app.configs._current_project)
+        path = crash_marker.write_crash(
+            self._logs_dir, reason=reason, exception=exc_text,
+            traceback_text=tb, project=project, state=state,
+            log_path=app_log.current_log_path(), version=_safe(app_version))
+        if path is not None:
+            print(f"[Crash] {reason} - details written to {path}")
 
     # ------------------------------------------------------------------
     # One tick
@@ -683,7 +841,10 @@ class MainLoop:
                     app.models._model_loaded = False
                     time.sleep(0.01)
                     return False
-                raise
+                return self._on_frame_error(exc)
+            except Exception as exc:  # noqa: BLE001 - per-frame boundary (ARCH-6)
+                return self._on_frame_error(exc)
+            self._proc_fail_streak = 0
             app.last_tracked = tracked
             if display_frame is not None:
                 app._last_review_frame = display_frame.copy()
@@ -827,7 +988,7 @@ class MainLoop:
                     thickness_scale = 1.0
                     ruler_scale = 1.0
 
-                preview_t0 = time.time()
+                preview_t0 = time.perf_counter()
                 if app.settings.roi_enabled:
                     app.roi._draw_roi_mask(preview_frame, src_w, src_h)
                 app.roi._draw_exclusion_overlay(preview_frame, src_w, src_h)
@@ -848,15 +1009,15 @@ class MainLoop:
                 if app.settings.roi_enabled:
                     app.roi._draw_roi_note(preview_frame, src_w, src_h)
                 app._last_review_frame = preview_frame.copy()
-                preview_draw_ms = (time.time() - preview_t0) * 1000
-                upload_t0 = time.time()
+                preview_draw_ms = (time.perf_counter() - preview_t0) * 1000
+                upload_t0 = time.perf_counter()
                 app.bus.publish(api.PreviewFrame(preview_frame))
-                preview_upload_ms = (time.time() - upload_t0) * 1000
+                preview_upload_ms = (time.perf_counter() - upload_t0) * 1000
                 self._last_preview_upload_time = time.time()
                 timing["preview_draw"] = preview_draw_ms
                 timing["preview_upload"] = preview_upload_ms
                 app.timing = timing
-                self._log_timing_spikes_if_any(app.timing)
+                t.log_timing = True  # [Budget]/[PerfSpike] printed after render (PERF-11)
                 self._log_runtime_diag_if_stalled(
                     camera_read_ms=t.camera_read_ms,
                     process_wall_ms=t.process_wall_ms,
@@ -879,7 +1040,7 @@ class MainLoop:
             if app.timing:
                 app.timing["preview_draw"] = 0.0
                 app.timing["preview_upload"] = 0.0
-                self._log_timing_spikes_if_any(app.timing)
+                t.log_timing = True  # [Budget]/[PerfSpike] printed after render (PERF-11)
                 self._log_runtime_diag_if_stalled(
                     camera_read_ms=t.camera_read_ms,
                     process_wall_ms=t.process_wall_ms,
@@ -991,6 +1152,8 @@ class MainLoop:
             app.timing["gui_stats"] = t.gui_stats_ms
             if 'camera_read_ms' not in app.timing:
                 app.timing["camera_read"] = t.camera_read_ms
+        if t.log_timing:
+            self._log_timing_spikes_if_any(app.timing)
 
     # ------------------------------------------------------------------
     # Loop-only helpers (moved verbatim from WallDanceApp in Phase 4)
@@ -1019,6 +1182,8 @@ class MainLoop:
         if now - self._last_ops_tick < 1.0:
             return
         self._last_ops_tick = now
+        self._poll_osc_alert()
+        self._note_project_for_crash_marker()
         in_run = bool(app.bus.ui_ready and app.system_state == SystemState.RUN)
         # Person-height staleness input (⑤d): 1 Hz sample of RAW detection
         # heights (pre-size-gate, original-space px) over a rolling window.
@@ -1053,6 +1218,28 @@ class MainLoop:
             return
         for alert in alerts:
             self._emit_ops_alert(alert)
+
+    def _poll_osc_alert(self) -> None:
+        """Surface a (rate-limited) OSC send failure as an operator alert.
+        The sender drops the failing datagrams and keeps going (ARCH-6)."""
+        osc = getattr(self.app.processor, "osc", None)
+        take = getattr(osc, "take_alert", None)
+        if take is None:
+            return
+        try:
+            msg = take()
+        except Exception:  # noqa: BLE001
+            return
+        if msg:
+            self._emit_ops_alert(Alert(
+                "osc_send", msg,
+                {"target": f"{osc.ip}:{osc.port}", "errors": osc.send_errors}))
+
+    def _note_project_for_crash_marker(self) -> None:
+        project = _safe(lambda: self.app.configs._current_project)
+        if project != self._marker_project:
+            self._marker_project = project
+            crash_marker.note_project(self._logs_dir, project)
 
     def _emit_ops_alert(self, alert):
         app = self.app

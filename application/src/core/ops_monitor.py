@@ -39,6 +39,8 @@ from core.config import (
     OPS_OVER_CAP_ALERT_S,
     OPS_WATCHDOG_HANG_S,
     OPS_WATCHDOG_POLL_S,
+    RECORDING_CODEC,
+    RECORDING_GB_PER_HOUR,
 )
 
 # --------------------------------------------------------------------------
@@ -198,15 +200,28 @@ def check_calibration(*, saved_at_iso: Optional[str], active_profile: str,
     return CheckResult("calibration", "ok", detail)
 
 
+def recording_gb_per_hour(codec: str = RECORDING_CODEC) -> Tuple[str, float]:
+    """(codec actually used, estimated GB/h at the show resolution and fps).
+
+    Resolves the codec like the recorder does (case-insensitive, unknown ->
+    MJPG), so the estimate matches what a recording would really write."""
+    table = {k.lower(): k for k in RECORDING_GB_PER_HOUR}
+    name = table.get(str(codec).lower(), "MJPG")
+    return name, float(RECORDING_GB_PER_HOUR[name])
+
+
 def check_disk(*, recordings_dir: str, warn_free_gb: float, fail_free_gb: float,
-               disk_usage: Callable = shutil.disk_usage) -> CheckResult:
+               disk_usage: Callable = shutil.disk_usage,
+               codec: str = RECORDING_CODEC) -> CheckResult:
     try:
         usage = disk_usage(recordings_dir)
     except OSError as e:
         return CheckResult("disk", "warn", f"could not stat {recordings_dir} ({e})")
     free_gb = usage.free / 1e9
-    hours = free_gb / 55.0  # measured MJPG rate on the corpus recordings
-    detail = f"{free_gb:.1f} GB free for recordings (~{hours:.1f} h of MJPG)"
+    codec, gb_per_h = recording_gb_per_hour(codec)
+    hours = free_gb / gb_per_h
+    detail = (f"{free_gb:.1f} GB free for recordings (~{hours:.1f} h of "
+              f"{codec} at ~{gb_per_h:g} GB/h)")
     if free_gb < fail_free_gb:
         return CheckResult("disk", "fail", detail)
     if free_gb < warn_free_gb:

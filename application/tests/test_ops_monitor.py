@@ -135,6 +135,42 @@ def test_check_disk_thresholds():
                       disk_usage=boom).status == "warn"
 
 
+def test_check_disk_estimates_hours_from_the_configured_codec():
+    from core.config import RECORDING_CODEC, RECORDING_GB_PER_HOUR
+    from core.ops_monitor import recording_gb_per_hour
+
+    def usage_gb(free):
+        return lambda path: Usage(500e9, 500e9 - free * 1e9, free * 1e9)
+
+    # Default = the configured codec (FFV1 on the show laptop), not "MJPG".
+    r = check_disk(recordings_dir="X", warn_free_gb=60, fail_free_gb=10,
+                   disk_usage=usage_gb(110))
+    name, rate = recording_gb_per_hour(RECORDING_CODEC)
+    assert f"of {name} " in r.detail
+    assert f"~{110 / rate:.1f} h" in r.detail
+
+    # FFV1: 0.77 MB/frame at 1488x1528 x 20 fps x 3600 s = ~55 GB/h.
+    assert RECORDING_GB_PER_HOUR["FFV1"] == pytest.approx(0.77 * 20 * 3600 / 1000, rel=0.01)
+    r = check_disk(recordings_dir="X", warn_free_gb=60, fail_free_gb=10,
+                   disk_usage=usage_gb(110), codec="FFV1")
+    assert r.detail == "110.0 GB free for recordings (~2.0 h of FFV1 at ~55 GB/h)"
+
+    # The lossy codecs write less, so the same disk lasts longer.
+    hours = {}
+    for codec in ("FFV1", "MJPG", "mp4v"):
+        _, rate = recording_gb_per_hour(codec)
+        hours[codec] = 110 / rate
+        assert f"of {codec} " in check_disk(
+            recordings_dir="X", warn_free_gb=60, fail_free_gb=10,
+            disk_usage=usage_gb(110), codec=codec).detail
+    assert hours["FFV1"] < hours["MJPG"] < hours["mp4v"]
+
+    # Resolved like the recorder: case-insensitive, unknown -> MJPG.
+    assert recording_gb_per_hour("ffv1")[0] == "FFV1"
+    assert recording_gb_per_hour("MP4V")[0] == "mp4v"
+    assert recording_gb_per_hour("XVID")[0] == "MJPG"
+
+
 def test_check_gpu_temp():
     assert check_gpu_temp(gpu_stats=None, warn_c=85).status == "skip"
     assert check_gpu_temp(gpu_stats={"util": -1}, warn_c=85).status == "skip"
