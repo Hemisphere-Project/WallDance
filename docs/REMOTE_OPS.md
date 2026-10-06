@@ -91,6 +91,8 @@ python extra/wdremote.py events -f --types Alert,Toast,ReadinessResult,CalibRepo
 python extra/wdremote.py cmd CheckReadiness
 python extra/wdremote.py record start --slot 3 ; python extra/wdremote.py record stop
 python extra/wdremote.py cmd SetRigSheet field=f_number value=2.8
+python extra/wdremote.py cmd ImportVideoToSlot slot=4 path="C:/Users/<u>/Videos/take.mov"   # STANDBY
+python extra/wdremote.py cmd SetInputTransform mirror=true rotation=90
 python extra/wdremote.py commands                     # allowlist + policy class of each command
 python extra/wdremote.py logs -f                      # the app log (logs/walldance_<stamp>.log)
 python extra/wdremote.py snapshot                     # current preview JPEG
@@ -102,8 +104,8 @@ python extra/wdremote.py clip projects/<p>/recordings/slot_3_x.avi --start 900 -
 | Class | Examples | Allowed |
 |---|---|---|
 | safe | `CheckReadiness`, `SetRigSheet`, overlays | always |
-| control | `SetState`, `StartRecordingSlot`, `PlaybackControl`, dials, `StartCalibration`, `SaveConfig`… | in STANDBY; in **RUN only while the operator ticks *Allow remote control during RUN*** (phase 6 Live, GUI-only) |
-| heavy | `RunKnownNTune`, `RunCalibSweep`, `RunDryRunReplay`, model/engine/project loads, clips | STANDBY only |
+| control | `SetState`, `StartRecordingSlot`, `PlaybackControl`, dials, `StartCalibration`, `SaveConfig`, `SetInputTransform`… | in STANDBY; in **RUN only while the operator ticks *Allow remote control during RUN*** (phase 6 Live, GUI-only) |
+| heavy | `RunKnownNTune`, `RunCalibSweep`, `RunDryRunReplay`, model/engine/project loads, clips, `ImportVideoToSlot` | STANDBY only |
 | never | `Quit`, delete/rename project, dialogs | never; anything not listed is denied |
 
 A **REMOTE** chip shows in the top bar while a client is active (**REMOTE\*** when control in RUN is allowed).
@@ -122,6 +124,20 @@ Each `slot_N_<stamp>.avi.meta` holds:
 
 `slot_N_<stamp>.avi.camlog.jsonl` samples exposure, gain, AE/AG and temperature about once a second during the
 take, because auto-exposure drifts within takes.
+
+**Mirror / rotate (REQ-5).** Slot files hold the **raw** sensor frames. `input_transform` in the `.meta` records
+the Mirror/Rotate that was live at REC; playback applies the project's *current* setting (phase 1 Rig > Input),
+like the live camera, so ROI, mask and calibration always match the screen. A toast says so when a take was
+recorded under a different setting. The offline tools (`tests/replay.py`, `calibrate_segment.py`, `known_n.py`,
+`detect_cache.py`) do not apply it yet: the app warns when Dry-run / Auto-tune / Known-N start with it on.
+
+**Imported takes (REQ-1, IMPORT on the recordings bar or `ImportVideoToSlot`).** The file becomes the slot's
+newest take; older takes stay in the Ctrl+click history. `.avi` / `.mp4` are byte-copied; other containers
+(`.mov`, `.mkv`, `.m4v`, `.webm`...) are transcoded to MJPG `.avi` (quality `IMPORT_TRANSCODE_QUALITY`), because
+the slot list and the replay tools only read `.avi` / `.mp4` and OpenCV's MJPG encoder exists in every build.
+A file OpenCV cannot decode is refused. The `.meta` has `actual_fps`, `frames`, `meta_version: 2`,
+`source: "import"` and `imported_from` (original path, size, mtime, mode, source codec/fps/frames, and the
+source's own `.meta` when it is a WallDance take).
 
 ## 7. Getting this code onto the laptop (decision D1: release branch)
 
