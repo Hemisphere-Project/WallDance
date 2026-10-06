@@ -147,6 +147,7 @@ def run(scenario_path, L, frames=None, use_trt=False):
 
     tmp = tempfile.mkdtemp(prefix="wd_lagged_")
     proc.tracker.logger.start_session(tmp)
+    xf = replay.input_transform_for(config)
     cap = cv2.VideoCapture(video)
     if start:
         cap.set(cv2.CAP_PROP_POS_FRAMES, start)
@@ -158,6 +159,7 @@ def run(scenario_path, L, frames=None, use_trt=False):
             if not ok:
                 break
             rec.frame = processed
+            frame = xf.apply(frame)   # REQ-5 (identity = no-op)
             tracks, _enh, _timing, _lat = proc.process(
                 frame, need_preview=False, frame_number=processed)
             for st in tracks:

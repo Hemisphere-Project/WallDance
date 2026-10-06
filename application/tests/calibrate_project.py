@@ -99,6 +99,7 @@ def calibrate_window(scenario_path: str, frames: Optional[int] = None) -> dict:
 
     proc = replay._build_processor(base, model, imgsz, use_trt=False)
     proc.tracker.reset()
+    xf = replay.input_transform_for(base)   # REQ-5 (identity = no-op)
 
     cap = cv2.VideoCapture(video)
     if not cap.isOpened():
@@ -121,6 +122,7 @@ def calibrate_window(scenario_path: str, frames: Optional[int] = None) -> dict:
         ok, fr = cap.read()
         if not ok:
             break
+        fr = xf.apply(fr)
         g = cv2.cvtColor(fr, cv2.COLOR_BGR2GRAY)
         bvals.append(float(g.mean()))
         gs = cv2.resize(g, (g.shape[1] // 2, g.shape[0] // 2),
@@ -152,6 +154,7 @@ def calibrate_window(scenario_path: str, frames: Optional[int] = None) -> dict:
         ok, fr = cap.read()
         if not ok:
             break
+        fr = xf.apply(fr)
         tracks, _e, timing, _l = proc.process(fr, need_preview=False, frame_number=n)
         gray = proc.get_last_motion_gray() if hasattr(proc, "get_last_motion_gray") else None
         samples = _track_samples(tracks)

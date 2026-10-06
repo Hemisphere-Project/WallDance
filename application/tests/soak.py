@@ -206,6 +206,7 @@ def run_soak(args) -> dict:
     if args.gpu and not proc.gpu_path_active:
         raise SystemExit("GPU path requested but unavailable")
     proc.tracker.reset()
+    xf = replay.input_transform_for(config)   # REQ-5 (identity = no-op)
 
     cap = cv2.VideoCapture(str(video))
     if not cap.isOpened():
@@ -252,7 +253,8 @@ def run_soak(args) -> dict:
                     loops += 1
                     window_frames = 0
                     continue
-                proc.process(frame, need_preview=False, frame_number=total_frames)
+                proc.process(xf.apply(frame), need_preview=False,
+                             frame_number=total_frames)
                 n += 1
                 total_frames += 1
                 window_frames += 1

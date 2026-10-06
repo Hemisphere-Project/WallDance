@@ -80,7 +80,23 @@ def cache_key(config: dict, video_name: str, start: int, frames: int,
     sub["_frames"] = frames
     if path != "cpu":
         sub["_path"] = path
+    # REQ-5: a Mirror/Rotate changes every decoded frame.  Only a non-identity
+    # transform enters the key, so existing (identity) cache hashes are kept.
+    mirror, rotation = _transform_key(config)
+    if mirror or rotation:
+        sub["_input_transform"] = [mirror, rotation]
     return sub
+
+
+def _transform_key(config: dict):
+    """(mirror, rotation) of the config's input transform, without importing
+    the app (keeps this module's key helpers import-light)."""
+    src = str(Path(__file__).resolve().parent.parent / "src")
+    if src not in sys.path:
+        sys.path.insert(0, src)
+    from core.input_transform import InputTransform
+    xf = InputTransform.from_config(config)
+    return xf.mirror, xf.rotation
 
 
 def _key_hash(key: dict) -> str:
@@ -129,6 +145,7 @@ def build_cache_gpu(
     proc = replay._build_processor(config, model_name, imgsz, load_model=True,
                                    use_gpu_path=True, use_trt=use_trt)
     proc.tracker.reset()  # deterministic track IDs (global counter)
+    xf = replay.input_transform_for(config)   # REQ-5 (identity = no-op)
 
     captured: List[dict] = []
 
@@ -172,6 +189,7 @@ def build_cache_gpu(
             ok, frame = cap.read()
             if not ok:
                 break
+            frame = xf.apply(frame)
             proc.process(frame, need_preview=False, frame_number=processed)
             processed += 1
     finally:

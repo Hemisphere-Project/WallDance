@@ -2122,13 +2122,28 @@ class WallDanceApp:
         self._warn_offline_transform("Dry-run")
 
     def _warn_offline_transform(self, what: str) -> None:
-        """REQ-5 gap: the offline tools (tests/replay.py, calibrate_segment.py,
-        known_n.py / detect_cache.py) decode slot files themselves and do not
-        apply Mirror/Rotate yet -- raw frames vs a transformed ROI/mask."""
-        if not self.input_transform.is_identity:
+        """REQ-5: the offline tools (tests/replay.py, calibrate_project /
+        calibrate_segment, known_n.py / detect_cache.py) decode slot files
+        themselves and apply the Mirror/Rotate of the config they read -- the
+        project's SAVED config (scenarios: their pinned config). Warn when the
+        live setting differs from the saved one (not saved since the change)."""
+        saved = None
+        try:
+            path = self.configs.config_store.latest_for_project(
+                self.configs._current_project)
+            if path:
+                with open(path, "r", encoding="utf-8") as f:
+                    saved = InputTransform.from_config(
+                        config_schema.flatten(json.load(f)))
+        except Exception:  # noqa: BLE001 - a warning helper must not raise
+            saved = None
+        if saved is None:
+            saved = IDENTITY
+        if saved != self.input_transform:
             self.bus.publish(api.Toast(
-                f"{what}: Mirror/Rotate ({self.input_transform.label()}) is not applied "
-                "by the offline tools yet - results may be off", 6.0, (255, 180, 80)))
+                f"{what}: live Mirror/Rotate ({self.input_transform.label()}) differs "
+                f"from the saved config ({saved.label()}), which the offline tools "
+                "apply - save the project first", 6.0, (255, 180, 80)))
 
     def _run_dry_run_replay(self):
         """Background worker: subprocess replay.py on the newest recording.

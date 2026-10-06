@@ -153,6 +153,20 @@ def check_fingerprint(manifest: dict, video: Path) -> None:
                 "or update the manifest")
 
 
+def input_transform_for(config: Optional[dict]):
+    """REQ-5: the Mirror/Rotate a replay must apply to decoded slot frames.
+
+    Slot recordings store RAW sensor frames; the app applies the project's
+    current ``InputTransform`` at playback, so ROI / exclusion mask /
+    calibration live in the transformed space.  Offline tools that decode
+    slot files themselves must do the same after every frame read:
+    ``frame = input_transform_for(config).apply(frame)``.  Absent / invalid
+    keys mean identity, whose ``apply`` returns the same array (no copy).
+    """
+    from core.input_transform import InputTransform
+    return InputTransform.from_config(config)
+
+
 def _build_processor(config: dict, model_name: str, imgsz: int,
                      load_model: bool = True, use_gpu_path: bool = False,
                      use_trt: bool = False):
@@ -329,6 +343,9 @@ def replay_recording(
     """
     proc = _build_processor(config, model_name, imgsz,
                             use_gpu_path=use_gpu_path, use_trt=use_trt)
+    # REQ-5: slot files hold RAW frames; apply the project's Mirror/Rotate like
+    # the app's playback does (identity = the same array, byte-identical).
+    xf = input_transform_for(config)
     if (use_gpu_path or use_trt) and not proc.gpu_path_active:
         raise RuntimeError("GPU path requested but unavailable "
                            "(kornia/CUDA missing?)")
@@ -359,6 +376,7 @@ def replay_recording(
             ok, frame = cap.read()
             if not ok:
                 break
+            frame = xf.apply(frame)
             tracks, _enh, _timing, _lat = proc.process(
                 frame, need_preview=False, frame_number=processed)
             per_frame.append(per_frame_record(
