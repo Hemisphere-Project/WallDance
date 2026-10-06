@@ -172,6 +172,11 @@ class _Tick:
     display_frame: Optional[np.ndarray] = None
     tracked: List[ScaledTrack] = field(default_factory=list)
     gui_stats_ms: float = 0.0
+    # Set by the preview stage when this tick's timing should feed the
+    # [Budget]/[PerfSpike] log; the render stage prints it once dpg_render /
+    # gui_stats are in the dict (PERF-11: printing in the preview stage meant
+    # the GUI tail was never reported -- the next tick overwrote it first).
+    log_timing: bool = False
 
 
 class MainLoop:
@@ -820,7 +825,7 @@ class MainLoop:
                     thickness_scale = 1.0
                     ruler_scale = 1.0
 
-                preview_t0 = time.time()
+                preview_t0 = time.perf_counter()
                 if app.settings.roi_enabled:
                     app.roi._draw_roi_mask(preview_frame, src_w, src_h)
                 app.roi._draw_exclusion_overlay(preview_frame, src_w, src_h)
@@ -841,15 +846,15 @@ class MainLoop:
                 if app.settings.roi_enabled:
                     app.roi._draw_roi_note(preview_frame, src_w, src_h)
                 app._last_review_frame = preview_frame.copy()
-                preview_draw_ms = (time.time() - preview_t0) * 1000
-                upload_t0 = time.time()
+                preview_draw_ms = (time.perf_counter() - preview_t0) * 1000
+                upload_t0 = time.perf_counter()
                 app.bus.publish(api.PreviewFrame(preview_frame))
-                preview_upload_ms = (time.time() - upload_t0) * 1000
+                preview_upload_ms = (time.perf_counter() - upload_t0) * 1000
                 self._last_preview_upload_time = time.time()
                 timing["preview_draw"] = preview_draw_ms
                 timing["preview_upload"] = preview_upload_ms
                 app.timing = timing
-                self._log_timing_spikes_if_any(app.timing)
+                t.log_timing = True  # [Budget]/[PerfSpike] printed after render (PERF-11)
                 self._log_runtime_diag_if_stalled(
                     camera_read_ms=t.camera_read_ms,
                     process_wall_ms=t.process_wall_ms,
@@ -872,7 +877,7 @@ class MainLoop:
             if app.timing:
                 app.timing["preview_draw"] = 0.0
                 app.timing["preview_upload"] = 0.0
-                self._log_timing_spikes_if_any(app.timing)
+                t.log_timing = True  # [Budget]/[PerfSpike] printed after render (PERF-11)
                 self._log_runtime_diag_if_stalled(
                     camera_read_ms=t.camera_read_ms,
                     process_wall_ms=t.process_wall_ms,
@@ -984,6 +989,8 @@ class MainLoop:
             app.timing["gui_stats"] = t.gui_stats_ms
             if 'camera_read_ms' not in app.timing:
                 app.timing["camera_read"] = t.camera_read_ms
+        if t.log_timing:
+            self._log_timing_spikes_if_any(app.timing)
 
     # ------------------------------------------------------------------
     # Loop-only helpers (moved verbatim from WallDanceApp in Phase 4)
