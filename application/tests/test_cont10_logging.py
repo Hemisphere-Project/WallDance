@@ -15,7 +15,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
-import pytest
 
 HERE = Path(__file__).resolve().parent
 SRC = HERE.parent / "src"
