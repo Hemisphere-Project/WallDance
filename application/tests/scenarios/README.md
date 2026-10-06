@@ -26,7 +26,11 @@ from the unit-test validation and the golden regression.
 | `ground_truth` | obj | provenance: how/when N was verified, known drop regions, notes |
 | `config` | obj | **frozen config snapshot** the scenario replays with (flattened, as `replay._build_processor` consumes it). Pinned so goldens are reproducible from the repo alone — the 2026-06 reorganisation orphaned the original goldens precisely because configs lived only in mutable project folders. `replay.py` prefers this over the project's latest config; `--set` still overrides on top |
 | `recording_fingerprint` | obj | `{file, bytes, frames}` of the recording at GT-verification time. `replay.py` hard-fails on mismatch — re-organised/re-cut footage must trigger a GT re-verification, not silently invalidate it |
-| `pass` | obj | scene-class pass line (CORPUS_ANALYSIS §8): `{"class": "A"\|"B"\|"S", "drop_rate": ..., "ghost_rate": ..., "longest_drop_s": ...}`. Class A (indoor rigged) 0.05/0.05/1.0s; class B (outdoor/uncontrolled) 0.10/0.15/2.0s; class S (stress) no thresholds. Evaluated by `scoring.evaluate_pass` (`replay --score` prints the verdict) |
+| `pass` | obj | scene-class pass line (CORPUS_ANALYSIS §8): `{"class": "A"\|"B"\|"S", "drop_rate": ..., "ghost_rate": ..., "longest_drop_s": ...}`. Class A (indoor rigged) 0.05/0.05/1.0s; class B (outdoor/uncontrolled) 0.10/0.15/2.0s; class S (stress) no thresholds. Long-span lines use `<continuity metric>_min` / `_max` keys (below). Evaluated by `scoring.evaluate_pass` (`replay --score` prints the verdict) |
+| `long_span` | bool | TEST-1 long-span continuity manifest (a whole take). Skipped by the known-N search and the default `replay_sweep.py` run (name it with `--scenarios`) |
+| `window_pass` | obj | line for the per-window pass rate: `{"window": 300, "class": "A", "drop_rate": 0.05, ...}` (default: class A on 300-frame windows) |
+| `reference` | obj | pseudo ground truth for C7/C8/C9: `{"min_conf": 0.5, "tol_h": 0.75, "exclude_spots": [[x, y, r], ...]}` — YOLO dets ≥ `min_conf`, minus recurring fixed scenery spots (original-frame px) |
+| `known_issues` | list[str] | config issues deliberately left pinned (e.g. CFG-1/CFG-2) so the manifest keeps measuring the shipped config |
 
 ### `expected_count`
 
@@ -71,3 +75,21 @@ white-walkers. Together these cover multi-dancer, aerial/inverted, small-far,
 texture ghosts, outdoor day/night, defocus, static-person, and ghost-flood —
 the gaps TUNING.md §2 named. Moving-camera clips stay out of tracking
 scenarios (YOLO-only stress assets).
+
+## Long-span continuity suite (TEST-1, 2026-10)
+
+The 300-frame windows above were chosen in good stretches and hide the
+continuity problem (audit `docs/audit-2026-10/01-continuity.md` §0: the
+whole slot-4 take has 25 ids for one dancer and only 7/16 windows pass).
+`hangar-aerial-full` (slot 4, frames 0–5087, 4.3 min) and `hangar-floor-full`
+(slot 3, frames 0–9673, 8.1 min) replay the **whole take** with the same pinned
+config + fingerprint as their window manifests, scored by the continuity
+metrics C1–C10 (`continuity.py`) against the long-span class-A line of §3.3:
+coverage ≥ 0.98, 0 gaps ≥ 1 s, ≤ 5 gaps/min, ≤ 1.5 ids/dancer, spatial
+validity ≥ 0.97 — plus the 300-frame window pass rate.
+
+    python tests/replay.py --scenario tests/scenarios/hangar-aerial-full.json --score
+
+They are a dev reference on the dev box (PyTorch) and a gate on the prod
+laptop (TRT); the CFG-1 / CFG-2 pinned-config issues are listed in each
+manifest's `known_issues` and deliberately **not** fixed here (CONT-2).

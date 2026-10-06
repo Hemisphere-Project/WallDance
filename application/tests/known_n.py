@@ -54,12 +54,18 @@ KNOWN_N_SPACE = {
 
 
 def scenarios_for_project(project: str) -> list:
-    """Verified scenario manifests whose ``project`` matches."""
+    """Verified scenario manifests whose ``project`` matches.
+
+    Long-span continuity manifests (TEST-1, ``"long_span": true``) are a gate,
+    not a search window -- one eval per knob value over a whole take would take
+    hours -- so they are skipped here."""
     out = []
     for f in sorted(glob(str(SCEN_DIR / "*.json"))):
         try:
             m = json.loads(Path(f).read_text())
         except Exception:
+            continue
+        if m.get("long_span"):
             continue
         if m.get("project") == project and m.get("ground_truth", {}).get("verified"):
             out.append(f)

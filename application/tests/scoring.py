@@ -248,7 +248,8 @@ def score_timeline(
     }
 
 
-def evaluate_pass(score_result: dict, manifest: dict) -> dict:
+def evaluate_pass(score_result: dict, manifest: dict,
+                  continuity: Optional[dict] = None) -> dict:
     """Evaluate a score result against the manifest's pass lines.
 
     Scene-class pass lines (CORPUS_ANALYSIS §8, operator-agreed 2026-06-10):
@@ -259,6 +260,18 @@ def evaluate_pass(score_result: dict, manifest: dict) -> dict:
 
         "pass": {"class": "A", "drop_rate": 0.05, "ghost_rate": 0.05,
                  "longest_drop_s": 1.0}
+
+    Long-span lines (TEST-1, 01-continuity §3.3) are written over the
+    continuity metrics (``continuity.continuity_metrics`` keys) with a
+    ``_min`` / ``_max`` suffix, and need ``continuity`` to be passed:
+
+        "pass": {"class": "A", "span": "long", "coverage_min": 0.98,
+                 "gaps_ge_1s_max": 0, "gaps_per_min_max": 5.0,
+                 "ids_per_dancer_max": 1.5, "spatial_validity_min": 0.97}
+
+    A continuity check whose metric is missing / not computable (``None``,
+    e.g. C8 without reference positions) FAILS -- a long-span line must not
+    pass on metrics nobody measured.
 
     Any threshold may be omitted.  Returns ``{"passed", "class", "checks"}``;
     an empty/missing pass block always passes (class S).
@@ -278,11 +291,40 @@ def evaluate_pass(score_result: dict, manifest: dict) -> dict:
     if "longest_drop_s" in p:
         _check("longest_drop_s", raw.get("longest_drop_seconds", 0.0),
                p["longest_drop_s"])
+    for key, limit in p.items():
+        if key.endswith("_min") or key.endswith("_max"):
+            metric, bound = key[:-4], key[-3:]
+            value = (continuity or {}).get(metric)
+            if value is None:
+                checks[key] = {"value": None, "limit": limit, "ok": False,
+                               "note": "not computed"}
+            else:
+                ok = value >= limit if bound == "min" else value <= limit
+                checks[key] = {"value": value, "limit": limit, "ok": ok}
     return {
         "passed": all(c["ok"] for c in checks.values()),
         "class": p.get("class"),
         "checks": checks,
     }
+
+
+def is_long_span(manifest: dict) -> bool:
+    """A TEST-1 long-span continuity manifest (whole take, minutes long).
+
+    Excluded from the known-N search and the default replay sweep: they are a
+    continuity gate, not a tuning/regression window (a known-N eval over 9 674
+    frames per knob value would take hours)."""
+    return bool(manifest.get("long_span"))
+
+
+def score_continuity(timeline: List[dict], manifest: dict, **kwargs) -> dict:
+    """Continuity metrics C1-C10 + the per-window pass rate (TEST-1).
+
+    Thin entry point so the scoring toolchain exposes continuity; the metrics
+    live in ``continuity.py`` (which builds on this module, hence the lazy
+    import)."""
+    import continuity
+    return continuity.continuity_report(timeline, manifest, **kwargs)
 
 
 def score_multi(
@@ -328,6 +370,8 @@ def main():
                     help="timeline JSON (list of {frame,reported,ids} or replay summary with per_frame)")
     ap.add_argument("--weights", default=None,
                     help='JSON weight overrides, e.g. \'{"drop":2.0,"ghost":1.0}\'')
+    ap.add_argument("--continuity", action="store_true",
+                    help="also print the continuity metrics C1-C10 + window pass rate")
     args = ap.parse_args()
 
     manifest = load_scenario(args.scenario)
@@ -335,6 +379,11 @@ def main():
     weights = json.loads(args.weights) if args.weights else None
     result = score_timeline(timeline, manifest, weights)
     print(json.dumps(result, indent=2))
+    if args.continuity:
+        report = score_continuity(timeline, manifest)
+        print(json.dumps(report, indent=2))
+        print(json.dumps(evaluate_pass(result, manifest, continuity=report["metrics"]),
+                         indent=2))
 
 
 if __name__ == "__main__":
