@@ -199,3 +199,32 @@ def test_app_log_tee_survives_dead_console(tmp_path):
     app_log._prune(tmp_path, keep=2, current=tmp_path / "walldance_0.log")
     assert sorted(p.name for p in tmp_path.glob("walldance_*.log")) == \
         ["walldance_0.log", "walldance_3.log", "walldance_4.log"]
+
+
+def test_every_command_is_classified():
+    """A new command must be put in a policy class (unlisted = denied, which
+    is only intended for the operator-only SetRemoteControl)."""
+    commands = {n for n, c in vars(api).items()
+                if isinstance(c, type) and issubclass(c, api.Command) and c is not api.Command}
+    assert commands - set(POLICY) == {"SetRemoteControl"}
+    assert set(POLICY) <= commands
+    assert POLICY["SetInputTransform"] == "control"
+
+
+def test_set_input_transform_policy(server):
+    """control: free in STANDBY, in RUN only once the operator allows it."""
+    runtime, state, remote = server["runtime"], server["state"], server["remote"]
+    got = []
+    runtime.register(api.SetInputTransform, got.append)
+    assert _json(server, "/api/v1/command",
+                 {"type": "SetInputTransform", "args": {"rotation": 90}})[0] == 200
+    assert _json(server, "/api/v1/command",
+                 {"type": "SetInputTransform", "args": {"rotation": 45}})[0] == 400
+    state["v"] = "run"
+    assert _json(server, "/api/v1/command",
+                 {"type": "SetInputTransform", "args": {"mirror": True}})[0] == 403
+    remote.control_enabled = True
+    assert _json(server, "/api/v1/command",
+                 {"type": "SetInputTransform", "args": {"mirror": True}})[0] == 200
+    runtime.drain()
+    assert got == [api.SetInputTransform(rotation=90), api.SetInputTransform(mirror=True)]

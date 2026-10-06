@@ -343,6 +343,23 @@ class RefreshCameras(Command):
 
 
 @dataclass(frozen=True)
+class SetInputTransform(Command):
+    """Mirror horizontal / rotate the camera image at the source (REQ-5):
+    live camera AND slot playback, before ROI/enhancement/YOLO. None keeps
+    the current value. Rotation is clockwise degrees (0/90/180/270); mirror
+    flips left-right in the rotated image. Saved with the project."""
+    mirror: Optional[bool] = None
+    rotation: Optional[int] = None
+
+    def __post_init__(self):
+        if self.rotation is not None and self.rotation not in (0, 90, 180, 270):
+            raise ValueError("SetInputTransform.rotation must be one of "
+                             f"(0, 90, 180, 270), got {self.rotation!r}")
+        if self.mirror is not None and not isinstance(self.mirror, bool):
+            raise ValueError(f"SetInputTransform.mirror must be a bool, got {self.mirror!r}")
+
+
+@dataclass(frozen=True)
 class SetIdsParam(Command):
     name: str  # ratio | gain_db | exposure_us
     value: float

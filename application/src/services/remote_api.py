@@ -75,6 +75,7 @@ POLICY: Dict[str, str] = {
     "ApplyCalib2": CONTROL, "ClearCalib2Pool": CONTROL, "ApplyCalibSweep": CONTROL,
     "ApplyKnownNTune": CONTROL, "SaveConfig": CONTROL, "SwitchProfile": CONTROL,
     "LoadSafeDefaults": CONTROL, "SelectConfigVersion": CONTROL,
+    "SetInputTransform": CONTROL,
     # heavy: STANDBY only
     "RunDryRunReplay": HEAVY, "RunCalibSweep": HEAVY, "RunKnownNTune": HEAVY,
     "RebuildTrt": HEAVY, "LoadModel": HEAVY, "SetImgsz": HEAVY, "ToggleTrt": HEAVY,

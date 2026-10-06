@@ -580,6 +580,13 @@ class ExclusionMaskBuilder:
     def set_cells(self, grid, cells, manual_add=(), manual_remove=()) -> None:
         """Restore a persisted mask (e.g. on project load)."""
         self.gx, self.gy = int(grid[0]), int(grid[1])
+        if self._motion.shape != (self.gy, self.gx):
+            # A different grid (e.g. cols/rows swapped by a 90° input rotation,
+            # REQ-5): resize the Calib1 accumulators too, or the next observe()
+            # would add a (gy, gx) tile map into the old-shape array.
+            self._motion = np.zeros((self.gy, self.gx), dtype=np.float64)
+            self._skel = np.zeros((self.gy, self.gx), dtype=np.float64)
+            self._frames = 0
         self._cells = {(int(c[0]), int(c[1])) for c in cells}
         self._manual_add = {(int(c[0]), int(c[1])) for c in manual_add}
         self._manual_remove = {(int(c[0]), int(c[1])) for c in manual_remove}

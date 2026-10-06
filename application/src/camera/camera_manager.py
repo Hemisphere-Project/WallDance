@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
 from core.config import CAMERA_FPS, CAMERA_HEIGHT, CAMERA_INDEX, CAMERA_WIDTH
+from core.input_transform import IDENTITY, InputTransform
 
 
 @dataclass
@@ -44,6 +45,18 @@ class CameraManager:
         
         # Callback for recording (called from capture thread with each frame)
         self._frame_callback: Optional[Callable[[np.ndarray], None]] = None
+
+        # Input transform (REQ-5): applied to frames handed out by read();
+        # the recording callback keeps getting raw frames. state.width/height
+        # report the transformed size once open; raw_size keeps the sensor's.
+        self.input_transform: InputTransform = IDENTITY
+        self.raw_size: Optional[tuple] = None
+
+    def set_input_transform(self, transform: InputTransform) -> None:
+        """Mirror/rotate what read() returns (and the reported frame size)."""
+        self.input_transform = transform
+        if self.raw_size is not None:
+            self.state.width, self.state.height = transform.output_size(*self.raw_size)
 
     def set_frame_callback(self, callback: Optional[Callable[[np.ndarray], None]]):
         """Set a callback to receive every captured frame (for recording)."""
@@ -110,7 +123,8 @@ class CameraManager:
             # Direct read
             if self.cap is None or not self.cap.isOpened():
                 return False, None
-            return self.cap.read()
+            ret, frame = self.cap.read()
+            return ret, (self.input_transform.apply(frame) if ret else frame)
         
         # Threaded read from buffer
         if self._capture_error:
@@ -124,8 +138,9 @@ class CameraManager:
             if not self._frame_ready or self._latest_frame is None:
                 # Camera is open but no frame yet - not an error, just wait
                 return True, None
-            # Return a copy to avoid buffer overwrite issues
-            frame = self._latest_frame.copy()
+            # Return a copy to avoid buffer overwrite issues (a non-identity
+            # input transform produces the new array itself: no extra copy)
+            frame = self.input_transform.apply_copy(self._latest_frame)
             # Mark consumed so caller waits for a fresh captured frame next time.
             # This prevents processing the same frame multiple times when the
             # main loop runs faster than camera acquisition.
@@ -272,8 +287,8 @@ class CameraManager:
 
         actual_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         actual_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        self.state.width = actual_w
-        self.state.height = actual_h
+        self.raw_size = (actual_w, actual_h)
+        self.state.width, self.state.height = self.input_transform.output_size(actual_w, actual_h)
         self.state.source = source
         self.state.is_open = True
 

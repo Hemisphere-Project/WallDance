@@ -13,6 +13,7 @@ import dearpygui.dearpygui as dpg
 import numpy as np
 
 from gui_builder import build_ui, create_texture, setup_theme, load_icon_font, SystemState, scaled, CONTROL_PANEL_WIDTH
+from gui_builder import rotation_from_label, rotation_label
 from gui_constants import (
     TEXT_NORMAL, TEXT_MUTED, TEXT_DIM, TEXT_HINT, TEXT_FAINT,
     HEADING_GREEN, OK_GREEN, BRIGHT_GREEN, WARN_AMBER, WARN_ORANGE,
@@ -844,6 +845,17 @@ class WallDanceGUI:
         if 'on_rig_field' in self.callbacks and user_data:
             self.callbacks['on_rig_field'](user_data, value)
 
+    # === Input transform (REQ-5) ===
+
+    def _on_input_mirror_toggle(self, sender=None, value=None, user_data=None):
+        if 'on_input_mirror_toggle' in self.callbacks:
+            self.callbacks['on_input_mirror_toggle'](bool(value))
+
+    def _on_input_rotation_change(self, sender=None, value=None, user_data=None):
+        deg = rotation_from_label(value)
+        if deg is not None and 'on_input_rotation_change' in self.callbacks:
+            self.callbacks['on_input_rotation_change'](deg)
+
     def _on_osc_config_change(self, sender=None, value=None):
         if 'on_osc_config' in self.callbacks:
             ip = dpg.get_value("osc_ip_input")
@@ -1672,6 +1684,7 @@ class WallDanceGUI:
             'osc': ['osc_checkbox'],
             'bg_enable': ['bg_enable_checkbox'],
             'roi_enable': ['adv_roi_enable_checkbox'],
+            'input_mirror': ['input_mirror_checkbox'],
         }
         # Visualization toggles - update toolbar button themes instead of checkboxes
         vis_toggles = ['skeleton', 'keypoints', 'bbox', 'trails', 'ids']
@@ -1745,7 +1758,10 @@ class WallDanceGUI:
             'model': ['adv_model_combo'],
             'imgsz': ['adv_imgsz_combo'],
             'camera': ['adv_camera_combo'],
+            'input_rotation': ['input_rotation_combo'],
         }
+        if name == 'input_rotation':
+            value = rotation_label(value)
         if name in tag_map:
             for tag in tag_map[name]:
                 if dpg.does_item_exist(tag):

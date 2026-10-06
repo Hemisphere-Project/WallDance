@@ -73,6 +73,10 @@ _RANGES = {
 
 _IMGSZ_PRESETS = (640, 800, 960, 1280, 1536, 1920)
 
+# Input transform (REQ-5, shared key: the camera mount is the same for both
+# lighting profiles). Clockwise quarter turns; mirror = left-right flip.
+INPUT_ROTATIONS = (0, 90, 180, 270)
+
 # Rig sheet (MRK-0): the shooting setup the camera cannot report -- entered once
 # per project in phase 1 Rig, copied into every recording's .meta. A shared key
 # (same rig for both lighting profiles). field -> (kind, lo, hi); str = max len.
@@ -237,8 +241,43 @@ def validate_flat(flat: Dict) -> Tuple[Dict, List[str]]:
         out["rig"], rig_warnings = sanitize_rig(out["rig"])
         warnings.extend(rig_warnings)
 
+    _validate_input_transform(out, warnings)
+
     _validate_cross_field(out, warnings)
     return out, warnings
+
+
+def _validate_input_transform(out: Dict, warnings: List[str]) -> None:
+    """input_rotation: enum {0, 90, 180, 270} (any multiple of 90 is folded
+    back, e.g. -90 -> 270); input_mirror: bool. Junk is dropped (= off)."""
+    if out.get("input_rotation") is not None:
+        raw = out["input_rotation"]
+        try:
+            deg = float(raw)
+            ok = not isinstance(raw, bool) and deg.is_integer() and int(deg) % 90 == 0
+        except (TypeError, ValueError):
+            ok = False
+        if not ok:
+            warnings.append(f"input_rotation: invalid value {raw!r} dropped "
+                            f"(one of {INPUT_ROTATIONS})")
+            out.pop("input_rotation")
+        else:
+            rot = int(deg) % 360
+            if rot != raw:
+                warnings.append(f"input_rotation: {raw!r} normalized to {rot}")
+            out["input_rotation"] = rot
+    if out.get("input_mirror") is not None:
+        raw = out["input_mirror"]
+        if isinstance(raw, bool):
+            pass
+        elif isinstance(raw, (int, float)) and raw in (0, 1):
+            out["input_mirror"] = bool(raw)
+        elif isinstance(raw, str) and raw.strip().lower() in (
+                "true", "false", "1", "0", "yes", "no", "on", "off"):
+            out["input_mirror"] = raw.strip().lower() in ("true", "1", "yes", "on")
+        else:
+            warnings.append(f"input_mirror: invalid value {raw!r} dropped")
+            out.pop("input_mirror")
 
 
 def _validate_cross_field(out: Dict, warnings: List[str]) -> None:

@@ -21,6 +21,7 @@ import numpy as np
 
 from core.config_store import PROJECTS_DIR, sanitize_project_name
 from core.config import RECORDING_CODEC, RECORDING_QUALITY
+from core.input_transform import IDENTITY, InputTransform
 
 
 class RecorderState(Enum):
@@ -254,6 +255,37 @@ class VideoRecorder:
         # "start", "restart" (same slot), or "loop".
         # Intended for tracker reset so IDs don't carry across takes.
         self.on_playback_start: Optional[Callable[[str], None]] = None
+
+        # Input transform (REQ-5). Slot files hold RAW frames; playback applies
+        # the project's current transform (the same one the live camera uses)
+        # in read_frame(), so ROI/mask/calibration match what is on screen.
+        self._input_transform: InputTransform = IDENTITY
+        self._playback_raw_size: Tuple[int, int] = (0, 0)
+        self._playback_meta: dict = {}
+
+    @property
+    def input_transform(self) -> InputTransform:
+        return self._input_transform
+
+    def set_input_transform(self, transform: InputTransform) -> None:
+        """Mirror/rotate played-back frames; playback dims follow."""
+        self._input_transform = transform
+        if self.is_playing:
+            self._status.playback_width, self._status.playback_height = \
+                transform.output_size(*self._playback_raw_size)
+
+    @property
+    def playback_recorded_transform(self) -> Optional[InputTransform]:
+        """The transform that was live when the playing take was recorded
+        (from its ``.meta``), or None for legacy / imported takes."""
+        block = self._playback_meta.get("input_transform")
+        if not isinstance(block, dict):
+            return None
+        try:
+            return InputTransform(bool(block.get("mirror", False)),
+                                  int(block.get("rotation", 0)))
+        except (TypeError, ValueError):
+            return None
     
     @property
     def status(self) -> RecorderStatus:
@@ -578,10 +610,13 @@ class VideoRecorder:
         container_fps = self._reader.get(cv2.CAP_PROP_FPS) or 30.0
         meta_path = filepath + ".meta"
         sidecar_fps: Optional[float] = None
+        self._playback_meta = {}
         if os.path.exists(meta_path):
             try:
                 with open(meta_path, "r") as f:
                     meta = json.load(f)
+                if isinstance(meta, dict):
+                    self._playback_meta = meta
                 sidecar_fps = meta.get("actual_fps")
                 if sidecar_fps and sidecar_fps > 0:
                     print(f"[Playback] Using sidecar FPS: {sidecar_fps:.2f} "
@@ -610,8 +645,10 @@ class VideoRecorder:
         self._status.playback_frame = 0
         self._status.playback_total = int(self._reader.get(cv2.CAP_PROP_FRAME_COUNT))
         self._status.playback_fps = self._playback_fps
-        self._status.playback_width = int(self._reader.get(cv2.CAP_PROP_FRAME_WIDTH))
-        self._status.playback_height = int(self._reader.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        self._playback_raw_size = (int(self._reader.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                                   int(self._reader.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+        self._status.playback_width, self._status.playback_height = \
+            self._input_transform.output_size(*self._playback_raw_size)
 
         if start_frame is not None and self._status.playback_total > 0:
             target = max(0, min(int(start_frame), self._status.playback_total - 1))
@@ -684,7 +721,8 @@ class VideoRecorder:
             self._status.playback_frame = self._playback_frame_count
             # Mark consumed so we don't re-process the same frame
             self._frame_new = False
-            return self._frame_buffer.copy()
+            # Identity = the old .copy(); a transform makes the new array itself.
+            return self._input_transform.apply_copy(self._frame_buffer)
     
     def set_playback_speed(self, speed: float):
         """Set playback speed multiplier (e.g. 0.5, 1.0, 2.0)."""
@@ -808,6 +846,7 @@ class VideoRecorder:
             self._frame_new = False
         
         self._playback_path = None
+        self._playback_meta = {}
         self._status.state = RecorderState.LIVE
         self._status.current_slot = 0
         self._status.playback_frame = 0

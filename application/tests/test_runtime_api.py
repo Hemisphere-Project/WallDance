@@ -135,6 +135,8 @@ def test_bus_ui_ready_default_false():
     lambda: api.ToggleOverlay("halo"),
     lambda: api.PlaybackControl("rewind"),
     lambda: api.ControlSync("dial", "x", 1),
+    lambda: api.SetInputTransform(rotation=45),
+    lambda: api.SetInputTransform(mirror="yes"),
 ])
 def test_member_validation(bad):
     with pytest.raises(ValueError):

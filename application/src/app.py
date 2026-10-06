@@ -94,6 +94,7 @@ from core.tracker import DancerTracker
 from core.tracking_logger import _json_default
 from core.video_recorder import VideoRecorder
 from core.version import app_version
+from core.input_transform import IDENTITY, InputTransform, remap_exclusion_bundle
 import core.config_schema as config_schema
 from runtime import api
 from runtime.api import SystemState
@@ -416,8 +417,10 @@ class _RecordingCameraAdapter:
         return None
 
     def record_dimensions(self):
+        # Slot files hold RAW frames (the camera callback is upstream of the
+        # REQ-5 input transform), so the writer gets the sensor size.
         state = self._app.camera.state
-        return (state.width, state.height)
+        return self._app.input_transform.input_size(state.width, state.height)
 
     def capture_settings(self, fast: bool = False) -> dict:
         app = self._app
@@ -473,6 +476,9 @@ class _RecordingSessionAdapter:
                        "trt_requested": app.models._trt_requested,
                        "trt_active": trt_active},
             "rig": dict(app.rig_sheet),
+            # REQ-5: frames on disk are raw; playback re-applies the project's
+            # current transform (this records what was live at REC).
+            "input_transform": app.input_transform.to_meta(),
             "config": app._get_saveable_config(),
         }
 
@@ -631,6 +637,8 @@ class WallDanceApp:
         # Rig sheet (MRK-0): lens/aperture/focus/illuminator/distances -- what
         # the camera cannot report; saved per project, copied into every .meta.
         self.rig_sheet: Dict = dict(RIG_DEFAULTS)
+        # REQ-5 mirror/rotate at the source (shared config key, default off).
+        self.input_transform: InputTransform = IDENTITY
         # Dial B "Gap bridging" (OPERATOR_V2 §2.2): 50 = the calibrated seed.
         self.gap_bridging: float = 50.0
         self._bridge_sens_seed: float = self.processor.get_motion_sensitivity()
@@ -787,6 +795,8 @@ class WallDanceApp:
             "camera_reconnecting": self.cameras._camera_reconnecting,
             "active_profile": self.configs._active_profile,
             "sensitivity": self.sensitivity,
+            "input_mirror": self.input_transform.mirror,
+            "input_rotation": self.input_transform.rotation,
         }
 
     def _show_qr(self):
@@ -859,6 +869,7 @@ class WallDanceApp:
         reg(api.SelectSource, lambda c: self.cameras._cb_camera_change(c.source))
         reg(api.RefreshCameras, lambda c: self.cameras._cb_camera_refresh())
         reg(api.SetIdsParam, self._cmd_set_ids_param)
+        reg(api.SetInputTransform, self._cmd_set_input_transform)
         # OSC
         reg(api.ToggleOsc, lambda c: self._cb_osc_toggle(c.enabled))
         reg(api.SetOscTarget, lambda c: self._cb_osc_config(c.ip, c.port))
@@ -964,6 +975,7 @@ class WallDanceApp:
             "osc": {"enabled": self.osc_enabled, "target": f"{self.osc_ip}:{self.osc_port}"},
             "sensitivity": self.sensitivity,
             "rig": dict(self.rig_sheet),
+            "input_transform": self.input_transform.to_config(),
         }
 
     def _sync_rig_sheet(self):
@@ -994,6 +1006,76 @@ class WallDanceApp:
             "gain_db": self.cameras._cb_ids_gain_change,
             "exposure_us": self.cameras._cb_ids_exposure_change,
         }[c.name](c.value)
+
+    # --- input transform (REQ-5: mirror horizontal / rotate) ---
+
+    def _cmd_set_input_transform(self, c: api.SetInputTransform):
+        cur = self.input_transform
+        new = InputTransform(cur.mirror if c.mirror is None else c.mirror,
+                             cur.rotation if c.rotation is None else c.rotation)
+        if new != cur and (self.calibration._calibrating or self.calibration._calibrating2):
+            self.bus.publish(api.Toast(
+                "Finish or cancel the calibration before changing Mirror/Rotate",
+                4.0, (255, 200, 100)))
+            self._sync_input_transform_ui()
+            return
+        self._set_input_transform(new, remap=True)
+
+    def _set_input_transform(self, t: InputTransform, remap: bool) -> None:
+        """Apply mirror/rotate to every frame source: the cameras (IDS mono8
+        before the GPU upload, OpenCV) and slot playback, so ROI / mask /
+        enhancement / YOLO all see the transformed image. ``remap`` (operator
+        change, not a config load whose ROI/mask are already in its space)
+        carries the ROI rect and the exclusion masks across so they keep
+        covering the same physical region, and resets the models learned in
+        the old orientation (tracker, MOG2, BG reference)."""
+        old = self.input_transform
+        self.input_transform = t
+        if self.unified_camera is not None:
+            self.unified_camera.set_input_transform(t)
+        self.camera.set_input_transform(t)
+        self.recorder.set_input_transform(t)
+        uni = self.unified_camera
+        if self._use_unified_camera and uni is not None and uni.is_open:
+            self.camera.state.width, self.camera.state.height = uni.width, uni.height
+        self._sync_input_transform_ui()
+        if t == old:
+            return
+        if self.recorder.is_playing:
+            self.recording._apply_playback_dimensions()
+        elif self.camera.state.is_open:
+            self._camera_preview_geometry(self.camera.state.width, self.camera.state.height)
+        if remap:
+            delta = t.after(old.inverse())
+            self.roi.state.apply_transform(delta)
+            self.roi._sync_roi_ui()
+            grid, auto, add, rem = self.processor.get_exclusion_state()
+            mask = remap_exclusion_bundle(
+                {"exclusion_grid": list(grid), "exclusion_cells": auto,
+                 "exclusion_manual_add": add, "exclusion_manual_remove": rem}, delta)
+            self.processor.set_exclusion(
+                mask["exclusion_grid"], mask["exclusion_cells"],
+                mask["exclusion_manual_add"], mask["exclusion_manual_remove"])
+            profiles = self.configs._profiles      # the other lighting profile's mask
+            for name in list(profiles):
+                if name != self.configs._active_profile:
+                    profiles[name] = remap_exclusion_bundle(profiles[name], delta)
+            self.roi._sync_mask_ui()
+            if self.processor.bg_subtractor.has_reference:
+                self._cb_bg_clear()
+            self._cb_tracker_reset()
+            msg = (f"Mirror/Rotate: {t.label()} - ROI and mask moved with the "
+                   "image (Save to keep)")
+            if delta.swaps_axes:
+                msg += ". Re-run Calibrate: heights were measured sideways"
+            self.bus.publish(api.Toast(msg, 6.0, (120, 200, 255)))
+        self._request_reprocess()
+        print(f"[Input] transform {old.label()} -> {t.label()}"
+              f"{' (ROI/mask remapped)' if remap else ''}")
+
+    def _sync_input_transform_ui(self):
+        self._sync("checkbox", "input_mirror", self.input_transform.mirror)
+        self._sync("combo", "input_rotation", self.input_transform.rotation)
 
     def _cmd_playback_control(self, c: api.PlaybackControl):
         rec = self.recording
@@ -1134,6 +1216,9 @@ class WallDanceApp:
             "calibration_state": dict(self.calibration.calibration_state),
             # MRK-0: shooting setup the camera cannot report (shared key).
             "rig": dict(self.rig_sheet),
+            # REQ-5: mirror/rotate at the source (shared keys).
+            "input_mirror": self.input_transform.mirror,
+            "input_rotation": self.input_transform.rotation,
         }
 
     def _apply_config_without_model(self, config: Dict):
@@ -1153,6 +1238,10 @@ class WallDanceApp:
             self.rig_sheet = (config_schema.sanitize_rig(rig)[0] if isinstance(rig, dict)
                               else dict(RIG_DEFAULTS))
             self._sync_rig_sheet()
+        # REQ-5 input transform (shared keys; a full config without them = off).
+        # Its ROI / mask are already in its transformed space: no remap.
+        if "input_mirror" in config or "input_rotation" in config or full_config:
+            self._set_input_transform(InputTransform.from_config(config), remap=False)
         # YOLO settings (except imgsz which is handled separately)
         if "confidence" in config:
             self.settings.confidence = config["confidence"]
@@ -2008,6 +2097,16 @@ class WallDanceApp:
                          name="DryRunReplay", daemon=True).start()
         self.bus.publish(api.Toast(
             "Dry-run: replaying the last recording...", 3.0, (120, 170, 220)))
+        self._warn_offline_transform("Dry-run")
+
+    def _warn_offline_transform(self, what: str) -> None:
+        """REQ-5 gap: the offline tools (tests/replay.py, calibrate_segment.py,
+        known_n.py / detect_cache.py) decode slot files themselves and do not
+        apply Mirror/Rotate yet -- raw frames vs a transformed ROI/mask."""
+        if not self.input_transform.is_identity:
+            self.bus.publish(api.Toast(
+                f"{what}: Mirror/Rotate ({self.input_transform.label()}) is not applied "
+                "by the offline tools yet - results may be off", 6.0, (255, 180, 80)))
 
     def _run_dry_run_replay(self):
         """Background worker: subprocess replay.py on the newest recording.
@@ -2083,6 +2182,7 @@ class WallDanceApp:
         self.bus.publish(api.Toast(
             "Auto-tune: sweeping CLAHE x confidence (~2-4 min)...", 4.0,
             (120, 170, 220)))
+        self._warn_offline_transform("Auto-tune")
 
     def _run_calib_sweep(self, n: int, slot: int = -1):
         """Background worker: subprocess calibrate_segment.py on the chosen slot
@@ -2212,6 +2312,7 @@ class WallDanceApp:
         self.bus.publish(api.Toast(
             "Known-N tune: searching vs known counts (several min)...", 5.0,
             (120, 170, 220)))
+        self._warn_offline_transform("Known-N tune")
 
     def _run_known_n(self):
         """Background worker: subprocess known_n.py --dry-run on the current

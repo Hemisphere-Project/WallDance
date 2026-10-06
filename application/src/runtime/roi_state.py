@@ -29,6 +29,22 @@ class RoiState:
         h = min(h, frame_h - y)
         return x, y, w, h
 
+    def apply_transform(self, delta) -> tuple:
+        """Carry the ROI rect across an input-transform change (REQ-5):
+        ``delta`` (core.input_transform.InputTransform) maps the old
+        transformed frame onto the new one. The rect is clamped to the old
+        source first, so it keeps covering the same physical region.
+        Returns the new (x, y, w, h); source_size follows."""
+        src_w, src_h = self.source_size
+        x, y, w, h = self.effective_roi(src_w, src_h)
+        nx, ny, nw, nh = delta.map_rect(x, y, w, h, src_w, src_h)
+        new_w, new_h = delta.output_size(src_w, src_h)
+        nx, ny, nw, nh = self.normalize_rect(nx, ny, nw, nh, new_w, new_h)
+        s = self.settings
+        s.roi_x, s.roi_y, s.roi_w, s.roi_h = nx, ny, nw, nh
+        self.source_size = (new_w, new_h)
+        return nx, ny, nw, nh
+
     def effective_roi(self, frame_w: int, frame_h: int) -> tuple:
         x, y, w, h = self.normalize_rect(
             self.settings.roi_x,

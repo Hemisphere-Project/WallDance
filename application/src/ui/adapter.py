@@ -158,6 +158,9 @@ class DpgUiAdapter:
             "on_ids_ratio_change": lambda v: submit(api.SetIdsParam("ratio", v)),
             "on_ids_gain_change": lambda v: submit(api.SetIdsParam("gain_db", v)),
             "on_ids_exposure_change": lambda v: submit(api.SetIdsParam("exposure_us", v)),
+            "on_input_mirror_toggle": lambda v: submit(api.SetInputTransform(mirror=bool(v))),
+            "on_input_rotation_change": lambda deg: submit(
+                api.SetInputTransform(rotation=int(deg))),
             "on_camera_change": lambda src: submit(api.SelectSource(src)),
             "on_camera_refresh": lambda: submit(api.RefreshCameras()),
             "on_imgsz_change": lambda v: submit(api.SetImgsz(int(v))),

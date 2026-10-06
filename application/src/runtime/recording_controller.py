@@ -473,8 +473,22 @@ class RecordingController:
             self._pending_rec_slot = None
             self._apply_playback_dimensions()
             self._update_recording_ui()
+            self._hint_recorded_transform(slot)
         finally:
             self._source_transitioning = False
+
+    def _hint_recorded_transform(self, slot: int) -> None:
+        """REQ-5: playback applies the project's current mirror/rotate (slot
+        files are raw). When the take's .meta says it was recorded under a
+        different one, say so -- the operator may want to match it."""
+        recorded = self.recorder.playback_recorded_transform
+        current = self.recorder.input_transform
+        if recorded is None or recorded == current or not self.ui.available:
+            return
+        self.ui.show_toast(
+            f"Slot {slot} was recorded with mirror/rotate: {recorded.label()} "
+            f"- the project now uses: {current.label()} (1 Rig > Input)",
+            duration=6.0, color=(255, 200, 100))
 
     def _play_recording(self, slot: int, filepath: str):
         """Play a specific recording from history."""
