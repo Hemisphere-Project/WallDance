@@ -696,6 +696,13 @@ MOTION_BRIDGE_WARMUP_INCREMENT = 0.4    # Warmup score added per bridge-blob mat
                                          # Lower than YOLO (+1.0) so a motion-only
                                          # track needs ~40 consistent blob frames
                                          # (~2s @ 20fps) to reach output threshold.
+# No bridge warm-up credit for a track inside the occlusion radius of a track
+# matched this frame (CONT-1 follow-up, approved 2026-10-06): the motion there
+# belongs to the matched dancer, so a bridge must not incubate a duplicate of
+# it into a confirmed id.  The bridge still relays the track (position, tsu).
+# Replay-measured with the BUG-2 tsu clamp, hangar aerial take (slot 4):
+# frames with 2 ids 203 -> 127, ids 25 -> 20, coverage 0.942 -> 0.949.
+MOTION_BRIDGE_OCCLUDED_WARMUP_GUARD = True
 
 # =============================================================================
 # TRACKING MODE — YOLO-first vs Motion-first detection priority

@@ -131,6 +131,54 @@ def test_occlusion_aging_still_slows_an_unbridged_track():
 
 
 # --------------------------------------------------------------------------- #
+# Follow-up to BUG-2: occluded-duplicate bridge warm-up guard
+# --------------------------------------------------------------------------- #
+class _BlobAtQuery:
+    """Fake motion detector: a big local blob right at the queried centroid."""
+
+    def extract_local_motion_blob(self, qx, qy, qw, qh, target_centroid=None,
+                                  min_motion_ratio=0.0, include_shadows=False):
+        from types import SimpleNamespace
+        c = np.asarray(target_centroid, dtype=float).copy()
+        return SimpleNamespace(centroid=c, area=5000.0), 0.5
+
+
+def _bridge_scene():
+    """Track 0 matched this frame at x=300; track 1 unmatched 20 px from it
+    (inside the occlusion radius); track 2 unmatched 600 px away."""
+    t = _tracker()
+    matched = DancerTrack(*_det(x=300.0))
+    near = DancerTrack(*_det(x=320.0))
+    far = DancerTrack(*_det(x=900.0))
+    for trk in (near, far):
+        trk.hits = 30                     # established -> bridge-eligible
+        trk._warmup_score = 5.0
+        trk.time_since_update = 1         # missed this frame
+    t.tracks = [matched, near, far]
+    return t, near, far
+
+
+def test_bridge_gives_no_warmup_credit_next_to_a_matched_track():
+    t, near, far = _bridge_scene()
+    t._lazy_bridge_with_motion(_BlobAtQuery(), matched_trk={0})
+    # both were relayed by the bridge ...
+    assert near.is_bridged and far.is_bridged
+    assert near.time_since_update == 0 and far.time_since_update == 0
+    # ... but only the free-standing one earned the +0.4 integral credit
+    assert near._warmup_score == 5.0
+    assert far._warmup_score == pytest.approx(5.0 + config.MOTION_BRIDGE_WARMUP_INCREMENT)
+
+
+def test_bridge_warmup_guard_switch(monkeypatch):
+    import core.tracker as T
+    monkeypatch.setattr(T, "MOTION_BRIDGE_OCCLUDED_WARMUP_GUARD", False)
+    t, near, _far = _bridge_scene()
+    t._lazy_bridge_with_motion(_BlobAtQuery(), matched_trk={0})
+    assert near._warmup_score == pytest.approx(5.0 + config.MOTION_BRIDGE_WARMUP_INCREMENT)
+    assert config.MOTION_BRIDGE_OCCLUDED_WARMUP_GUARD is True     # shipped default
+
+
+# --------------------------------------------------------------------------- #
 # BUG-4 (config key + search space)
 # --------------------------------------------------------------------------- #
 class _Frozen:

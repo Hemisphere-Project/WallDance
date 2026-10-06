@@ -70,7 +70,7 @@ from core.config import (
     TRACK_WARMUP_SLOW_MIN_TRAVEL_RATIO,
     TRACK_WARMUP_SLOW_MIN_SEPARATION_RATIO,
     TRACK_WARMUP_INTERMITTENT_ENABLED,
-    MOTION_BRIDGE_WARMUP_INCREMENT,
+    MOTION_BRIDGE_WARMUP_INCREMENT, MOTION_BRIDGE_OCCLUDED_WARMUP_GUARD,
     TRACKER_REPORT_REQUIRES_SKELETON, TRACKER_GHOST_SKELETON_AGE,
     TRACKER_GHOST_FROZEN_SPEED_RATIO,
 )
@@ -909,6 +909,9 @@ class DancerTracker:
         self.last_over_cap = 0
         # Per-track emit/hide reason of the most recent frame (EMIT_*), CONT-10.
         self.last_emit_reasons: dict[int, str] = {}
+        # Centroids of the tracks matched in the current frame, captured just
+        # before the motion bridge (occluded-duplicate warm-up guard).
+        self._bridge_matched_positions: list[np.ndarray] = []
         # Master switch for the three post-hoc swap correctors (§3a, Phase 2
         # ⑧).  Default off: corpus-measured net harm (they false-fire on
         # aerial/erratic motion and suppress the real track).  Per-scene
@@ -2823,6 +2826,9 @@ class DancerTracker:
         if not candidate_indices:
             return
 
+        # Positions of the tracks matched this frame: a bridged track inside
+        # their occlusion radius earns no warm-up credit (_apply_motion_bridge).
+        self._bridge_matched_positions = self._collect_matched_positions(matched_trk)
         if self._bridge_with_local_motion_support(
             motion_detector, matched_trk, candidate_indices,
         ):
@@ -3069,9 +3075,18 @@ class DancerTracker:
         # bridge noise cleared the intermittent path, and bridge Kalman drift
         # even defeats its travel check).  The 0.0 still occupies the frame
         # slot so window sums stay per-frame.
-        track._warmup_score = min(
-            track._warmup_score + MOTION_BRIDGE_WARMUP_INCREMENT,
-            TRACK_WARMUP_THRESHOLD + 5.0)
+        #
+        # Occluded-duplicate guard: a track bridged inside the occlusion radius
+        # of a track matched this frame is relayed but earns no credit -- that
+        # motion is the matched dancer's, and crediting it incubated duplicates
+        # (MOTION_BRIDGE_OCCLUDED_WARMUP_GUARD; replay-measured on the hangar
+        # aerial take: frames with 2 ids 203 -> 127, ids 25 -> 20).
+        if not (MOTION_BRIDGE_OCCLUDED_WARMUP_GUARD
+                and self._is_track_near_matched_positions(
+                    track, self._bridge_matched_positions)):
+            track._warmup_score = min(
+                track._warmup_score + MOTION_BRIDGE_WARMUP_INCREMENT,
+                TRACK_WARMUP_THRESHOLD + 5.0)
         track._warmup_history.append(0.0)
 
         # Record match event so merge-episode bookkeeping stays coherent
