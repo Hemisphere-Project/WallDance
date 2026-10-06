@@ -169,7 +169,10 @@ class SshTransport:
         self.remote = remote
 
     def _base(self, prog: str, compress: bool) -> List[str]:
-        args = [prog, "-o", "BatchMode=yes", "-o", "ServerAliveInterval=15"]
+        # accept-new: first contact pins the host key (tailnet = WireGuard-authenticated
+        # peer); a later change still fails loudly.
+        args = [prog, "-o", "BatchMode=yes", "-o", "ServerAliveInterval=15",
+                "-o", "StrictHostKeyChecking=accept-new"]
         if compress:
             args.append("-C")
         return args + list(self.remote.ssh_opts)
@@ -716,6 +719,8 @@ def cmd_setup(a) -> int:
             cfg[k] = v
     if a.bwlimit is not None:
         cfg["bwlimit_kbit"] = a.bwlimit
+    if a.identity:
+        cfg["ssh_opts"] = ["-i", os.path.expanduser(a.identity), "-o", "IdentitiesOnly=yes"]
     DEFAULT_CONFIG.parent.mkdir(parents=True, exist_ok=True)
     DEFAULT_CONFIG.write_text(json.dumps(cfg, indent=2) + "\n")
     print(f"[setup] wrote {DEFAULT_CONFIG}: {cfg}")
@@ -1375,6 +1380,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--os", choices=["windows", "posix"])
     s.add_argument("--python", help="remote python override")
     s.add_argument("--bwlimit", type=int, help="default sftp limit, Kbit/s (0 = none)")
+    s.add_argument("--identity", help="ssh private key for the laptop (sets IdentitiesOnly)")
 
     sub.add_parser("doctor", help="check ssh, shell, venv python, git")
 

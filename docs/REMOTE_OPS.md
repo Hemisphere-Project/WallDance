@@ -25,20 +25,24 @@ venues it is slow 4G tethering, where syncing GBs of FFV1 recordings is impracti
    New-NetFirewallRule -Name wd-ssh-tailnet -DisplayName "SSH (tailnet only)" -Direction Inbound `
      -Protocol TCP -LocalPort 22 -RemoteAddress 100.64.0.0/10 -Action Allow
    ```
-3. **Key auth.** Put dev37's public key (`~/.ssh/id_ed25519.pub`) into
+3. **Key auth.** Put dev37's public key (`~/.ssh/mgr-26.pub`) into
    `C:\ProgramData\ssh\administrators_authorized_keys` if the Windows user is an admin, or
-   `%USERPROFILE%\.ssh\authorized_keys` otherwise.
+   `%USERPROFILE%\.ssh\authorized_keys` otherwise. Write it with `Add-Content` (ANSI), not
+   `>`/`Out-File` (UTF-16, which sshd rejects), and lock the admin file down:
+   `icacls <file> /inheritance:r /grant Administrators:F /grant SYSTEM:F`.
 4. Leave the default shell as **cmd.exe**: `wdremote` builds cmd.exe command lines.
 
 ## 2. One-time setup on the dev box
 
 ```bash
-python extra/wdremote.py setup --host wd-prod --root C:/WallDance/WallDance   # the launcher's checkout
+python extra/wdremote.py setup --host <user>@<tailnet ip> --root C:/WallDance/WallDance \
+    --identity ~/.ssh/mgr-26        # root = the launcher's checkout
 python extra/wdremote.py doctor        # ssh, shell, venv python, git CLI present?
 python extra/wdremote.py inventory     # git state, stack versions, engines, projects (saved as JSON)
 ```
 
-The config lives in `~/.config/walldance/remote.json`. The API token is cached next to it as
+The config lives in `~/.config/walldance/remote.json`. The first connection pins the laptop's
+host key (`StrictHostKeyChecking=accept-new`); a changed key later fails loudly. The API token is cached next to it as
 `remote_token.<host>` (0600).
 
 ## 3. Mirror mode (fast link)
