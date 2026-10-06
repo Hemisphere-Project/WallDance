@@ -51,12 +51,13 @@ CPU_MODE_PATTERNS = [
 
 
 class LauncherGUI(ctk.CTk):
-    def __init__(self, repo_url, target_dir):
+    def __init__(self, repo_url, target_dir, branch="release"):
         super().__init__()
 
         self.repo_url = repo_url
         self.target_dir = target_dir
-        self.git_manager = GitManager(repo_url, target_dir)
+        self.branch = branch
+        self.git_manager = GitManager(repo_url, target_dir, branch=branch)
         self.process_runner = ProcessRunner(target_dir)
 
         self.title("WallDance Launcher")
@@ -146,9 +147,14 @@ class LauncherGUI(ctk.CTk):
                 # so user can resume later if install is interrupted
                 self._ensure_desktop_shortcut()
             else:
-                # 2. Check for updates
+                # 2. Check for updates (on the release channel, not main)
                 self.update_status("Checking for updates...")
-                self.append_log("Checking for updates...\n")
+                try:
+                    cur_branch, cur_sha = self.git_manager.current_version()
+                    self.append_log(f"Installed: {cur_branch or 'detached'} @ {cur_sha}\n")
+                except Exception:
+                    pass
+                self.append_log(f"Checking for updates on channel '{self.branch}'...\n")
                 
                 status = UpdateStatus.UNKNOWN
                 try:
@@ -172,16 +178,17 @@ class LauncherGUI(ctk.CTk):
                         if status is UpdateStatus.BEHIND:
                             # Ask user in main thread safely
                             update_choice = self.ask_update_sync()
-                        else:  # DIVERGED: updating discards local commits
+                        else:  # DIVERGED: local commits not in the release
                             update_choice = self.ask_choice_sync(
                                 "Local Version Differs",
-                                "The server version and this machine's version have both "
-                                "changed. Updating will PERMANENTLY DISCARD the local "
-                                "commits and sync to the server version.\n\n"
-                                "Untracked working data (models/, projects/, recordings) "
-                                "is not affected.\n\nDiscard local commits and update?",
-                                yes_text="Discard and Update",
-                                no_text="Keep Local Version",
+                                "This machine has changes that are not in the release, "
+                                "and the release has changes this machine lacks.\n\n"
+                                "If unsure, choose KEEP LOCAL VERSION and call Thomas.\n\n"
+                                "Switching to the release keeps a backup of the local "
+                                "version (it can be restored), and never touches "
+                                "models/, projects/ or recordings.",
+                                yes_text="Switch to release",
+                                no_text="Keep local version",
                             )
                         if update_choice:
                             self.update_status("Updating repository...")
@@ -189,6 +196,11 @@ class LauncherGUI(ctk.CTk):
                             try:
                                 self.needs_install = self.git_manager.update()
                                 self.append_log("Update complete.\n")
+                                if self.git_manager.last_backup_ref:
+                                    self.append_log(f"Previous version kept as "
+                                                    f"{self.git_manager.last_backup_ref}\n")
+                                for rel in self.git_manager.last_moved_aside:
+                                    self.append_log(f"Untracked file moved aside: {rel}.wd-local-*\n")
                             except DirtyWorkingTreeError as e:
                                 # Raced edit between the check and the sync
                                 self._warn_update_skipped_dirty(e.files)
@@ -413,12 +425,39 @@ class LauncherGUI(ctk.CTk):
         event.wait()
 
     def ask_choice_sync(self, title, message, yes_text="Yes", no_text="No"):
-        """Show a yes/no dialog and return True if user chose yes."""
+        """Two-button dialog with REAL labels (askyesno ignored yes_text/no_text,
+        so a destructive choice read as a plain "Yes"). Closing the window or
+        pressing Escape = the safe "no" choice. Returns True for yes_text."""
         result = [False]
         event = threading.Event()
+
         def prompt():
-            result[0] = messagebox.askyesno(title, message)
-            event.set()
+            dlg = ctk.CTkToplevel(self)
+            dlg.title(title)
+            dlg.resizable(False, False)
+            dlg.transient(self)
+            ctk.CTkLabel(dlg, text=message, justify="left", wraplength=460).pack(
+                padx=20, pady=(20, 12))
+            row = ctk.CTkFrame(dlg, fg_color="transparent")
+            row.pack(pady=(0, 16))
+
+            def finish(choice):
+                result[0] = choice
+                try:
+                    dlg.grab_release()
+                except Exception:
+                    pass
+                dlg.destroy()
+                event.set()
+
+            keep = ctk.CTkButton(row, text=no_text, command=lambda: finish(False))
+            keep.pack(side="left", padx=8)
+            ctk.CTkButton(row, text=yes_text, fg_color="#a04040", hover_color="#802020",
+                          command=lambda: finish(True)).pack(side="left", padx=8)
+            dlg.protocol("WM_DELETE_WINDOW", lambda: finish(False))
+            dlg.bind("<Escape>", lambda _e: finish(False))
+            dlg.after(50, lambda: (dlg.grab_set(), keep.focus_set()))
+
         self.after(0, prompt)
         event.wait()
         return result[0]

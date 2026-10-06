@@ -27,6 +27,7 @@ from git_manager import (  # noqa: E402
     DirtyWorkingTreeError,
     GitManager,
     UpdateStatus,
+    resolve_branch,
 )
 
 _IDENT = b"Test <test@example.com>"
@@ -76,7 +77,9 @@ def remote(tmp_path):
 @pytest.fixture
 def manager(remote, tmp_path):
     """A field checkout cloned through the production clone path."""
-    gm = GitManager(remote, str(tmp_path / "local"))
+    # These tests predate the release channel: pin the channel to the
+    # remote's main so their ahead/behind/diverged semantics are unchanged.
+    gm = GitManager(remote, str(tmp_path / "local"), branch="main")
     gm.clone()
     return gm
 
@@ -182,3 +185,78 @@ def test_update_applies_when_diverged_and_clean(manager, remote):
 
     assert _head(manager.target_dir) == _head(remote)
     assert os.path.exists(os.path.join(manager.target_dir, "remote.txt"))
+
+
+# --- release channel + update safety (audit 2026-10 ARCH-2/ARCH-19, D1) -----
+
+def _commit_on(repo_path, branch, relpath, content, message):
+    """Commit on another branch of a (non-bare) repo, then switch back."""
+    with Repo(repo_path) as repo:
+        prev = repo.refs.read_ref(b"HEAD")
+        ref = b"refs/heads/" + branch.encode()
+        if ref not in repo.refs:
+            repo.refs[ref] = repo.head()
+        repo.refs.set_symbolic_ref(b"HEAD", ref)
+    sha = _commit(repo_path, relpath, content, message)
+    with Repo(repo_path) as repo:
+        repo.refs.set_symbolic_ref(b"HEAD", prev[len(b"ref: "):])
+    return sha
+
+
+def test_missing_release_branch_is_unknown(remote, tmp_path):
+    gm = GitManager(remote, str(tmp_path / "local"))      # default channel: release
+    gm.clone()                                             # falls back to the default branch
+    assert gm.branch == "release"
+    assert gm.check_updates() is UpdateStatus.UNKNOWN      # never moves until published
+
+
+def test_release_switch_keeps_laptop_commits_on_main(remote, tmp_path):
+    # Today's laptop: old launcher, checkout on main with a laptop-only commit.
+    old = GitManager(remote, str(tmp_path / "local"), branch="main")
+    old.clone()
+    laptop_sha = _commit(old.target_dir, "laptop.txt", "field fix\n", "laptop-only work")
+    # Thomas publishes the release branch (main + one commit).
+    release_sha = _commit_on(remote, "release", "release.txt", "r1\n", "release 1")
+
+    gm = GitManager(remote, old.target_dir, branch="release")
+    assert gm.check_updates() is UpdateStatus.DIVERGED
+    gm.update()
+
+    with Repo(gm.target_dir) as repo:
+        assert repo.refs.read_ref(b"HEAD") == b"ref: refs/heads/release"
+        assert repo.head() == release_sha
+        assert repo.refs[b"refs/heads/main"] == laptop_sha          # untouched
+        assert repo.refs[gm.last_backup_ref.encode()] == laptop_sha  # + backup ref
+    assert os.path.exists(os.path.join(gm.target_dir, "release.txt"))
+    assert not os.path.exists(os.path.join(gm.target_dir, "laptop.txt"))  # still on main
+    assert gm.current_version() == ("release", release_sha.decode()[:12])
+
+
+def test_update_moves_untracked_collision_aside(manager, remote):
+    _write(manager.target_dir, "notes.txt", "precious untracked notes\n")
+    _commit(remote, "notes.txt", "upstream notes\n", "upstream starts tracking notes.txt")
+    assert manager.check_updates() is UpdateStatus.BEHIND
+    manager.update()
+    with open(os.path.join(manager.target_dir, "notes.txt")) as f:
+        assert f.read() == "upstream notes\n"
+    aside = [n for n in os.listdir(manager.target_dir) if n.startswith("notes.txt.wd-local-")]
+    assert len(aside) == 1 and manager.last_moved_aside == ["notes.txt"]
+    with open(os.path.join(manager.target_dir, aside[0])) as f:
+        assert f.read() == "precious untracked notes\n"
+
+
+def test_update_removes_files_deleted_upstream(manager, remote):
+    porcelain.remove(remote, paths=[os.path.join(remote, "README.md")])
+    porcelain.commit(remote, message=b"drop readme", author=_IDENT, committer=_IDENT)
+    assert manager.check_updates() is UpdateStatus.BEHIND
+    manager.update()
+    assert not os.path.exists(os.path.join(manager.target_dir, "README.md"))
+
+
+def test_resolve_branch(tmp_path, monkeypatch):
+    monkeypatch.delenv("WALLDANCE_BRANCH", raising=False)
+    assert resolve_branch(str(tmp_path)) == "release"
+    (tmp_path / "launcher.json").write_text('{"branch": "field-2026"}')
+    assert resolve_branch(str(tmp_path)) == "field-2026"
+    monkeypatch.setenv("WALLDANCE_BRANCH", "main")
+    assert resolve_branch(str(tmp_path)) == "main"

@@ -4,6 +4,7 @@ import shutil
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
 from gui import LauncherGUI
+from git_manager import resolve_branch
 import install_manager
 
 class SetupDialog(ctk.CTk):
@@ -113,7 +114,9 @@ def main():
     target_dir = os.path.join(base_dir, "WallDance")
     repo_url = "https://github.com/Hemisphere-Project/WallDance.git"
     
-    app = LauncherGUI(repo_url, target_dir)
+    # Field update channel (decision D1): a release branch, not main.
+    branch = resolve_branch(base_dir)
+    app = LauncherGUI(repo_url, target_dir, branch=branch)
     app.mainloop()
 
 if __name__ == "__main__":
