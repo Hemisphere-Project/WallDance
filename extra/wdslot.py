@@ -386,8 +386,8 @@ def cmd_slot_run(tr, remote, a) -> int:
         return p.returncode
     # posix (dev37 --local tests): plain background process
     sets = " ".join(f"{k}={v}" for k, v in env.items())
-    cmd = (f"cd {root} && mkdir -p logs && {sets} nohup bash run.sh {' '.join(app_args)} "
-           f"> logs/launch-console.log 2>&1 &")
+    cmd = (f"cd {root} && mkdir -p logs && ({sets} setsid nohup bash run.sh "
+           f"{' '.join(app_args)} > logs/launch-console.log 2>&1 < /dev/null &)")
     p = tr.run(cmd, timeout=30)
     print(f"[slot] started {a.slot} (posix) rc={p.returncode}")
     return p.returncode
@@ -399,6 +399,11 @@ def cmd_slot_stop(tr, remote, a) -> int:
         try:
             with wr.ApiSession(tr, remote) as s:
                 code, res = s.request("/api/v1/command", {"type": "Quit", "args": {}})
+                if code == 403 and "RUN" in (res.get("error") or ""):
+                    # DEV sessions allow control in RUN: drop to STANDBY, then quit.
+                    s.request("/api/v1/command", {"type": "SetState", "args": {"state": "standby"}})
+                    time.sleep(1.5)
+                    code, res = s.request("/api/v1/command", {"type": "Quit", "args": {}})
             if code == 200:
                 print("[slot] quit requested (graceful)")
                 return 0

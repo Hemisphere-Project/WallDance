@@ -1415,8 +1415,18 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
+_PASSTHROUGH = {"run": "argv", "pytest": "args", "py": "args", "slot": "args"}
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    a = build_parser().parse_args(argv)
+    # REMAINDER does not capture leading dash-args inside a subparser
+    # (`pytest -x`, `slot run -- --project p`): collect them explicitly.
+    a, extra = build_parser().parse_known_args(argv)
+    if extra:
+        dest = _PASSTHROUGH.get(a.cmd)
+        if dest is None:
+            build_parser().error(f"unrecognized arguments: {' '.join(extra)}")
+        setattr(a, dest, list(getattr(a, dest) or []) + [x for x in extra if x != "--"])
     if a.cmd == "setup":
         return cmd_setup(a)
     remote = load_remote(host=a.host, root=a.root, **({"os": "posix"} if a.local else {}))

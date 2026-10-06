@@ -162,3 +162,15 @@ def test_remote_quit_only_for_dev_slot_in_standby():
     assert check_policy("Quit", {}, "standby", False) is not None          # live app
     assert check_policy("Quit", {}, "standby", False, allow_quit=True) is None
     assert check_policy("Quit", {}, "run", True, allow_quit=True) is not None
+
+
+def test_dash_args_pass_through(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(wr, "load_remote", lambda **kw: wr.Remote(host="h", root="/r", os="posix"))
+    monkeypatch.setattr(wr, "cmd_pytest", lambda tr, remote, a: seen.setdefault("pytest", a.args) and 0)
+    monkeypatch.setattr(ws, "cmd_slot_run",
+                        lambda tr, remote, a: seen.setdefault("slot", a.args) and 0)
+    wr.main(["pytest", "-x", "-k", "rig"])
+    wr.main(["slot", "run", "--", "--project", "p", "--slot", "3"])
+    assert seen["pytest"] == ["-x", "-k", "rig"]
+    assert seen["slot"] == ["--project", "p", "--slot", "3"]
