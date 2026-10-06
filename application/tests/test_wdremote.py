@@ -168,3 +168,21 @@ def test_pull_tier_honours_include_exclude(fake_remote, monkeypatch, tmp_path):
     rels = [f["rel"] for f in seen["f"]]
     assert rels and not any(r.endswith("events.jsonl") for r in rels)
     assert any(r.endswith("session.json") for r in rels)
+
+
+def test_replay_passthrough_args(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(wdremote, "_stream", lambda tr, remote, argv, **kw: seen.setdefault("argv", argv) and 0)
+
+    class _Tr:
+        def sftp_batch(self, lines, compress=False, limit_kbit=0):
+            return 0
+    argv, extra = wdremote._split_passthrough(
+        ["replay", "--trt", "--", "--project", "mur25m", "--slot", "4", "--imgsz", "1280"])
+    a = wdremote.build_parser().parse_args(argv)
+    a.args = extra
+    r = wdremote.Remote(host="h", root="C:/WallDance/WallDance")
+    wdremote.cmd_replay(_Tr(), r, a)
+    got = seen["argv"]
+    assert "--scenario" not in got and "--trt" in got
+    assert got[-6:] == ["--project", "mur25m", "--slot", "4", "--imgsz", "1280"]

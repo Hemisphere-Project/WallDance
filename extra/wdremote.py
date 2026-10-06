@@ -1019,13 +1019,17 @@ def cmd_py(tr, remote: Remote, a) -> int:
 def cmd_replay(tr, remote: Remote, a) -> int:
     stamp = new_stamp()
     scratch = remote_scratch(stamp)
-    name = a.scenario[:-5] if a.scenario.endswith(".json") else a.scenario
+    extra = list(getattr(a, "args", None) or [])
+    if not a.scenario and not extra:
+        raise SystemExit("wdremote replay: give a scenario, or replay.py args after --")
     lines = sftp_mkdirs(remote, scratch + "/logs")
     tr.sftp_batch(lines)
     argv = [remote.python_exe(), "tests/replay.py",
-            "--scenario", f"tests/scenarios/{name}.json",
             "--out", remote.path(f"{scratch}/summary.json"),
             "--log-dir", remote.path(f"{scratch}/logs")]
+    if a.scenario:
+        name = a.scenario[:-5] if a.scenario.endswith(".json") else a.scenario
+        argv += ["--scenario", f"tests/scenarios/{name}.json"]
     if a.trt:
         argv.append("--trt")
     if a.score:
@@ -1040,6 +1044,7 @@ def cmd_replay(tr, remote: Remote, a) -> int:
         argv += ["--timeline", remote.path(f"{scratch}/timeline.json")]
     for s in a.set or []:
         argv += ["--set", s]
+    argv += extra                       # verbatim replay.py args (after --)
     rc = _stream(tr, remote, argv)
     local = RUNS_DIR / stamp
     keep = ["summary.json"] + (["timeline.json"] if a.timeline else [])
@@ -1498,7 +1503,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(args=[])                 # script args go after --
 
     s = sub.add_parser("replay", help="tests/replay.py on the laptop; fetch the summary")
-    s.add_argument("scenario")
+    s.add_argument("scenario", nargs="?", default=None,
+                   help="tests/scenarios/<name>.json; omit and pass replay.py args after -- "
+                        "(e.g. -- --project P --slot 4 --imgsz 1280)")
     s.add_argument("--trt", action="store_true")
     s.add_argument("--score", action="store_true")
     s.add_argument("--cache", action="store_true")
@@ -1548,7 +1555,7 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
-_PASSTHROUGH = {"run": "argv", "pytest": "args", "py": "args", "slot": "args"}
+_PASSTHROUGH = {"run": "argv", "pytest": "args", "py": "args", "slot": "args", "replay": "args"}
 
 
 def _split_passthrough(argv: List[str]) -> Tuple[List[str], Optional[List[str]]]:
