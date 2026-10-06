@@ -46,10 +46,21 @@ def app_version(repo: Optional[str] = None) -> Dict[str, Optional[str]]:
             commit = head
     except OSError:
         pass
+    slot = None
+    if commit is None:
+        # A wdremote DEV slot is a plain tree (no .git): DEPLOYED.json says
+        # which ref/commit was synced into it (extra/wdslot.py).
+        try:
+            import json
+            dep = json.loads((root / "DEPLOYED.json").read_text())
+            commit, branch, slot = dep.get("commit"), dep.get("ref"), "dev"
+        except (OSError, ValueError):
+            pass
     return {
         "commit": commit[:12] if commit else None,
         "branch": branch,
         "python": sys.version.split()[0],
         "platform": platform.platform(),
         "host": platform.node() or os.environ.get("COMPUTERNAME"),
+        "slot": slot or os.environ.get("WD_SLOT") or ("live" if commit else None),
     }

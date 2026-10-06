@@ -50,6 +50,18 @@ CPU_MODE_PATTERNS = [
 ]
 
 
+def launcher_build_info():
+    """build_info.json bundled by the spec (commit/ref/stamp of this exe)."""
+    import json
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    try:
+        with open(os.path.join(base, "build_info.json"), encoding="utf-8") as f:
+            info = json.load(f)
+        return f"{info.get('ref')} @ {info.get('commit')} (built {info.get('built')})"
+    except (OSError, ValueError):
+        return "unknown (pre-2026-10 exe)"
+
+
 class LauncherGUI(ctk.CTk):
     def __init__(self, repo_url, target_dir, branch="release"):
         super().__init__()
@@ -152,6 +164,7 @@ class LauncherGUI(ctk.CTk):
                 try:
                     cur_branch, cur_sha = self.git_manager.current_version()
                     self.append_log(f"Installed: {cur_branch or 'detached'} @ {cur_sha}\n")
+                    self.append_log(f"Launcher build: {launcher_build_info()}\n")
                 except Exception:
                     pass
                 self.append_log(f"Checking for updates on channel '{self.branch}'...\n")

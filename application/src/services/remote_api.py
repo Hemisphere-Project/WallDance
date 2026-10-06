@@ -114,8 +114,14 @@ def load_or_create_token(path: Path) -> str:
 
 
 def check_policy(type_name: str, args: Dict[str, Any], state: str,
-                 control_enabled: bool) -> Optional[str]:
-    """None when allowed, else the refusal reason."""
+                 control_enabled: bool, allow_quit: bool = False) -> Optional[str]:
+    """None when allowed, else the refusal reason.
+
+    ``allow_quit``: the DEV slot is launched with WD_REMOTE_ALLOW_QUIT=1 so
+    ``wdremote slot stop`` can quit it gracefully -- STANDBY only. The field
+    (LIVE) app never allows a remote Quit."""
+    if type_name == "Quit" and allow_quit:
+        return None if state != "run" else "Quit is refused while in RUN"
     cls = POLICY.get(type_name)
     if cls is None:
         return f"{type_name} is not on the remote allowlist"
@@ -165,7 +171,8 @@ class RemoteApi:
                  log_path_fn: Callable[[], Optional[Path]] = lambda: None,
                  snapshot_fn: Callable[[], Optional[bytes]] = lambda: None,
                  host: str = "127.0.0.1", port: int = 8765,
-                 buffer: int = 2000, version: Optional[Dict] = None):
+                 buffer: int = 2000, version: Optional[Dict] = None,
+                 allow_quit: bool = False):
         self.runtime = runtime
         self.token = token
         self.roots = {k: Path(v).resolve() for k, v in roots.items()}
@@ -175,6 +182,7 @@ class RemoteApi:
         self.host, self.port = host, int(port)
         self.version = version or {}
         self.control_enabled = False          # operator-only (GUI), never remote
+        self.allow_quit = bool(allow_quit)    # DEV slot only (WD_REMOTE_ALLOW_QUIT=1)
         self._lock = threading.Condition()
         self._events: Deque[Tuple[int, float, Dict]] = deque(maxlen=buffer)
         self._seq = 0
@@ -233,7 +241,8 @@ class RemoteApi:
                 self._lock.wait(timeout=max(0.05, deadline - time.time()))
 
     def submit(self, type_name: str, args: Dict[str, Any]) -> Tuple[int, Dict]:
-        reason = check_policy(type_name, args, self.state_fn(), self.control_enabled)
+        reason = check_policy(type_name, args, self.state_fn(), self.control_enabled,
+                              self.allow_quit)
         if reason:
             return 403, {"error": reason}
         if type_name in ("PlaySlotRecording", "LoadConfig"):

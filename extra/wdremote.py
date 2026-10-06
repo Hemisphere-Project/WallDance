@@ -89,6 +89,7 @@ class Remote:
     python: str = ""                # override; default = the app venv's python
     bwlimit_kbit: int = 0           # sftp -l (0 = unlimited)
     api_port: int = 8765            # the app's loopback remote API (REMOTE_API_PORT)
+    dev_root: str = ""              # dev slot (default: <root>-dev), see wdslot.py
     ssh_opts: List[str] = field(default_factory=list)
 
     @property
@@ -467,8 +468,12 @@ def main(op, args):
 
 
 def run_agent(tr, remote: Remote, op: str, args: Optional[dict] = None,
-              timeout: float = 600) -> dict:
-    script = AGENT_PY + f"\nmain({op!r}, json.loads({json.dumps(json.dumps(args or {}))}))\n"
+              timeout: float = 600, script_src: str = "") -> dict:
+    """Pipe an agent script to the laptop's python and parse its JSON answer.
+    ``script_src`` lets other modules (wdslot) ship their own agent; it must
+    define ``main(op, args)`` printing the JSON between JSON_MARK lines."""
+    body = script_src or AGENT_PY
+    script = body + f"\nmain({op!r}, json.loads({json.dumps(json.dumps(args or {}))}))\n"
     cmd = remote.shell([remote.python_exe(), "-", remote.root],
                        env={"PYTHONIOENCODING": "utf-8"})
     proc = tr.run(cmd, stdin=script.encode(), timeout=timeout, compress=True)
@@ -1291,6 +1296,19 @@ def cmd_clip(tr, remote: Remote, a) -> int:
 # CLI
 # ---------------------------------------------------------------------------
 
+_SLOT_HANDLERS: Dict[str, object] = {}
+
+
+def _wdslot():
+    """Lazy import of the sibling deploy/slot module (extra/wdslot.py)."""
+    here = str(Path(__file__).resolve().parent)
+    if here not in sys.path:
+        sys.path.insert(0, here)
+    sys.modules.setdefault("wdremote", sys.modules[__name__])
+    import wdslot
+    return wdslot
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="wdremote", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1298,6 +1316,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--root")
     ap.add_argument("--local", action="store_true",
                     help="treat the 'remote' as this machine (tests / dry runs)")
+    ap.add_argument("--slot", choices=["live", "dev"], default="live",
+                    help="target code tree for run/pytest/py/replay (dev = wdremote deploy slot)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("setup", help="save host/root to the config file")
@@ -1359,6 +1379,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--set", action="append", metavar="KEY=VALUE")
 
     sub.add_parser("bundle", help="git bundle --all (or .git zip) of the laptop checkout -> local")
+    _SLOT_HANDLERS.update(_wdslot().add_commands(sub))
 
     # -- live app (in-app remote API over an SSH tunnel) --
     sub.add_parser("token", help="(re)fetch the app's API token over ssh")
@@ -1400,6 +1421,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return cmd_setup(a)
     remote = load_remote(host=a.host, root=a.root, **({"os": "posix"} if a.local else {}))
     tr = LocalTransport(remote) if a.local else SshTransport(remote)
+    if a.slot == "dev" and a.cmd in ("run", "pytest", "py", "replay"):
+        from dataclasses import replace
+        remote = replace(remote, root=_wdslot().dev_root(remote))
+        tr.remote = remote
     handlers = {
         "doctor": cmd_doctor, "inventory": cmd_inventory, "probe": cmd_probe,
         "plan": cmd_plan, "pull": cmd_pull, "run": cmd_run, "pytest": cmd_pytest,
@@ -1407,6 +1432,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "token": cmd_token, "status": cmd_status, "events": cmd_events,
         "commands": cmd_commands, "cmd": cmd_cmd, "record": cmd_record, "state": cmd_state,
         "logs": cmd_logs, "snapshot": cmd_snapshot, "ls": cmd_ls, "clip": cmd_clip,
+        **_SLOT_HANDLERS,
     }
     return handlers[a.cmd](tr, remote, a)
 

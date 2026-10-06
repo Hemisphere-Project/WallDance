@@ -299,8 +299,10 @@ class MainLoop:
                     log_path_fn=app_log.current_log_path,
                     snapshot_fn=lambda: (app._web_monitor.get_jpeg()
                                          if app._web_monitor is not None else None),
-                    host=REMOTE_API_HOST, port=REMOTE_API_PORT,
-                    version=app_version())
+                    host=REMOTE_API_HOST,
+                    port=int(os.environ.get("WD_REMOTE_API_PORT", REMOTE_API_PORT)),
+                    version=app_version(),
+                    allow_quit=os.environ.get("WD_REMOTE_ALLOW_QUIT") == "1")
                 if not app._remote.start():
                     app._remote = None
             except Exception as e:  # noqa: BLE001 - remote API is non-critical

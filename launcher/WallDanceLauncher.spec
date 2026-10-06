@@ -1,11 +1,18 @@
 # -*- mode: python ; coding: utf-8 -*-
 
 
+# Path-independent (was hard-coded to one developer's checkout): resolve
+# customtkinter from the build venv, and bundle build_info.json (commit/ref/
+# build stamp written by `wdremote launcher build`) so the exe can say what it is.
+import os
+import customtkinter
+
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('C:\\Users\\tango\\Documents\\GitHub\\WallDance\\launcher\\.venv\\Lib\\site-packages\\customtkinter', 'customtkinter/')],
+    datas=[(os.path.dirname(customtkinter.__file__), 'customtkinter/'),
+           ('build_info.json', '.')],
     hiddenimports=['win32timezone'],
     hookspath=[],
     hooksconfig={},

@@ -1,4 +1,6 @@
-customtkinter
+# Launcher build deps. Pinned build: requirements-win.lock
+#   (uv pip compile requirements.txt --python-platform windows --python-version 3.12 -o requirements-win.lock)
+customtkinter>=5.2,<6
 dulwich>=0.22
 pyinstaller
 winshell
