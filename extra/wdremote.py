@@ -689,7 +689,7 @@ def pull_files(tr, remote: Remote, files: List[dict], dest: Path, *,
                 local.parent.mkdir(parents=True, exist_ok=True)
                 if f.get("fresh") and local.exists():
                     local.unlink()
-                lines.append(f'-get -ap "{remote.sftp_path(f["rel"])}" "{local}"')
+                lines.append(f'-get -a "{remote.sftp_path(f["rel"])}" "{local}"')  # no -p: Windows modes arrive o+w; mtime set below
             rcs.append(tr.sftp_batch(lines, compress=compress, limit_kbit=limit_kbit))
     finally:
         stop.set()
