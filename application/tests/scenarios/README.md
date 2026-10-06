@@ -93,3 +93,20 @@ validity ≥ 0.97 — plus the 300-frame window pass rate.
 They are a dev reference on the dev box (PyTorch) and a gate on the prod
 laptop (TRT); the CFG-1 / CFG-2 pinned-config issues are listed in each
 manifest's `known_issues` and deliberately **not** fixed here (CONT-2).
+
+## Two-dancer long spans and ghost guards (PLAN_25M, 2026-10-06)
+
+- `white-duo-full` (whitebg3 slot 2, frames 0-738) and `texture-duo-full` (texturedbg slot 5, frames
+  0-2637): the whole takes of the two duo windows, same pinned config + fingerprint, N = 2 throughout
+  (checked on take sheets; long contact phases look like one body), `reference.exclude_spots` = the
+  fixed ghost spots so the pseudo-GT never counts a ghost as a dancer. `white-duo-full` (two dancers on
+  ropes on a white wall, ~23 m) is the closest footage to the 25 m demo.
+- `bdx1005-s5-ghost` / `bdx1005-s8-shadows` (whitebg3 2026-10-05 slots 5 / 8): **ghost guards, not show
+  takes**. One person walking on the hangar floor (near the lens, then far). Slot 5: on-axis IR and a
+  static dark figure by the left door that YOLO keeps confirming (0.25-0.73); slot 8: two floor
+  projectors in frame (off-axis IR), the person's shadow on the wall detected at 0.7-0.9 and a floor
+  light that fooled the belt detector. N = 1. The other 2026-10-05 takes (4, 6, 7, 9) are of the same
+  kind (single walker, test lighting, blur); none has two dancers or a dancer on a wall.
+
+TEST-2 (`tests/test_emitted_golden.py`) uses stripped replay timelines of some of these as fixtures
+(`tests/golden/emitted/`), so the identity-slot layer is gated without a GPU or the recordings.

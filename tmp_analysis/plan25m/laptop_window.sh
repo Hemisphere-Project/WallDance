@@ -43,6 +43,14 @@ done
 #   cd application && .venv/bin/python ../tmp_analysis/plan25m/kpi.py --n 2 <tmp_analysis/remote-runs/<stamp>/timeline.json>
 #   and the same take with the project's own settings (no $REC) for the before/after.
 
+# ---- B3b (10-15 min): clean-plate foreground N-lock (BRAINSTORM §3.2), slot 1 = the empty-wall plate --------
+# one shot on the laptop: decodes the plate + each take (ROI from the project), finds B3's replay timeline per take
+# in tmp_analysis/remote/, runs nlock.py --variant fg --bg plate; one JSON line per take comes back (~1 KB).
+$W py --with tmp_analysis/brainstorm-2026-10/fg_lib.py --with tmp_analysis/brainstorm-2026-10/nlock.py \
+      tmp_analysis/brainstorm-2026-10/fg_takes.py -- --project $P --slots 4,5,6,9 --plate-slot 1 --n 2
+#   compare onD / coast_share / hole_max_s with kpi.py's emitted row for the same take (B3): if the foreground wins
+#   clearly on tonight's on-axis takes, D26 = build the hook before the demo.
+
 # ---- B5 (10 min): perf with TouchDesigner (slot 9 session of the evening) ----------------
 $W ls logs
 #   $W pull logs/walldance_<evening stamp>.log  ;  grep '\[Budget\]\|\[PerfSpike\]' -> process_wall, yolo, mog2_wait, track

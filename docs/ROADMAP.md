@@ -73,9 +73,18 @@ whole show, with no per-venue knob tuning.
 | **N-6** | **TEST-2** emitted-stream golden + KPI floor from committed timelines (PLAN A7) | Claude | the slot layer gated in seconds, no GPU |
 | **N-7** | **Push 2** (`pinned-install`, D3) in a supervised window | Thomas | engines load, suite green on the laptop |
 | **N-8** | Operator note v2 (FR) with the day's settings and the preview colours as the operator's KPI | Claude | PDF on the laptop desktop |
+| **N-9** | **Clean-plate foreground evidence** (BRAINSTORM §3.2, PLAN §C.10): run the foreground N-lock on tonight's takes with the empty wall as the plate; if it beats the slot stream there, build the output-side hook (ghost veto, held-slot measurement, known-N re-acquisition) + plate capture at Calibrate, behind a key (D26) | Claude, on Thomas's go | on-dancer / held share / longest hole vs the shipped stream on slots 4/5/6/9 + a by-eye audit |
 
 Done when the client has seen the two-point stream hold through losses on the wall, and the KPI table from the
 latest take is in this file.
+
+**Progress 2026-10-06 evening (offline, PLAN §C):** N-3 analysis done (the Bordeaux takes are single-walker tests,
+no KPI from them; the demo proxy is the April white-wall duo: two points 0.909, longest hole 5.2 s, on-dancer 0.74
+with the shipped layer); N-4 shipped behind keys (static-ghost guard + yield ON, `raw_skeleton` filter input OFF
+for D18, belt static map ON); N-6 TEST-2 in the suite; candidate settings `yolo_first` + tau 0.15 + intermittent
+confirm (white duo: two points 0.973, hole 1.26 s, on-dancer 0.93) **only with the venue's ghost spots excluded**
+(they otherwise fill the spare slot when a dancer is off the wall): decided tomorrow on tonight's takes. N-8 done
+(TERRAIN_2026-10-07_FR with the good-take conditions).
 
 ## 4. NEXT — scaling (30–40 m, bigger scene, less light, portrait)
 
@@ -118,8 +127,11 @@ Only after §3 is demonstrated. Order and evidence in REVIEW §3–§4.
   `weak`), P-5 bundling (consumer-gated).
 - **Acquisition:** CONT-8 motion-first lane for small far figures (only beyond ~45 m with the 8 mm).
 - **Ops:** REM-5 in-app job runner for 4G without SSH; remote low-bitrate preview stream.
-- **Research-gated:** corpus-trained IR person detector, Track D SNR leads, optical-flow coherence, clean-plate
-  static path.
+- **Research-gated:** corpus-trained IR person detector, Track D SNR leads, optical-flow coherence.
+- **From the brainstorm (BRAINSTORM_APPROACHES_2026-10):** rope-pendulum prediction for held points (needs the
+  anchors per show); lighter YOLO once the foreground carries presence (l@1280 / x@960, -35 to -65 % GPU); the
+  belt as a primary sensor if the on-axis belt saturates; replacing the tracker's blob-as-detection path by the
+  foreground (a CONT-3 / CONT-11 simplification).
 
 ## 6. Simplification backlog (opportunistic, gated)
 
@@ -154,6 +166,8 @@ current 25 m setup is the priority; id consistency/swaps and the full skeleton c
 | D22 | `/dancer/state` ON for the TD patch | yes if the patch uses it (fade while coasting) |
 | D23 | Textured venues: operator paints exclusion now; calibration proposes before production | both |
 | D24 | `Stable IDs` ON on LIVE at push 1 | yes, checkbox as the fallback, TD patch checked |
+| D26 | Build the clean-plate foreground hook before the demo (1.5-2.5 d) or right after? | before, only if tonight's takes confirm the April numbers; it also fixes the spare-slot ghost |
+| D27 | Demo settings: `yolo_first` + tau 0.15 + intermittent confirm + exclusion from the empty wall, vs the project defaults | decide on tonight's takes (PLAN B3/B6) |
 | D6 | Latency budget | measured ~140–170 ms effective centroid on fast moves today; D18 is the lever |
 | D7 | Exposure ≤ 25 ms | only with the IR multiplied (P-1) |
 | D8 | Costume | belt front + back; cuffs dropped |
@@ -161,7 +175,8 @@ current 25 m setup is the priority; id consistency/swaps and the full skeleton c
 | D10 | Manual | French, English UI labels quoted (P-7) |
 | D13 | Crash mid-show | restart into STANDBY (crash marker shipped) |
 | D17 | TD on the same laptop | yes — the perf constraint |
-| D2, D11, D12, D14–D16 | laptop facts (done via `inventory`), repo public?, `numpy<2`, `motion_first` (keep), cleanup menu, clean plate text | unchanged from the audit |
+| D2, D11, D12, D14, D15 | laptop facts (done via `inventory`), repo public?, `numpy<2`, `motion_first` (keep), cleanup menu | unchanged from the audit |
+| D16 | Clean plate: fix the UI text or build it? | **build it** if D26 goes ahead (it is the foreground's input); else fix the text |
 
 ---
 
