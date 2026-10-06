@@ -13,13 +13,18 @@ Two modes
 ---------
 * **Gated** (the live mode): ``detect_near(gray, predictions)`` with one
   ``(key, x, y, gate_px, expected_band_w_px | None)`` per tracked dancer. Only
-  a small window around each prediction is analysed (~0.1-0.2 ms each), and the
-  result maps every key to its best ``BeltBlob`` or None. A blob goes to at
-  most one key (greedy on score x distance), so two dancers crossing do not
-  both claim the same belt.
+  a small window around each prediction is analysed, and the result maps every
+  key to its best ``BeltBlob`` or None. A blob goes to at most one key (greedy
+  on score x distance), so two dancers crossing do not both claim the same
+  belt. A window without any pixel above ``floor_dn`` returns at once.
 * **Global**: ``detect(gray, roi=None)`` finds candidate clusters on the
   1/4-scale average against its opening, then segments each one at full
-  resolution with the same rules as the gated mode.
+  resolution with the same rules as the gated mode (at most
+  ``max_candidates`` clusters). A ``StaticMap`` lets it skip fixed glints.
+
+Cost on dev37 (i7-3770K, 1 cv2 thread, machine loaded by other jobs): gated
+~0.25 ms per lit prediction (0.05 ms when the window is dark); global ~1.6-2.4
+ms on a 1488x1528 show-like frame, ~2.5 ms p50 on the busy 2026-10-05 takes.
 
 Segmentation (per window)
 -------------------------
@@ -97,7 +102,6 @@ class BeltParams:
     # gated mode
     gate_min_px: float = 6.0
     max_window_px: int = 40000        # larger windows are analysed downscaled
-    static_cell: int = 8
 
 
 @dataclass
