@@ -32,9 +32,9 @@ Binding (each frame):
    established, unbound track can only take a slot whose own track is gone.
 4. **Entry**: a ``lost`` slot can be taken by an established track *anywhere*
    (a dancer entering), reusing the same id; the nearest lost slot (by its last
-   position) wins.  A coasting slot older than ``rebind_any_after_s`` may also
-   take an established track anywhere when no lost slot is free (the same
-   dancer re-acquired far from where it vanished, N being a cap).
+   position) wins.  (``rebind_any_after_s`` / ``hidden_yield_s`` let a
+   coasting / hidden-following slot jump to a track anywhere; both OFF by
+   default -- on the replays they mostly jumped onto ghost tracks.)
 
 Anti-ghost (a slot only binds to an **established** track):
 
@@ -204,15 +204,19 @@ class SlotParams:
     entry_min_hits: int = 12     # own warm-up already took ~0.75 s)
     entry_max_fss: int = 60      # entry: a real skeleton within 3 s (never blob-born)
     min_travel_h: float = 0.0    # optional displacement evidence (0 = off)
+    entry_min_travel_h: float = 0.0  # ... for an entry into a lost slot
     # -- hidden continuation: the bound track is alive and updated but the
     # tracker hides it (frozen gate: a still dancer fed by motion blobs) --
     hidden_max_s: float = 3.0
     hidden_drift_h: float = 1.5  # ... and it stays near its last reported position
+    hidden_yield_s: float = 99.0  # ... and yields to an unclaimed established track (OFF:
+                                  # replay-neutral, 0.5 s made white-duo worse)
     # -- gates, in dancer heights --
     gate_h: float = 1.0
     gate_growth_h_per_s: float = 2.0
     gate_max_h: float = 3.0
-    rebind_any_after_s: float = 0.5
+    rebind_any_after_s: float = 99.0  # "re-acquire anywhere" for a coasting slot: OFF
+    # (it let a coasting slot jump onto ghost tracks: white-duo on-dancer 0.74 -> 0.64)
     snap_h: float = 1.0          # a rebind this far from the output snaps (no glide)
     jump_h: float = 2.0
     dup_bind_h: float = 0.5
@@ -377,7 +381,8 @@ class IdentitySlots:
             return False
         if not c.zone_ok:
             return False
-        if p.min_travel_h > 0 and self._max_travel.get(c.key, 0.0) < p.min_travel_h * max(1.0, c.h):
+        travel = p.entry_min_travel_h if entry else p.min_travel_h
+        if travel > 0 and self._max_travel.get(c.key, 0.0) < travel * max(1.0, c.h):
             return False
         return True
 
@@ -591,8 +596,13 @@ class IdentitySlots:
         pool = [c for k, c in cands.items() if k not in used]
         lost = [s for s in self._slots if s.state == STATE_LOST and s.sid not in measured]
         stale = [s for s in self._slots
-                 if s.state != STATE_LOST and s.sid not in measured
-                 and t - s.last_meas_t >= p.rebind_any_after_s]
+                 if s.state != STATE_LOST and (
+                     (s.sid not in measured and t - s.last_meas_t >= p.rebind_any_after_s)
+                     # a slot only following a hidden (frozen-gated) track for a
+                     # while yields to an established track nobody claims: the
+                     # dancer most likely moved on, leaving a zombie behind
+                     or (s.sid in provisional and s.hidden_since is not None
+                         and t - s.hidden_since >= p.hidden_yield_s))]
         for group, kind in ((lost, "entry"), (stale, "reacquire")):
             pool = [c for c in pool if c.key not in used]
             if not group or not pool:
@@ -612,6 +622,7 @@ class IdentitySlots:
                     continue
                 self._bind(s, c, t, kind)
                 used.add(c.key)
+                provisional.discard(s.sid)
                 measured[s.sid] = (np.array([c.x, c.y], dtype=np.float64),
                                    np.array([c.w, c.h], dtype=np.float64), c)
 

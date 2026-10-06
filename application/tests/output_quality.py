@@ -357,8 +357,33 @@ def compare_streams(rows: Sequence[dict], manifest: Optional[dict], *,
                 "coverage", "ghost_rate", "drop_episodes", "gap_max_s", "gaps_ge_1s",
                 "distinct_ids", "ids_per_dancer", "multi_id_frames", "dup_frames",
                 "ghost_frames", "spatial_validity", "acquisition_s", "freeze_share")}
+            block["continuity"]["on_dancer"] = on_dancer_rate(tl, manifest)
         out[name] = block
     return out
+
+
+def on_dancer_rate(rows: Sequence[dict], manifest: dict) -> Optional[float]:
+    """Share of pseudo-GT dancer positions (C8 reference: conf floor, top-N)
+    with an emitted point within ``tol_h`` x h -- over ALL scored frames, so a
+    frame emitting nothing counts as a miss.  C8 (spatial validity) only looks
+    at frames that emit something, which flatters a stream that drops out
+    exactly when the dancer is hard (the tracker) next to one that holds."""
+    import continuity
+    cfg = continuity._ref_cfg(manifest)
+    tol = float(cfg["tol_h"])
+    warm = int(manifest.get("warmup", 0))
+    hit = tot = 0
+    for r in rows:
+        if r["frame"] < warm:
+            continue
+        n = scoring.expected_at(manifest, r["frame"])
+        refs = continuity.reference_positions(r, n, cfg) if n > 0 else []
+        pts = _points(r)
+        for ref in refs:
+            tot += 1
+            hit += any(math.hypot(x - ref["c"][0], y - ref["c"][1]) <= tol * float(ref["h"])
+                       for _i, x, y, _h, _s in pts)
+    return round(hit / tot, 4) if tot else None
 
 
 def format_comparison(report: dict) -> str:
