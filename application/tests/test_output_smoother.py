@@ -13,6 +13,7 @@ Covers the review-mandated checks (docs/TRACK_X_SMOOTHER.md §10):
 """
 
 import numpy as np
+import pytest
 
 from core.output_smoother import OutputSmoother, SmootherInput
 
@@ -280,6 +281,8 @@ def test_lagged_keypoints_stay_coherent_with_centroid():
     translated by the centroid correction, so keypoints keep their offset from
     the smoothed centroid (no centroid/keypoint drift on the lagged tap)."""
     from types import SimpleNamespace
+    pytest.importorskip("torch")        # core.pipeline pulls in torch/ultralytics
+    pytest.importorskip("ultralytics")
     from core.pipeline import FrameProcessor, ScaledTrack
 
     L = 3

@@ -1,0 +1,10 @@
+# CI test dependencies (.github/workflows/ci.yml). The unit suite is import-
+# light on purpose: GPU / torch / ultralytics / IDS / DearPyGui tests skip
+# themselves (importorskip, WD_RUN_REPLAY), so CI never installs CUDA wheels.
+numpy>=1.24,<2.0             # same bound as application/pyproject.toml
+opencv-python-headless>=4.8
+scipy>=1.10                  # core/tracker.py (Hungarian assignment)
+filterpy>=1.4.5              # core/tracker.py (Kalman filter)
+python-osc>=1.8              # core/osc_output.py
+dulwich>=0.22                # launcher/git_manager.py (update-safety tests)
+pytest>=8

@@ -6,14 +6,39 @@ attributes a stage touches exist, so an unexpected dependency fails loudly.
 """
 from __future__ import annotations
 
+import importlib.util
+import sys
 import time
+import types
 from types import SimpleNamespace
 
 import pytest
 
-pytest.importorskip("torch")  # runtime.main_loop -> core.pipeline -> torch/ultralytics
 
-from runtime.main_loop import MainLoop, _Tick  # noqa: E402
+def _import_main_loop():
+    """``runtime.main_loop`` imports ``core.pipeline`` (torch + ultralytics)
+    only for the ``ScaledTrack`` type used by preview scaling, which these
+    tests never reach. Where those are absent (CI), import it against a
+    one-attribute stub so the crash-hygiene tests still run; the stub is
+    removed right after, so no other test can pick it up."""
+    if importlib.util.find_spec("torch") and importlib.util.find_spec("ultralytics"):
+        import runtime.main_loop as ml
+        return ml
+    import core
+    stub = types.ModuleType("core.pipeline")
+    stub.ScaledTrack = object
+    sys.modules["core.pipeline"] = stub
+    try:
+        import runtime.main_loop as ml
+    finally:
+        sys.modules.pop("core.pipeline", None)
+        if getattr(core, "pipeline", None) is stub:
+            delattr(core, "pipeline")
+    return ml
+
+
+_ml = _import_main_loop()
+MainLoop, _Tick = _ml.MainLoop, _ml._Tick
 
 
 class _Ui:
