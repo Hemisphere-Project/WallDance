@@ -1,0 +1,4 @@
+default |
+guard+yield | static_guard=true static_yield=true
+g+y+release8s | static_guard=true static_yield=true static_release_s=8
+g+y+release15s | static_guard=true static_yield=true static_release_s=15

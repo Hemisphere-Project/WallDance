@@ -1,0 +1,2 @@
+ae4_yf15_interm_excl|hangar-aerial-full|--set confidence=0.15 --set tracker_intermittent_confirm=true --set exclusion_cells=[[9,2],[13,2],[15,2]]
+ae4_yf25_interm|hangar-aerial-full|--set confidence=0.25 --set tracker_intermittent_confirm=true

@@ -1,0 +1,3 @@
+smoothed s.5 (shipped) | static_guard=true static_yield=true
+raw_skel s.5 | static_guard=true static_yield=true filter_input="raw_skeleton"
+raw_skel s.75 | static_guard=true static_yield=true filter_input="raw_skeleton" stability=0.75

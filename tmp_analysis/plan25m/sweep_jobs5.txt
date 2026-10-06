@@ -1,0 +1,2 @@
+wd5_yf15_interm_excltool|white-duo-full|--set tracking_mode=yolo_first --set confidence=0.15 --set tracker_intermittent_confirm=true --set exclusion_cells=[[9,2],[14,2],[0,8],[15,1]]
+wd5_yf25_interm_excltool|white-duo-full|--set tracking_mode=yolo_first --set confidence=0.25 --set tracker_intermittent_confirm=true --set exclusion_cells=[[9,2],[14,2],[0,8],[15,1]]

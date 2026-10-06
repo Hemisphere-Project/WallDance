@@ -1,0 +1,12 @@
+wd3_yf15_interm|white-duo-full|--set tracking_mode=yolo_first --set confidence=0.15 --set tracker_intermittent_confirm=true
+wd3_yf15_interm_excl|white-duo-full|--set tracking_mode=yolo_first --set confidence=0.15 --set tracker_intermittent_confirm=true --set exclusion_cells=[[13,2],[9,2]]
+wd3_yf15_excl|white-duo-full|--set tracking_mode=yolo_first --set confidence=0.15 --set exclusion_cells=[[13,2],[9,2]]
+wd3_yf20|white-duo-full|--set tracking_mode=yolo_first --set confidence=0.20
+wd3_yf20_interm|white-duo-full|--set tracking_mode=yolo_first --set confidence=0.20 --set tracker_intermittent_confirm=true
+wd3_yf25|white-duo-full|--set tracking_mode=yolo_first --set confidence=0.25
+td3_tau20_interm_excl|texture-duo-full|--set confidence=0.20 --set tracker_intermittent_confirm=true --set exclusion_cells=[[3,6],[12,5]]
+td3_tau15_interm_excl_g|texture-duo-full|--set tracker_intermittent_confirm=true --set exclusion_cells=[[3,6],[12,5]]
+ae3_yf15_interm|hangar-aerial-full|--set confidence=0.15 --set tracker_intermittent_confirm=true
+ae3_base|hangar-aerial-full|
+h23_base|tangoH2-s9|
+h23_yf15_interm|tangoH2-s9|--set tracking_mode=yolo_first --set confidence=0.15 --set tracker_intermittent_confirm=true

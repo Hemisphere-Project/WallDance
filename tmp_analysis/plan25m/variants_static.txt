@@ -1,0 +1,7 @@
+default        |
+guard          | static_guard=true
+guard+yield    | static_guard=true static_yield=true
+yield only     | static_yield=true
+g+y+reacq1.0s  | static_guard=true static_yield=true rebind_any_after_s=1.0
+g+y+reacq0.5s  | static_guard=true static_yield=true rebind_any_after_s=0.5
+reacq0.5 noguard | rebind_any_after_s=0.5

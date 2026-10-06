@@ -1,0 +1,4 @@
+default |
+guard+yield | static_guard=true static_yield=true
+guard+yield sp0.04 | static_guard=true static_yield=true static_spread_h=0.04
+guard+yield sp0.09 | static_guard=true static_yield=true static_spread_h=0.09

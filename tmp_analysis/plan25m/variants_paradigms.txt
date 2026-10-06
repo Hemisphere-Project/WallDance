@@ -1,0 +1,7 @@
+base(guard)            | static_guard=true static_yield=true
+weak warmup            | static_guard=true static_yield=true weak_enabled=true weak_src="warmup"
+weak subtau            | static_guard=true static_yield=true weak_enabled=true weak_src="subtau"
+weak both              | static_guard=true static_yield=true weak_enabled=true weak_src="both"
+weak both max1.5s      | static_guard=true static_yield=true weak_enabled=true weak_src="both" weak_max_s=1.5
+plausible entry        | static_guard=true static_yield=true entry_plausibility=true
+weak both + plausible  | static_guard=true static_yield=true weak_enabled=true weak_src="both" entry_plausibility=true

@@ -1,0 +1,5 @@
+smoothed s.5 (shipped) | static_guard=true static_yield=true
+raw s.5 | static_guard=true static_yield=true filter_input="raw"
+raw s.75 | static_guard=true static_yield=true filter_input="raw" stability=0.75
+raw s1.0 | static_guard=true static_yield=true filter_input="raw" stability=1.0
+smoothed s.25 | static_guard=true static_yield=true stability=0.25

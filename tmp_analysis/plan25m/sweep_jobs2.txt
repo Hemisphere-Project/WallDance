@@ -1,0 +1,9 @@
+wd2_yf_tau010|white-duo-full|--set tracking_mode=yolo_first --set confidence=0.10
+wd2_yf_interm|white-duo-full|--set tracking_mode=yolo_first --set tracker_intermittent_confirm=true
+wd2_yf_tau010_interm|white-duo-full|--set tracking_mode=yolo_first --set confidence=0.10 --set tracker_intermittent_confirm=true
+wd2_yf_excl|white-duo-full|--set tracking_mode=yolo_first --set exclusion_cells=[[13,2],[9,2]]
+wd2_yf_tau015|white-duo-full|--set tracking_mode=yolo_first --set confidence=0.15
+wd2_yf_tau010_excl|white-duo-full|--set tracking_mode=yolo_first --set confidence=0.10 --set exclusion_cells=[[13,2],[9,2]]
+td2_interm_excl|texture-duo-full|--set tracker_intermittent_confirm=true --set exclusion_cells=[[3,6],[12,5]]
+td2_tau010_interm|texture-duo-full|--set confidence=0.10 --set tracker_intermittent_confirm=true
+td2_tau010_interm_excl|texture-duo-full|--set confidence=0.10 --set tracker_intermittent_confirm=true --set exclusion_cells=[[3,6],[12,5]]
