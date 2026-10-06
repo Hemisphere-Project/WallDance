@@ -191,6 +191,19 @@ def test_slot_states_land_in_the_frame_summary(proc, tmp_path):
     assert any(r.get("event") == "SLOT_EVENT" and r["data"]["ev"] == "entry" for r in rows)
 
 
+def test_preview_draws_slot_labels_in_state_colour(proc):
+    from core.visualization import SLOT_STATE_COLORS, draw_slot
+    for _ in range(10):
+        _step(proc, [_st(7, 500, 400)])
+    coast = _step(proc, [])[0]
+    img = np.zeros((1080, 1920, 3), np.uint8)
+    draw_slot(img, coast, 0.5, 0.5)                  # preview at half size
+    assert coast.slot_state == "coasting"
+    col = np.array(SLOT_STATE_COLORS["coasting"], np.uint8)
+    assert (img == col).all(axis=2).sum() > 50       # box + cross + label drawn
+    assert (img[:, 1000:] == 0).all()                # scaled into the preview
+
+
 def test_state_message_wire_format():
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.bind(("127.0.0.1", 0))
