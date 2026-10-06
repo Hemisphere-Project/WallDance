@@ -75,8 +75,8 @@ def scenarios_for_project(project: str) -> list:
             m = json.loads(Path(f).read_text())
         except Exception:
             continue
-        if m.get("long_span"):
-            continue
+        if m.get("long_span") or m.get("variant_of"):
+            continue   # a file variant (clip) would double-count its window
         if m.get("project") == project and m.get("ground_truth", {}).get("verified"):
             out.append(f)
     return out

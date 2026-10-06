@@ -35,6 +35,12 @@ from core.config import (
     MOTION_BRIDGE_MOG2_VAR_THRESHOLD,
     MOTION_BRIDGE_SENSITIVITY,
     BOX_SIZE_OUTPUT_SMOOTHING,
+    IDENTITY_SLOTS_ENABLED,
+    IDENTITY_SLOTS_MAX_DANCERS,
+    IDENTITY_SLOTS_STABILITY,
+    IDENTITY_SLOTS_COAST_S,
+    IDENTITY_SLOTS_USE_IR_BELT,
+    OSC_SEND_STATE,
     TrackingMode,
     MOTION_FIRST_BLOB_OVERLAP_RATIO,
     MOTION_FIRST_ASPECT_RANGE,
@@ -59,6 +65,8 @@ from core.motion_model import MotionModel
 from core.calibration import ExclusionMaskBuilder
 from core.osc_output import OSCSender
 from core.output_smoother import OutputSmoother, SmootherInput
+from core.identity_slots import (IdentitySlots, SlotParams, STATE_LIVE,
+                                 candidate_from_track)
 from core.tracker import DancerTrack, DancerTracker
 from core.yolo_runner import PoseRunner
 
@@ -121,6 +129,16 @@ class ProcessingSettings:
     #           lagged signal IS the /walldance/dancer/* stream at L>1.
     # OUTPUT-ONLY (never touches the tracker/detector → replay goldens unaffected).
     output_smoothing_l: int = 1
+    # Identity-slot output layer (CONT-6, core/identity_slots.py): N stable
+    # OSC ids over the tracker's churning track ids.  OUTPUT-ONLY: process()
+    # still returns the tracker's reported tracks (replays/goldens unchanged);
+    # the slot stream is what OSC sends (``FrameProcessor.last_emitted``).
+    identity_slots_enabled: bool = IDENTITY_SLOTS_ENABLED
+    max_dancers: int = IDENTITY_SLOTS_MAX_DANCERS
+    stability: float = IDENTITY_SLOTS_STABILITY
+    coast_s: float = IDENTITY_SLOTS_COAST_S
+    use_ir_belt: bool = IDENTITY_SLOTS_USE_IR_BELT
+    osc_send_state: bool = OSC_SEND_STATE
     use_gpu_path: bool = USE_GPU_PATH  # Enable GPU frame buffer
     bg_subtract_enabled: bool = BG_SUBTRACT_ENABLED  # Static BG subtraction
     bg_subtract_sensitivity: int = BG_SUBTRACT_SENSITIVITY  # Threshold 0-255
@@ -154,6 +172,18 @@ class ScaledTrack:
     #                  — the de-jitter input that avoids cascaded filtering.
     frames_since_skeleton: Optional[int] = None
     centroid_raw: Optional[np.ndarray] = None
+    # Output-only evidence copied from read-only tracker scalars at finalize,
+    # for the identity-slot output layer's establishment gate (CONT-6):
+    # cumulative matches, frames alive, misses since the last update, and what
+    # fed the track this frame (yolo / synthetic / bridge / coast).
+    hits: Optional[int] = None
+    age: Optional[int] = None
+    time_since_update: Optional[int] = None
+    feed_src: Optional[str] = None
+    # Identity-slot output (CONT-6): set on the emitted slot tracks only
+    # (track_id = slot id): live / belt / coasting, seconds in that state.
+    slot_state: Optional[str] = None
+    slot_age_s: Optional[float] = None
 
 
 class _LetterboxMotionProxy:
@@ -388,6 +418,21 @@ class FrameProcessor:
         # inactive→active edge so it never releases stale buffered frames.
         self._output_smoother: Optional[OutputSmoother] = None
         self._output_lagged_active = False
+        # Identity-slot output layer (CONT-6): lazily built; ``last_emitted``
+        # is the causal stream OSC carries this frame (slot tracks when the
+        # layer is on, else the tracker's reported tracks).  The output clock
+        # is the wall clock live; replays install a frame clock.
+        self._slots: Optional[IdentitySlots] = None
+        self.last_emitted: List[ScaledTrack] = []
+        self._output_clock = time.perf_counter
+        self._out_last_t: Optional[float] = None
+        self._out_dt = 0.05
+        # IR waist-belt hook (core/belt_detector.py, lazily imported; absent =
+        # no-op).  The raw gray of the current frame + its ROI offset.
+        self._belt_detector = None
+        self._belt_state = "unloaded"      # unloaded | ready | unavailable
+        self._belt_gray: Optional[np.ndarray] = None
+        self._belt_gray_offset = (0, 0)
         # Raw detection heights (original-space px) BEFORE the size gate — the
         # height-staleness alarm must see what the gate would reject (⑤d)
         self.last_raw_det_heights: List[float] = []
@@ -660,6 +705,9 @@ class FrameProcessor:
         if self._cache_capture_gpu is not None:
             self._cache_capture_gpu(detections, space, gray_for_motion,
                                     original_w, original_h)
+        # IR belt hook input: the raw (un-enhanced) ROI gray, full-frame offset.
+        self._belt_gray = gray_for_motion
+        self._belt_gray_offset = (roi_x, roi_y)
 
         return self._post_yolo_chain(
             detections, space, lb_motion, finalize,
@@ -710,6 +758,8 @@ class FrameProcessor:
         self._motion_pad_y = space.pad_y
         lb_motion = self._get_letterbox_motion_detector()
         clamp = self.settings.box_clamp_enabled
+        self._belt_gray = gray
+        self._belt_gray_offset = (space.roi_x, space.roi_y)
 
         def finalize(track):
             return self._unscale_letterbox(
@@ -897,15 +947,216 @@ class FrameProcessor:
         self._output_lagged_active = lagged_active
 
         if L == 1:
-            self._smooth_output_box_sizes(scaled_tracks)   # causal box-size EMA
+            # Causal box-size EMA on the tracker's reported tracks -- the
+            # returned / preview stream, byte-identical with slots on or off.
+            self._smooth_output_box_sizes(scaled_tracks)
+
+        # Identity slots (CONT-6): N stable ids over the churning track ids,
+        # coasting + One-Euro smoothing per slot -- the stream OSC carries.
+        # OUTPUT-ONLY: the returned ``scaled_tracks`` are untouched.
+        slots_on = bool(self.settings.identity_slots_enabled)
+        out_tracks = (self._run_identity_slots(scaled_tracks, finalize,
+                                               original_w, original_h)
+                      if slots_on else scaled_tracks)
+
+        if L == 1:
             if osc_on:
-                self.osc.send_frame(scaled_tracks, original_w, original_h)
+                self.osc.send_frame(out_tracks, original_w, original_h)
         elif lagged_active:
-            lagged_tracks = self._run_output_smoother(scaled_tracks, L)
+            # At L>1 the RTS smoother runs on the slot ids when slots are on
+            # (no restart on tracker id churn).
+            lagged_tracks = self._run_output_smoother(out_tracks, L)
             if lagged_tracks:  # empty during the first L-frame warm-up
                 self.osc.send_frame(lagged_tracks, original_w, original_h)
+        if osc_on and slots_on and self.settings.osc_send_state and self._slots is not None:
+            # Opt-in /walldance/dancer/state (OSC_CONTRACT §D): every slot,
+            # lost ones included, causal (not lagged at L>1).
+            self.osc.send_states(self.slot_states())
+        self.last_emitted = out_tracks
 
         return scaled_tracks
+
+    # ------------------------------------------------------------------
+    # Identity-slot output layer (CONT-6)
+    # ------------------------------------------------------------------
+    def set_output_clock(self, clock) -> None:
+        """Seconds clock for the output stage (slots' coast timers, One-Euro).
+        Live = wall clock; replays install ``frame / fps`` (deterministic)."""
+        self._output_clock = clock
+        self._out_last_t = None
+
+    def configure_identity_slots(self, **kw) -> None:
+        """Live operator knobs: ``identity_slots_enabled``, ``max_dancers``,
+        ``stability``, ``coast_s``, ``use_ir_belt``, ``osc_send_state``."""
+        for key in ("identity_slots_enabled", "use_ir_belt", "osc_send_state"):
+            if kw.get(key) is not None:
+                setattr(self.settings, key, bool(kw[key]))
+        if kw.get("max_dancers") is not None:
+            self.settings.max_dancers = max(1, int(kw["max_dancers"]))
+        if kw.get("stability") is not None:
+            self.settings.stability = min(1.0, max(0.0, float(kw["stability"])))
+        if kw.get("coast_s") is not None:
+            self.settings.coast_s = max(0.0, float(kw["coast_s"]))
+        if self._slots is not None:
+            self._slots.configure(max_dancers=self.settings.max_dancers,
+                                  stability=self.settings.stability,
+                                  coast_s=self.settings.coast_s)
+        if kw.get("identity_slots_enabled") is False:
+            self.reset_output()
+
+    def reset_output(self) -> None:
+        """Forget the slot table (tracker reset / playback restart / disable)."""
+        if self._slots is not None:
+            self._slots.reset()
+        self._out_last_t = None
+        self.last_emitted = []
+
+    def slot_states(self) -> List[tuple]:
+        """[(slot id, state, age_s)] for every slot (lost included)."""
+        if self._slots is None:
+            return []
+        t = self._out_last_t or 0.0
+        return [(s.sid, s.state, round(max(0.0, t - s.state_since), 3))
+                for s in self._slots.slots]
+
+    @property
+    def belt_status(self) -> str:
+        """``off`` | ``unloaded`` (not tried yet) | ``ready`` | ``unavailable``
+        (module not landed / failed)."""
+        if not self.settings.use_ir_belt:
+            return "off"
+        return self._belt_state
+
+    def _belt_hook(self):
+        """The per-slot belt measure callable for this frame, or None.  Lazily
+        imports ``core.belt_detector`` (written in parallel); any import /
+        construction / call failure turns the hook into a logged no-op."""
+        if not self.settings.use_ir_belt or self._belt_state == "unavailable":
+            return None
+        if self._belt_state == "unloaded":
+            try:
+                from core.belt_detector import BeltDetector
+                self._belt_detector = BeltDetector()
+                self._belt_state = "ready"
+                print("[Slots] IR belt detector ready")
+            except Exception as exc:  # noqa: BLE001 - optional module
+                self._belt_state = "unavailable"
+                print(f"[Slots] IR belt detector unavailable ({type(exc).__name__}: {exc})")
+                return None
+        gray = self._belt_gray
+        if gray is None:
+            return None
+        ox, oy = self._belt_gray_offset
+        det = self._belt_detector
+
+        def measure(slot_id, x, y, gate_px):
+            try:
+                res = det.detect_near(gray, [(slot_id, float(x) - ox, float(y) - oy,
+                                              float(gate_px), None)])
+            except Exception as exc:  # noqa: BLE001 - never stop the show
+                self._belt_state = "unavailable"
+                print(f"[Slots] IR belt detector failed, disabled: {exc}")
+                return None
+            blob = res.get(slot_id) if isinstance(res, dict) else None
+            if blob is None:
+                return None
+            return (float(blob.cx) + ox, float(blob.cy) + oy,
+                    float(getattr(blob, "score", 1.0)))
+        return measure
+
+    def _zone_ok_fn(self, original_w: int, original_h: int):
+        """Original-px point -> outside the exclusion mask (normalized over the
+        ROI, like the MOG2 mask the cells are defined on)."""
+        excl = self._exclusion
+        if not excl.active:
+            return lambda x, y: True
+        roi = self._resolve_roi(original_w, original_h)
+        x0, y0, x1, y1 = roi if roi is not None else (0, 0, original_w, original_h)
+        w = max(1.0, float(x1 - x0))
+        h = max(1.0, float(y1 - y0))
+        return lambda x, y: not excl.excluded((x - x0) / w, (y - y0) / h)
+
+    def _run_identity_slots(self, scaled_tracks, finalize,
+                            original_w: int, original_h: int) -> List[ScaledTrack]:
+        """Feed the reported tracks (+ the hidden state of slot-bound ones) to
+        the slot layer and return the emitted slot ScaledTracks."""
+        if self._slots is None:
+            self._slots = IdentitySlots(SlotParams(
+                max_dancers=int(self.settings.max_dancers),
+                stability=float(self.settings.stability),
+                coast_s=float(self.settings.coast_s)))
+        t = float(self._output_clock())
+        if self._out_last_t is not None and t > self._out_last_t:
+            self._out_dt = min(0.25, t - self._out_last_t)
+        self._out_last_t = t
+        zone_ok = self._zone_ok_fn(original_w, original_h)
+        cands = []
+        for st in scaled_tracks:
+            c = candidate_from_track(st)
+            if c is not None:
+                c.zone_ok = zone_ok(c.x, c.y)
+                cands.append(c)
+        want = set(self._slots.bound_keys()) - {c.key for c in cands}
+        hidden = {}
+        if want:   # bound tracks the tracker kept alive but hid (frozen gate)
+            for trk in self.tracker.tracks:
+                if trk.track_id in want:
+                    c = candidate_from_track(finalize(trk))
+                    if c is not None:
+                        hidden[c.key] = c
+        outs = self._slots.update(cands, t, belt=self._belt_hook(), hidden=hidden)
+        self._log_slots(outs)
+        return [self._slot_track(o) for o in outs]
+
+    def _slot_track(self, o) -> ScaledTrack:
+        """SlotOutput -> ScaledTrack on the slot id (OSC / preview / RTS).  The
+        skeleton of the bound (or last bound) track is translated rigidly onto
+        the smoothed centroid."""
+        src = o.payload
+        c = np.array([o.x, o.y], dtype=np.float64)
+        if src is not None:
+            sc = src.smoothed_centroid if src.smoothed_centroid is not None else c
+            delta = c - np.asarray(sc, dtype=np.float64)
+            kpts = np.asarray(src.keypoints, dtype=np.float64) + delta
+            conf = np.asarray(src.confidence, dtype=np.float64).copy()
+        else:
+            kpts = np.tile(c, (17, 1))
+            conf = np.zeros(17, dtype=np.float64)
+        return ScaledTrack(
+            track_id=int(o.slot_id),
+            keypoints=kpts,
+            confidence=conf,
+            bbox=np.array([o.x - o.w / 2.0, o.y - o.h / 2.0, o.w, o.h], dtype=np.float64),
+            history=[],
+            velocity=np.array([o.vx, o.vy], dtype=np.float64) * self._out_dt,  # px/frame
+            smoothed_centroid=c,
+            is_bridged=o.state != STATE_LIVE or bool(getattr(src, "is_bridged", False)),
+            frames_since_skeleton=o.fss if o.fss is not None else 999,
+            centroid_raw=np.array([o.raw_x, o.raw_y], dtype=np.float64),
+            hits=getattr(src, "hits", None),
+            feed_src=getattr(src, "feed_src", None) if o.state == STATE_LIVE else o.state,
+            slot_state=o.state,
+            slot_age_s=o.age_s,
+        )
+
+    def _log_slots(self, outs) -> None:
+        """Slot states into this frame's FRAME_SUMMARY (CONT-10) + SLOT_EVENT
+        lines for binds / losses."""
+        logger = getattr(self.tracker, "logger", None)
+        if logger is None or not getattr(logger, "enabled", False):
+            return
+        by_sid = {o.slot_id: o for o in outs}
+        rows = []
+        for s in self._slots.slots:
+            o = by_sid.get(s.sid)
+            rows.append({"id": s.sid, "st": s.state,
+                         "key": None if o is None else o.key,
+                         "age": None if o is None else o.age_s})
+        annotate = getattr(logger, "annotate_frame_summary", None)
+        if callable(annotate):
+            annotate(slots=rows, emitted_slots=[o.slot_id for o in outs])
+        for ev in self._slots.events:
+            logger.log("SLOT_EVENT", ev)
 
     def _run_output_smoother(self, scaled_tracks, L: int) -> List[ScaledTrack]:
         """Feed the reported tracks to the fixed-lag/RTS smoother and return the
@@ -1460,6 +1711,10 @@ class FrameProcessor:
             is_bridged=getattr(track, 'is_bridged', False),
             frames_since_skeleton=getattr(track, '_frames_since_skeleton', None),
             centroid_raw=centroid_raw,
+            hits=getattr(track, 'hits', None),
+            age=getattr(track, 'age', None),
+            time_since_update=getattr(track, 'time_since_update', None),
+            feed_src=getattr(track, '_feed_src', None),
         )
 
     # ------------------------------------------------------------------

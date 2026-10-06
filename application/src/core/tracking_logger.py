@@ -264,7 +264,8 @@ class TrackingLogger:
         """Current session directory, or None if using legacy path."""
         return self._session_dir
 
-    def log(self, event: str, data: Optional[Dict[str, Any]] = None):
+    def log(self, event: str, data: Optional[Dict[str, Any]] = None,
+            _autoflush: bool = True):
         """Record a tracking event.
 
         Args:
@@ -272,7 +273,7 @@ class TrackingLogger:
             data:  Event-specific payload dict.
         """
         if not self.enabled:
-            return
+            return None
 
         entry = {
             "frame": self._frame,
@@ -287,8 +288,24 @@ class TrackingLogger:
 
         # Auto-flush periodically
         now = time.time()
-        if now - self._last_flush_time >= self.flush_interval:
+        if _autoflush and now - self._last_flush_time >= self.flush_interval:
             self.flush()
+        return entry
+
+    def annotate_frame_summary(self, **fields):
+        """Add output-stage fields (e.g. the identity-slot states, CONT-6) to
+        this frame's FRAME_SUMMARY.  The summary is written by the tracker
+        before the output stage runs; it is kept pending (no auto-flush on
+        that entry) so the annotation lands in the same JSONL line.  If it was
+        flushed anyway (a session roll), the fields go out as FRAME_OUTPUT."""
+        if not self.enabled or not fields:
+            return
+        entry = getattr(self, "_last_summary", None)
+        if (entry is not None and entry.get("frame") == self._frame
+                and any(e is entry for e in self._pending[-8:])):
+            entry.setdefault("data", {}).update(fields)
+        else:
+            self.log("FRAME_OUTPUT", dict(fields))
 
     def log_settings(self, settings: Dict[str, Any]):
         """Emit a SESSION_SETTINGS event with all active config values.
@@ -335,7 +352,9 @@ class TrackingLogger:
         }
         if emitted is not None:
             data["emitted"] = emitted
-        self.log("FRAME_SUMMARY", data)
+        # No auto-flush on this entry: the output stage may still annotate it
+        # (annotate_frame_summary); the next event / flush writes it.
+        self._last_summary = self.log("FRAME_SUMMARY", data, _autoflush=False)
 
     def flush(self):
         """Write pending entries to disk."""

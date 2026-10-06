@@ -67,6 +67,12 @@ from core.config import (
     USE_TENSORRT,
     YOLO_CONFIDENCE,
     YOLO_IMGSZ,
+    IDENTITY_SLOTS_ENABLED,
+    IDENTITY_SLOTS_MAX_DANCERS,
+    IDENTITY_SLOTS_STABILITY,
+    IDENTITY_SLOTS_COAST_S,
+    IDENTITY_SLOTS_USE_IR_BELT,
+    OSC_SEND_STATE,
     YOLO_MODEL,
     TrackingMode,
     OPS_READINESS_ENABLED,
@@ -806,6 +812,12 @@ class WallDanceApp:
             "sensitivity": self.sensitivity,
             "input_mirror": self.input_transform.mirror,
             "input_rotation": self.input_transform.rotation,
+            "identity_slots_enabled": self.settings.identity_slots_enabled,
+            "max_dancers": self.settings.max_dancers,
+            "stability": self.settings.stability,
+            "coast_s": self.settings.coast_s,
+            "use_ir_belt": self.settings.use_ir_belt,
+            "osc_send_state": self.settings.osc_send_state,
         }
 
     def _show_qr(self):
@@ -843,6 +855,14 @@ class WallDanceApp:
         reg(api.SetOutputSmoothing,
             lambda c: self._cb_output_smoothing_change(c.value))
         reg(api.ToggleBoxClamp, lambda c: self._cb_box_clamp_toggle(c.value))
+        # dancer ids (identity slots, CONT-6)
+        reg(api.SetIdentitySlots,
+            lambda c: self._cb_identity_slots(identity_slots_enabled=c.enabled))
+        reg(api.SetMaxDancers, lambda c: self._cb_identity_slots(max_dancers=c.value))
+        reg(api.SetStability, lambda c: self._cb_identity_slots(stability=c.value))
+        reg(api.SetCoastSeconds, lambda c: self._cb_identity_slots(coast_s=c.value))
+        reg(api.ToggleIrBelt, lambda c: self._cb_identity_slots(use_ir_belt=c.enabled))
+        reg(api.ToggleOscState, lambda c: self._cb_identity_slots(osc_send_state=c.enabled))
         reg(api.SetPersonHeight, lambda c: self._cb_person_height_change(c.value))
         reg(api.SetImgsz, lambda c: self._cb_imgsz_change(c.value))
         reg(api.SetTrackerMaxAge, lambda c: self._cb_tracker_age_change(c.value))
@@ -1207,6 +1227,13 @@ class WallDanceApp:
             # a known-N Apply does not silently drop them (CONT-1 / BUG-4).
             "tracker_intermittent_confirm": self.tracker.intermittent_confirm,
             "tracker_ghost_skeleton_age": self.tracker.ghost_skeleton_age,
+            # Dancer ids (identity slots, CONT-6) -- shared keys.
+            "identity_slots_enabled": self.settings.identity_slots_enabled,
+            "max_dancers": self.settings.max_dancers,
+            "stability": self.settings.stability,
+            "coast_s": self.settings.coast_s,
+            "use_ir_belt": self.settings.use_ir_belt,
+            "osc_send_state": self.settings.osc_send_state,
             "motion_sensitivity": self.processor.get_motion_sensitivity(),
             "osc_enabled": self.osc_enabled,
             "osc_ip": self.osc_ip,
@@ -1402,6 +1429,20 @@ class WallDanceApp:
             self._bridge_sens_seed = float(config["motion_sensitivity"])
             self.gap_bridging = 50.0
             self._sync("slider", "gap_bridging", 50.0)
+        # Dancer ids (identity slots, CONT-6).  A full project load without the
+        # keys gets the defaults (a project predating them -> slots ON), never
+        # the previous project's values; a profile bundle leaves them alone.
+        slot_kw = {}
+        for key, default in (("identity_slots_enabled", IDENTITY_SLOTS_ENABLED),
+                             ("max_dancers", IDENTITY_SLOTS_MAX_DANCERS),
+                             ("stability", IDENTITY_SLOTS_STABILITY),
+                             ("coast_s", IDENTITY_SLOTS_COAST_S),
+                             ("use_ir_belt", IDENTITY_SLOTS_USE_IR_BELT),
+                             ("osc_send_state", OSC_SEND_STATE)):
+            if key in config or full_config:
+                slot_kw[key] = config.get(key, default)
+        if slot_kw:
+            self._cb_identity_slots(**slot_kw)
         # Conditional Dial-B visibility (OPERATOR_V2 P3 / build #3): calibration
         # writes `dial_b_relevant` (drop-rate at the tuned config still leaves
         # gaps gap-bridging could address). Absent = visible (no regression);
@@ -1695,6 +1736,30 @@ class WallDanceApp:
         print(f"Box-clamp: {'ON' if enabled else 'OFF'}")
         self._request_reprocess()
 
+    # Config key -> (GUI sync kind, GUI sync name) for the dancer-id knobs.
+    _SLOT_SYNC = {
+        "identity_slots_enabled": ("checkbox", "identity_slots"),
+        "max_dancers": ("slider", "max_dancers"),
+        "stability": ("slider", "stability"),
+        "coast_s": ("slider", "coast_s"),
+        "use_ir_belt": ("checkbox", "ir_belt"),
+        "osc_send_state": ("checkbox", "osc_state"),
+    }
+
+    def _cb_identity_slots(self, sync: bool = True, **kw):
+        """Dancer-id knobs (identity slots, CONT-6; phase 6 Live + remote API).
+        Output-only: applied live, no reprocess of detection needed."""
+        self.processor.configure_identity_slots(**kw)
+        s = self.settings
+        for key in kw:
+            if sync and key in self._SLOT_SYNC:
+                kind, name = self._SLOT_SYNC[key]
+                self._sync(kind, name, getattr(s, key))
+        print(f"Dancer ids: slots={'ON' if s.identity_slots_enabled else 'OFF'} "
+              f"N={s.max_dancers} stability={s.stability:.2f} hold={s.coast_s:.1f}s "
+              f"belt={'on' if s.use_ir_belt else 'off'} "
+              f"state_msg={'on' if s.osc_send_state else 'off'}")
+
     def _cb_imgsz_change(self, value: int):
         new_imgsz = int(value)
         old_imgsz = self.settings.imgsz
@@ -1767,6 +1832,7 @@ class WallDanceApp:
 
     def _cb_tracker_reset(self):
         self.tracker.reset()
+        self.processor.reset_output()   # identity slots restart with the tracker
         # Reset MOG2 background model so it re-learns the scene
         if hasattr(self.processor, 'motion_detector') and self.processor.motion_detector is not None:
             self.processor.reset_motion_detectors()

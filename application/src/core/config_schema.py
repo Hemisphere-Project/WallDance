@@ -70,7 +70,15 @@ _RANGES = {
     "sensitivity": (0.0, 100.0),
     "sensitivity_conf_seed": (0.05, 0.95),
     "sensitivity_var_anchor": (4.0, 256.0),
+    # Dancer ids (identity slots, CONT-6; shared keys)
+    "max_dancers": (1, 16),
+    "stability": (0.0, 1.0),
+    "coast_s": (0.0, 10.0),
 }
+
+# Boolean keys: real bools pass, 0/1 and "true"/"off"-style strings are coerced,
+# anything else is dropped (the in-app default applies).
+_BOOL_KEYS = ("identity_slots_enabled", "use_ir_belt", "osc_send_state")
 
 _IMGSZ_PRESETS = (640, 800, 960, 1280, 1536, 1920)
 
@@ -243,9 +251,34 @@ def validate_flat(flat: Dict) -> Tuple[Dict, List[str]]:
         warnings.extend(rig_warnings)
 
     _validate_input_transform(out, warnings)
+    for key in _BOOL_KEYS:
+        _validate_bool(out, key, warnings)
 
     _validate_cross_field(out, warnings)
     return out, warnings
+
+
+def _coerce_bool(raw):
+    """bool for a bool-ish value, else None."""
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)) and raw in (0, 1):
+        return bool(raw)
+    if isinstance(raw, str) and raw.strip().lower() in (
+            "true", "false", "1", "0", "yes", "no", "on", "off"):
+        return raw.strip().lower() in ("true", "1", "yes", "on")
+    return None
+
+
+def _validate_bool(out: Dict, key: str, warnings: List[str]) -> None:
+    if out.get(key) is None:
+        return
+    val = _coerce_bool(out[key])
+    if val is None:
+        warnings.append(f"{key}: invalid value {out[key]!r} dropped")
+        out.pop(key)
+    else:
+        out[key] = val
 
 
 def _validate_input_transform(out: Dict, warnings: List[str]) -> None:

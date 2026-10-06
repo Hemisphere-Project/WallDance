@@ -28,6 +28,12 @@ def test_phase_live_builds_with_output_controls():
             _on_gap_bridging_change=noop,
             _on_box_clamp_toggle=noop,
             _on_output_smoothing_change=noop,
+            _on_identity_slots_toggle=noop,
+            _on_max_dancers_change=noop,
+            _on_stability_change=noop,
+            _on_coast_s_change=noop,
+            _on_ir_belt_toggle=noop,
+            _on_osc_state_toggle=noop,
             _on_remote_control_toggle=noop,
             _btn_standby_theme=th1,
             _btn_run_active_theme=th2,
@@ -57,6 +63,15 @@ def test_phase_live_builds_with_output_controls():
         # defaults: box-clamp ON, smoothing L=1 (causal/live).
         assert dpg.get_value("box_clamp_checkbox") is True
         assert dpg.get_value("output_smoothing_slider") == 1
+        # Dancer ids (identity slots, CONT-6): the on-site knobs + defaults.
+        from core import config as C
+        assert dpg.get_value("identity_slots_checkbox") is C.IDENTITY_SLOTS_ENABLED
+        assert dpg.get_value("max_dancers_slider") == C.IDENTITY_SLOTS_MAX_DANCERS
+        assert dpg.get_value("stability_slider") == pytest.approx(C.IDENTITY_SLOTS_STABILITY)
+        assert dpg.get_value("coast_s_slider") == pytest.approx(C.IDENTITY_SLOTS_COAST_S)
+        assert dpg.get_value("ir_belt_checkbox") is C.IDENTITY_SLOTS_USE_IR_BELT
+        assert dpg.get_value("osc_state_checkbox") is False
+        assert dpg.does_item_exist("identity_slots_status_text")
         # Conditional Dial B (build #3): the gap-bridging group is hideable, and
         # WallDanceGUI.set_dial_b_visible toggles it (unbound; ignores self).
         from gui import WallDanceGUI

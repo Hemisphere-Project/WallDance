@@ -642,6 +642,31 @@ class WallDanceGUI:
         if 'on_box_clamp_toggle' in self.callbacks:
             self.callbacks['on_box_clamp_toggle'](bool(value))
 
+    # --- Dancer IDs (identity slots, CONT-6) ---------------------------------
+    def _on_identity_slots_toggle(self, sender, value):
+        if 'on_identity_slots_toggle' in self.callbacks:
+            self.callbacks['on_identity_slots_toggle'](bool(value))
+
+    def _on_max_dancers_change(self, sender, value):
+        if 'on_max_dancers_change' in self.callbacks:
+            self.callbacks['on_max_dancers_change'](int(value))
+
+    def _on_stability_change(self, sender, value):
+        if 'on_stability_change' in self.callbacks:
+            self.callbacks['on_stability_change'](float(value))
+
+    def _on_coast_s_change(self, sender, value):
+        if 'on_coast_s_change' in self.callbacks:
+            self.callbacks['on_coast_s_change'](float(value))
+
+    def _on_ir_belt_toggle(self, sender, value):
+        if 'on_ir_belt_toggle' in self.callbacks:
+            self.callbacks['on_ir_belt_toggle'](bool(value))
+
+    def _on_osc_state_toggle(self, sender, value):
+        if 'on_osc_state_toggle' in self.callbacks:
+            self.callbacks['on_osc_state_toggle'](bool(value))
+
     def _on_check_readiness(self, *args):
         if 'on_check_readiness' in self.callbacks:
             self.callbacks['on_check_readiness']()
@@ -1661,10 +1686,13 @@ class WallDanceGUI:
         camera_type: str = "",
         enhance_bypassed: bool = False,
         gpu_fallback_reason: str = "",
+        slots_text: str = "",
     ):
         """Update stats display."""
         self.fps = fps
         self.num_dancers = num_dancers
+        if slots_text and dpg.does_item_exist("identity_slots_status_text"):
+            dpg.set_value("identity_slots_status_text", slots_text)
         self.latency_ms = latency_ms
         self.brightness = brightness
 
@@ -1813,6 +1841,9 @@ class WallDanceGUI:
             'bg_enable': ['bg_enable_checkbox'],
             'roi_enable': ['adv_roi_enable_checkbox'],
             'input_mirror': ['input_mirror_checkbox'],
+            'identity_slots': ['identity_slots_checkbox'],
+            'ir_belt': ['ir_belt_checkbox'],
+            'osc_state': ['osc_state_checkbox'],
         }
         # Visualization toggles - update toolbar button themes instead of checkboxes
         vis_toggles = ['skeleton', 'keypoints', 'bbox', 'trails', 'ids']
@@ -1851,6 +1882,9 @@ class WallDanceGUI:
             'ids_exposure_us': ['adv_ids_exposure_slider'],
             'bg_sensitivity': ['bg_sensitivity_slider'],
             'mog2_scale': ['mog2_scale_slider'],
+            'max_dancers': ['max_dancers_slider'],
+            'stability': ['stability_slider'],
+            'coast_s': ['coast_s_slider'],
         }
         if name in tag_map:
             for tag in tag_map[name]:

@@ -293,6 +293,19 @@ CENTROID_OUTPUT_SMOOTHING = 0.5         # EMA alpha (0 = max smooth, 1 = raw)
 # by L, so higher L = smoother box at the cost of causal group-delay latency.
 BOX_SIZE_OUTPUT_SMOOTHING = 0.5         # EMA alpha at L=1 (~1 frame group delay)
 
+# Identity-slot output layer (audit 2026-10 CONT-6, core/identity_slots.py).
+# OUTPUT-ONLY: N stable OSC ids (1..max_dancers) over the tracker's churning
+# track ids, coasting through short losses, One-Euro smoothed per slot.
+# Per-project config keys: identity_slots_enabled, max_dancers, stability,
+# coast_s, use_ir_belt, osc_send_state (operator knobs, phase 6 Live).
+IDENTITY_SLOTS_ENABLED = True           # default for new configs / absent key
+IDENTITY_SLOTS_MAX_DANCERS = 2          # the show's dancer cap (D4: capped, not constant)
+IDENTITY_SLOTS_STABILITY = 0.5          # 0 = responsive .. 1 = calm (One-Euro presets)
+IDENTITY_SLOTS_COAST_S = 2.0            # hold a vanished dancer this long: bridges 355/356
+                                        # tracker losses on the 2026-10 replays + field takes
+IDENTITY_SLOTS_USE_IR_BELT = True       # use core/belt_detector.py when importable
+OSC_SEND_STATE = False                  # opt-in /walldance/dancer/state [id, state, age_s]
+
 # =============================================================================
 # TRACKING EVENT LOG (Phase 0 — diagnostics)
 # =============================================================================

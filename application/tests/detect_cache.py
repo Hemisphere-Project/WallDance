@@ -233,18 +233,24 @@ def replay_from_cache_gpu(
     track_details: bool = False,
     frame_skip: int = 1,
     reference: bool = False,
+    internal: bool = False,
+    fps: Optional[float] = None,
 ) -> Dict:
     """Re-run the GPU post-YOLO chain from a TRT cache, skipping YOLO.  Mirrors
     ``replay_from_cache`` but drives ``proc.replay_gpu_cached`` (letterbox space)
     instead of ``_track_detections`` (full-frame CPU).
 
     ``reference=True`` adds the cached detections as each row's ``ref``
-    (continuity pseudo ground truth, ``continuity.reference_from_dets``)."""
+    (continuity pseudo ground truth, ``continuity.reference_from_dets``).
+    ``internal=True`` adds every internal track (``replay.internal_tracks``);
+    the output stage runs on a frame clock at ``fps`` (``replay`` docs) and its
+    emitted stream is recorded under ``emitted``."""
     import replay
     meta = cache["meta"]
     proc = replay._build_processor(
         config, meta["model"], meta["imgsz"], load_model=False)
     proc.tracker.reset()  # deterministic track IDs across build+replay / search
+    clock = replay._attach_frame_clock(proc, fps)
 
     tmp = log_dir or tempfile.mkdtemp(prefix="wd_gpucachereplay_")
     proc.tracker.logger.start_session(tmp)
@@ -271,14 +277,18 @@ def replay_from_cache_gpu(
         gray = grays[i] if grays is not None else _decode(fr)
         dets = [(k, c, b) for (k, c, b) in fr["dets"]]
         timing: Dict[str, float] = {}
+        clock["frame"] = i
         tracks = proc.replay_gpu_cached(
             dets, fr["space"], gray, fr["ow"], fr["oh"], kept, timing)
         per_frame.append(replay.per_frame_record(
-            kept, meta["start_frame"] + i, tracks, track_details))
+            kept, meta["start_frame"] + i, tracks, track_details,
+            emitted=getattr(proc, "last_emitted", None)))
         if reference:
             import continuity
             per_frame[-1]["ref"] = continuity.reference_from_dets(
                 fr["dets"], fr["space"], fr.get("bc"))
+        if internal:
+            per_frame[-1]["int"] = replay.internal_tracks(proc.tracker, fr["space"])
         kept += 1
     proc.tracker.logger.close()
 

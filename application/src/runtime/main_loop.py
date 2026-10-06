@@ -55,7 +55,7 @@ from core.config import (
 )
 from core.config_store import sanitize_project_name
 from core.pipeline import ScaledTrack
-from core.visualization import draw_dancer
+from core.visualization import draw_dancer, draw_slot
 from runtime import api
 from runtime.api import SystemState
 from services.web_monitor import WebMonitor
@@ -994,6 +994,11 @@ class MainLoop:
                 if app.settings.roi_enabled:
                     app.roi._draw_roi_mask(preview_frame, src_w, src_h)
                 app.roi._draw_exclusion_overlay(preview_frame, src_w, src_h)
+                # Identity slots (CONT-6): the ids OSC sends are D1..Dn (state
+                # colour); the tracker's internal ids become T<n>.
+                slot_tracks = (getattr(app.processor, "last_emitted", None)
+                               if getattr(app.settings, "identity_slots_enabled", False)
+                               else None)
                 for track in scaled_tracks:
                     draw_dancer(
                         preview_frame,
@@ -1004,7 +1009,10 @@ class MainLoop:
                         show_trail=app.show_trails,
                         show_id=app.show_ids,
                         thickness_scale=thickness_scale,
+                        id_prefix="T" if slot_tracks is not None else "D",
                     )
+                for st in slot_tracks or ():
+                    draw_slot(preview_frame, st, scale_x, scale_y, thickness_scale)
                 self._draw_height_ruler(preview_frame, scale=ruler_scale, thickness_scale=thickness_scale)
                 # Phase 0: frame number overlay (top-right)
                 self._draw_frame_number_overlay(preview_frame, t.display_frame_num)
@@ -1078,6 +1086,7 @@ class MainLoop:
         app.bus.publish(api.StatsTick(dict(
             fps=app.fps,
             num_dancers=len(t.tracked),
+            slots_text=self._slots_text(),
             latency_ms=app.latency_ms,
             brightness=brightness,
             timing=app.timing,
@@ -1128,6 +1137,23 @@ class MainLoop:
             app.bus.publish(api.BgStatus(
                 True, app.settings.bg_subtract_enabled,
                 fg_ratio, is_mismatched))
+
+    def _slots_text(self) -> str:
+        """Phase-6 'Dancer IDs' readout: each slot's state + the belt status."""
+        proc = self.app.processor
+        settings = self.app.settings
+        if not getattr(settings, "identity_slots_enabled", False):
+            return "ids: raw tracker ids (stable ids off)"
+        try:
+            states = proc.slot_states()
+            belt = proc.belt_status
+        except Exception:  # noqa: BLE001 - a readout must never stop the loop
+            return ""
+        if not states:
+            return f"ids: waiting for dancers (max {settings.max_dancers})"
+        parts = [f"D{sid} {st}" + (f" {age:.1f}s" if st == "coasting" else "")
+                 for sid, st, age in states]
+        return "ids: " + " | ".join(parts) + f"   belt: {belt}"
 
     def _tick_record(self):
         """Record stage: periodic recording-UI refresh + pause-at-frame.

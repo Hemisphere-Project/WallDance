@@ -58,8 +58,11 @@ def main() -> int:
     # TEST-1 long-span continuity manifests (whole takes, minutes each) have no
     # decomp-phase0 archive and are a separate gate (replay.py --score): run
     # them only when named explicitly via --scenarios.
+    # File variants of a scenario (``variant_of``, e.g. a clip cut from the
+    # take) replay the same window and have no golden of their own either.
     long_span = {p.stem for p in SCEN_DIR.glob("*.json")
-                 if json.loads(p.read_text()).get("long_span")}
+                 if json.loads(p.read_text()).get("long_span")
+                 or json.loads(p.read_text()).get("variant_of")}
     if args.scenarios:
         names = [n.strip() for n in args.scenarios.split(",") if n.strip()]
         unknown = sorted(set(names) - set(all_names))

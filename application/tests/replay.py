@@ -251,6 +251,17 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
         box_clamp_enabled=bool(config.get("box_clamp_enabled", True)),
         use_gpu_path=use_gpu_path or use_trt,  # TRT implies the GPU show path
     )
+    # Output stage (identity slots, CONT-6) as app._apply_config_without_model:
+    # output-only, so the tracker summary / lean timeline do not depend on it.
+    from core.config import (IDENTITY_SLOTS_ENABLED, IDENTITY_SLOTS_MAX_DANCERS,
+                             IDENTITY_SLOTS_STABILITY, IDENTITY_SLOTS_COAST_S,
+                             IDENTITY_SLOTS_USE_IR_BELT)
+    settings.identity_slots_enabled = bool(config.get("identity_slots_enabled",
+                                                      IDENTITY_SLOTS_ENABLED))
+    settings.max_dancers = int(config.get("max_dancers", IDENTITY_SLOTS_MAX_DANCERS))
+    settings.stability = float(config.get("stability", IDENTITY_SLOTS_STABILITY))
+    settings.coast_s = float(config.get("coast_s", IDENTITY_SLOTS_COAST_S))
+    settings.use_ir_belt = bool(config.get("use_ir_belt", IDENTITY_SLOTS_USE_IR_BELT))
     settings.roi_enabled = bool(config.get("roi_enabled", False))
     settings.roi_x = int(config.get("roi_x", 0))
     settings.roi_y = int(config.get("roi_y", 0))
@@ -317,14 +328,16 @@ def _attach_reference_capture(proc) -> dict:
     detections (``holder["ref"]``, reset by the caller before each frame) --
     the continuity pseudo ground truth (``continuity.reference_from_dets``).
     Observation only: the hook runs after YOLO + duplicate filtering, before
-    the post-YOLO chain, and changes nothing."""
+    the post-YOLO chain, and changes nothing.  ``holder["space"]`` keeps the
+    frame's tracker space (for ``internal_tracks``)."""
     import continuity
-    holder: dict = {"ref": None}
+    holder: dict = {"ref": None, "space": None}
     prev = proc._cache_capture_gpu
 
     def _hook(dets, space, gray, ow, oh):
         confs = [proc._last_box_confs.get(proc._bbox_conf_key(b)) for (_k, _c, b) in dets]
         holder["ref"] = continuity.reference_from_dets(dets, space, confs)
+        holder["space"] = space
         if prev is not None:
             prev(dets, space, gray, ow, oh)
 
@@ -332,12 +345,86 @@ def _attach_reference_capture(proc) -> dict:
     return holder
 
 
-def per_frame_record(frame_idx: int, abs_frame: int, tracks, track_details: bool = False) -> dict:
+def _attach_frame_clock(proc, fps: Optional[float]) -> dict:
+    """Drive the output stage (identity slots, One-Euro) on a frame clock:
+    ``t = frame / fps``.  A replay runs slower or faster than real time; the
+    live app uses the wall clock.  The caller bumps ``clock["frame"]``."""
+    clock = {"frame": 0}
+    rate = float(fps or 20.0)
+    setter = getattr(proc, "set_output_clock", None)
+    if callable(setter):
+        setter(lambda: clock["frame"] / rate)
+    return clock
+
+
+def internal_tracks(tracker, space) -> list:
+    """Every internal (active) tracker track in original-frame px, with its
+    emit/hide reason -- the slot layer's offline input beyond the reported set
+    (diagnostics; observation only)."""
+    if space is None:
+        return []
+    g = space   # _TrackerSpace, or the detect-cache dict of it
+    get = (lambda k: g[k]) if isinstance(g, dict) else (lambda k: getattr(g, k))
+    s = float(get("scale")) or 1.0
+    px, py = float(get("pad_x")), float(get("pad_y"))
+    rx, ry = float(get("roi_x")), float(get("roi_y"))
+    reasons = getattr(tracker, "last_emit_reasons", {}) or {}
+    out = []
+    for t in tracker.tracks:
+        c = t.get_centroid()
+        sm = t.get_smoothed_centroid()
+        out.append({
+            "id": int(t.track_id),
+            "p": [round((float(c[0]) - px) / s + rx, 2), round((float(c[1]) - py) / s + ry, 2)],
+            "sm": [round((float(sm[0]) - px) / s + rx, 2), round((float(sm[1]) - py) / s + ry, 2)],
+            "h": round(float(t.bbox[3]) / s, 1),
+            "tsu": int(t.time_since_update),
+            "hits": int(t.hits),
+            "fss": int(t._frames_since_skeleton),
+            "emit": reasons.get(t.track_id),
+        })
+    return out
+
+
+def _track_dict(t) -> dict:
+    """Timeline entry for one reported / emitted track (``--details``)."""
+    bbox = [float(x) for x in t.bbox]
+    sc = getattr(t, "smoothed_centroid", None)
+    if sc is not None:
+        centroid = [float(sc[0]), float(sc[1])]
+    else:
+        centroid = [bbox[0] + bbox[2] / 2, bbox[1] + bbox[3] / 2]
+    d = {
+        "id": int(t.track_id),
+        "bbox": bbox,
+        "centroid": centroid,
+        "bridged": bool(getattr(t, "is_bridged", False)),
+    }
+    # Additive slot-layer inputs (CONT-6): raw KF centroid + evidence.
+    raw = getattr(t, "centroid_raw", None)
+    if raw is not None:
+        d["raw"] = [float(raw[0]), float(raw[1])]
+    for key, attr in (("fss", "frames_since_skeleton"), ("hits", "hits"),
+                      ("age", "age"), ("tsu", "time_since_update")):
+        v = getattr(t, attr, None)
+        if v is not None:
+            d[key] = int(v)
+    for key, attr in (("src", "feed_src"), ("state", "slot_state")):
+        v = getattr(t, attr, None)
+        if v is not None:
+            d[key] = v
+    return d
+
+
+def per_frame_record(frame_idx: int, abs_frame: int, tracks, track_details: bool = False,
+                     emitted=None) -> dict:
     """One timeline row from the OSC-faithful returned tracks.
 
     ``track_details=True`` adds spatial info (bbox/centroid/bridged) for the
     Phase-D overlay; default off so the Phase-A/B timelines stay lean and the
-    cache-equivalence comparison is unaffected.
+    cache-equivalence comparison is unaffected.  ``emitted`` (the identity-slot
+    stream actually sent to OSC, ``FrameProcessor.last_emitted``) is recorded
+    under ``"emitted"`` with the same row shape, so it can be scored on its own.
     """
     rec = {
         "frame": frame_idx,
@@ -346,21 +433,13 @@ def per_frame_record(frame_idx: int, abs_frame: int, tracks, track_details: bool
         "ids": sorted(int(t.track_id) for t in tracks),
     }
     if track_details:
-        det = []
-        for t in tracks:
-            bbox = [float(x) for x in t.bbox]
-            sc = getattr(t, "smoothed_centroid", None)
-            if sc is not None:
-                centroid = [float(sc[0]), float(sc[1])]
-            else:
-                centroid = [bbox[0] + bbox[2] / 2, bbox[1] + bbox[3] / 2]
-            det.append({
-                "id": int(t.track_id),
-                "bbox": bbox,
-                "centroid": centroid,
-                "bridged": bool(getattr(t, "is_bridged", False)),
-            })
-        rec["tracks"] = det
+        rec["tracks"] = [_track_dict(t) for t in tracks]
+    if emitted is not None and track_details:
+        # Only with details: the lean timeline stays byte-identical to the
+        # decomp-phase0 goldens (replay_sweep byte-compares it).
+        rec["emitted"] = {"reported": len(emitted),
+                          "ids": sorted(int(t.track_id) for t in emitted),
+                          "tracks": [_track_dict(t) for t in emitted]}
     return rec
 
 
@@ -378,6 +457,8 @@ def replay_recording(
     use_trt: bool = False,
     frame_skip: int = 1,
     reference: bool = False,
+    internal: bool = False,
+    fps: Optional[float] = None,
 ) -> Dict:
     """Replay a recording and return a compact metric summary.
 
@@ -387,6 +468,10 @@ def replay_recording(
 
     ``reference=True`` adds each frame's YOLO detections as ``ref`` (the
     continuity pseudo ground truth, see ``reference_dets``) to the timeline rows.
+    ``internal=True`` adds every internal tracker track as ``int`` (offline
+    slot-layer studies).  The output stage (identity slots) runs on a frame
+    clock at ``fps`` (default 20) so its seconds-based timers are replay-exact;
+    the emitted stream is recorded under ``emitted`` in each row.
     """
     proc = _build_processor(config, model_name, imgsz,
                             use_gpu_path=use_gpu_path, use_trt=use_trt)
@@ -399,7 +484,9 @@ def replay_recording(
     # Reset the global track-ID counter so IDs are deterministic when several
     # replays run in one process (a search, or --cache build+replay).
     proc.tracker.reset()
-    ref_holder = _attach_reference_capture(proc) if reference else None
+    ref_holder = (_attach_reference_capture(proc)
+                  if (reference or internal) else None)
+    clock = _attach_frame_clock(proc, fps)
 
     tmp = log_dir or tempfile.mkdtemp(prefix="wd_replay_")
     proc.tracker.logger.start_session(tmp)
@@ -427,12 +514,16 @@ def replay_recording(
             frame = xf.apply(frame)
             if ref_holder is not None:
                 ref_holder["ref"] = None
+            clock["frame"] = consumed
             tracks, _enh, _timing, _lat = proc.process(
                 frame, need_preview=False, frame_number=processed)
             per_frame.append(per_frame_record(
-                processed, start_frame + consumed, tracks, track_details))
-            if ref_holder is not None and ref_holder["ref"] is not None:
+                processed, start_frame + consumed, tracks, track_details,
+                emitted=getattr(proc, "last_emitted", None)))
+            if reference and ref_holder["ref"] is not None:
                 per_frame[-1]["ref"] = ref_holder["ref"]
+            if internal:
+                per_frame[-1]["int"] = internal_tracks(proc.tracker, ref_holder["space"])
             processed += 1
             consumed += 1
             # Frame-skip (stride): advance past the next stride-1 source frames
@@ -499,6 +590,21 @@ def _summary_from_log(
         # out of the lean golden summary written by --out.
         "per_frame": per_frame,
     }
+
+
+def _stream_fps(scenario: Optional[dict], video: Path) -> float:
+    """The recording's frame rate: the manifest's ``fps``, else the
+    ``.avi.meta`` sidecar's ``actual_fps``, else 20 (the show cadence)."""
+    if scenario is not None and scenario.get("fps"):
+        return float(scenario["fps"])
+    meta = video.with_name(video.name + ".meta")
+    try:
+        fps = json.loads(meta.read_text()).get("actual_fps")
+        if fps:
+            return float(fps)
+    except (OSError, ValueError, AttributeError):
+        pass
+    return 20.0
 
 
 def parse_set_value(v: str):
@@ -573,6 +679,14 @@ def main():
                          "Cheap exploration / Track-G frame-skip safety pre-check; "
                          "N=1 is byte-identical to a full run. With --cache the cache "
                          "is still built full and the stride is applied at replay.")
+    ap.add_argument("--internal", action="store_true",
+                    help="also record every internal tracker track per frame (row key "
+                         "'int') -- offline identity-slot studies")
+    ap.add_argument("--quality", action="store_true",
+                    help="output-quality block without ground truth (field takes): "
+                         "records reference detections; prints ids, coasting share, "
+                         "jitter at rest and lag on fast moves for the tracker and the "
+                         "emitted (identity-slot) streams")
     args = ap.parse_args()
     if args.engine_dir:
         os.environ["WD_ENGINE_DIR"] = args.engine_dir   # subprocess tools inherit it
@@ -593,6 +707,9 @@ def main():
 
     if scenario is not None:
         config = scenario_config(scenario)
+        # Identity slots (CONT-6): the operator sets max_dancers to the show's
+        # dancer cap; a scenario's cap is its largest expected count.
+        config.setdefault("max_dancers", max(1, scoring.max_expected(scenario)))
     else:
         config = _latest_config(args.project)
         if config is None:
@@ -603,7 +720,12 @@ def main():
     if args.var is not None:
         config["mog2_var_threshold"] = args.var
     apply_overrides(config, args.sets)
-    video = args.video or _find_recording(args.project, args.slot)
+    video = args.video
+    if video is None and scenario is not None and scenario.get("video"):
+        # A manifest may pin a file other than the slot's recording (e.g. a
+        # clip cut from it), relative to the project folder.
+        video = PROJECTS_DIR / scenario["project"] / scenario["video"]
+    video = video or _find_recording(args.project, args.slot)
     if not video:
         sys.exit(f"no recording found for {args.project} slot {args.slot}")
     if scenario is not None:
@@ -611,6 +733,8 @@ def main():
 
     model_name = args.model or config.get("model", "yolo11x-pose")
     imgsz = args.imgsz or int(config.get("yolo_imgsz", 1280))
+    fps = _stream_fps(scenario, Path(video))
+    want_ref = args.score or args.quality
 
     if args.cache or args.rebuild_cache:
         # Detect-pass cache path (TUNING Phase B): skip YOLO, replay the tunable
@@ -630,16 +754,17 @@ def main():
                 use_trt=args.trt)
         summary = detect_cache.replay_from_cache_gpu(
             detect_cache.load_cache(cpath), config, frame_skip=args.frame_skip,
-            track_details=args.details or args.score, reference=args.score)
+            track_details=args.details or want_ref, reference=want_ref,
+            internal=args.internal, fps=fps)
     else:
         summary = replay_recording(
             str(video), config, model_name=model_name, imgsz=imgsz,
             start_frame=args.start, max_frames=args.frames,
             # --score: centroids (C7/C10) + reference dets (C7/C8/C9) for the
             # continuity block; the lean --out summary is unaffected.
-            track_details=args.details or args.score, use_gpu_path=True,   # Track P: GPU-only
+            track_details=args.details or want_ref, use_gpu_path=True,   # Track P: GPU-only
             use_trt=args.trt, log_dir=args.log_dir, frame_skip=args.frame_skip,
-            reference=args.score,
+            reference=want_ref, internal=args.internal, fps=fps,
         )
 
     # Split the per-frame timeline out of the lean (golden-comparable) summary.
@@ -671,6 +796,16 @@ def main():
             verdict = scoring.evaluate_pass(result, scenario, continuity=cont["metrics"])
             print("\n=== PASS LINE ===")
             print(json.dumps(verdict, indent=2))
+    if args.score or args.quality:
+        # CONT-6: score the stream actually sent to OSC (identity slots) next
+        # to the tracker's reported set -- one run gives both (output-only).
+        import output_quality
+        report = output_quality.compare_streams(
+            per_frame, scenario, fps=fps,
+            max_dancers=int(config.get("max_dancers", 0) or 0) or None)
+        print("\n=== OUTPUT STREAMS (tracker vs emitted) ===")
+        print(output_quality.format_comparison(report))
+        print(json.dumps(report, indent=2, default=str))
 
 
 if __name__ == "__main__":

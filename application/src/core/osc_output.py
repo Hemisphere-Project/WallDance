@@ -149,6 +149,16 @@ class OSCSender:
 
         self._send(address, [count] + list(track_ids))
 
+    def send_states(self, states, address="/walldance/dancer/state"):
+        """Opt-in identity-slot states (OSC_CONTRACT §D, additive): one
+        ``[id, state, age_s]`` message per slot -- ``state`` is ``live`` /
+        ``belt`` / ``coasting`` / ``lost`` (a lost slot is absent from
+        ``/walldance/count``), ``age_s`` = seconds in that state."""
+        if not self.enabled or not self.client:
+            return
+        for sid, state, age_s in states:
+            self._send(address, [int(sid), str(state), float(age_s)])
+
     def send_latency_ms(self, latency_ms):
         """Publish the active output latency (Track X / OSC_CONTRACT §B).
 

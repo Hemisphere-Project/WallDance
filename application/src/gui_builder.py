@@ -14,7 +14,9 @@ from typing import Any, Tuple
 import dearpygui.dearpygui as dpg
 import numpy as np
 
-from core.config import RECORDING_SLOTS
+from core.config import (RECORDING_SLOTS, IDENTITY_SLOTS_ENABLED, IDENTITY_SLOTS_MAX_DANCERS,
+                         IDENTITY_SLOTS_STABILITY, IDENTITY_SLOTS_COAST_S,
+                         IDENTITY_SLOTS_USE_IR_BELT, OSC_SEND_STATE)
 from gui_icons import Icons
 from gui_constants import (
     TEXT_NORMAL, TEXT_MUTED, TEXT_DIM, TEXT_HINT, TEXT_FAINT,
@@ -1057,6 +1059,8 @@ def build_phase_live(gui: Any):
                          "late (smoother + retroactively gap-corrected), with\n"
                          "/walldance/meta/latency_ms published. Output-only.")
         dpg.add_text("output: live (L=1, 0 ms)", tag="lagged_latency_text", color=TEXT_DIM)
+        dpg.add_spacer(height=scaled(6))
+        build_identity_slot_controls(gui)
         dpg.add_spacer(height=scaled(12))
         # Remote ops API (REMOTE_OPS): operator-owned gate for control during RUN.
         dpg.add_text("Remote", color=TEXT_NORMAL)
@@ -1071,6 +1075,80 @@ def build_phase_live(gui: Any):
         dpg.add_text("remote: idle", tag="remote_status_text", color=TEXT_DIM)
         dpg.add_spacer(height=scaled(12))
         build_visualization_toolbar(gui)    # promoted: View S/K/B/T/I
+
+
+def build_identity_slot_controls(gui: Any):
+    """Phase-6 'Dancer IDs' block (CONT-6 identity slots): the on-site knobs.
+    Output-only: they shape the OSC stream TouchDesigner gets, never detection."""
+    cfg = gui.config
+    dpg.add_text("Dancer IDs", color=TEXT_NORMAL)
+    slots_chk = dpg.add_checkbox(
+        label="Stable IDs (D1..Dn, hold through losses)",
+        tag="identity_slots_checkbox",
+        default_value=bool(cfg.get("identity_slots_enabled", IDENTITY_SLOTS_ENABLED)),
+        callback=gui._on_identity_slots_toggle,
+    )
+    with dpg.tooltip(slots_chk):
+        dpg.add_text("ON: OSC sends one stable id per dancer (1..Max dancers)\n"
+                     "for the whole show. A dancer the tracker loses is held\n"
+                     "(coasting) for 'Hold' seconds instead of vanishing, and\n"
+                     "re-found under the SAME id. Extra tracks are not sent.\n"
+                     "OFF: the raw tracker ids (they change often).")
+    with dpg.group(horizontal=True):
+        n_slider = dpg.add_slider_int(
+            tag="max_dancers_slider", label="Max dancers",
+            default_value=int(cfg.get("max_dancers", IDENTITY_SLOTS_MAX_DANCERS)),
+            min_value=1, max_value=8, width=scaled(-150),
+            callback=gui._on_max_dancers_change,
+        )
+    with dpg.tooltip(n_slider):
+        dpg.add_text("How many dancers can be on stage at most.\n"
+                     "Ids 1..N; never more ids than this.")
+    with dpg.group(horizontal=True):
+        st_slider = dpg.add_slider_float(
+            tag="stability_slider", label="Stability",
+            default_value=float(cfg.get("stability", IDENTITY_SLOTS_STABILITY)),
+            min_value=0.0, max_value=1.0, format="%.2f", width=scaled(-150),
+            callback=gui._on_stability_change,
+        )
+        _add_slider_row("stability_slider", 0.1, 0.0, 1.0, gui._on_stability_change)
+    with dpg.tooltip(st_slider):
+        dpg.add_text("Centroid smoothing (adaptive: calm at rest, quick on\n"
+                     "fast moves). 0 = most responsive, 1 = calmest.\n"
+                     "Shaking point? Raise it. Point trails fast moves? Lower it.")
+    with dpg.group(horizontal=True):
+        coast_slider = dpg.add_slider_float(
+            tag="coast_s_slider", label="Hold (s)",
+            default_value=float(cfg.get("coast_s", IDENTITY_SLOTS_COAST_S)),
+            min_value=0.0, max_value=5.0, format="%.1f", width=scaled(-150),
+            callback=gui._on_coast_s_change,
+        )
+        _add_slider_row("coast_s_slider", 0.5, 0.0, 5.0, gui._on_coast_s_change)
+    with dpg.tooltip(coast_slider):
+        dpg.add_text("How long a lost dancer keeps its id (held at its last\n"
+                     "position) before it disappears from OSC.\n"
+                     "Video drops in TD when a dancer vanishes? Raise it.\n"
+                     "Ids linger after a dancer leaves? Lower it.")
+    with dpg.group(horizontal=True):
+        belt_chk = dpg.add_checkbox(
+            label="IR belt", tag="ir_belt_checkbox",
+            default_value=bool(cfg.get("use_ir_belt", IDENTITY_SLOTS_USE_IR_BELT)),
+            callback=gui._on_ir_belt_toggle,
+        )
+        with dpg.tooltip(belt_chk):
+            dpg.add_text("Use the retroreflective waist belt to keep a dancer\n"
+                         "alive when the pose model loses them (needs the belt\n"
+                         "detector module; does nothing without it).")
+        dpg.add_spacer(width=scaled(8))
+        state_chk = dpg.add_checkbox(
+            label="Send /dancer/state", tag="osc_state_checkbox",
+            default_value=bool(cfg.get("osc_send_state", OSC_SEND_STATE)),
+            callback=gui._on_osc_state_toggle,
+        )
+        with dpg.tooltip(state_chk):
+            dpg.add_text("Opt-in OSC /walldance/dancer/state [id, state, age_s]\n"
+                         "(live / belt / coasting / lost) for every slot.")
+    dpg.add_text("ids: -", tag="identity_slots_status_text", color=TEXT_DIM)
 
 
 # --------------------------------------------------------------------------- #

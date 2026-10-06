@@ -127,6 +127,56 @@ class ToggleBoxClamp(Command):
     value: bool
 
 
+# --- dancer ids: identity-slot output layer (CONT-6, phase 6 Live) -----------
+
+@dataclass(frozen=True)
+class SetIdentitySlots(Command):
+    """Stable OSC dancer ids 1..N (identity slots) on/off; default ON."""
+    enabled: bool
+
+
+@dataclass(frozen=True)
+class SetMaxDancers(Command):
+    """The show's dancer cap N (slot ids 1..N), 1..16."""
+    value: int
+
+    def __post_init__(self):
+        if not 1 <= int(self.value) <= 16:
+            raise ValueError(f"SetMaxDancers.value must be 1..16, got {self.value!r}")
+
+
+@dataclass(frozen=True)
+class SetStability(Command):
+    """Centroid smoothing knob 0 (responsive) .. 1 (calm)."""
+    value: float
+
+    def __post_init__(self):
+        if not 0.0 <= float(self.value) <= 1.0:
+            raise ValueError(f"SetStability.value must be 0..1, got {self.value!r}")
+
+
+@dataclass(frozen=True)
+class SetCoastSeconds(Command):
+    """Hold a lost dancer's id this long (seconds, 0..10) before it vanishes."""
+    value: float
+
+    def __post_init__(self):
+        if not 0.0 <= float(self.value) <= 10.0:
+            raise ValueError(f"SetCoastSeconds.value must be 0..10, got {self.value!r}")
+
+
+@dataclass(frozen=True)
+class ToggleIrBelt(Command):
+    """Use the IR waist-belt detector to keep slots alive (no-op without it)."""
+    enabled: bool
+
+
+@dataclass(frozen=True)
+class ToggleOscState(Command):
+    """Opt-in OSC /walldance/dancer/state [id, state, age_s]; default OFF."""
+    enabled: bool
+
+
 @dataclass(frozen=True)
 class CheckReadiness(Command):
     """Phase-⑤: run the Go-Live readiness checks on demand (OPERATOR_V2 §6)."""

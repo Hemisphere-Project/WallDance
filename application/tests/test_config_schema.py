@@ -262,3 +262,26 @@ def test_manual_overlays_are_profile_scoped():
     # Overlays ride the same per-profile bundle as the mask they modify.
     assert "exclusion_manual_add" in cs.PROFILE_KEYS
     assert "exclusion_manual_remove" in cs.PROFILE_KEYS
+
+
+# ---------------------------------------------- dancer ids (identity slots)
+
+def test_identity_slot_keys_validated_and_shared():
+    out, warnings = cs.validate_flat({
+        "max_dancers": 40, "stability": -0.5, "coast_s": 2.0,
+        "identity_slots_enabled": "off", "use_ir_belt": 1, "osc_send_state": "maybe",
+    })
+    assert out["max_dancers"] == 16 and out["stability"] == 0.0 and out["coast_s"] == 2.0
+    assert out["identity_slots_enabled"] is False and out["use_ir_belt"] is True
+    assert "osc_send_state" not in out                      # junk dropped -> default
+    assert len(warnings) == 3
+    # shared keys: the same for both lighting profiles
+    for key in ("max_dancers", "stability", "coast_s", "identity_slots_enabled",
+                "use_ir_belt", "osc_send_state"):
+        assert key not in cs.PROFILE_KEYS
+
+
+def test_identity_slot_keys_in_range_silent():
+    out, warnings = cs.validate_flat({"max_dancers": 2, "stability": 0.5, "coast_s": 1.5,
+                                      "identity_slots_enabled": True})
+    assert warnings == [] and out["max_dancers"] == 2 and isinstance(out["max_dancers"], int)
