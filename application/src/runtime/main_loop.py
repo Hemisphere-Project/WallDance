@@ -1291,7 +1291,7 @@ class MainLoop:
             budget_keys = ["camera_read", "process_wall", "yolo", "preview_upload",
                            "preview_draw", "dpg_render", "gui_stats",
                            "preview_download", "extract_cpu_total",
-                           "mog2_cvt", "mog2_feed", "tracker_update",
+                           "mog2_cvt", "mog2_feed", "mog2_wait", "tracker_update",
                            "track", "enhance"]
             parts = []
             for k in budget_keys:

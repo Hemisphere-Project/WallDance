@@ -59,6 +59,7 @@ from core.calibration import ExclusionMaskBuilder
 from core.osc_output import OSCSender
 from core.output_smoother import OutputSmoother, SmootherInput
 from core.tracker import DancerTrack, DancerTracker
+from core.yolo_runner import PoseRunner
 
 # Import GPU pipeline (optional, for zero-copy GPU path)
 try:
@@ -329,6 +330,7 @@ class FrameProcessor:
         osc_sender: Optional[OSCSender] = None,
     ):
         self.model = model
+        self._yolo_runner: Optional[PoseRunner] = None  # PERF-3, see _run_yolo
         self.settings = settings
         self.enhancer = enhancer or ImageEnhancer()
         self.tracker = tracker or DancerTracker()
@@ -475,9 +477,20 @@ class FrameProcessor:
         
         # Sync GPU pipeline settings
         self._sync_gpu_settings()
-        
+
+        # 0. Start the CPU motion feed first, so it overlaps the GPU upload +
+        # enhance as well as YOLO (it only needs the raw frame + the ROI).
+        motion = self._start_motion_feed(
+            frame, self._gpu_pipeline._resolve_roi(original_w, original_h),
+            timing, mono_raw=False)
+
         # 1. GPU Pipeline: Upload + Enhance + YOLO prep
-        yolo_tensor, preview_frame, gpu_timing = self._gpu_pipeline.process(frame, preview_enabled=need_preview)
+        try:
+            yolo_tensor, preview_frame, gpu_timing = self._gpu_pipeline.process(
+                frame, preview_enabled=need_preview)
+        except BaseException:
+            self._await_motion_feed()   # never leave a feed in flight
+            raise
         
         # Merge GPU timing
         timing.update(gpu_timing)
@@ -486,7 +499,7 @@ class FrameProcessor:
         # 2-6. YOLO → Track → OSC
         scaled_tracks = self._run_yolo_and_track(
             yolo_tensor, gpu_timing, timing, original_w, original_h,
-            frame_number=frame_number, raw_frame=frame)
+            frame_number=frame_number, raw_frame=frame, motion=motion)
         
         latency_ms = (time.perf_counter() - frame_start) * 1000
         timing["total"] = latency_ms
@@ -521,19 +534,30 @@ class FrameProcessor:
         # Sync GPU pipeline settings
         self._sync_gpu_settings()
 
+        # 0. Motion feed first (overlaps enhance + YOLO).  This is the IDS-only
+        # path: the camera delivers mono frames expanded to BGR (R==G==B), so
+        # the motion feed takes the single channel directly (P-1, mono_raw).
+        motion = self._start_motion_feed(
+            raw_frame, self._gpu_pipeline._resolve_roi(original_w, original_h),
+            timing, mono_raw=True)
+
         # 1. GPU Pipeline: process_gpu_tensor (skip upload, already on GPU)
-        yolo_tensor, preview_frame, gpu_timing = self._gpu_pipeline.process_gpu_tensor(
-            gpu_tensor, preview_enabled=need_preview
-        )
+        try:
+            yolo_tensor, preview_frame, gpu_timing = self._gpu_pipeline.process_gpu_tensor(
+                gpu_tensor, preview_enabled=need_preview
+            )
+        except BaseException:
+            self._await_motion_feed()   # never leave a feed in flight
+            raise
 
         # Merge GPU timing
         timing.update(gpu_timing)
         timing["path_enhance"] = "gpu-direct"
 
-        # 2-6. YOLO → Track → OSC.  This is the IDS-only path: the camera
-        # delivers mono frames expanded to BGR (R==G==B), so the motion feed
-        # can take the single channel directly (P-1, mono_raw=True).
-        scaled_tracks = self._run_yolo_and_track(yolo_tensor, gpu_timing, timing, original_w, original_h, frame_number=frame_number, raw_frame=raw_frame, mono_raw=True)
+        # 2-6. YOLO → Track → OSC
+        scaled_tracks = self._run_yolo_and_track(
+            yolo_tensor, gpu_timing, timing, original_w, original_h,
+            frame_number=frame_number, raw_frame=raw_frame, motion=motion)
 
         latency_ms = (time.perf_counter() - frame_start) * 1000
         timing["total"] = latency_ms
@@ -550,49 +574,24 @@ class FrameProcessor:
         original_h: int,
         frame_number: int | None = None,
         raw_frame: np.ndarray | None = None,
-        mono_raw: bool = False,
+        motion: Optional[Tuple[float, np.ndarray]] = None,
     ) -> List[ScaledTrack]:
         """Shared YOLO inference → extract → track → unscale → OSC pipeline.
 
         Mutates *timing* in place and returns the final scaled tracks.
-        MOG2 feed runs in a background thread overlapping YOLO (CPU ∥ GPU).
+        ``motion`` is the (submit time, gray) of the MOG2/frame-diff feed the
+        caller started (``_start_motion_feed``) before the GPU stage; it runs
+        on the worker thread overlapping enhance + YOLO (CPU ∥ GPU) and is
+        awaited before the tracker needs blobs.
         """
         roi = gpu_timing.get('roi', {})
         roi_x = int(roi.get('x', 0))
         roi_y = int(roi.get('y', 0))
-
-        # Start MOG2 feed on the persistent worker — runs on CPU while YOLO uses GPU
-        motion_submitted = False
-        gray_for_motion = None
-        if (self.bridge_motion_detector is not None
-                or self.crossval_motion_detector is not None) and raw_frame is not None:
-            t_mog_start = time.perf_counter()
-            motion_frame = raw_frame
-            if roi.get('enabled'):
-                roi_w = int(roi.get('w', 0))
-                roi_h = int(roi.get('h', 0))
-                motion_frame = raw_frame[roi_y:roi_y + roi_h, roi_x:roi_x + roi_w]
-            # P-1: a mono source is expanded to BGR with R==G==B, so the single
-            # channel equals cv2 BGR2GRAY bit-for-bit (weights sum to 1.0) — skip
-            # the conversion.  Only the IDS path sets mono_raw; everything else
-            # (incl. replay/goldens) keeps cvtColor → byte-identical.
-            gray_for_motion = (np.ascontiguousarray(motion_frame[:, :, 0])
-                               if mono_raw and motion_frame.ndim == 3
-                               else cv2.cvtColor(motion_frame, cv2.COLOR_BGR2GRAY))
-            timing["mog2_cvt"] = (time.perf_counter() - t_mog_start) * 1000
-            self._submit_motion_feed(gray_for_motion)  # P-2
-            motion_submitted = True
+        gray_for_motion = motion[1] if motion is not None else None
 
         # YOLO inference (GPU) — runs in parallel with MOG2 feed (CPU)
         t0 = time.perf_counter()
-        results = self.model(
-            yolo_tensor,
-            imgsz=self.settings.imgsz,
-            conf=self.settings.confidence,
-            iou=YOLO_IOU_THRESHOLD,
-            half=self.settings.use_fp16,
-            verbose=False,
-        )
+        results = self._run_yolo(yolo_tensor)
         timing["yolo"] = (time.perf_counter() - t0) * 1000
         timing["path_yolo"] = "gpu"
 
@@ -617,9 +616,14 @@ class FrameProcessor:
         timing.update(self._extract_transfer_timing)
 
         # Block on the MOG2 feed before tracker needs blobs (same sync point)
-        if motion_submitted:
+        if motion is not None:
+            t_wait = time.perf_counter()
             self._await_motion_feed()
-            timing["mog2_feed"] = (time.perf_counter() - t_mog_start) * 1000 - timing.get("mog2_cvt", 0)
+            t_done = time.perf_counter()
+            # submit -> done window (spans enhance + YOLO); mog2_wait is what
+            # the main thread actually blocked (> 0 = motion on the critical path)
+            timing["mog2_feed"] = (t_done - motion[0]) * 1000
+            timing["mog2_wait"] = (t_done - t_wait) * 1000
 
         # GPU tracker space: ROI-local letterboxed imgsz coords — content sits
         # between pad_x and imgsz - pad_x for edge-exit detection.
@@ -659,6 +663,22 @@ class FrameProcessor:
         return self._post_yolo_chain(
             detections, space, lb_motion, finalize,
             original_w, original_h, frame_number, timing)
+
+    def _run_yolo(self, yolo_tensor: 'torch.Tensor'):
+        """``self.model(yolo_tensor, imgsz=, conf=, iou=, half=, verbose=False)``
+        through the PERF-3 ``PoseRunner`` (same detections, without the
+        per-call ultralytics setup / device syncs / orig_img download).  The
+        runner follows ``self.model`` (the app swaps models by assignment)."""
+        runner = self._yolo_runner
+        if runner is None or runner.model is not self.model:
+            runner = self._yolo_runner = PoseRunner(self.model)
+        return runner(
+            yolo_tensor,
+            imgsz=self.settings.imgsz,
+            conf=self.settings.confidence,
+            iou=YOLO_IOU_THRESHOLD,
+            half=self.settings.use_fp16,
+        )
 
     def replay_gpu_cached(self, dets, space_dict, gray, original_w, original_h,
                           frame_number, timing):
@@ -1017,6 +1037,39 @@ class FrameProcessor:
             out = cv2.LUT(out, self._motion_gamma_lut)
 
         return out
+
+    def _start_motion_feed(self, raw_frame: Optional[np.ndarray], roi: Dict,
+                           timing: Dict[str, float], mono_raw: bool = False
+                           ) -> Optional[Tuple[float, np.ndarray]]:
+        """Crop the motion gray to the ROI and submit it to the motion worker.
+
+        Returns (submit time, gray) or None when no motion model consumes it
+        (or there is no CPU frame).  ``roi`` is the GPU pipeline's resolved ROI
+        for this frame (``GpuPipeline._resolve_roi``), so the motion crop and
+        the GPU crop always agree.
+        """
+        if raw_frame is None or (self.bridge_motion_detector is None
+                                 and self.crossval_motion_detector is None):
+            return None
+        t_mog_start = time.perf_counter()
+        motion_frame = raw_frame
+        if roi.get('enabled'):
+            roi_x = int(roi.get('x', 0))
+            roi_y = int(roi.get('y', 0))
+            roi_w = int(roi.get('w', 0))
+            roi_h = int(roi.get('h', 0))
+            motion_frame = raw_frame[roi_y:roi_y + roi_h, roi_x:roi_x + roi_w]
+        # P-1: a mono source is expanded to BGR with R==G==B, so the single
+        # channel equals cv2 BGR2GRAY bit-for-bit (weights sum to 1.0) — skip
+        # the conversion.  Only the IDS path sets mono_raw; everything else
+        # (incl. replay/goldens) keeps cvtColor → byte-identical.
+        gray = (np.ascontiguousarray(motion_frame[:, :, 0])
+                if mono_raw and motion_frame.ndim == 3
+                else cv2.cvtColor(motion_frame, cv2.COLOR_BGR2GRAY))
+        t_submit = time.perf_counter()
+        timing["mog2_cvt"] = (t_submit - t_mog_start) * 1000
+        self._submit_motion_feed(gray)  # P-2
+        return t_submit, gray
 
     def _submit_motion_feed(self, gray: np.ndarray) -> None:
         """P-2: hand the motion gray to the persistent worker (was a Thread

@@ -90,6 +90,14 @@ except ImportError:
     rgb_to_ycbcr = None
     ycbcr_to_rgb = None
 
+# PERF-4: bit-exact, sync-free CLAHE (batched histogram + device-cached
+# gather indices); falls back to kornia's equalize_clahe on any failure.
+try:
+    from core.fast_clahe import FastClahe, KORNIA_CLAHE_AVAILABLE
+except ImportError:  # pragma: no cover - fast_clahe ships with this module
+    FastClahe = None
+    KORNIA_CLAHE_AVAILABLE = False
+
 
 @dataclass
 class GpuPipelineSettings:
@@ -223,7 +231,11 @@ class GpuEnhancer:
         
         # Temporal denoising state
         self._last_frame_tensor: Optional[torch.Tensor] = None
-    
+
+        # PERF-4: launch-light CLAHE, bit-identical to kornia's.
+        self._clahe = (FastClahe() if FastClahe is not None and KORNIA_CLAHE_AVAILABLE
+                       else None)
+
     @property
     def gpu_available(self) -> bool:
         return self._gpu_available
@@ -387,7 +399,10 @@ class GpuEnhancer:
         # back to gamma-only enhancement instead of crashing the app.
         if clip > 1.0 and can_run_clahe:
             try:
-                y = equalize_clahe(y, clip_limit=clip, grid_size=(grid, grid))
+                if self._clahe is not None:
+                    y = self._clahe(y, clip_limit=clip, grid_size=(grid, grid))
+                else:
+                    y = equalize_clahe(y, clip_limit=clip, grid_size=(grid, grid))
             except (RuntimeError, ValueError):
                 pass
         
