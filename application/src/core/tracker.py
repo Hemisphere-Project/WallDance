@@ -37,6 +37,7 @@ from core.config import (
     CENTROID_OUTPUT_SMOOTHING,
     TRACKER_EVENT_LOG_ENABLED, TRACKER_EVENT_LOG_FILE,
     TRACKER_EVENT_LOG_MAX_ENTRIES, TRACKER_EVENT_LOG_FLUSH_INTERVAL,
+    TRACKER_EVENT_LOG_SEGMENT_MB, TRACKER_EVENT_LOG_MAX_SEGMENTS,
     TRACKER_MAHALANOBIS_GATE, TRACKER_MAHALANOBIS_GATE_NOISE,
     TRACKER_CASCADED_MATCHING, TRACKER_SWAP_CORRECTORS,
     TRACKER_CASCADE_SUPPRESSION_FRAMES,
@@ -69,7 +70,7 @@ from core.config import (
     TRACK_WARMUP_SLOW_MIN_TRAVEL_RATIO,
     TRACK_WARMUP_SLOW_MIN_SEPARATION_RATIO,
     TRACK_WARMUP_INTERMITTENT_ENABLED,
-    MOTION_BRIDGE_WARMUP_INCREMENT,
+    MOTION_BRIDGE_WARMUP_INCREMENT, MOTION_BRIDGE_OCCLUDED_WARMUP_GUARD,
     TRACKER_REPORT_REQUIRES_SKELETON, TRACKER_GHOST_SKELETON_AGE,
     TRACKER_GHOST_FROZEN_SPEED_RATIO,
 )
@@ -77,6 +78,57 @@ from core.tracking_logger import TrackingLogger
 
 # Set to True for detailed tracking debug output
 TRACKER_DEBUG = False
+
+
+# ----------------------------------------------------------------------------
+# Field-log vocabulary (CONT-10): what fed a track this frame, and why it was
+# (not) emitted.  Logged per track in FRAME_SUMMARY; never drives behaviour.
+# ----------------------------------------------------------------------------
+FEED_YOLO = "yolo"            # matched a YOLO detection (real pose)
+FEED_SYNTHETIC = "synthetic"  # matched a cold motion-blob synthetic det
+FEED_BRIDGE = "bridge"        # relayed by the track-local motion bridge
+FEED_COAST = "coast"          # nothing fed it (predict only)
+
+EMIT_OK = "ok"                # emitted to OSC this frame
+EMIT_WARMUP = "warmup"        # not confirmed: warm-up integral (or min_hits) not met
+EMIT_FROZEN = "frozen"        # frozen-ghost gate: skeleton-stale AND slow
+EMIT_SLOW_DUP = "slow_dup"    # intermittent-only track too close to a kept one
+EMIT_CAP = "cap"              # beyond the max_persons report cap
+
+
+def _feed_source_of(confidence) -> str:
+    """Synthetic cold-blob detections carry all-zero keypoint confidence
+    (``_fuse_motion_blobs``); anything else came from YOLO."""
+    return FEED_YOLO if np.any(np.asarray(confidence) > 0) else FEED_SYNTHETIC
+
+
+def emission_gate(*, hits: int, min_hits: int, frame_count: int,
+                  integral_ok: bool, slow_ok: bool,
+                  frames_since_skeleton: int, speed: float,
+                  person_height_px: float, ghost_skeleton_age: int,
+                  requires_skeleton: bool = TRACKER_REPORT_REQUIRES_SKELETON,
+                  frozen_speed_ratio: float = TRACKER_GHOST_FROZEN_SPEED_RATIO,
+                  ) -> str:
+    """Per-track half of the report boundary, as a pure decision with a reason
+    (audit 01-continuity §5 seam 2; CONT-10).
+
+    Returns ``EMIT_OK`` (eligible for emission), ``EMIT_WARMUP`` (not
+    confirmed: below ``min_hits`` after the first frames, or neither the
+    warm-up integral nor the intermittent slow path holds) or ``EMIT_FROZEN``
+    (the TUNING Phase F frozen-ghost gate: no real skeleton for more than
+    ``ghost_skeleton_age`` frames AND KF speed below
+    ``frozen_speed_ratio`` x person height).  The set-level reasons
+    (``EMIT_SLOW_DUP``, ``EMIT_CAP``) are decided by
+    ``DancerTracker._collect_confirmed_tracks`` over the eligible tracks.
+    """
+    if not (hits >= min_hits or frame_count <= min_hits):
+        return EMIT_WARMUP
+    if not (integral_ok or slow_ok):
+        return EMIT_WARMUP
+    if (requires_skeleton and frames_since_skeleton > ghost_skeleton_age
+            and speed < frozen_speed_ratio * person_height_px):
+        return EMIT_FROZEN
+    return EMIT_OK
 
 
 class DormantSnapshot:
@@ -97,7 +149,7 @@ class DormantSnapshot:
                  'last_match_frame', 'last_occluded_frame',
                  'occlusion_start_frame', 'last_reacquired_frame',
                  'last_merge_frame', 'merge_episode_start_frame',
-                 'merge_episode_id')
+                 'merge_episode_id', 'was_reported')
 
     def __init__(self, track: 'DancerTrack', exited_from_edge: bool = True,
                  was_ghost: bool = False):
@@ -111,6 +163,10 @@ class DormantSnapshot:
         self.was_occluded: bool = getattr(track, '_occluded', False)
         self.exited_from_edge: bool = exited_from_edge
         self.was_ghost: bool = was_ghost
+        # Was this id ever emitted to OSC?  Only such ids get their warm-up
+        # restored on resurrect (CONT-1 / BUG-1): restoring it for never-
+        # emitted scenery tracks re-emits ghosts (audit: ids 25 -> 29).
+        self.was_reported: bool = bool(getattr(track, '_ever_reported', False))
         self.hits: int = int(track.hits)
         self.track_age: int = int(track.age)
         self.vx_history = [float(v) for v in track._vx_history]
@@ -211,6 +267,17 @@ class DancerTrack:
         # predict() increments it each frame; update() resets it on a real pose.
         self._frames_since_skeleton: int = (
             0 if np.any(confidence > KEYPOINT_CONFIDENCE) else 999)
+
+        # True once this id has been emitted (passed _collect_confirmed_tracks).
+        # Carried into the DormantSnapshot so a resurrect knows whether the
+        # consumer has already seen this id (BUG-1).
+        self._ever_reported: bool = False
+
+        # What fed this track on the current frame (CONT-10, logging only):
+        # FEED_YOLO / FEED_SYNTHETIC (a zero-confidence cold-blob det) on a
+        # match or at birth, FEED_BRIDGE on a motion-bridge relay, FEED_COAST
+        # (reset by predict()) when nothing did.
+        self._feed_src: str = _feed_source_of(confidence)
 
         self._last_match_frame = -1
         self._last_occluded_frame = -1
@@ -349,6 +416,7 @@ class DancerTrack:
         self.hits = max(self.hits, other.hits)
         self._warmup_score = max(self._warmup_score, other._warmup_score)
         self._warmup_history = other._warmup_history.copy()
+        self._feed_src = other._feed_src
         self._smoothed_centroid = other._smoothed_centroid.copy()
         self.history.append(other.get_centroid().copy())
 
@@ -367,6 +435,7 @@ class DancerTrack:
         # Grows on every miss / bridge / cold-blob-only frame → feeds the
         # frozen-ghost report gate.
         self._frames_since_skeleton += 1
+        self._feed_src = FEED_COAST   # until a match / bridge this frame says otherwise
         # Add slight friction to missing tracks so they don't accelerate away,
         # but let them coast through occlusions so they emerge on the correct side!
         if self.time_since_update > 0:
@@ -444,6 +513,7 @@ class DancerTrack:
         """
         self.keypoints = keypoints.copy()
         self.confidence = confidence.copy()
+        self._feed_src = _feed_source_of(confidence)
         if np.any(confidence > KEYPOINT_CONFIDENCE):
             self._frames_since_skeleton = 0  # real pose, not a cold-blob synthetic
             # Refresh the box-clamp output stage's size memory from this YOLO box.
@@ -825,6 +895,11 @@ class DancerTracker:
         # config key `tracker_intermittent_confirm` enables it on scenes
         # where intermittent detection dominates (aerial, very dark).
         self.intermittent_confirm = TRACK_WARMUP_INTERMITTENT_ENABLED
+        # Frozen-ghost report gate: frames without a real skeleton before the
+        # "frozen" speed test applies.  Per-scene config key
+        # `tracker_ghost_skeleton_age` (searched by known-N, CONT-1/BUG-4);
+        # the default is the shipped constant, so behaviour is unchanged.
+        self.ghost_skeleton_age = TRACKER_GHOST_SKELETON_AGE
         # Report cap (bug 12c): at most this many tracks are exposed per
         # frame (top-K by hits).  <=0 disables the cap.  Per-project config
         # key `max_persons`; internal tracks are never capped.
@@ -832,6 +907,11 @@ class DancerTracker:
         # Suppressed-track count of the most recent frame — the app's health
         # tick reads this to surface "more people than max_persons visible".
         self.last_over_cap = 0
+        # Per-track emit/hide reason of the most recent frame (EMIT_*), CONT-10.
+        self.last_emit_reasons: dict[int, str] = {}
+        # Centroids of the tracks matched in the current frame, captured just
+        # before the motion bridge (occluded-duplicate warm-up guard).
+        self._bridge_matched_positions: list[np.ndarray] = []
         # Master switch for the three post-hoc swap correctors (§3a, Phase 2
         # ⑧).  Default off: corpus-measured net harm (they false-fire on
         # aerial/erratic motion and suppress the real track).  Per-scene
@@ -884,6 +964,8 @@ class DancerTracker:
             filepath=TRACKER_EVENT_LOG_FILE,
             max_entries=TRACKER_EVENT_LOG_MAX_ENTRIES,
             flush_interval=TRACKER_EVENT_LOG_FLUSH_INTERVAL,
+            segment_bytes=int(TRACKER_EVENT_LOG_SEGMENT_MB * 1024 * 1024),
+            max_segments=TRACKER_EVENT_LOG_MAX_SEGMENTS,
         )
 
         # Tracking mode — YOLO_FIRST (default) or MOTION_FIRST
@@ -1007,6 +1089,7 @@ class DancerTracker:
         self._merge_swap_cooldown = {}
         self.frame_count = 0
         self.last_over_cap = 0
+        self.last_emit_reasons = {}
         DancerTrack._id_counter = 0
         self.logger.reset()
     
@@ -2061,8 +2144,14 @@ class DancerTracker:
         3. Shape (when >= 3 co-visible keypoints): mean keypoint distance
            < gate * 0.5.
 
-        Resurrected tracks are **immediately confirmed** (hits set to
-        ``min_hits``) so they appear without the usual warm-up delay.
+        A resurrected track gets ``hits`` back (at least ``min_hits``).  Its
+        warm-up integral is restored to the confirmation threshold **only if
+        the id had been emitted before** (``snap.was_reported``): the consumer
+        already knows that id, so it reappears on the resurrect frame instead
+        of re-warming for ~14 frames.  A never-emitted snapshot (typically a
+        scenery ghost) restarts from the fresh-track warm-up like any new id
+        (CONT-1 / BUG-1; restoring blindly re-emits ghosts, ids 25 -> 29 on
+        the hangar aerial take).
 
         Returns:
             A resurrected ``DancerTrack`` or ``None``.
@@ -2167,7 +2256,12 @@ class DancerTracker:
         DancerTrack._id_counter = max(saved_counter, new_track.track_id)
         new_track.restore_continuity(snap)
         new_track.note_match_event(self.frame_count, merge_frame=False)
-        new_track.hits = max(self.min_hits, snap.hits)  # immediately confirmed
+        new_track.hits = max(self.min_hits, snap.hits)
+        if snap.was_reported:
+            # Previously emitted id: confirmed again on this frame (BUG-1).
+            new_track._warmup_score = max(new_track._warmup_score,
+                                          TRACK_WARMUP_THRESHOLD)
+            new_track._ever_reported = True
 
         self.logger.log("RESURRECT", {
             "track_id": snap.track_id,
@@ -2175,6 +2269,7 @@ class DancerTracker:
             "score": round(best_score, 1),
             "was_occluded": snap.was_occluded,
             "edge_exit": snap.exited_from_edge,
+            "was_reported": snap.was_reported,
         })
         if TRACKER_DEBUG:
             print(f"[TRACKER] Resurrected track #{snap.track_id} from dormant "
@@ -2242,7 +2337,7 @@ class DancerTracker:
         self._finalize_track_lifecycle()
 
         confirmed = self._collect_confirmed_tracks()
-        self._log_frame_summary(detections, matched_pairs_log)
+        self._log_frame_summary(detections, matched_pairs_log, confirmed)
         return confirmed
 
     def _begin_frame_update(self, frame_number: int | None = None):
@@ -2731,6 +2826,9 @@ class DancerTracker:
         if not candidate_indices:
             return
 
+        # Positions of the tracks matched this frame: a bridged track inside
+        # their occlusion radius earns no warm-up credit (_apply_motion_bridge).
+        self._bridge_matched_positions = self._collect_matched_positions(matched_trk)
         if self._bridge_with_local_motion_support(
             motion_detector, matched_trk, candidate_indices,
         ):
@@ -2900,6 +2998,7 @@ class DancerTracker:
 
         track.bridge_frames += 1
         track.is_bridged = True
+        track._feed_src = FEED_BRIDGE
         # Do NOT reset time_since_update — let the track age naturally.
         # Presence-only is weak evidence; the track should die if no real
         # blob confirms its position.
@@ -2922,6 +3021,7 @@ class DancerTracker:
         """
         track.bridge_frames += 1
         track.is_bridged = True
+        track._feed_src = FEED_BRIDGE
 
         # Reposition bbox center from blob centroid, keep last YOLO w/h
         # so the bbox stays a stable dancer-sized rectangle.
@@ -2975,9 +3075,18 @@ class DancerTracker:
         # bridge noise cleared the intermittent path, and bridge Kalman drift
         # even defeats its travel check).  The 0.0 still occupies the frame
         # slot so window sums stay per-frame.
-        track._warmup_score = min(
-            track._warmup_score + MOTION_BRIDGE_WARMUP_INCREMENT,
-            TRACK_WARMUP_THRESHOLD + 5.0)
+        #
+        # Occluded-duplicate guard: a track bridged inside the occlusion radius
+        # of a track matched this frame is relayed but earns no credit -- that
+        # motion is the matched dancer's, and crediting it incubated duplicates
+        # (MOTION_BRIDGE_OCCLUDED_WARMUP_GUARD; replay-measured on the hangar
+        # aerial take: frames with 2 ids 203 -> 127, ids 25 -> 20).
+        if not (MOTION_BRIDGE_OCCLUDED_WARMUP_GUARD
+                and self._is_track_near_matched_positions(
+                    track, self._bridge_matched_positions)):
+            track._warmup_score = min(
+                track._warmup_score + MOTION_BRIDGE_WARMUP_INCREMENT,
+                TRACK_WARMUP_THRESHOLD + 5.0)
         track._warmup_history.append(0.0)
 
         # Record match event so merge-episode bookkeeping stays coherent
@@ -3037,12 +3146,19 @@ class DancerTracker:
         return False
 
     def _apply_fractional_occlusion_aging(self, track: DancerTrack):
-        """Undo full predict aging and reapply slowed occlusion aging."""
+        """Undo full predict aging and reapply slowed occlusion aging.
+
+        ``time_since_update`` is clamped at 0 (CONT-1 / BUG-2): a track that a
+        motion bridge reset to 0 earlier in this same frame has no predict
+        increment left to undo.  ``-1`` reached the lifecycle/report stage and
+        the FRAME_SUMMARY ``t_miss``, and left the track at tsu 0 after the
+        next predict() -- looking freshly matched, so it skipped that frame's
+        bridge candidacy and aged one frame behind."""
         track._fractional_age = (
             track._fractional_age
             + TRACKER_OCCLUSION_AGE_FACTOR
         )
-        track.time_since_update -= 1
+        track.time_since_update = max(0, track.time_since_update - 1)
         if track._fractional_age >= 1.0:
             increments = int(track._fractional_age)
             track.time_since_update += increments
@@ -3159,30 +3275,41 @@ class DancerTracker:
         self._dormant = [s for s in self._dormant if s.age < self.dormant_max_age]
 
     def _collect_confirmed_tracks(self):
-        """Return tracks that are confirmed enough to expose externally."""
+        """Return tracks that are confirmed enough to expose externally.
+
+        Every active track also gets its emit/hide reason in
+        ``self.last_emit_reasons`` (``EMIT_*``; logged in FRAME_SUMMARY, CONT-10).
+        """
         eligible = []
+        reasons: dict[int, str] = {}
         for track in self.tracks:
-            if track.hits >= self.min_hits or self.frame_count <= self.min_hits:
-                integral_ok = track._warmup_score >= TRACK_WARMUP_THRESHOLD
-                slow_ok = (self.intermittent_confirm and not integral_ok
-                           and track.warmup_confirmed)
-                if integral_ok or slow_ok:
-                    # Frozen-ghost gate (TUNING Phase F): drop a track that is
-                    # both skeleton-stale AND effectively stationary — an
-                    # abandoned track kept alive by recurring cold blobs at a
-                    # fixed wall spot.  A real gap-bridged dancer is moving and a
-                    # still dancer keeps getting skeletons, so both are spared.
-                    if (TRACKER_REPORT_REQUIRES_SKELETON
-                            and track._frames_since_skeleton > TRACKER_GHOST_SKELETON_AGE):
-                        speed = float(np.linalg.norm(track.get_velocity()))
-                        if speed < TRACKER_GHOST_FROZEN_SPEED_RATIO * self._person_height_px:
-                            self.logger.log("GHOST_FROZEN_SUPPRESSED", {
-                                "track_id": track.track_id,
-                                "frames_since_skeleton": track._frames_since_skeleton,
-                                "speed": round(speed, 2),
-                            })
-                            continue
-                    eligible.append(track)
+            integral_ok = track._warmup_score >= TRACK_WARMUP_THRESHOLD
+            slow_ok = (self.intermittent_confirm and not integral_ok
+                       and track.warmup_confirmed)
+            speed = float(np.linalg.norm(track.get_velocity()))
+            # Frozen-ghost gate (TUNING Phase F) inside emission_gate: drop a
+            # track that is both skeleton-stale AND effectively stationary — an
+            # abandoned track kept alive by recurring cold blobs at a fixed wall
+            # spot.  A real gap-bridged dancer is moving and a still dancer keeps
+            # getting skeletons, so both are spared.
+            reason = emission_gate(
+                hits=track.hits, min_hits=self.min_hits,
+                frame_count=self.frame_count,
+                integral_ok=integral_ok, slow_ok=slow_ok,
+                frames_since_skeleton=track._frames_since_skeleton,
+                speed=speed, person_height_px=self._person_height_px,
+                ghost_skeleton_age=self.ghost_skeleton_age,
+                requires_skeleton=TRACKER_REPORT_REQUIRES_SKELETON,
+                frozen_speed_ratio=TRACKER_GHOST_FROZEN_SPEED_RATIO)
+            reasons[track.track_id] = reason
+            if reason == EMIT_FROZEN:
+                self.logger.log("GHOST_FROZEN_SUPPRESSED", {
+                    "track_id": track.track_id,
+                    "frames_since_skeleton": track._frames_since_skeleton,
+                    "speed": round(speed, 2),
+                })
+            elif reason == EMIT_OK:
+                eligible.append(track)
 
         # Integral-confirmed tracks report unconditionally (the shipped
         # behavior).  A track confirmed ONLY via the intermittent slow path
@@ -3208,6 +3335,7 @@ class DancerTracker:
             if near is None:
                 confirmed.append(track)
             else:
+                reasons[track.track_id] = EMIT_SLOW_DUP
                 self.logger.log("WARMUP_SLOW_DUP_SUPPRESSED", {
                     "track_id": track.track_id, "near": near})
 
@@ -3229,11 +3357,25 @@ class DancerTracker:
                 "suppressed": [t.track_id for t in confirmed
                                if t.track_id not in keep],
             })
+            for t in confirmed:
+                if t.track_id not in keep:
+                    reasons[t.track_id] = EMIT_CAP
             confirmed = [t for t in confirmed if t.track_id in keep]
+        for track in confirmed:
+            track._ever_reported = True   # BUG-1: remembered by DormantSnapshot
+        self.last_emit_reasons = reasons
         return confirmed
 
-    def _log_frame_summary(self, detections, matched_pairs_log):
-        """Emit the structured FRAME_SUMMARY event for the current frame."""
+    def _log_frame_summary(self, detections, matched_pairs_log, emitted=None):
+        """Emit the structured FRAME_SUMMARY event for the current frame.
+
+        CONT-10 diagnostic fields, so a field log answers "why did id X
+        vanish" without a recording: ``emitted`` (the ids sent to OSC this
+        frame, in report order) and, per track, ``src`` (what fed it this
+        frame: yolo / synthetic / bridge / coast), ``wu`` (warm-up integral),
+        ``fss`` (frames since a real skeleton) and ``emit`` (ok / warmup /
+        frozen / slow_dup / cap -- ``emission_gate`` + the report stage)."""
+        reasons = getattr(self, "last_emit_reasons", {})
         # ---- Emit per-frame summary to structured log ----
         self.logger.log_frame_summary(
             n_detections=len(detections),
@@ -3251,11 +3393,17 @@ class DancerTracker:
                     "last_occluded_frame": getattr(t, '_last_occluded_frame', -1),
                     "last_merge_frame": getattr(t, '_last_merge_frame', -1),
                     "merge_episode_id": getattr(t, '_merge_episode_id', 0),
+                    "src": getattr(t, '_feed_src', None),
+                    "wu": round(float(t._warmup_score), 2),
+                    "fss": int(t._frames_since_skeleton),
+                    "emit": reasons.get(t.track_id),
                 }
                 for t in self.tracks
             ],
             n_dormant=len(self._dormant),
             matched_pairs=matched_pairs_log,
+            emitted=(None if emitted is None
+                     else [int(t.track_id) for t in emitted]),
         )
 
     # ------------------------------------------------------------------

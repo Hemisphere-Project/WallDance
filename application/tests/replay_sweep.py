@@ -20,6 +20,7 @@ Usage (from application/):
 """
 import argparse
 import filecmp
+import json
 import subprocess
 import sys
 import time
@@ -54,6 +55,11 @@ def main() -> int:
             fh.write(line + "\n")
 
     all_names = sorted(p.stem for p in SCEN_DIR.glob("*.json"))
+    # TEST-1 long-span continuity manifests (whole takes, minutes each) have no
+    # decomp-phase0 archive and are a separate gate (replay.py --score): run
+    # them only when named explicitly via --scenarios.
+    long_span = {p.stem for p in SCEN_DIR.glob("*.json")
+                 if json.loads(p.read_text()).get("long_span")}
     if args.scenarios:
         names = [n.strip() for n in args.scenarios.split(",") if n.strip()]
         unknown = sorted(set(names) - set(all_names))
@@ -67,7 +73,7 @@ def main() -> int:
             log(f"ERROR: golden trio scenario(s) missing: {missing}")
             return 2
     else:
-        names = all_names
+        names = [n for n in all_names if n not in long_span]
 
     log(f"replay sweep: {len(names)} scenario(s) "
         f"({'golden trio' if args.golden else 'full' if not args.scenarios else 'custom'})")

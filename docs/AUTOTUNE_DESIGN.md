@@ -88,7 +88,7 @@ Ordered by the **coupling chain** (each tier depends on the ones above). "Set by
 | Param | Set by | Expose? |
 |-------|--------|---------|
 | **tracker_max_age, θ_s (skel_min_kpts), θ_m (motion_min_ratio)** | **Sweep**, only matter on multi-dancer/occlusion/static-sitter (G4); set per-scene by the **known-N search** (`tests/known_n.py`, K1) | No — internal; ✅ **writer shipped** (known-N writes them per project; phase-④ "Tune (known-N)" button) |
-| **tracker_intermittent_confirm** | per-scene switch — **documented but unwired** (reads the global) | No — internal; **wiring gap (Track C)** |
+| **tracker_intermittent_confirm**, **tracker_ghost_skeleton_age** | per-scene switches (bug-#14 intermittent path; frozen-ghost gate age, default 3) — wired live + replay, **searched by known-N since 2026-10** (CONT-1 / audit BUG-4: before that nothing set the intermittent switch) | No — internal; written per project by known-N |
 | **tracker_swap_correctors** | default off; per-scene re-enable | No — internal |
 
 ### Tier 7 — Output (operator preference — expose, no detection coupling)

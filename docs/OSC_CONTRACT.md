@@ -56,7 +56,9 @@ Each per-dancer message **prepends the integer `id`** to its argument list.
   `alpha = CENTROID_OUTPUT_SMOOTHING = 0.5` (`config.py:278`). Updated on YOLO match
   (`tracker.py:485-487`), motion-bridge (`tracker.py:2953-2955`), and dormant restore
   (`tracker.py:576-578`). **On a plain miss (predict-only) it is *not* updated → it holds its
-  last value** until the track re-acquires or bridges.
+  last value** for as long as the id is still emitted — which on a plain miss is short: the id
+  drops out of the whole stream after ≤ 8 un-bridged misses, or after 4 skeleton-less frames
+  if the track is also slow (see §A.4 "When an id disappears").
 - Note: this is the **keypoint centroid**, not the bbox center; the two differ when the pose
   is off-center in the box.
 
@@ -93,6 +95,27 @@ gated, and `MAX_PERSONS`-capped — mapped to original-frame coords as `ScaledTr
 (`pipeline.py:910` CPU identity / `pipeline.py:1408` GPU letterbox-unscale). `track_id` is a
 monotonic counter (`tracker.py:155,167`) — **ids grow unbounded** across a session and are not
 reused; consumers must not assume a small/bounded id range.
+
+**When an id disappears** (audit 2026-10 `01-continuity.md` §1.3, DOC-1). A track is emitted on
+a frame only while it passes *all* of the report gates of `_collect_confirmed_tracks`:
+- **warm-up:** its integral is ≥ 15 (+1 per match, +0.4 per motion-bridge frame, −0.8 per missed
+  frame from the 2nd miss, capped at 20) — or the intermittent path when the per-scene
+  `tracker_intermittent_confirm` is on. A confirmed track at the cap therefore drops after
+  **8 un-bridged misses**; a new id needs ~14 consecutive feeds (~0.75 s);
+- **frozen-ghost gate:** not (no real skeleton for more than `tracker_ghost_skeleton_age`
+  frames — default 3 — **and** KF speed < 0.03 × person height per frame);
+- **slow-path separation:** an intermittent-only track within 0.7 h of a kept track is hidden;
+- **cap:** at most `max_persons`, most-hit first.
+
+On the **first frame** an id fails a gate it is simply **absent** from `/walldance/count` and from
+every `/walldance/dancer/*` message. There is no coasting state and no "lost" message, so a
+consumer cannot tell a 1-frame flicker from an exit. The **same** id comes back if its internal
+track re-passes the gates, or is resurrected from the dormant pool (an id that had already been
+emitted is confirmed again on the resurrect frame — CONT-1, 2026-10). Otherwise the dancer
+reappears under a **new, higher** id after its warm-up. With `L > 1` the RTS smoother restarts on
+any reporting gap (`output_smoother.py`), so it does not bridge these gaps either.
+The FRAME_SUMMARY log records, per frame, the emitted id set and each track's hide reason
+(`warmup` / `frozen` / `slow_dup` / `cap`) — CONT-10.
 
 ---
 

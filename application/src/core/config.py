@@ -297,9 +297,15 @@ BOX_SIZE_OUTPUT_SMOOTHING = 0.5         # EMA alpha at L=1 (~1 frame group delay
 # TRACKING EVENT LOG (Phase 0 — diagnostics)
 # =============================================================================
 TRACKER_EVENT_LOG_ENABLED = True        # Write structured JSONL event log
-TRACKER_EVENT_LOG_FILE = "tracking_events.jsonl"  # Output file (in working dir)
+# No working-dir file any more (CONT-10): playback/replay runs log into their
+# session dir, live runs into a per-show folder projects/<p>/sessions/<stamp>_live
+# (core/tracking_logger.py).  The old ./tracking_events.jsonl appended forever.
+TRACKER_EVENT_LOG_FILE = None
 TRACKER_EVENT_LOG_MAX_ENTRIES = 3000    # Rolling in-memory buffer size
 TRACKER_EVENT_LOG_FLUSH_INTERVAL = 2.0  # Seconds between auto-flushes
+TRACKER_EVENT_LOG_SEGMENT_MB = 64       # rotate a session's JSONL past this size
+TRACKER_EVENT_LOG_MAX_SEGMENTS = 32     # per session (~2 GB); oldest dropped beyond
+TRACKER_EVENT_LOG_KEEP_LIVE = 30        # newest live-show folders kept per project
 
 # =============================================================================
 # PHASE 1 — HARDENED ASSOCIATION
@@ -730,6 +736,13 @@ MOTION_BRIDGE_WARMUP_INCREMENT = 0.4    # Warmup score added per bridge-blob mat
                                          # Lower than YOLO (+1.0) so a motion-only
                                          # track needs ~40 consistent blob frames
                                          # (~2s @ 20fps) to reach output threshold.
+# No bridge warm-up credit for a track inside the occlusion radius of a track
+# matched this frame (CONT-1 follow-up, approved 2026-10-06): the motion there
+# belongs to the matched dancer, so a bridge must not incubate a duplicate of
+# it into a confirmed id.  The bridge still relays the track (position, tsu).
+# Replay-measured with the BUG-2 tsu clamp, hangar aerial take (slot 4):
+# frames with 2 ids 203 -> 127, ids 25 -> 20, coverage 0.942 -> 0.949.
+MOTION_BRIDGE_OCCLUDED_WARMUP_GUARD = True
 
 # =============================================================================
 # TRACKING MODE — YOLO-first vs Motion-first detection priority

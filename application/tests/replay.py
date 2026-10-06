@@ -237,12 +237,12 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
 
     tracker = DancerTracker()
     tracker.set_person_height(settings.person_height_px)
-    if "tracker_max_age" in config:
-        tracker.max_age = config["tracker_max_age"]
     if "tracker_smoothing" in config:
         tracker.smoothing_depth = config["tracker_smoothing"]
     if "tracker_intermittent_confirm" in config:
         tracker.intermittent_confirm = bool(config["tracker_intermittent_confirm"])
+    if "tracker_ghost_skeleton_age" in config:
+        tracker.ghost_skeleton_age = int(config["tracker_ghost_skeleton_age"])
     if "tracker_swap_correctors" in config:
         tracker.swap_correctors = bool(config["tracker_swap_correctors"])
     if "max_persons" in config:
@@ -258,6 +258,13 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
         mode = TrackingMode.YOLO_FIRST
     tracker.set_tracking_mode(mode)
     proc.set_tracking_mode(mode)
+    # tracker_max_age AFTER the mode, as app._apply_config_without_model does
+    # (CONT-1 / BUG-3): set_tracking_mode(MOTION_FIRST) resets max_age to
+    # MOTION_FIRST_BRIDGE_MAX_FRAMES (60), which silently overrode the project
+    # value in replays of motion_first projects.  yolo_first is unaffected
+    # (the mode switch is a no-op from the default mode).
+    if "tracker_max_age" in config:
+        tracker.max_age = config["tracker_max_age"]
 
     if "mog2_scale" in config and proc.motion_detector is not None:
         proc.set_motion_scale(config["mog2_scale"])
@@ -273,6 +280,26 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
         proc.set_exclusion(grid, cells or (), manual_add, manual_remove)
 
     return proc
+
+
+def _attach_reference_capture(proc) -> dict:
+    """Hook the GPU detect-pass capture point to record per-frame reference
+    detections (``holder["ref"]``, reset by the caller before each frame) --
+    the continuity pseudo ground truth (``continuity.reference_from_dets``).
+    Observation only: the hook runs after YOLO + duplicate filtering, before
+    the post-YOLO chain, and changes nothing."""
+    import continuity
+    holder: dict = {"ref": None}
+    prev = proc._cache_capture_gpu
+
+    def _hook(dets, space, gray, ow, oh):
+        confs = [proc._last_box_confs.get(proc._bbox_conf_key(b)) for (_k, _c, b) in dets]
+        holder["ref"] = continuity.reference_from_dets(dets, space, confs)
+        if prev is not None:
+            prev(dets, space, gray, ow, oh)
+
+    proc._cache_capture_gpu = _hook
+    return holder
 
 
 def per_frame_record(frame_idx: int, abs_frame: int, tracks, track_details: bool = False) -> dict:
@@ -320,12 +347,16 @@ def replay_recording(
     use_gpu_path: bool = True,    # Track P: GPU-only (CPU path removed)
     use_trt: bool = False,
     frame_skip: int = 1,
+    reference: bool = False,
 ) -> Dict:
     """Replay a recording and return a compact metric summary.
 
     The summary mirrors analyze_session's vocabulary so goldens are
     interpretable: real/marginal/ghost track counts (by hit count),
     swap count, zero-detection frames, average detections.
+
+    ``reference=True`` adds each frame's YOLO detections as ``ref`` (the
+    continuity pseudo ground truth, see ``reference_dets``) to the timeline rows.
     """
     proc = _build_processor(config, model_name, imgsz,
                             use_gpu_path=use_gpu_path, use_trt=use_trt)
@@ -335,6 +366,7 @@ def replay_recording(
     # Reset the global track-ID counter so IDs are deterministic when several
     # replays run in one process (a search, or --cache build+replay).
     proc.tracker.reset()
+    ref_holder = _attach_reference_capture(proc) if reference else None
 
     tmp = log_dir or tempfile.mkdtemp(prefix="wd_replay_")
     proc.tracker.logger.start_session(tmp)
@@ -359,10 +391,14 @@ def replay_recording(
             ok, frame = cap.read()
             if not ok:
                 break
+            if ref_holder is not None:
+                ref_holder["ref"] = None
             tracks, _enh, _timing, _lat = proc.process(
                 frame, need_preview=False, frame_number=processed)
             per_frame.append(per_frame_record(
                 processed, start_frame + consumed, tracks, track_details))
+            if ref_holder is not None and ref_holder["ref"] is not None:
+                per_frame[-1]["ref"] = ref_holder["ref"]
             processed += 1
             consumed += 1
             # Frame-skip (stride): advance past the next stride-1 source frames
@@ -487,7 +523,9 @@ def main():
     ap.add_argument("--log-dir", default=None,
                     help="keep the tracker JSONL event log in this dir (diagnostics)")
     ap.add_argument("--score", action="store_true",
-                    help="score against --scenario's ground truth (prints breakdown)")
+                    help="score against --scenario's ground truth (prints breakdown + the "
+                         "continuity block C1-C10 and the per-window pass rate; implies "
+                         "--details and records reference detections in the timeline)")
     ap.add_argument("--cache", action="store_true",
                     help="use the YOLO detect-pass cache (TUNING Phase B): build "
                          "it on first use, then replay from it skipping YOLO")
@@ -552,13 +590,17 @@ def main():
                 start_frame=args.start, max_frames=args.frames, out_path=cpath,
                 use_trt=args.trt)
         summary = detect_cache.replay_from_cache_gpu(
-            detect_cache.load_cache(cpath), config, frame_skip=args.frame_skip)
+            detect_cache.load_cache(cpath), config, frame_skip=args.frame_skip,
+            track_details=args.details or args.score, reference=args.score)
     else:
         summary = replay_recording(
             str(video), config, model_name=model_name, imgsz=imgsz,
             start_frame=args.start, max_frames=args.frames,
-            track_details=args.details, use_gpu_path=True,   # Track P: GPU-only
+            # --score: centroids (C7/C10) + reference dets (C7/C8/C9) for the
+            # continuity block; the lean --out summary is unaffected.
+            track_details=args.details or args.score, use_gpu_path=True,   # Track P: GPU-only
             use_trt=args.trt, log_dir=args.log_dir, frame_skip=args.frame_skip,
+            reference=args.score,
         )
 
     # Split the per-frame timeline out of the lean (golden-comparable) summary.
@@ -577,11 +619,17 @@ def main():
         if scenario is None:
             sys.exit("--score requires --scenario")
         import scoring
+        import continuity
         result = scoring.score_timeline(per_frame, scenario)
         print("\n=== SCORE ===")
         print(json.dumps(result, indent=2))
+        # TEST-1: continuity C1-C10 + per-window pass rate (audit 01-continuity §3.3).
+        cont = scoring.score_continuity(per_frame, scenario)
+        print("\n=== CONTINUITY (C1-C10) ===")
+        print(continuity.format_report(cont))
+        print(json.dumps(cont["metrics"], indent=2))
         if scenario.get("pass"):
-            verdict = scoring.evaluate_pass(result, scenario)
+            verdict = scoring.evaluate_pass(result, scenario, continuity=cont["metrics"])
             print("\n=== PASS LINE ===")
             print(json.dumps(verdict, indent=2))
 

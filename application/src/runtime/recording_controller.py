@@ -22,7 +22,8 @@ from typing import Callable, Deque, Optional, Protocol
 import numpy as np
 
 from core import video_import
-from core.config import CAMERA_FPS, RECORDING_CAMLOG_INTERVAL_S
+from core.config import (CAMERA_FPS, RECORDING_CAMLOG_INTERVAL_S,
+                         TRACKER_EVENT_LOG_KEEP_LIVE)
 from core.tracking_logger import _json_default
 from core.video_recorder import RecorderState
 
@@ -125,6 +126,30 @@ class RecordingController:
         self._slots_dirty: bool = False
 
         recorder.on_playback_start = self._on_playback_start_event
+
+        # Live runs log into per-show folders next to the playback sessions
+        # (CONT-10) instead of appending forever to ./tracking_events.jsonl.
+        set_live = getattr(tracker_logger, "set_live_root_provider", None)
+        if callable(set_live):
+            set_live(self._live_sessions_root, meta_fn=self._live_session_meta,
+                     keep=TRACKER_EVENT_LOG_KEEP_LIVE)
+
+    def _live_sessions_root(self) -> Optional[str]:
+        """Where a live show's tracker log folder goes; None during playback
+        (the playback run owns its explicit ``<stamp>_slot<n>`` session)."""
+        if self.recorder.is_playing:
+            return None
+        return os.path.join(self.session.config_dir,
+                            self.session.current_project, "sessions")
+
+    def _live_session_meta(self) -> dict:
+        """``session.json`` facts of a live-show folder."""
+        return {
+            "project": self.session.current_project,
+            "model": self.session.model_name,
+            "imgsz": self.session.imgsz,
+            "config": self.session.saveable_config(),
+        }
 
     @property
     def source_transitioning(self) -> bool:

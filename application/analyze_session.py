@@ -54,20 +54,36 @@ def find_latest_session():
     return sessions[0] if sessions else None
 
 
+def _event_segments(path):
+    """``tracking_events.jsonl`` plus its rotated predecessors
+    (``tracking_events.0001.jsonl`` ...), oldest first (CONT-10 rotation)."""
+    path = Path(path)
+    if path.name != "tracking_events.jsonl":
+        return [path]
+    segs = []
+    for p in path.parent.glob("tracking_events.*.jsonl"):
+        mid = p.name[len("tracking_events."):-len(".jsonl")]
+        if mid.isdigit():
+            segs.append((int(mid), p))
+    return [p for _i, p in sorted(segs)] + [path]
+
+
 def stream_parse_events(path):
     """Stream-parse JSONL file, yielding event dicts.
 
-    Memory-efficient: doesn't load entire file into memory.
+    Memory-efficient: doesn't load entire file into memory.  A rotated
+    session is read across its segments in order.
     """
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                yield json.loads(line)
-            except json.JSONDecodeError:
-                continue
+    for seg in _event_segments(path):
+        with open(seg) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    yield json.loads(line)
+                except json.JSONDecodeError:
+                    continue
 
 
 def load_issues(issues_dir):

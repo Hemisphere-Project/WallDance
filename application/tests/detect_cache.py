@@ -139,6 +139,11 @@ def build_cache_gpu(
             gray_png = png.tobytes()
         captured.append({
             "dets": [(k.copy(), c.copy(), b.copy()) for (k, c, b) in dets],
+            # YOLO box conf per det (None if the duplicate filter merged it) --
+            # the continuity reference's conf floor (TEST-1).  Older caches
+            # lack the field; refs then carry conf None (= cleared tau).
+            "bc": [proc._last_box_confs.get(proc._bbox_conf_key(b))
+                   for (_k, _c, b) in dets],
             "gray_png": gray_png,
             "space": {
                 "person_height": int(space.person_height),
@@ -209,10 +214,14 @@ def replay_from_cache_gpu(
     reuse_grays: bool = False,
     track_details: bool = False,
     frame_skip: int = 1,
+    reference: bool = False,
 ) -> Dict:
     """Re-run the GPU post-YOLO chain from a TRT cache, skipping YOLO.  Mirrors
     ``replay_from_cache`` but drives ``proc.replay_gpu_cached`` (letterbox space)
-    instead of ``_track_detections`` (full-frame CPU)."""
+    instead of ``_track_detections`` (full-frame CPU).
+
+    ``reference=True`` adds the cached detections as each row's ``ref``
+    (continuity pseudo ground truth, ``continuity.reference_from_dets``)."""
     import replay
     meta = cache["meta"]
     proc = replay._build_processor(
@@ -248,6 +257,10 @@ def replay_from_cache_gpu(
             dets, fr["space"], gray, fr["ow"], fr["oh"], kept, timing)
         per_frame.append(replay.per_frame_record(
             kept, meta["start_frame"] + i, tracks, track_details))
+        if reference:
+            import continuity
+            per_frame[-1]["ref"] = continuity.reference_from_dets(
+                fr["dets"], fr["space"], fr.get("bc"))
         kept += 1
     proc.tracker.logger.close()
 
