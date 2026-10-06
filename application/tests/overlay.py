@@ -157,8 +157,11 @@ def render(scenario_path: str, overrides: dict, out_dir: str, *,
 
     # 3. Read frames + render.
     cap = cv2.VideoCapture(str(video))
-    W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    H = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    # REQ-5: tracks live in the Mirror/Rotate-transformed space -> draw on
+    # transformed frames (identity = the same array, unchanged output).
+    xf = replay.input_transform_for(config)
+    W, H = xf.output_size(int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                          int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
     roi = _resolve_roi(config, W, H)
 
     writer = None
@@ -174,6 +177,7 @@ def render(scenario_path: str, overrides: dict, out_dir: str, *,
         ok, frame = cap.read()
         if not ok:
             break
+        frame = xf.apply(frame)
         rec = per_frame.get(i, {"frame": i, "abs_frame": manifest["start"] + i,
                                 "reported": 0, "ids": [], "tracks": []})
         if writer is not None:

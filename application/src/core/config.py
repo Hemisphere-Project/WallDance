@@ -423,6 +423,11 @@ PREVIEW_RENDER_SCALE = 0.35         # Texture resolution scale (0.3-1.0); lower 
                                     # IDS 2688×1528 @ 0.35 → 940×535 (~1.5 MB uint8 transfer)
                                     # IDS 2688×1528 @ 0.50 → 1344×764 (~3.1 MB — too heavy)
 PREVIEW_DISPLAY_SCALE = 0.5        # On-screen preview area scale relative to camera
+# Preview refresh caps (GPU download + compose + overlays + texture upload).
+# Display only: tracking / OSC run on every frame regardless.  The operator's
+# "Preview FPS cap" toggle selects the low one (and halves the preview size).
+PREVIEW_MAX_FPS = 15.0             # default cap (the 20 fps stream: 3 frames in 4)
+PREVIEW_CAPPED_FPS = 10.0          # with the "Preview FPS cap" toggle on
 SHOW_SKELETON = True                # Draw skeleton
 SHOW_KEYPOINTS = True               # Draw keypoints
 SHOW_BBOX = True                    # Draw bounding box

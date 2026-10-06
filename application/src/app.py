@@ -55,6 +55,8 @@ from core.config import (
     MOTION_BRIDGE_SENSITIVITY,
     PREVIEW_ENABLED,
     PREVIEW_RENDER_SCALE,
+    PREVIEW_MAX_FPS,
+    PREVIEW_CAPPED_FPS,
     SHOW_BBOX,
     SHOW_ID,
     SHOW_KEYPOINTS,
@@ -582,6 +584,9 @@ class WallDanceApp:
         preview_w = int(CAMERA_WIDTH * PREVIEW_RENDER_SCALE)
         preview_h = int(CAMERA_HEIGHT * PREVIEW_RENDER_SCALE)
         self.processor.set_preview_size(preview_w, preview_h)
+        # The preview never needs the full 20 fps (display only; tracking runs
+        # on every frame): cap it by default, the operator toggle goes lower.
+        self.processor.set_preview_fps_cap(PREVIEW_MAX_FPS)
         
         if self.osc_enabled:
             self._init_osc()
@@ -1961,13 +1966,14 @@ class WallDanceApp:
         self.preview_fps_cap = enabled
         # Sync to GPU pipeline if active
         if self.processor:
-            self.processor.set_preview_fps_cap(10.0 if enabled else None)
+            self.processor.set_preview_fps_cap(
+                PREVIEW_CAPPED_FPS if enabled else PREVIEW_MAX_FPS)
             # Also halve preview resolution when capped to reduce GPU→CPU transfer
             self._sync_preview_size_to_gpu()
         if enabled:
-            print("Preview FPS cap: ON (10 FPS limit, 0.5x preview)")
+            print(f"Preview FPS cap: ON ({PREVIEW_CAPPED_FPS:.0f} FPS limit, 0.5x preview)")
         else:
-            print("Preview FPS cap: OFF (uncapped, full preview)")
+            print(f"Preview FPS cap: OFF ({PREVIEW_MAX_FPS:.0f} FPS default, full preview)")
 
     def _apply_preview_scale(self, value: float, force: bool = False):
         value = max(0.05, min(1.0, float(value)))
@@ -2122,13 +2128,28 @@ class WallDanceApp:
         self._warn_offline_transform("Dry-run")
 
     def _warn_offline_transform(self, what: str) -> None:
-        """REQ-5 gap: the offline tools (tests/replay.py, calibrate_segment.py,
-        known_n.py / detect_cache.py) decode slot files themselves and do not
-        apply Mirror/Rotate yet -- raw frames vs a transformed ROI/mask."""
-        if not self.input_transform.is_identity:
+        """REQ-5: the offline tools (tests/replay.py, calibrate_project /
+        calibrate_segment, known_n.py / detect_cache.py) decode slot files
+        themselves and apply the Mirror/Rotate of the config they read -- the
+        project's SAVED config (scenarios: their pinned config). Warn when the
+        live setting differs from the saved one (not saved since the change)."""
+        saved = None
+        try:
+            path = self.configs.config_store.latest_for_project(
+                self.configs._current_project)
+            if path:
+                with open(path, "r", encoding="utf-8") as f:
+                    saved = InputTransform.from_config(
+                        config_schema.flatten(json.load(f)))
+        except Exception:  # noqa: BLE001 - a warning helper must not raise
+            saved = None
+        if saved is None:
+            saved = IDENTITY
+        if saved != self.input_transform:
             self.bus.publish(api.Toast(
-                f"{what}: Mirror/Rotate ({self.input_transform.label()}) is not applied "
-                "by the offline tools yet - results may be off", 6.0, (255, 180, 80)))
+                f"{what}: live Mirror/Rotate ({self.input_transform.label()}) differs "
+                f"from the saved config ({saved.label()}), which the offline tools "
+                "apply - save the project first", 6.0, (255, 180, 80)))
 
     def _run_dry_run_replay(self):
         """Background worker: subprocess replay.py on the newest recording.

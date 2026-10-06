@@ -210,6 +210,7 @@ class MainLoop:
         self._last_fresh_frame_time = time.time()
         self._last_preview_stalled_state = False
         self._last_ops_tick = 0.0
+        self._last_render_t = 0.0        # perf_counter of the last DPG render
         # Rolling (t, raw det height px) samples for the staleness alarm (⑤d)
         self._height_samples: deque = deque()
         self._rec_ui_update_counter = 0
@@ -634,7 +635,7 @@ class MainLoop:
                 # wait briefly to avoid spinning and re-processing the
                 # same frame (which would speed up playback and waste GPU).
                 if app.recorder.is_playback_active:
-                    app.ui.render_frame()
+                    self._render_while_waiting()
                     time.sleep(0.005)
                     return None
                 # Decoder thread exited -- playback truly ended
@@ -728,7 +729,7 @@ class MainLoop:
                     gpu_tensor_available=False,
                     camera_waiting=True,
                 )
-                app.ui.render_frame()
+                self._render_while_waiting()
                 # Update GPU stats periodically
                 self._update_gpu_stats_if_due()
                 time.sleep(0.01)
@@ -945,7 +946,8 @@ class MainLoop:
                     src_h, src_w = preview_base.shape[:2]
 
                 if app.settings.roi_enabled:
-                    preview_base = app.roi._compose_roi_preview(t.display_frame, src_w, src_h)
+                    preview_base = app.roi._compose_roi_preview(
+                        t.display_frame, src_w, src_h, render_w, render_h)
                 else:
                     preview_base = t.display_frame if t.display_frame is not None else t.preview_source_frame
 
@@ -1144,7 +1146,8 @@ class MainLoop:
         app = self.app
         _dpg_t0 = time.perf_counter()
         app.ui.render_frame_raw()
-        _dpg_render_ms = (time.perf_counter() - _dpg_t0) * 1000.0
+        self._last_render_t = time.perf_counter()
+        _dpg_render_ms = (self._last_render_t - _dpg_t0) * 1000.0
 
         # Inject GUI overhead into timing dict for spike logging
         if app.timing:
@@ -1158,6 +1161,19 @@ class MainLoop:
     # ------------------------------------------------------------------
     # Loop-only helpers (moved verbatim from WallDanceApp in Phase 4)
     # ------------------------------------------------------------------
+    # The frame-wait paths poll every 5-10 ms; rendering on every poll (vsync
+    # is off) meant up to ~100+ DPG renders/s between frames, each one a full
+    # ImGui draw + preview-texture upload -- GPU/CPU taken from the show (and
+    # from TouchDesigner on the same laptop) for nothing.  60 Hz is plenty for
+    # an idle UI; the per-frame render at the tick tail is unaffected.
+    IDLE_RENDER_MIN_INTERVAL_S = 1.0 / 60.0
+
+    def _render_while_waiting(self) -> None:
+        now = time.perf_counter()
+        if now - self._last_render_t >= self.IDLE_RENDER_MIN_INTERVAL_S:
+            self._last_render_t = now
+            self.app.ui.render_frame()
+
     def _update_gpu_stats_if_due(self, now: Optional[float] = None, interval_s: float = 1.0):
         """Update top-bar GPU stats at a fixed cadence without affecting FPS timing."""
         app = self.app
@@ -1291,7 +1307,7 @@ class MainLoop:
             budget_keys = ["camera_read", "process_wall", "yolo", "preview_upload",
                            "preview_draw", "dpg_render", "gui_stats",
                            "preview_download", "extract_cpu_total",
-                           "mog2_cvt", "mog2_feed", "tracker_update",
+                           "mog2_cvt", "mog2_feed", "mog2_wait", "tracker_update",
                            "track", "enhance"]
             parts = []
             for k in budget_keys:

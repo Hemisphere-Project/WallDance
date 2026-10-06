@@ -137,13 +137,8 @@ class MotionDetector:
         """
         if use_clean_mask:
             mask = self._clean_mask
-        elif self._fg_mask is not None:
-            if include_shadows:
-                mask = (self._fg_mask >= 127).astype(np.uint8) * 255
-            else:
-                mask = (self._fg_mask == 255).astype(np.uint8) * 255
         else:
-            mask = None
+            mask = self._fg_mask      # thresholded below, on the query box only
         if mask is None:
             return 0.0
         core_scale = max(0.1, min(1.0, core_scale))
@@ -168,6 +163,10 @@ class MotionDetector:
         if x2 <= x1 or y2 <= y1:
             return 0.0
         roi = mask[y1:y2, x1:x2]
+        if not use_clean_mask:
+            # raw MOG2 labels -> binary, per pixel (same values as thresholding
+            # the whole mask first, without the full-frame pass)
+            roi = ((roi >= 127) if include_shadows else (roi == 255)).astype(np.uint8) * 255
         total = roi.size
         if total == 0:
             return 0.0
@@ -414,16 +413,12 @@ class MotionDetector:
         """
         if self._fg_mask is None:
             return None, 0.0
-        if include_shadows:
-            mask = (self._fg_mask >= 127).astype(np.uint8) * 255
-        else:
-            mask = (self._fg_mask == 255).astype(np.uint8) * 255
 
         sx = max(0, int(x * self._scale))
         sy = max(0, int(y * self._scale))
         sw = max(1, int(w * self._scale))
         sh = max(1, int(h * self._scale))
-        mh, mw = mask.shape[:2]
+        mh, mw = self._fg_mask.shape[:2]
         x1 = min(sx, mw - 1)
         y1 = min(sy, mh - 1)
         x2 = min(sx + sw, mw)
@@ -431,7 +426,15 @@ class MotionDetector:
         if x2 <= x1 or y2 <= y1:
             return None, 0.0
 
-        roi = mask[y1:y2, x1:x2]
+        # Threshold only the query box (identical values: the threshold is
+        # per-pixel).  This ran over the WHOLE mask on every call -- several
+        # calls per frame per unmatched track while bridging (tracker profile:
+        # the single biggest tracker_update cost with 2+ dancers).
+        fg = self._fg_mask[y1:y2, x1:x2]
+        if include_shadows:
+            roi = (fg >= 127).astype(np.uint8) * 255
+        else:
+            roi = (fg == 255).astype(np.uint8) * 255
         total = roi.size
         if total == 0:
             return None, 0.0
@@ -453,23 +456,8 @@ class MotionDetector:
         if target_centroid is not None:
             target_small = np.array(target_centroid, dtype=np.float64) * self._scale
 
-        best_label = None
-        best_key = None
-        for label in range(1, n_labels):
-            area = int(stats[label, cv2.CC_STAT_AREA])
-            if area <= 0:
-                continue
-            cx = float(centroids[label][0] + x1)
-            cy = float(centroids[label][1] + y1)
-            if target_small is not None:
-                dist = float(np.linalg.norm(np.array([cx, cy]) - target_small))
-                key = (dist, -area)
-            else:
-                key = (-area,)
-            if best_key is None or key < best_key:
-                best_key = key
-                best_label = label
-
+        best_label = self._select_local_label(n_labels, stats, centroids, x1, y1,
+                                              target_small)
         if best_label is None:
             return None, motion_ratio
 
@@ -486,6 +474,48 @@ class MotionDetector:
             area=float(stats[best_label, cv2.CC_STAT_AREA] * inv * inv),
         )
         return blob, motion_ratio
+
+    @staticmethod
+    def _select_local_label(n_labels, stats, centroids, x1, y1, target_small):
+        """The component ``extract_local_motion_blob`` picks: minimal key
+        ``(distance to target, -area)`` -- or ``(-area,)`` without a target --
+        over labels 1..n-1 with area > 0, the earliest label winning ties.
+
+        Same result as the per-label Python loop (kept below for the few
+        candidates), which was one np.linalg.norm per component: a fragmented
+        MOG2 mask has hundreds per query box, several queries per bridged track
+        per frame.  The distance is screened vectorised, then every label
+        within a 1e-9 relative margin of the screened minimum -- far above
+        the few-ulp gap between the two sqrt evaluations -- is re-scored with
+        the original expression, in label order, so even exact ties resolve
+        as before.
+        """
+        if n_labels <= 1:
+            return None
+        areas = stats[1:n_labels, cv2.CC_STAT_AREA].astype(np.int64)
+        valid = areas > 0
+        if not np.any(valid):
+            return None
+        if target_small is None:
+            # max area, first occurrence (argmax returns the first maximum)
+            return int(np.argmax(np.where(valid, areas, -1))) + 1
+        dx = centroids[1:n_labels, 0] + x1 - target_small[0]
+        dy = centroids[1:n_labels, 1] + y1 - target_small[1]
+        approx = np.where(valid, np.sqrt(dx * dx + dy * dy), np.inf)
+        m = float(approx.min())
+        cand = np.nonzero(approx <= m * (1.0 + 1e-9) + 1e-12)[0] + 1
+        best_label = None
+        best_key = None
+        for label in cand.tolist():
+            area = int(stats[label, cv2.CC_STAT_AREA])
+            cx = float(centroids[label][0] + x1)
+            cy = float(centroids[label][1] + y1)
+            dist = float(np.linalg.norm(np.array([cx, cy]) - target_small))
+            key = (dist, -area)
+            if best_key is None or key < best_key:
+                best_key = key
+                best_label = label
+        return best_label
 
     def frame_diff_blob_in_bbox(
         self,

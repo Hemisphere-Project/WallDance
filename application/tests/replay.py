@@ -69,6 +69,22 @@ MODELS_DIR = REPO / "models"
 PROJECTS_DIR = REPO / "projects"
 
 
+def engine_dir() -> Path:
+    """Where ``--trt`` looks for ``<model>_<imgsz>.engine``.
+
+    TensorRT engines are tied to the TRT version + GPU that built them (dev37's
+    TRT 11.3 refuses the laptop's: serialization tag 243 vs 244), so a box can
+    keep its own set apart from the laptop-copied ``models/``:
+    ``WD_ENGINE_DIR=models/dev37`` (or ``--engine-dir``), relative to the repo.
+    The env var also reaches the tools that run replay.py as a subprocess.
+    """
+    d = os.environ.get("WD_ENGINE_DIR")
+    if not d:
+        return MODELS_DIR
+    p = Path(d)
+    return p if p.is_absolute() else REPO / p
+
+
 def _latest_config(project: str) -> Optional[dict]:
     """Newest saved config for a project (the realistic, tuned settings)."""
     pdir = PROJECTS_DIR / project
@@ -153,6 +169,20 @@ def check_fingerprint(manifest: dict, video: Path) -> None:
                 "or update the manifest")
 
 
+def input_transform_for(config: Optional[dict]):
+    """REQ-5: the Mirror/Rotate a replay must apply to decoded slot frames.
+
+    Slot recordings store RAW sensor frames; the app applies the project's
+    current ``InputTransform`` at playback, so ROI / exclusion mask /
+    calibration live in the transformed space.  Offline tools that decode
+    slot files themselves must do the same after every frame read:
+    ``frame = input_transform_for(config).apply(frame)``.  Absent / invalid
+    keys mean identity, whose ``apply`` returns the same array (no copy).
+    """
+    from core.input_transform import InputTransform
+    return InputTransform.from_config(config)
+
+
 def _build_processor(config: dict, model_name: str, imgsz: int,
                      load_model: bool = True, use_gpu_path: bool = False,
                      use_trt: bool = False):
@@ -182,7 +212,7 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
         from ultralytics import YOLO
         if use_trt:
             # Production-faithful: the FP16 TensorRT engine on the GPU show path.
-            engine_path = MODELS_DIR / f"{model_name}_{imgsz}.engine"
+            engine_path = engine_dir() / f"{model_name}_{imgsz}.engine"
             if not engine_path.exists():
                 raise FileNotFoundError(
                     f"TRT engine not found: {engine_path} "
@@ -360,6 +390,9 @@ def replay_recording(
     """
     proc = _build_processor(config, model_name, imgsz,
                             use_gpu_path=use_gpu_path, use_trt=use_trt)
+    # REQ-5: slot files hold RAW frames; apply the project's Mirror/Rotate like
+    # the app's playback does (identity = the same array, byte-identical).
+    xf = input_transform_for(config)
     if (use_gpu_path or use_trt) and not proc.gpu_path_active:
         raise RuntimeError("GPU path requested but unavailable "
                            "(kornia/CUDA missing?)")
@@ -391,6 +424,7 @@ def replay_recording(
             ok, frame = cap.read()
             if not ok:
                 break
+            frame = xf.apply(frame)
             if ref_holder is not None:
                 ref_holder["ref"] = None
             tracks, _enh, _timing, _lat = proc.process(
@@ -518,6 +552,9 @@ def main():
     ap.add_argument("--trt", action="store_true",
                     help="load the <model>_<imgsz>.engine FP16 TensorRT engine and "
                          "run the GPU show path (production-faithful; implies --gpu-path)")
+    ap.add_argument("--engine-dir", default=None, metavar="DIR",
+                    help="--trt engine directory (default models/, or $WD_ENGINE_DIR); "
+                         "e.g. models/dev37 for this box's own TRT build")
     ap.add_argument("--details", action="store_true",
                     help="include per-track bbox/centroid in the --timeline rows")
     ap.add_argument("--log-dir", default=None,
@@ -537,6 +574,8 @@ def main():
                          "N=1 is byte-identical to a full run. With --cache the cache "
                          "is still built full and the stride is applied at replay.")
     args = ap.parse_args()
+    if args.engine_dir:
+        os.environ["WD_ENGINE_DIR"] = args.engine_dir   # subprocess tools inherit it
 
     scenario = None
     if args.scenario:

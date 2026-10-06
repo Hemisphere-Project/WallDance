@@ -1091,6 +1091,12 @@ class IDSCamera:
                 if frame is not None:
                     consecutive_errors = 0
                     timestamp = time.perf_counter()
+                    # REQ-5: apply Mirror/Rotate HERE, off the main loop (a
+                    # 90/270 turn of the mono8 is ~0.5-1 ms of strided copy);
+                    # read()/read_gpu() reuse it while the transform matches.
+                    # The recording callback below stays raw.
+                    xf = self.input_transform
+                    frame_xf = None if xf.is_identity else (xf, xf.apply(frame))
 
                     # ---- Stall detection ----
                     gap = timestamp - self._last_acq_frame_time
@@ -1112,6 +1118,7 @@ class IDSCamera:
                             self.state.dropped_frames += 1
 
                         self._latest_frame = frame
+                        self._latest_frame_xf = frame_xf
                         self._latest_timestamp = timestamp
                         self._frame_ready = True
                         self.state.frame_count += 1
@@ -1223,6 +1230,19 @@ class IDSCamera:
     # frame, so both agree. The recording callback stays raw (upstream).
     # Identity returns the same array: the default path is byte-identical.
     input_transform: InputTransform = IDENTITY
+    # (transform, transformed mono8) of _latest_frame, made by the acquisition
+    # thread; None for identity or when not (yet) available.
+    _latest_frame_xf: Optional[Tuple[InputTransform, np.ndarray]] = None
+
+    def _transformed_mono(self, raw: np.ndarray, pre) -> np.ndarray:
+        """``input_transform.apply(raw)``, reusing the acquisition thread's
+        pre-transformed copy when it was made with the current transform."""
+        xf = self.input_transform
+        if xf.is_identity:
+            return raw
+        if pre is not None and pre[0] == xf:
+            return pre[1]
+        return xf.apply(raw)
 
     # CPU frame cache for zero-download preview (Strategy B+).
     # read_gpu() populates this with the CPU BGR frame produced from the
@@ -1255,13 +1275,14 @@ class IDSCamera:
             
             # Convert Mono (8/16-bit) to BGR8 for OpenCV-compatible path
             frame_mono8 = self._latest_frame
+            pre = self._latest_frame_xf
             
             if self.settings.newest_only:
                 # Clear the ready flag so we know if we're getting stale frames
                 self._frame_ready = False
         
         # Convert to BGR8 outside lock
-        frame_mono8 = self.input_transform.apply(frame_mono8)
+        frame_mono8 = self._transformed_mono(frame_mono8, pre)
         bgr = self._mono_to_bgr_cpu(frame_mono8)
         self._last_nonempty_read_time = time.perf_counter()
         return True, bgr
@@ -1292,13 +1313,15 @@ class IDSCamera:
                 return True, None
             
             frame_mono8 = self._latest_frame
+            pre = self._latest_frame_xf
             
             if self.settings.newest_only:
                 self._frame_ready = False
         
         # Input transform on the mono8 (cheapest point; identity = no-op), so
         # the GPU tensor and the cached CPU preview frame are transformed alike.
-        frame_mono8 = self.input_transform.apply(frame_mono8)
+        # Normally already done by the acquisition thread (off the main loop).
+        frame_mono8 = self._transformed_mono(frame_mono8, pre)
 
         # Convert Mono (8/16-bit) → GPU tensor (1, 3, H, W) outside lock
         gpu_tensor = self._mono_to_gpu_bgr(frame_mono8)

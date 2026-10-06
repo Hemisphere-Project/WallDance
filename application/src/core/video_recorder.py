@@ -247,6 +247,9 @@ class VideoRecorder:
         self._playback_running: bool = False
         self._playback_paused: bool = False
         self._frame_buffer: Optional[np.ndarray] = None
+        # (transform, transformed frame) of _frame_buffer, made by the decoder
+        # thread; None for identity / frames stored by the step/seek paths.
+        self._frame_buffer_xf: Optional[Tuple[InputTransform, np.ndarray]] = None
         self._frame_new: bool = False  # True when decoder wrote a new frame not yet consumed
         self._frame_lock = threading.Lock()
         self._playback_frame_count: int = 0
@@ -562,8 +565,14 @@ class VideoRecorder:
             if time.time() - target_time > frame_interval:
                 start_time = time.time() - (frame_count * frame_interval / self._playback_speed)
 
+            # REQ-5: Mirror/Rotate on THIS thread (a 90/270 turn of a BGR
+            # frame is a few ms of strided copy), not in read_frame on the
+            # main loop; read_frame reuses it while the transform matches.
+            xf = self._input_transform
+            frame_xf = None if xf.is_identity else (xf, xf.apply(frame))
             with self._frame_lock:
                 self._frame_buffer = frame.copy()
+                self._frame_buffer_xf = frame_xf
                 self._frame_new = True
                 self._playback_frame_count = frame_count
             
@@ -674,6 +683,7 @@ class VideoRecorder:
             return False
 
         self._frame_buffer = first_frame.copy()
+        self._frame_buffer_xf = None
         self._frame_new = True  # Mark first frame as available for consumption
         if start_frame is not None:
             self._playback_frame_count = target
@@ -722,7 +732,12 @@ class VideoRecorder:
             self._status.playback_frame = self._playback_frame_count
             # Mark consumed so we don't re-process the same frame
             self._frame_new = False
-            # Identity = the old .copy(); a transform makes the new array itself.
+            # Identity = the old .copy(); a transform makes the new array itself
+            # -- or copies the decoder thread's pre-transformed frame (the
+            # caller may draw on what it gets, so it always owns a fresh array).
+            pre = self._frame_buffer_xf
+            if pre is not None and pre[0] == self._input_transform:
+                return pre[1].copy()
             return self._input_transform.apply_copy(self._frame_buffer)
     
     def set_playback_speed(self, speed: float):
@@ -775,6 +790,7 @@ class VideoRecorder:
         if ret:
             with self._frame_lock:
                 self._frame_buffer = frame.copy()
+                self._frame_buffer_xf = None
                 self._frame_new = True
                 self._playback_frame_count = int(self._reader.get(cv2.CAP_PROP_POS_FRAMES)) - 1
     
@@ -793,6 +809,7 @@ class VideoRecorder:
         if ret:
             with self._frame_lock:
                 self._frame_buffer = frame.copy()
+                self._frame_buffer_xf = None
                 self._frame_new = True
                 self._playback_frame_count = int(self._reader.get(cv2.CAP_PROP_POS_FRAMES)) - 1
 
@@ -815,6 +832,7 @@ class VideoRecorder:
 
         with self._frame_lock:
             self._frame_buffer = frame.copy()
+            self._frame_buffer_xf = None
             self._frame_new = True
             self._playback_frame_count = target
         self._status.playback_frame = target
@@ -844,6 +862,7 @@ class VideoRecorder:
         
         with self._frame_lock:
             self._frame_buffer = None
+            self._frame_buffer_xf = None
             self._frame_new = False
         
         self._playback_path = None
