@@ -1353,19 +1353,19 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--dry-run", action="store_true")
     s.add_argument("--follow-symlinks", action="store_true")
 
-    s = sub.add_parser("run", help="run a command on the laptop (cwd application/)")
+    s = sub.add_parser("run", help="run a command on the laptop (cwd application/): run [--cwd D] CMD...")
     s.add_argument("--cwd", default="application")
-    s.add_argument("argv", nargs=argparse.REMAINDER)
+    s.set_defaults(argv=[])
 
-    s = sub.add_parser("pytest", help="run the unit suite on the laptop")
-    s.add_argument("args", nargs=argparse.REMAINDER)
+    s = sub.add_parser("pytest", help="run the unit suite on the laptop: pytest [pytest args]")
+    s.set_defaults(args=[])
 
     s = sub.add_parser("py", help="upload + run a local script on the laptop, fetch its out/")
     s.add_argument("script")
     s.add_argument("--with", dest="with_", action="append", help="extra file to upload")
     s.add_argument("--fetch", action="append", help="remote dir to fetch afterwards")
     s.add_argument("--cwd", default="application")
-    s.add_argument("args", nargs=argparse.REMAINDER)
+    s.set_defaults(args=[])                 # script args go after --
 
     s = sub.add_parser("replay", help="tests/replay.py on the laptop; fetch the summary")
     s.add_argument("scenario")
@@ -1418,15 +1418,31 @@ def build_parser() -> argparse.ArgumentParser:
 _PASSTHROUGH = {"run": "argv", "pytest": "args", "py": "args", "slot": "args"}
 
 
+def _split_passthrough(argv: List[str]) -> Tuple[List[str], Optional[List[str]]]:
+    """Separate the arguments meant for the remote command, verbatim and in
+    order: everything after `--`; or, for `pytest` / `run`, everything after the
+    subcommand (`run` keeps a leading `--cwd X`)."""
+    if "--" in argv:
+        i = argv.index("--")
+        return argv[:i], argv[i + 1:]
+    for cmd in ("pytest", "run"):
+        if cmd in argv:
+            i = argv.index(cmd) + 1
+            if cmd == "run" and argv[i:i + 1] == ["--cwd"]:
+                i += 2
+            return argv[:i], argv[i:]
+    return argv, None
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    # REMAINDER does not capture leading dash-args inside a subparser
-    # (`pytest -x`, `slot run -- --project p`): collect them explicitly.
-    a, extra = build_parser().parse_known_args(argv)
-    if extra:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    argv, passthrough = _split_passthrough(argv)
+    a = build_parser().parse_args(argv)
+    if passthrough is not None:
         dest = _PASSTHROUGH.get(a.cmd)
         if dest is None:
-            build_parser().error(f"unrecognized arguments: {' '.join(extra)}")
-        setattr(a, dest, list(getattr(a, dest) or []) + [x for x in extra if x != "--"])
+            build_parser().error(f"unexpected arguments after --: {' '.join(passthrough)}")
+        setattr(a, dest, passthrough)
     if a.cmd == "setup":
         return cmd_setup(a)
     remote = load_remote(host=a.host, root=a.root, **({"os": "posix"} if a.local else {}))

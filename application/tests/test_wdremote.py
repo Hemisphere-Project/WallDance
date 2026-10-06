@@ -139,8 +139,9 @@ def test_py_uploads_runs_and_fetches_outputs(fake_remote, tmp_path, monkeypatch)
         "out = pathlib.Path(os.environ['WD_REMOTE_OUT'])\n"
         "(out / 'result.json').write_text(json.dumps({'args': sys.argv[1:], 'cwd': os.getcwd()}))\n"
     ).encode())
-    args = wdremote.build_parser().parse_args(
-        ["py", str(script), "--", "--alpha", "1"])
+    argv, extra = wdremote._split_passthrough(["py", str(script), "--", "--alpha", "1"])
+    args = wdremote.build_parser().parse_args(argv)
+    args.args = extra
     assert wdremote.cmd_py(tr, remote, args) == 0
     results = list((tmp_path / "runs").glob("*/out/result.json"))
     assert len(results) == 1

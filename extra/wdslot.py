@@ -575,7 +575,7 @@ def add_commands(sub) -> Dict[str, object]:
     s.add_argument("--kill", action="store_true", help="stop: terminate without asking the app")
     s.add_argument("--via-launcher", action="store_true",
                    help="run --slot live through WallDanceLauncher.exe (applies release updates)")
-    s.add_argument("args", nargs="*", help="app arguments after --, e.g. -- --project p --slot 3")
+    s.set_defaults(args=[])                 # app arguments after --, e.g. -- --project p --slot 3
 
     s = sub.add_parser("release-check", help="what promoting a ref to `release` does (local)")
     s.add_argument("ref")
