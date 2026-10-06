@@ -70,8 +70,9 @@ $W cmd SetTrackingMode value=yolo_first
 $W cmd SetConfidence value=0.15
 $W cmd SetIntermittentConfirm enabled=true
 $W cmd SetMaxDancers value=2
-$W cmd SetCoastSeconds value=2.0
-$W cmd SetStability value=0.5
+$W cmd SetCoastSeconds value=2.0               # 3-5 s if TD drops on short losses (PLAN §C.11: helps the textured wall only)
+$W cmd SetSmartHold enabled=true                 # earned hold, 0.3 s at border exits (neutral at 2 s)
+$W cmd SetStability value=0.5                    # D27 proposal 1.0-1.25 (meets jitter+lag on the white duo), judge on TD
 $W cmd SetStaticGhostGuard enabled=true
 $W cmd ToggleIrBelt enabled=true               # or false per B2
 $W cmd SetSlotFilterInput value=smoothed       # raw_skeleton = less lag, judge on TD (D18)

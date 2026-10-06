@@ -347,3 +347,14 @@ def test_tracker_mode_and_intermittent_commands_validate():
     assert _api.SetTrackingMode("yolo_first").value == "yolo_first"
     with _pt.raises(ValueError):
         _api.SetTrackingMode("blob_first")
+
+
+def test_smart_hold_and_extended_stability_commands_validate():
+    import pytest as _pt
+    from runtime import api as _api
+    from services.remote_api import POLICY, CONTROL
+    assert _api.SetSmartHold(False).enabled is False
+    assert POLICY["SetSmartHold"] == CONTROL
+    assert _api.SetStability(2.5).value == 2.5      # extended range (heavier smoothing)
+    with _pt.raises(ValueError):
+        _api.SetStability(3.5)

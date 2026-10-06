@@ -1,0 +1,3 @@
+stab 2.0 | static_guard=true static_yield=true smart_hold=true stability=2.0
+stab 2.5 | static_guard=true static_yield=true smart_hold=true stability=2.5
+stab 3.0 | static_guard=true static_yield=true smart_hold=true stability=3.0

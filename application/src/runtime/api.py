@@ -151,8 +151,8 @@ class SetStability(Command):
     value: float
 
     def __post_init__(self):
-        if not 0.0 <= float(self.value) <= 1.0:
-            raise ValueError(f"SetStability.value must be 0..1, got {self.value!r}")
+        if not 0.0 <= float(self.value) <= 3.0:
+            raise ValueError(f"SetStability.value must be 0..3, got {self.value!r}")
 
 
 @dataclass(frozen=True)
@@ -180,6 +180,13 @@ class SetTrackingMode(Command):
     def __post_init__(self):
         if self.value not in ("yolo_first", "motion_first"):
             raise ValueError(f"SetTrackingMode.value must be yolo_first|motion_first, got {self.value!r}")
+
+
+@dataclass(frozen=True)
+class SetSmartHold(Command):
+    """Hold earned by reputation (skeleton-backed tracking + movement), no hold for a dancer
+    leaving across the ROI border (default ON)."""
+    enabled: bool
 
 
 @dataclass(frozen=True)

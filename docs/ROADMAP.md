@@ -85,6 +85,10 @@ for D18, belt static map ON); N-6 TEST-2 in the suite; candidate settings `yolo_
 confirm (white duo: two points 0.973, hole 1.26 s, on-dancer 0.93) **only with the venue's ghost spots excluded**
 (they otherwise fill the spare slot when a dancer is off the wall): decided tomorrow on tonight's takes. N-8 done
 (TERRAIN_2026-10-07_FR with the good-take conditions).
+Later the same night (PLAN §C.11): Hold up to 10 s with **smart hold** (earned by skeleton time + travel, 0.3 s at
+border exits; ON, neutral at 2 s, -24 % phantom frames at 5 s), Stability up to 3 (1.25 meets jitter + lag on the
+white duo), and the emitted point drawn as a big ball in the preview. With the candidate settings the remaining
+two-point loss is startup + merges, not hold expiries: a longer Hold helps the textured wall only.
 
 ## 4. NEXT — scaling (30–40 m, bigger scene, less light, portrait)
 
@@ -167,7 +171,7 @@ current 25 m setup is the priority; id consistency/swaps and the full skeleton c
 | D23 | Textured venues: operator paints exclusion now; calibration proposes before production | both |
 | D24 | `Stable IDs` ON on LIVE at push 1 | yes, checkbox as the fallback, TD patch checked |
 | D26 | Build the clean-plate foreground hook before the demo (1.5-2.5 d) or right after? | before, only if tonight's takes confirm the April numbers; it also fixes the spare-slot ghost |
-| D27 | Demo settings: `yolo_first` + tau 0.15 + intermittent confirm + exclusion from the empty wall, vs the project defaults | decide on tonight's takes (PLAN B3/B6) |
+| D27 | Demo settings: `yolo_first` + tau 0.15 + intermittent confirm + exclusion from the empty wall, vs the project defaults; Stability 1.0-1.25 and Hold 2-3 s (smart hold ON) | decide on tonight's takes (PLAN B3/B6), Stability by eye on TD |
 | D6 | Latency budget | measured ~140–170 ms effective centroid on fast moves today; D18 is the lever |
 | D7 | Exposure ≤ 25 ms | only with the IR multiplied (P-1) |
 | D8 | Costume | belt front + back; cuffs dropped |

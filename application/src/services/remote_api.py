@@ -66,7 +66,7 @@ POLICY: Dict[str, str] = {
     "SetIdentitySlots": CONTROL, "SetMaxDancers": CONTROL, "SetStability": CONTROL,
     "SetCoastSeconds": CONTROL, "ToggleIrBelt": CONTROL, "ToggleOscState": CONTROL,
     "SetStaticGhostGuard": CONTROL, "SetStaticRelease": CONTROL, "SetSlotFilterInput": CONTROL,
-    "SetIntermittentConfirm": CONTROL, "SetTrackingMode": CONTROL,
+    "SetIntermittentConfirm": CONTROL, "SetTrackingMode": CONTROL, "SetSmartHold": CONTROL,
     "SetPersonHeight": CONTROL, "SetTrackerMaxAge": CONTROL, "SetMog2Scale": CONTROL,
     "ResetTracker": CONTROL, "ToggleEnhance": CONTROL, "ToggleEnhanceLite": CONTROL,
     "ToggleEnhanceForce": CONTROL, "ToggleGreyscale": CONTROL,

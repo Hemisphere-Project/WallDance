@@ -39,7 +39,7 @@ from core.config import (
     IDENTITY_SLOTS_MAX_DANCERS,
     IDENTITY_SLOTS_STABILITY,
     IDENTITY_SLOTS_COAST_S, IDENTITY_SLOTS_STATIC_GUARD,
-    IDENTITY_SLOTS_STATIC_RELEASE_S, IDENTITY_SLOTS_FILTER_INPUT,
+    IDENTITY_SLOTS_STATIC_RELEASE_S, IDENTITY_SLOTS_FILTER_INPUT, IDENTITY_SLOTS_SMART_HOLD,
     BELT_STATIC_EVERY_N, BELT_STATIC_ALPHA, BELT_STATIC_ON,
     IDENTITY_SLOTS_USE_IR_BELT,
     OSC_SEND_STATE,
@@ -142,6 +142,7 @@ class ProcessingSettings:
     static_ghost_guard: bool = IDENTITY_SLOTS_STATIC_GUARD
     static_release_s: float = IDENTITY_SLOTS_STATIC_RELEASE_S
     slot_filter_input: str = IDENTITY_SLOTS_FILTER_INPUT
+    smart_hold: bool = IDENTITY_SLOTS_SMART_HOLD
     use_ir_belt: bool = IDENTITY_SLOTS_USE_IR_BELT
     osc_send_state: bool = OSC_SEND_STATE
     use_gpu_path: bool = USE_GPU_PATH  # Enable GPU frame buffer
@@ -1029,13 +1030,13 @@ class FrameProcessor:
         ``stability``, ``coast_s``, ``use_ir_belt``, ``osc_send_state``,
         ``static_ghost_guard``, ``static_release_s``, ``slot_filter_input``."""
         for key in ("identity_slots_enabled", "use_ir_belt", "osc_send_state",
-                    "static_ghost_guard"):
+                    "static_ghost_guard", "smart_hold"):
             if kw.get(key) is not None:
                 setattr(self.settings, key, bool(kw[key]))
         if kw.get("max_dancers") is not None:
             self.settings.max_dancers = max(1, int(kw["max_dancers"]))
         if kw.get("stability") is not None:
-            self.settings.stability = min(1.0, max(0.0, float(kw["stability"])))
+            self.settings.stability = min(3.0, max(0.0, float(kw["stability"])))
         if kw.get("coast_s") is not None:
             self.settings.coast_s = max(0.0, float(kw["coast_s"]))
         if kw.get("static_release_s") is not None:
@@ -1049,7 +1050,8 @@ class FrameProcessor:
                                   coast_s=self.settings.coast_s,
                                   static_guard=g, static_yield=g,
                                   static_release_s=self.settings.static_release_s,
-                                  filter_input=self.settings.slot_filter_input)
+                                  filter_input=self.settings.slot_filter_input,
+                                  smart_hold=bool(self.settings.smart_hold))
         if kw.get("identity_slots_enabled") is False:
             self.reset_output()
 
@@ -1158,7 +1160,8 @@ class FrameProcessor:
                 coast_s=float(self.settings.coast_s),
                 static_guard=g, static_yield=g,
                 static_release_s=float(self.settings.static_release_s),
-                filter_input=str(self.settings.slot_filter_input)))
+                filter_input=str(self.settings.slot_filter_input),
+                smart_hold=bool(self.settings.smart_hold)))
         t = float(self._output_clock())
         if self._out_last_t is not None and t > self._out_last_t:
             self._out_dt = min(0.25, t - self._out_last_t)
@@ -1178,7 +1181,9 @@ class FrameProcessor:
                     c = candidate_from_track(finalize(trk))
                     if c is not None:
                         hidden[c.key] = c
-        outs = self._slots.update(cands, t, belt=self._belt_hook(), hidden=hidden)
+        roi = self._resolve_roi(original_w, original_h)
+        bounds = tuple(float(v) for v in roi) if roi is not None else (0.0, 0.0, float(original_w), float(original_h))
+        outs = self._slots.update(cands, t, belt=self._belt_hook(), hidden=hidden, bounds=bounds)
         self._log_slots(outs)
         return [self._slot_track(o) for o in outs]
 

@@ -60,7 +60,13 @@ def test_stability_is_monotonic():
     lo, hi = stability_params(0.0), stability_params(1.0)
     mid = stability_params(0.5)
     assert lo[0] > mid[0] > hi[0] and lo[1] > mid[1] > hi[1]
-    assert stability_params(-3) == lo and stability_params(9) == hi
+    assert stability_params(-3) == lo
+    # extended range (2026-10-06): 1..2 keeps getting calmer, clamps at 2; 0..1 is unchanged
+    x2 = stability_params(2.0)
+    assert hi[0] > stability_params(1.5)[0] > x2[0] and hi[1] > stability_params(1.5)[1] > x2[1]
+    assert x2 == pytest.approx((0.05, 0.5)) and stability_params(9) == stability_params(3.0)
+    assert stability_params(3.0) == pytest.approx((0.0125, 0.125))
+    assert hi == pytest.approx((0.2, 2.0))
 
 
 # --------------------------------------------------------------------------- #
@@ -409,3 +415,74 @@ def test_params_from_config_static_and_filter_keys():
     assert p.static_release_s == 12.0 and p.filter_input == "raw_skeleton"
     p = params_from_config({"static_ghost_guard": True, "slot_filter_input": "bogus"})
     assert p.static_guard and p.static_yield and p.filter_input == "smoothed"
+
+
+# --------------------------------------------------------------------------- #
+# Smart hold (2026-10-06): the hold is earned (skeleton-backed live time AND
+# travel since entry); a dancer leaving across the border is released fast.
+# --------------------------------------------------------------------------- #
+BOUNDS = (0.0, 0.0, 2000.0, 1500.0)
+
+
+def _hold_run(slots, frames, start=0, bounds=BOUNDS):
+    return [slots.update(c, (start + i) / FPS, bounds=bounds) for i, c in enumerate(frames)]
+
+
+def _lost_after(slots, start, n=200, bounds=BOUNDS):
+    """Feed empty frames from `start`; return the seconds the slot stayed emitted."""
+    for i in range(n):
+        if not slots.update([], (start + i) / FPS, bounds=bounds):
+            return i / FPS
+    return n / FPS
+
+
+def test_smart_hold_full_hold_needs_skeleton_time_and_travel():
+    p = dict(max_dancers=1, coast_s=5.0, smart_hold=True)
+    # a moving, skeleton-backed dancer (2 s, ~1.2 h of travel) earns the full 5 s
+    s = IdentitySlots(SlotParams(**p))
+    _hold_run(s, [[cand(1, 800 + 6 * i, 700)] for i in range(40)])
+    assert 4.8 <= _lost_after(s, 40) <= 5.2
+    # a figure that never moves only gets hold_min_s, even with a skeleton
+    s = IdentitySlots(SlotParams(**p))
+    _hold_run(s, [[cand(1, 800, 700)] for i in range(40)])
+    assert 1.4 <= _lost_after(s, 40) <= 1.6
+    # a moving blob with no fresh skeleton (fss > 0) never earns more than hold_min_s
+    s = IdentitySlots(SlotParams(**p))
+    _hold_run(s, [[cand(1, 800 + 6 * i, 700, fss=3)] for i in range(40)])
+    assert 1.4 <= _lost_after(s, 40) <= 1.6
+
+
+def test_smart_hold_releases_a_dancer_leaving_across_the_border():
+    p = SlotParams(max_dancers=1, coast_s=5.0, smart_hold=True)
+    s = IdentitySlots(p)
+    # walks right (1.5 h/s) and is lost 30 px from the right bound
+    xs = [1970 - 15 * (39 - i) for i in range(40)]
+    _hold_run(s, [[cand(1, x, 700)] for x in xs])
+    assert _lost_after(s, 40) <= p.edge_hold_s + 0.1
+    # same dancer lost at the border but moving inward / along it keeps the full hold
+    s = IdentitySlots(p)
+    _hold_run(s, [[cand(1, 1970, 300 + 6 * i)] for i in range(40)])
+    assert _lost_after(s, 40) >= 4.8
+
+
+def test_smart_hold_off_and_short_hold_are_the_shipped_behaviour():
+    for p in (SlotParams(max_dancers=1, coast_s=5.0, smart_hold=False),
+              SlotParams(max_dancers=1, coast_s=1.0, smart_hold=True)):
+        s = IdentitySlots(p)
+        _hold_run(s, [[cand(1, 800, 700)] for i in range(10)])
+        assert abs(_lost_after(s, 10) - p.coast_s) <= 0.1
+
+
+def test_smart_hold_reputation_restarts_for_a_new_dancer():
+    s = IdentitySlots(SlotParams(max_dancers=1, coast_s=5.0, smart_hold=True))
+    _hold_run(s, [[cand(1, 800 + 6 * i, 700)] for i in range(40)])
+    assert _lost_after(s, 40) >= 4.8          # slot dropped after its earned 5 s
+    # a new track enters the freed slot and is lost again almost at once
+    _hold_run(s, [[cand(7, 300, 700)] for i in range(5)], start=200)
+    assert _lost_after(s, 205) <= 1.6
+
+
+def test_params_from_config_smart_hold_and_extended_stability():
+    p = params_from_config({"smart_hold": False, "stability": 2.5, "coast_s": 8.0})
+    assert p.smart_hold is False and p.coast_s == 8.0
+    assert stability_params(p.stability) == pytest.approx(stability_params(2.5))

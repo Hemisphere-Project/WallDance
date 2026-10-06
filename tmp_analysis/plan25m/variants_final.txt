@@ -1,0 +1,4 @@
+shipped (hold 2)          | static_guard=true static_yield=true
+smart hold 2 (new dflt)   | static_guard=true static_yield=true smart_hold=true
+smart hold 5              | static_guard=true static_yield=true smart_hold=true coast_s=5.0
+plain hold 5              | static_guard=true static_yield=true coast_s=5.0

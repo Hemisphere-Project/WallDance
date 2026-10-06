@@ -53,6 +53,7 @@ stable et un point qui saute. Elles se règlent une fois à l'installation.
    | Stability | **0.5** |
    | IR belt | selon Thomas (coché si la ceinture est vue) |
    | Send /dancer/state | décoché (sauf si le patch TouchDesigner l'utilise) |
+   | Smart hold (earned, none at exits) | **coché** |
    | Ignore static figures | **coché** |
 
 6. **Phase 6** : cocher **« Allow remote control during RUN »** pour que Thomas puisse ajuster à distance
@@ -63,17 +64,22 @@ stable et un point qui saute. Elles se règlent une fois à l'installation.
 
 | Ce qu'on voit | Quoi faire |
 |---|---|
-| Le point **tremble** | monter **Stability** (0.6 à 0.8) |
+| Le point **tremble** | monter **Stability** (0.8 à 1.25 ; jusqu'à 3 = très lissé mais en retard sur les gestes rapides) |
 | Le point **traîne** derrière les mouvements rapides | baisser **Stability** (0.3 à 0.4) |
-| TouchDesigner **perd la vidéo** quand un danseur est perdu un instant | monter **Hold** (3 s) |
+| TouchDesigner **perd la vidéo** quand un danseur est perdu un instant | monter **Hold** (3 à 5 s, jusqu'à 10) en gardant **Smart hold** coché |
 | Un point **reste** quelque part après le départ du danseur | baisser **Hold** (1 à 1.5 s) |
 | Un point apparaît sur un **objet fixe** (fantôme) | resserrer la **Region of Interest** ; peindre une case seulement si aucun danseur n'y passe ; noter l'heure |
 | Un point apparaît sur **l'ombre** d'un danseur | rapprocher le projecteur de l'objectif |
 | **Plus de points que de danseurs** | vérifier **Max dancers** |
 
-Dans l'aperçu, les danseurs émis s'affichent **D1, D2** : **vert** = suivi normal, **cyan** = suivi par la ceinture,
-**orange** = maintenu (danseur perdu depuis moins de « Hold »). **Beaucoup d'orange = conditions à améliorer**
-(lumière, cadrage, projecteur) : le noter avec l'heure.
+Dans l'aperçu, chaque point envoyé à TouchDesigner est une **grosse boule numérotée 1, 2**, exactement là où
+TouchDesigner la reçoit : **pleine** = suivi, **transparente avec un anneau** = maintenue. Couleur : **vert** = suivi
+normal, **cyan** = suivi par la ceinture, **orange** = maintenu (danseur perdu depuis moins de « Hold »).
+**Beaucoup d'orange = conditions à améliorer** (lumière, cadrage, projecteur) : le noter avec l'heure.
+
+**Smart hold** : seul un danseur bien suivi (squelette vu, un peu de mouvement) a droit au « Hold » complet ; un
+point nouveau ou immobile est maintenu 1,5 s au plus ; un danseur qui sort par un bord de la Region of Interest
+disparaît après 0,3 s. Un long « Hold » ne garde donc pas les fantômes en vie.
 
 ## Les prises utiles aujourd'hui
 
@@ -84,7 +90,8 @@ les deux danseurs et TouchDesigner en marche. Noter sur la feuille : slot, heure
 
 - Les identifiants envoyés sont **1 et 2**, stables (plus de grands numéros qui changent).
 - `/walldance/count` donne la liste des identifiants présents.
-- Un identifiant ne disparaît qu'après **Hold** secondes sans danseur.
+- Un identifiant ne disparaît qu'après **Hold** secondes sans danseur (moins s'il sort par un bord ou vient
+  d'apparaître : « Smart hold »). Pendant ce temps le point est **figé** ; s'il réapparaît loin, il **saute**.
 
 ## Si quelque chose ne va pas
 

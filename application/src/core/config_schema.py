@@ -72,7 +72,7 @@ _RANGES = {
     "sensitivity_var_anchor": (4.0, 256.0),
     # Dancer ids (identity slots, CONT-6; shared keys)
     "max_dancers": (1, 16),
-    "stability": (0.0, 1.0),
+    "stability": (0.0, 3.0),
     "coast_s": (0.0, 10.0),
     "static_release_s": (0.0, 60.0),
 }

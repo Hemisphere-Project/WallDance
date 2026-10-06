@@ -1,0 +1,6 @@
+hold 2 (shipped)        | static_guard=true static_yield=true
+hold 5                  | static_guard=true static_yield=true coast_s=5.0
+hold 5 edge-only        | static_guard=true static_yield=true coast_s=5.0 smart_hold=true hold_min_s=5.0
+hold 5 soft rep         | static_guard=true static_yield=true coast_s=5.0 smart_hold=true hold_min_s=1.5 hold_rep_s=1.0 hold_rep_travel_h=0.25
+hold 3 soft rep         | static_guard=true static_yield=true coast_s=3.0 smart_hold=true hold_min_s=1.5 hold_rep_s=1.0 hold_rep_travel_h=0.25
+hold 2 soft rep         | static_guard=true static_yield=true coast_s=2.0 smart_hold=true hold_min_s=1.5 hold_rep_s=1.0 hold_rep_travel_h=0.25

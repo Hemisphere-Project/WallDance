@@ -30,7 +30,7 @@ for p in (_HERE.parent / "src", _HERE):
 from core.identity_slots import IdentitySlots, SlotParams  # noqa: E402
 from core.config import (IDENTITY_SLOTS_COAST_S, IDENTITY_SLOTS_FILTER_INPUT,  # noqa: E402
                          IDENTITY_SLOTS_STABILITY, IDENTITY_SLOTS_STATIC_GUARD,
-                         IDENTITY_SLOTS_STATIC_RELEASE_S)
+                         IDENTITY_SLOTS_STATIC_RELEASE_S, IDENTITY_SLOTS_SMART_HOLD)
 import output_quality  # noqa: E402
 import scoring  # noqa: E402
 from slot_replay import candidates_from_row, hidden_from_row  # noqa: E402
@@ -92,7 +92,7 @@ def shipped_params() -> SlotParams:
     g = bool(IDENTITY_SLOTS_STATIC_GUARD)
     return SlotParams(stability=IDENTITY_SLOTS_STABILITY, coast_s=IDENTITY_SLOTS_COAST_S,
                       static_guard=g, static_yield=g, static_release_s=IDENTITY_SLOTS_STATIC_RELEASE_S,
-                      filter_input=IDENTITY_SLOTS_FILTER_INPUT)
+                      filter_input=IDENTITY_SLOTS_FILTER_INPUT, smart_hold=IDENTITY_SLOTS_SMART_HOLD)
 
 
 def simulate(fx, params: SlotParams | None = None):

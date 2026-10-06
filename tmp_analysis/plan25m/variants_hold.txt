@@ -1,0 +1,5 @@
+hold 2 (shipped)        | static_guard=true static_yield=true
+hold 5                  | static_guard=true static_yield=true coast_s=5.0
+hold 5 smart            | static_guard=true static_yield=true coast_s=5.0 smart_hold=true
+hold 3 smart            | static_guard=true static_yield=true coast_s=3.0 smart_hold=true
+hold 2 smart            | static_guard=true static_yield=true smart_hold=true

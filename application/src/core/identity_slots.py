@@ -92,6 +92,12 @@ EMITTING_STATES = (STATE_LIVE, STATE_BELT, STATE_WEAK, STATE_COASTING)
 # rest about halved), 1 = calm (jitter -70 %, +60..80 ms lag on fast moves).
 STABILITY_MIN_CUTOFF = (3.0, 0.2)
 STABILITY_BETA = (8.0, 2.0)
+# Extended range 1..3 (Thomas 2026-10-06: a big range for the operator, even at the cost of lag):
+# beyond 1 both One-Euro parameters shrink x0.25 per unit (2.0 = 0.05 Hz / 0.5, 3.0 = 0.0125 Hz /
+# 0.125).  Replay-measured lag on fast moves: 0.5 ~55-60 ms, 1.0 ~70, 1.5 ~85-115, 2.0 ~105-170 ms;
+# jitter at rest 2-5x lower at 2.0 than at 0.5.  0..1 is unchanged.
+STABILITY_STEP_X = 0.25
+STABILITY_MAX = 3.0
 D_CUTOFF_HZ = 1.0              # derivative low-pass, fixed
 HIP_MIN_CONF = 0.3             # YOLO hip keypoint confidence to anchor the belt search
 SIZE_MIN_CUTOFF_HZ = 0.4       # box size: calm, follows real size changes slowly
@@ -99,11 +105,15 @@ SIZE_BETA = 0.0
 
 
 def stability_params(stability: float) -> Tuple[float, float]:
-    """``(min_cutoff_hz, beta)`` for the operator's Stability knob (0..1)."""
-    s = min(1.0, max(0.0, float(stability)))
+    """``(min_cutoff_hz, beta)`` for the operator's Stability knob (0..3; 0..1 = the
+    original presets, above 1 = heavier smoothing, more lag)."""
+    s = min(STABILITY_MAX, max(0.0, float(stability)))
     lo_c, hi_c = STABILITY_MIN_CUTOFF
     lo_b, hi_b = STABILITY_BETA
-    return (lo_c * (hi_c / lo_c) ** s, lo_b * (hi_b / lo_b) ** s)
+    if s <= 1.0:
+        return (lo_c * (hi_c / lo_c) ** s, lo_b * (hi_b / lo_b) ** s)
+    f = STABILITY_STEP_X ** (s - 1.0)
+    return (hi_c * f, hi_b * f)
 
 
 def _alpha(cutoff_hz: float, dt: float) -> float:
@@ -268,6 +278,18 @@ class SlotParams:
     # takes WEAK measurements near its prediction (a warm-up tracker track with a fresh
     # skeleton, a YOLO box under the confidence threshold) instead of holding a stale
     # point; the binding is unchanged, a weak-only hold is capped. --
+    # -- smart hold (keepalive earned by reputation; Thomas 2026-10-06): a slot gets the full
+    # coast_s only after hold_rep_s seconds of LIVE tracking backed by a fresh YOLO skeleton;
+    # a fresh / weak / static slot gets hold_min_s; a dancer leaving across the ROI border
+    # (near it and moving outward) gets edge_hold_s, so exits drop quickly. --
+    smart_hold: bool = False
+    hold_min_s: float = 1.5
+    hold_rep_s: float = 1.0
+    hold_rep_travel_h: float = 0.25  # ... AND the slot travelled this far (x h) since its entry (a fixed figure never does)
+    edge_margin_h: float = 0.25      # "near the border": within this x h of the bounds
+    edge_out_speed_h: float = 0.5    # ... and moving outward faster than this (h/s), or the box touches the bound
+    edge_hold_s: float = 0.3
+    edge_touch: bool = False         # the box touching the bound counts as leaving (False: only outward motion)
     weak_enabled: bool = False
     weak_gate_h: float = 0.75
     weak_gate_growth_h_per_s: float = 2.0
@@ -344,6 +366,10 @@ class _Slot:
     hist: List[Tuple[float, float, float]] = field(default_factory=list)   # live (t, x, y) over static_after_s
     static_since: Optional[float] = None    # first time the slot was found static (this binding)
     strong_t: float = -1e9                  # last LIVE / belt measurement (weak-hold cap)
+    rep_t: float = 0.0                      # seconds of skeleton-backed live tracking (smart hold)
+    travel: float = 0.0                     # max distance (px, 5-sample median) from the entry point
+    recent5: List[np.ndarray] = field(default_factory=list)
+    hold_s: Optional[float] = None          # the hold granted when the slot started coasting
     filt: Optional[OneEuro2D] = None
     size_filt: Optional[OneEuro2D] = None
 
@@ -556,6 +582,9 @@ class IdentitySlots:
             s.hist = []
             s.static_since = None
             s.strong_t = t
+            s.rep_t = 0.0
+            s.travel = 0.0
+            s.recent5 = []
             self.counters["entries"] += 1
         else:
             s.vel = np.zeros(2)          # a rebind is a new trajectory
@@ -583,6 +612,11 @@ class IdentitySlots:
             s.vel = a * v + (1.0 - a) * s.vel
         s.pos = x.copy()
         s.fpos = x.copy() if fpos is None else np.asarray(fpos, dtype=np.float64).copy()
+        if s.entry_pos is not None:
+            s.recent5.append(x.copy())
+            del s.recent5[:-5]
+            m = np.median(np.asarray(s.recent5), axis=0)
+            s.travel = max(s.travel, float(np.linalg.norm(m - s.entry_pos)))
         if self.p.static_guard or self.p.static_yield:
             s.hist.append((t, float(x[0]), float(x[1])))
             while s.hist and t - s.hist[0][0] > self.p.static_after_s:
@@ -827,6 +861,9 @@ class IdentitySlots:
                     fpos = np.array([c.fx, c.fy], dtype=np.float64)
                 self._measure(s, xy, wh, t, dt, STATE_LIVE, fpos=fpos)
                 s.strong_t = t
+                s.hold_s = None
+                if c.fss is not None and int(c.fss) == 0:
+                    s.rep_t = min(p.hold_rep_s, s.rep_t + dt)
                 s.fss = c.fss
                 s.payload = c.payload
                 s.belt_since = None
@@ -852,12 +889,14 @@ class IdentitySlots:
                 self.counters["weak_frames"] = self.counters.get("weak_frames", 0) + 1
                 continue
             # no measurement: coast on the (decaying) prediction
+            if s.state != STATE_COASTING:
+                s.hold_s = self._granted_hold(s, t)   # decided once, from the last measured state
             s.pos = pred[s.sid]
             s.fpos = s.pos
             if s.state != STATE_COASTING:
                 s.state = STATE_COASTING
                 s.state_since = t
-            if t - s.last_meas_t > p.coast_s:
+            if t - s.last_meas_t > (s.hold_s if s.hold_s is not None else p.coast_s):
                 self._drop(s, t, "coast_expired")
 
         # 6. never two slots on one dancer
@@ -902,6 +941,37 @@ class IdentitySlots:
         return out
 
     # ------------------------------------------------------------------
+    def _granted_hold(self, s: _Slot, t: float) -> float:
+        """How long this slot may coast: coast_s, or with smart_hold a share of it earned by
+        skeleton-backed live time, cut to edge_hold_s for a dancer leaving across the border
+        and to hold_min_s for a static slot."""
+        p = self.p
+        if not p.smart_hold:
+            return p.coast_s
+        if p.coast_s <= p.hold_min_s:
+            hold = p.coast_s
+        else:
+            h_ref = max(1.0, float(s.wh[1]) if s.wh is not None else 1.0)
+            r = min(1.0, s.rep_t / max(1e-6, p.hold_rep_s),
+                    s.travel / max(1e-6, p.hold_rep_travel_h * h_ref))
+            hold = p.hold_min_s + (p.coast_s - p.hold_min_s) * r
+        if s.static_since is not None:
+            hold = min(hold, p.hold_min_s)
+        b = self._bounds
+        if b is not None and s.pos is not None and s.wh is not None:
+            h = max(1.0, float(s.wh[1]))
+            x, y = float(s.pos[0]), float(s.pos[1])
+            hw, hh = 0.5 * float(s.wh[0]), 0.5 * float(s.wh[1])
+            x0, y0, x1, y1 = b
+            v = s.vel / h                                   # h/s
+            out = p.edge_out_speed_h
+            for dist, touch, vout in ((x - x0, x - hw <= x0, -v[0]), (x1 - x, x + hw >= x1, v[0]),
+                                      (y - y0, y - hh <= y0, -v[1]), (y1 - y, y + hh >= y1, v[1])):
+                if dist <= p.edge_margin_h * h and (vout > out or (touch and p.edge_touch)):
+                    hold = min(hold, p.edge_hold_s)
+                    break
+        return hold
+
     def _weak_round(self, weak, measured, belt_res, pred, t) -> Dict[int, "WeakMeasure"]:
         """Coasting slots look deeper near their prediction: each weak measurement goes to
         at most one slot (nearest, inside a gate growing with the time since the last
@@ -1149,6 +1219,8 @@ def params_from_config(cfg: Dict[str, Any], base: Optional[SlotParams] = None) -
         p.static_guard = p.static_yield = bool(cfg["static_ghost_guard"])
     if cfg.get("static_release_s") is not None:
         p.static_release_s = max(0.0, float(cfg["static_release_s"]))
+    if cfg.get("smart_hold") is not None:
+        p.smart_hold = bool(cfg["smart_hold"])
     if cfg.get("slot_filter_input") in ("smoothed", "raw", "raw_skeleton"):
         p.filter_input = str(cfg["slot_filter_input"])
     return p

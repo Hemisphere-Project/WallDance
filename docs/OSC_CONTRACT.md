@@ -265,6 +265,13 @@ byte-identical with slots on or off).
   velocity decaying in ~0.25 s), for up to `coast_s` seconds (default **2.0 s**), then it is
   absent (state `lost`). A dancer the tracker re-finds under a new internal id gets the **same
   slot id back** (gated around the held position; the gate grows with the coast time).
+- **Smart hold** (2026-10-06, `smart_hold`, default ON): the full `coast_s` is *earned*. A slot gets it
+  only after >= 1 s of live tracking backed by a fresh YOLO skeleton **and** >= 0.25 h of travel since it
+  took its id; before that (and for a static slot) the hold is 1.5 s, ramping linearly to `coast_s`.
+  A dancer lost within 0.25 h of the ROI border (the frame when the ROI is off) while moving outward
+  faster than 0.5 h/s is released after 0.3 s. Bit-identical to plain hold at `coast_s` = 2 s
+  (6 goldens); at 5 s it cuts the frames with a held point beyond the dancers by 24 % on the ghost-pressure
+  take. The hold length is decided once, when the slot starts coasting.
 - **A new dancer** (an established tracker track: confirmed, a few frames reported, a real
   skeleton within 3 s, outside the exclusion mask) takes a free slot, lowest / nearest first.
   Extra tracks beyond `max_dancers` are not sent. A track sitting on a body another slot already
@@ -277,7 +284,9 @@ byte-identical with slots on or off).
   frames with a point on it.  `static_release_s` (default 0 = off) would also drop a static slot with no
   newcomer -- off because at 8 s it dropped a still floor dancer.
 - **Centroid**: One-Euro filter per slot (adaptive: calm at rest, quick on fast moves), operator
-  knob **Stability** 0..1.  Its input (`slot_filter_input`) is the tracker's EMA centroid
+  knob **Stability** 0..3 (0..1 unchanged; above 1 both filter parameters shrink x0.25 per unit:
+  heavier smoothing, more lag; replay-measured lag on fast moves ~70 ms at 1, ~105-170 ms at 2,
+  ~160-400 ms at 3; jitter at rest 2-5x lower at 2 than at 0.5).  Its input (`slot_filter_input`) is the tracker's EMA centroid
   (`smoothed`, default); `raw_skeleton` feeds the bound track's raw Kalman centroid on frames with a
   fresh skeleton (lag on fast moves -30..-60 ms, jitter at rest x1.3-1.5; binding unchanged), `raw` on
   every frame (fragile on textured walls). `/bbox` is the slot's smoothed box centred on the centroid; `/keypoints`
@@ -300,8 +309,9 @@ byte-identical with slots on or off).
 |---|---|---|
 | Stable IDs (`identity_slots_enabled`) | ON | TD drops its video when an id vanishes |
 | Max dancers (`max_dancers`) | 2 | this week's show: 2 dancers on the wall (a cap, not a constant) |
-| Stability (`stability`) | 0.5 | jitter at rest about halved vs the legacy EMA centroid for +15..25 ms lag on fast moves; 0 ~ legacy lag, 1 = calmest (+60..80 ms) |
-| Hold (`coast_s`) | 2.0 s | 355 of the 356 tracker losses observed over all replays + the 2026-10-05 field takes re-acquire within 2.0 s (99 % within 1.5 s, longest 2.37 s) |
+| Stability (`stability`) | 0.5 | jitter at rest about halved vs the legacy EMA centroid for +15..25 ms lag on fast moves; 0 ~ legacy lag, 1 = calm (+60..80 ms), up to 3 for very heavy smoothing (PLAN_25M §C.11) |
+| Hold (`coast_s`) | 2.0 s | 355 of the 356 tracker losses observed over all replays + the 2026-10-05 field takes re-acquire within 2.0 s (99 % within 1.5 s, longest 2.37 s); settable to 10 s |
+| Smart hold (`smart_hold`) | ON | earned hold, fast release at border exits (above); neutral at 2 s |
 | IR belt (`use_ir_belt`) | ON | no-op unless `core/belt_detector.py` is importable; plain coasting stays the base |
 | Send state (`osc_send_state`) | OFF | opt-in |
 | Ignore static figures (`static_ghost_guard`) | ON | PLAN_25M 2026-10-06 offline gate (`tmp_analysis/plan25m/slot_eval.py`) |
@@ -310,5 +320,7 @@ byte-identical with slots on or off).
 
 Operator knobs live in phase **6 Live → Dancer IDs** and are remote-settable
 (`SetIdentitySlots`, `SetMaxDancers`, `SetStability`, `SetCoastSeconds`, `ToggleIrBelt`,
-`ToggleOscState`, `SetStaticGhostGuard`, `SetStaticRelease`, `SetSlotFilterInput`; policy `control`). The FRAME_SUMMARY log carries `slots` (per slot: id,
+`ToggleOscState`, `SetStaticGhostGuard`, `SetStaticRelease`, `SetSlotFilterInput`, `SetSmartHold`; policy `control`).
+The preview draws each emitted slot as a **big ball** at exactly the position `/centroid` sends
+(solid while measured, see-through with a ring while held, state colour, slot number inside). The FRAME_SUMMARY log carries `slots` (per slot: id,
 state, bound tracker id, age) and `emitted_slots`; `SLOT_EVENT` lines record binds and losses.

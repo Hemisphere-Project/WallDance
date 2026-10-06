@@ -256,7 +256,8 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
     from core.config import (IDENTITY_SLOTS_ENABLED, IDENTITY_SLOTS_MAX_DANCERS,
                              IDENTITY_SLOTS_STABILITY, IDENTITY_SLOTS_COAST_S,
                              IDENTITY_SLOTS_USE_IR_BELT, IDENTITY_SLOTS_STATIC_GUARD,
-                             IDENTITY_SLOTS_STATIC_RELEASE_S, IDENTITY_SLOTS_FILTER_INPUT)
+                             IDENTITY_SLOTS_STATIC_RELEASE_S, IDENTITY_SLOTS_FILTER_INPUT,
+                             IDENTITY_SLOTS_SMART_HOLD)
     settings.identity_slots_enabled = bool(config.get("identity_slots_enabled",
                                                       IDENTITY_SLOTS_ENABLED))
     settings.max_dancers = int(config.get("max_dancers", IDENTITY_SLOTS_MAX_DANCERS))
@@ -266,6 +267,7 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
     settings.static_ghost_guard = bool(config.get("static_ghost_guard", IDENTITY_SLOTS_STATIC_GUARD))
     settings.static_release_s = float(config.get("static_release_s", IDENTITY_SLOTS_STATIC_RELEASE_S))
     settings.slot_filter_input = str(config.get("slot_filter_input", IDENTITY_SLOTS_FILTER_INPUT))
+    settings.smart_hold = bool(config.get("smart_hold", IDENTITY_SLOTS_SMART_HOLD))
     settings.roi_enabled = bool(config.get("roi_enabled", False))
     settings.roi_x = int(config.get("roi_x", 0))
     settings.roi_y = int(config.get("roi_y", 0))

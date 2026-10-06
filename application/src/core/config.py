@@ -311,6 +311,10 @@ IDENTITY_SLOTS_STATIC_GUARD = True      # static-ghost guard + yield (a figure t
 IDENTITY_SLOTS_STATIC_RELEASE_S = 0.0   # > 0: drop a slot static this long even with no newcomer
                                         # (OFF: at 8 s it dropped a still floor dancer)
 IDENTITY_SLOTS_FILTER_INPUT = "smoothed"  # One-Euro input: smoothed | raw | raw_skeleton (D18)
+IDENTITY_SLOTS_SMART_HOLD = True        # Hold earned by reputation (>= 1 s of skeleton-backed tracking AND
+                                        # >= 0.25 h of travel since entry, else 1.5 s) and cut to 0.3 s for a
+                                        # dancer leaving across the ROI border; neutral at Hold 2 s, -24 %
+                                        # ghost-point frames at Hold 5 s (PLAN_25M §C.11)
 # IR-belt static-glint map, learned online (PLAN_25M A6): every N-th frame a global
 # belt pass updates a per-cell persistence EMA, live dancers protected; a cell above
 # the threshold becomes static and the gated belt queries ignore it.  ~9 s to learn

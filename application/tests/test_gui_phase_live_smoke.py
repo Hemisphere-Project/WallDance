@@ -33,7 +33,7 @@ def test_phase_live_builds_with_output_controls():
             _on_stability_change=noop,
             _on_coast_s_change=noop,
             _on_ir_belt_toggle=noop,
-            _on_static_guard_toggle=noop, _on_osc_state_toggle=noop,
+            _on_static_guard_toggle=noop, _on_smart_hold_toggle=noop, _on_osc_state_toggle=noop,
             _on_remote_control_toggle=noop,
             _btn_standby_theme=th1,
             _btn_run_active_theme=th2,

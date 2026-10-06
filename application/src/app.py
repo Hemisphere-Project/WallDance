@@ -71,7 +71,7 @@ from core.config import (
     IDENTITY_SLOTS_MAX_DANCERS,
     IDENTITY_SLOTS_STABILITY,
     IDENTITY_SLOTS_COAST_S, IDENTITY_SLOTS_STATIC_GUARD,
-    IDENTITY_SLOTS_STATIC_RELEASE_S, IDENTITY_SLOTS_FILTER_INPUT,
+    IDENTITY_SLOTS_STATIC_RELEASE_S, IDENTITY_SLOTS_FILTER_INPUT, IDENTITY_SLOTS_SMART_HOLD,
     IDENTITY_SLOTS_USE_IR_BELT,
     OSC_SEND_STATE,
     YOLO_MODEL,
@@ -820,6 +820,7 @@ class WallDanceApp:
             "static_ghost_guard": self.settings.static_ghost_guard,
             "static_release_s": self.settings.static_release_s,
             "slot_filter_input": self.settings.slot_filter_input,
+            "smart_hold": self.settings.smart_hold,
             "use_ir_belt": self.settings.use_ir_belt,
             "osc_send_state": self.settings.osc_send_state,
         }
@@ -868,6 +869,7 @@ class WallDanceApp:
         reg(api.ToggleIrBelt, lambda c: self._cb_identity_slots(use_ir_belt=c.enabled))
         reg(api.SetIntermittentConfirm, lambda c: self._cb_intermittent_confirm(c.enabled))
         reg(api.SetTrackingMode, lambda c: self._cb_tracking_mode(c.value))
+        reg(api.SetSmartHold, lambda c: self._cb_identity_slots(smart_hold=c.enabled))
         reg(api.SetStaticGhostGuard,
             lambda c: self._cb_identity_slots(static_ghost_guard=c.enabled))
         reg(api.SetStaticRelease, lambda c: self._cb_identity_slots(static_release_s=c.value))
@@ -1247,6 +1249,7 @@ class WallDanceApp:
             "static_ghost_guard": self.settings.static_ghost_guard,
             "static_release_s": self.settings.static_release_s,
             "slot_filter_input": self.settings.slot_filter_input,
+            "smart_hold": self.settings.smart_hold,
             "use_ir_belt": self.settings.use_ir_belt,
             "osc_send_state": self.settings.osc_send_state,
             "motion_sensitivity": self.processor.get_motion_sensitivity(),
@@ -1455,6 +1458,7 @@ class WallDanceApp:
                              ("static_ghost_guard", IDENTITY_SLOTS_STATIC_GUARD),
                              ("static_release_s", IDENTITY_SLOTS_STATIC_RELEASE_S),
                              ("slot_filter_input", IDENTITY_SLOTS_FILTER_INPUT),
+                             ("smart_hold", IDENTITY_SLOTS_SMART_HOLD),
                              ("use_ir_belt", IDENTITY_SLOTS_USE_IR_BELT),
                              ("osc_send_state", OSC_SEND_STATE)):
             if key in config or full_config:
@@ -1763,6 +1767,7 @@ class WallDanceApp:
         "use_ir_belt": ("checkbox", "ir_belt"),
         "osc_send_state": ("checkbox", "osc_state"),
         "static_ghost_guard": ("checkbox", "static_guard"),
+        "smart_hold": ("checkbox", "smart_hold"),
     }
 
     def _cb_intermittent_confirm(self, enabled: bool):
@@ -1793,6 +1798,7 @@ class WallDanceApp:
               f"N={s.max_dancers} stability={s.stability:.2f} hold={s.coast_s:.1f}s "
               f"belt={'on' if s.use_ir_belt else 'off'} "
               f"ghost_guard={'on' if s.static_ghost_guard else 'off'} "
+              f"smart_hold={'on' if s.smart_hold else 'off'} "
               f"release={s.static_release_s:.0f}s filter={s.slot_filter_input} "
               f"state_msg={'on' if s.osc_send_state else 'off'}")
 

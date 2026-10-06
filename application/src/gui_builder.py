@@ -16,7 +16,7 @@ import numpy as np
 
 from core.config import (RECORDING_SLOTS, IDENTITY_SLOTS_ENABLED, IDENTITY_SLOTS_MAX_DANCERS,
                          IDENTITY_SLOTS_STABILITY, IDENTITY_SLOTS_COAST_S,
-                         IDENTITY_SLOTS_STATIC_GUARD,
+                         IDENTITY_SLOTS_STATIC_GUARD, IDENTITY_SLOTS_SMART_HOLD,
                          IDENTITY_SLOTS_USE_IR_BELT, OSC_SEND_STATE)
 from gui_icons import Icons
 from gui_constants import (
@@ -1109,27 +1109,32 @@ def build_identity_slot_controls(gui: Any):
         st_slider = dpg.add_slider_float(
             tag="stability_slider", label="Stability",
             default_value=float(cfg.get("stability", IDENTITY_SLOTS_STABILITY)),
-            min_value=0.0, max_value=1.0, format="%.2f", width=scaled(-150),
+            min_value=0.0, max_value=3.0, format="%.2f", width=scaled(-150),
             callback=gui._on_stability_change,
         )
-        _add_slider_row("stability_slider", 0.1, 0.0, 1.0, gui._on_stability_change)
+        _add_slider_row("stability_slider", 0.1, 0.0, 3.0, gui._on_stability_change)
     with dpg.tooltip(st_slider):
         dpg.add_text("Centroid smoothing (adaptive: calm at rest, quick on\n"
-                     "fast moves). 0 = most responsive, 1 = calmest.\n"
+                     "fast moves). 0 = most responsive, 0.5 = default, 1 = calm.\n"
+                     "Above 1: heavier smoothing, the point lags fast moves\n"
+                     "(~70 ms at 1, ~110-170 ms at 2, 160-400 ms at 3).\n"
                      "Shaking point? Raise it. Point trails fast moves? Lower it.")
     with dpg.group(horizontal=True):
         coast_slider = dpg.add_slider_float(
             tag="coast_s_slider", label="Hold (s)",
             default_value=float(cfg.get("coast_s", IDENTITY_SLOTS_COAST_S)),
-            min_value=0.0, max_value=5.0, format="%.1f", width=scaled(-150),
+            min_value=0.0, max_value=10.0, format="%.1f", width=scaled(-150),
             callback=gui._on_coast_s_change,
         )
-        _add_slider_row("coast_s_slider", 0.5, 0.0, 5.0, gui._on_coast_s_change)
+        _add_slider_row("coast_s_slider", 0.5, 0.0, 10.0, gui._on_coast_s_change)
     with dpg.tooltip(coast_slider):
         dpg.add_text("How long a lost dancer keeps its id (held at its last\n"
-                     "position) before it disappears from OSC.\n"
+                     "position) before it disappears from OSC. Up to 10 s.\n"
                      "Video drops in TD when a dancer vanishes? Raise it.\n"
-                     "Ids linger after a dancer leaves? Lower it.")
+                     "Ids linger after a dancer leaves? Lower it.\n"
+                     "With 'Smart hold' ON (default) only a well-tracked dancer\n"
+                     "gets the full Hold; exits across the border are released\n"
+                     "after 0.3 s, so a long Hold does not keep ghosts alive.")
     with dpg.group(horizontal=True):
         belt_chk = dpg.add_checkbox(
             label="IR belt", tag="ir_belt_checkbox",
@@ -1149,6 +1154,17 @@ def build_identity_slot_controls(gui: Any):
         with dpg.tooltip(state_chk):
             dpg.add_text("Opt-in OSC /walldance/dancer/state [id, state, age_s]\n"
                          "(live / belt / coasting / lost) for every slot.")
+    hold_chk = dpg.add_checkbox(
+        label="Smart hold (earned, none at exits)", tag="smart_hold_checkbox",
+        default_value=bool(cfg.get("smart_hold", IDENTITY_SLOTS_SMART_HOLD)),
+        callback=gui._on_smart_hold_toggle,
+    )
+    with dpg.tooltip(hold_chk):
+        dpg.add_text("ON: a dancer gets the full 'Hold' only after ~1 s of solid\n"
+                     "tracking (skeleton seen + some movement); a new, weak or\n"
+                     "static point is held 1.5 s at most; a dancer leaving across\n"
+                     "the Region of Interest border is released after 0.3 s.\n"
+                     "Leave it ON, especially with a long Hold.")
     guard_chk = dpg.add_checkbox(
         label="Ignore static figures", tag="static_guard_checkbox",
         default_value=bool(cfg.get("static_ghost_guard", IDENTITY_SLOTS_STATIC_GUARD)),

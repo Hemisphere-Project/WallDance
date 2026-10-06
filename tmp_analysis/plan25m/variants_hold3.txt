@@ -1,0 +1,4 @@
+hold 5 soft rep (edge .5h)   | static_guard=true static_yield=true coast_s=5.0 smart_hold=true hold_min_s=1.5 hold_rep_s=1.0 hold_rep_travel_h=0.25
+hold 5 soft, edge strict     | static_guard=true static_yield=true coast_s=5.0 smart_hold=true hold_min_s=1.5 hold_rep_s=1.0 hold_rep_travel_h=0.25 edge_margin_h=0.25 edge_out_speed_h=0.5 edge_touch=false
+hold 5 soft, no edge         | static_guard=true static_yield=true coast_s=5.0 smart_hold=true hold_min_s=1.5 hold_rep_s=1.0 hold_rep_travel_h=0.25 edge_margin_h=0.0 edge_touch=false
+hold 3 soft, edge strict     | static_guard=true static_yield=true coast_s=3.0 smart_hold=true hold_min_s=1.5 hold_rep_s=1.0 hold_rep_travel_h=0.25 edge_margin_h=0.25 edge_out_speed_h=0.5 edge_touch=false

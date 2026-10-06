@@ -1,0 +1,5 @@
+stab 0.5 (dflt)   | static_guard=true static_yield=true smart_hold=true
+stab 1.0          | static_guard=true static_yield=true smart_hold=true stability=1.0
+stab 1.25         | static_guard=true static_yield=true smart_hold=true stability=1.25
+stab 1.5          | static_guard=true static_yield=true smart_hold=true stability=1.5
+stab 2.0          | static_guard=true static_yield=true smart_hold=true stability=2.0
