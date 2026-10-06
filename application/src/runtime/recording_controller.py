@@ -536,11 +536,24 @@ class RecordingController:
     def _play_recording(self, slot: int, filepath: str):
         """Play a specific recording from history."""
         slot_info = self.recorder.get_slot_info(slot)
+
+        def _norm(p):
+            return os.path.normcase(os.path.realpath(p))
+
+        # Exact path first; then the same file through another route (the DEV
+        # slot's projects junction, a remote client's path); then a bare name.
+        want = _norm(filepath)
+        name = os.path.basename(filepath)
+        by_name = [i for i, (_d, p) in enumerate(slot_info.recordings)
+                   if os.path.basename(p) == name]
         for idx, (display, path) in enumerate(slot_info.recordings):
-            if path == filepath:
+            if path == filepath or _norm(path) == want:
                 self._start_playback_safe(slot, idx)
                 return
-        print(f"Recording not found: {filepath}")
+        if len(by_name) == 1:
+            self._start_playback_safe(slot, by_name[0])
+            return
+        print(f"Recording not found in slot {slot}: {filepath}")
 
     def _update_recording_ui(self):
         """Update the recording UI to match current state."""
