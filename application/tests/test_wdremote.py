@@ -150,3 +150,19 @@ def test_py_uploads_runs_and_fetches_outputs(fake_remote, tmp_path, monkeypatch)
     assert res["cwd"].endswith("application")
     # scratch lives under the gitignored tmp_analysis/remote/
     assert list((root / "tmp_analysis" / "remote").glob("*/probe_script.py"))
+
+
+def test_pull_tier_honours_include_exclude(fake_remote, monkeypatch, tmp_path):
+    remote, tr, _ = fake_remote
+    monkeypatch.setattr(wdremote, "scenario_files", lambda: {})
+    argv, _ = wdremote._split_passthrough(
+        ["pull", "--tier", "P0", "--exclude", "*events.jsonl", "--dest", str(tmp_path / "d"),
+         "--dry-run"])
+    a = wdremote.build_parser().parse_args(argv)
+    seen = {}
+    monkeypatch.setattr(wdremote, "pull_files",
+                        lambda tr, remote, files, dest, **kw: seen.setdefault("f", files))
+    assert wdremote.cmd_pull(tr, remote, a) == 0
+    rels = [f["rel"] for f in seen["f"]]
+    assert rels and not any(r.endswith("events.jsonl") for r in rels)
+    assert any(r.endswith("session.json") for r in rels)

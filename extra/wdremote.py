@@ -881,6 +881,10 @@ def cmd_pull(tr, remote: Remote, a) -> int:
         files = [f for t in a.tier for f in tiers[t]]
         if a.paths:
             files = [f for f in files if any(f["rel"].startswith(p.rstrip("/")) for p in a.paths)]
+        if a.include:
+            files = [f for f in files if any(fnmatch.fnmatch(f["rel"], g) for g in a.include)]
+        if a.exclude:
+            files = [f for f in files if not any(fnmatch.fnmatch(f["rel"], g) for g in a.exclude)]
     else:
         if not a.paths:
             raise SystemExit("wdremote pull: give PATH(s) relative to the remote root, or --tier")
