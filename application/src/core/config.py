@@ -77,6 +77,16 @@ USE_GPU_PATH = True                 # Enable GPU frame buffer and GPU-accelerate
                                     # Requires OpenCV with CUDA support
                                     # Falls back to CPU if CUDA not available
 
+# OpenCV worker threads (audit 2026-10 PERF-1). `import ultralytics` calls
+# cv2.setNumThreads(0) (a PyTorch-DataLoader workaround), which left the whole
+# app -- including the CPU motion feed, the prod critical path -- single-
+# threaded. Every module that imports ultralytics (core/pipeline.py,
+# core/model_manager.py) restores this count right after the import. Motion
+# outputs are bit-identical at any count (tests/test_cv2_threads_bit_identity.py).
+# Capped at 4: the motion worker shares the CPU with the main thread (YOLO
+# launches, tracker, GUI), IDS acquisition and the recording encoder.
+CV2_NUM_THREADS = 4
+
 # IDS staged rollout switches (stability-first)
 # GPU-direct is ON for maximum YOLO efficiency: frame uploads via pinned
 # memory async DMA (~4 MB mono8), YOLO runs on GPU tensor directly.

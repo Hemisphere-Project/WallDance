@@ -16,6 +16,7 @@ import numpy as np
 from ultralytics import YOLO
 
 from core.config import (
+    CV2_NUM_THREADS,
     BG_SUBTRACT_ENABLED,
     BG_SUBTRACT_SENSITIVITY,
     BRIGHTNESS_THRESHOLD,
@@ -77,6 +78,11 @@ except ImportError:
     TORCH_AVAILABLE = False
     GpuPipeline = None
     GpuPipelineSettings = None
+
+# PERF-1: `import ultralytics` (above) ran cv2.setNumThreads(0) process-wide,
+# leaving the CPU motion feed single-threaded. Restore a multi-threaded OpenCV
+# (motion outputs are bit-identical: tests/test_cv2_threads_bit_identity.py).
+cv2.setNumThreads(CV2_NUM_THREADS)
 
 
 @dataclass
