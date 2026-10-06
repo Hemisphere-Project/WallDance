@@ -20,6 +20,7 @@ import cv2
 import dearpygui.dearpygui as dpg
 import numpy as np
 
+from core.visualization import scaled_roi_rect
 from runtime.roi_state import RoiState
 
 
@@ -309,7 +310,15 @@ class RoiMaskEditor:
             for hx, hy in ((x, y), (x + w, y), (x, y + h), (x + w, y + h)):
                 cv2.rectangle(frame, (hx - handle, hy - handle), (hx + handle, hy + handle), border_color, -1)
 
-    def _compose_roi_preview(self, preview_frame: Optional[np.ndarray], source_w: int, source_h: int) -> Optional[np.ndarray]:
+    def _compose_roi_preview(self, preview_frame: Optional[np.ndarray], source_w: int,
+                             source_h: int, out_w: Optional[int] = None,
+                             out_h: Optional[int] = None) -> Optional[np.ndarray]:
+        """Black canvas with the ROI image pasted where the ROI sits.
+
+        ``out_w`` x ``out_h`` is the canvas size (the preview texture); the GPU
+        pipeline already downloads the ROI at that scale (``scaled_roi_rect``),
+        so no full-resolution canvas / resize is needed.  Without it the canvas
+        is source-sized (the old behaviour)."""
         if preview_frame is None or source_w <= 0 or source_h <= 0:
             return None
 
@@ -321,11 +330,16 @@ class RoiMaskEditor:
         if roi_frame.size == 0:
             return None
 
-        if roi_frame.shape[1] != w or roi_frame.shape[0] != h:
-            roi_frame = cv2.resize(roi_frame, (w, h))
+        if not out_w or not out_h:
+            out_w, out_h = source_w, source_h
+        x0, y0, x1, y1 = scaled_roi_rect(x, y, w, h, source_w, source_h, out_w, out_h)
+        if x1 <= x0 or y1 <= y0:
+            return None
+        if roi_frame.shape[1] != x1 - x0 or roi_frame.shape[0] != y1 - y0:
+            roi_frame = cv2.resize(roi_frame, (x1 - x0, y1 - y0))
 
-        canvas = np.zeros((source_h, source_w, 3), dtype=roi_frame.dtype)
-        canvas[y:y + h, x:x + w] = roi_frame
+        canvas = np.zeros((out_h, out_w, 3), dtype=roi_frame.dtype)
+        canvas[y0:y1, x0:x1] = roi_frame
         return canvas
 
     def _draw_roi_note(self, frame: np.ndarray, source_w: int, source_h: int):

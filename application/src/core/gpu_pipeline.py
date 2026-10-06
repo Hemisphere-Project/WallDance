@@ -57,6 +57,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from core.visualization import scaled_roi_rect
+
 # Check CUDA availability
 CUDA_AVAILABLE = torch.cuda.is_available()
 if CUDA_AVAILABLE:
@@ -495,6 +497,7 @@ class GpuPipeline:
         
         # Preview rate limiting - cache on CPU side to skip GPU→CPU copy
         self._last_preview_time: float = 0.0
+        self._next_preview_time: float = 0.0  # phase-keeping schedule (see _preview_due)
         self._preview_interval: float = 0.0  # seconds between previews
         self._cached_preview: Optional[np.ndarray] = None  # CPU-side cache
         
@@ -511,6 +514,39 @@ class GpuPipeline:
             self._preview_interval = 1.0 / settings.preview_fps_cap
         else:
             self._preview_interval = 0.0
+        self._next_preview_time = 0.0
+
+    def _preview_due(self, preview_enabled: bool, now: float) -> bool:
+        """Rate limiter for the preview download (preview_fps_cap).
+
+        Keeps the schedule's phase instead of measuring from the last preview:
+        on a 20 fps stream a 15 fps cap yields 15 previews/s (3 frames in 4)
+        and a 10 fps cap 10/s -- "since the last preview >= interval" turned
+        15 into 10 and, with any jitter, 10 into ~7.  Falling behind (pause,
+        stall) does not cause a burst: the schedule restarts from now."""
+        if not preview_enabled:
+            return False
+        if self._preview_interval <= 0:
+            return True
+        if now < self._next_preview_time:
+            return False
+        nxt = self._next_preview_time + self._preview_interval
+        self._next_preview_time = nxt if nxt > now else now + self._preview_interval
+        return True
+
+    def _preview_target(self, roi: Dict[str, int | bool], frame_w: int,
+                        frame_h: int) -> Tuple[int, int]:
+        """Preview download size.  Full frame: preview_width x preview_height.
+        ROI: only the ROI is on the GPU, sized to its footprint in that preview
+        (``scaled_roi_rect``) -- not at full ROI resolution, which cost a
+        ~4.6 MB D2H plus a full-resolution compose + resize on the main thread
+        for a ~0.5 MP texture."""
+        pw, ph = self.settings.preview_width, self.settings.preview_height
+        if not roi.get('enabled'):
+            return (pw, ph)
+        x0, y0, x1, y1 = scaled_roi_rect(int(roi['x']), int(roi['y']), int(roi['w']),
+                                         int(roi['h']), frame_w, frame_h, pw, ph)
+        return (max(1, x1 - x0), max(1, y1 - y0))
 
     def _resolve_roi(self, frame_w: int, frame_h: int) -> Dict[str, int | bool]:
         """Return clamped ROI metadata in full-frame pixels."""
@@ -618,18 +654,11 @@ class GpuPipeline:
         
         # 4. Preview path: rate-limited GPU resize + download
         # Single rate limiter here - app just checks preview_new flag
-        should_generate = preview_enabled
-        if should_generate and self._preview_interval > 0:
-            if current_time - self._last_preview_time < self._preview_interval:
-                should_generate = False
+        should_generate = self._preview_due(preview_enabled, current_time)
         
         if should_generate:
             t0 = time.time()
-            preview_target = (
-                (int(roi['w']), int(roi['h']))
-                if roi.get('enabled')
-                else (self.settings.preview_width, self.settings.preview_height)
-            )
+            preview_target = self._preview_target(roi, frame_w, frame_h)
             # Resize to exact preview dimensions on GPU
             preview_gpu = self._resizer.resize(
                 enhanced_frame, 
@@ -723,18 +752,11 @@ class GpuPipeline:
         timing['letterbox'] = letterbox_info
         
         # 4. Preview path (same rate-limited logic as process())
-        should_generate = preview_enabled
-        if should_generate and self._preview_interval > 0:
-            time_since_last = current_time - self._last_preview_time
-            should_generate = time_since_last >= self._preview_interval
+        should_generate = self._preview_due(preview_enabled, current_time)
         
         if should_generate:
             t0 = time.time()
-            preview_target = (
-                (int(roi['w']), int(roi['h']))
-                if roi.get('enabled')
-                else (self.settings.preview_width, self.settings.preview_height)
-            )
+            preview_target = self._preview_target(roi, frame_w, frame_h)
             preview_tensor = self._resizer.resize(
                 enhanced_frame,
                 target_size=preview_target

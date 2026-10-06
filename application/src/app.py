@@ -55,6 +55,8 @@ from core.config import (
     MOTION_BRIDGE_SENSITIVITY,
     PREVIEW_ENABLED,
     PREVIEW_RENDER_SCALE,
+    PREVIEW_MAX_FPS,
+    PREVIEW_CAPPED_FPS,
     SHOW_BBOX,
     SHOW_ID,
     SHOW_KEYPOINTS,
@@ -582,6 +584,9 @@ class WallDanceApp:
         preview_w = int(CAMERA_WIDTH * PREVIEW_RENDER_SCALE)
         preview_h = int(CAMERA_HEIGHT * PREVIEW_RENDER_SCALE)
         self.processor.set_preview_size(preview_w, preview_h)
+        # The preview never needs the full 20 fps (display only; tracking runs
+        # on every frame): cap it by default, the operator toggle goes lower.
+        self.processor.set_preview_fps_cap(PREVIEW_MAX_FPS)
         
         if self.osc_enabled:
             self._init_osc()
@@ -1955,13 +1960,14 @@ class WallDanceApp:
         self.preview_fps_cap = enabled
         # Sync to GPU pipeline if active
         if self.processor:
-            self.processor.set_preview_fps_cap(10.0 if enabled else None)
+            self.processor.set_preview_fps_cap(
+                PREVIEW_CAPPED_FPS if enabled else PREVIEW_MAX_FPS)
             # Also halve preview resolution when capped to reduce GPU→CPU transfer
             self._sync_preview_size_to_gpu()
         if enabled:
-            print("Preview FPS cap: ON (10 FPS limit, 0.5x preview)")
+            print(f"Preview FPS cap: ON ({PREVIEW_CAPPED_FPS:.0f} FPS limit, 0.5x preview)")
         else:
-            print("Preview FPS cap: OFF (uncapped, full preview)")
+            print(f"Preview FPS cap: OFF ({PREVIEW_MAX_FPS:.0f} FPS default, full preview)")
 
     def _apply_preview_scale(self, value: float, force: bool = False):
         value = max(0.05, min(1.0, float(value)))

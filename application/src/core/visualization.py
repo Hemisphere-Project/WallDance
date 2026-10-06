@@ -8,6 +8,20 @@ import numpy as np
 from core.config import SKELETON, DANCER_COLORS, KEYPOINT_CONFIDENCE
 
 
+def scaled_roi_rect(x: int, y: int, w: int, h: int, src_w: int, src_h: int,
+                    out_w: int, out_h: int) -> tuple:
+    """ROI rect (source px) -> (x0, y0, x1, y1) in a out_w x out_h preview of
+    the whole source.  Shared by the GPU preview (sizes the ROI download) and
+    the CPU compose (pastes it), so both agree to the pixel."""
+    sx = out_w / src_w if src_w > 0 else 1.0
+    sy = out_h / src_h if src_h > 0 else 1.0
+    x0, y0 = int(round(x * sx)), int(round(y * sy))
+    x1, y1 = int(round((x + w) * sx)), int(round((y + h) * sy))
+    x0, y0 = min(max(x0, 0), out_w), min(max(y0, 0), out_h)
+    x1, y1 = min(max(x1, x0), out_w), min(max(y1, y0), out_h)
+    return x0, y0, x1, y1
+
+
 def get_dancer_color(track_id):
     """Get consistent color for dancer ID."""
     return DANCER_COLORS[(track_id - 1) % len(DANCER_COLORS)]
