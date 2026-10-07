@@ -250,6 +250,8 @@ class SlotParams:
     entry_conf_lo: float = 0.25      # YOLO confidence: the median box conf of the track's last second
     entry_conf_hi: float = 0.5       # <= lo needs the full travel, >= hi none (a still dancer YOLO sees
                                      # well enters at once; a faint static figure must move first)
+    entry_reappear_h: float = 0.75   # ... or appears within this x h of where a slot was lost (not at the
+    entry_reappear_s: float = 20.0   # ROI border) less than this many seconds ago: a dancer was just there
     entry_fg_support: float = 0.3    # ... and none either when the track has a belt at its hips or this
                                      # much empty-wall foreground under it (a faint still DANCER; a static
                                      # ghost has neither)
@@ -408,6 +410,7 @@ class _Slot:
     hold_s: Optional[float] = None          # the hold granted when the slot started coasting
     belt_backed_t: float = -1e9             # last time a belt-only hold had independent evidence
     fg_offset: Optional[np.ndarray] = None  # foreground blob -> slot centroid (learned while live)
+    lost_interior: bool = False             # lost away from the ROI border (not an exit)
     filt: Optional[OneEuro2D] = None
     size_filt: Optional[OneEuro2D] = None
 
@@ -561,15 +564,37 @@ class IdentitySlots:
             return 0.0
         return need
 
+    def _near_border(self, s: _Slot) -> bool:
+        b = self._bounds
+        if b is None:
+            return False
+        h = max(1.0, float(s.wh[1]))
+        x, y = float(s.pos[0]), float(s.pos[1])
+        m = self.p.edge_margin_h * h
+        return x - b[0] <= m or b[2] - x <= m or y - b[1] <= m or b[3] - y <= m
+
+    def _reappearance(self, c: SlotCandidate) -> bool:
+        """The track appears where a dancer was lost inside the wall, recently."""
+        p, t = self.p, self._t
+        if t is None or p.entry_reappear_h <= 0:
+            return False
+        for s in self._slots:
+            if (s.state == STATE_LOST and s.lost_interior and s.pos is not None
+                    and t - s.state_since <= p.entry_reappear_s):
+                h = max(1.0, float(s.wh[1]) if s.wh is not None else c.h)
+                if float(np.hypot(c.x - s.pos[0], c.y - s.pos[1])) <= p.entry_reappear_h * h:
+                    return True
+        return False
+
     def _person_evidence(self, c: SlotCandidate) -> bool:
         """Evidence beyond YOLO that a track is a person: the IR belt at its hips, or
         solid empty-wall foreground under its box.  Cached per track per frame."""
         if c.key in self._entry_ev:
             return self._entry_ev[c.key]
-        p, ok = self.p, False
+        p, ok = self.p, self._reappearance(c)
         h = max(1.0, float(c.h))
         fg = self._fg
-        if fg is not None and p.entry_fg_support > 0 and fg.support(c.x, c.y, h) >= p.entry_fg_support:
+        if not ok and fg is not None and p.entry_fg_support > 0 and fg.support(c.x, c.y, h) >= p.entry_fg_support:
             ok = True
         belt = self._belt_now
         if not ok and belt is not None:
@@ -1150,6 +1175,8 @@ class IdentitySlots:
 
     def _drop(self, s: _Slot, t: float, why: str) -> None:
         self._event("lost", s.sid, why=why, key=s.key)
+        s.lost_interior = (why == "coast_expired" and s.pos is not None and s.wh is not None
+                           and not self._near_border(s))
         s.state = STATE_LOST
         s.state_since = t
         s.last_key = s.key if why not in ("merged", "yield") else None

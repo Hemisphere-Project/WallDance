@@ -536,3 +536,30 @@ def test_faint_still_track_enters_with_a_belt_or_foreground_but_not_without():
     assert all(o == [] for o in run())
     assert run(belt=Belt())[-1][0].state == STATE_LIVE
     assert run(fg=Fg())[-1][0].state == STATE_LIVE
+
+
+def test_faint_still_track_reenters_where_a_dancer_was_just_lost_inside_the_wall():
+    """Spatial prior: a dancer lost mid-wall is likely still there.  A faint still NEW track at
+    that spot within 20 s enters without moving; not at the ROI border (an exit), not later."""
+    p = SlotParams(max_dancers=1, coast_s=0.5, entry_min_travel_h=0.25, min_streak=1, entry_min_streak=1)
+    bounds = (0.0, 0.0, 2000.0, 1500.0)
+
+    def lose_then_faint(x, gap_frames):
+        s = IdentitySlots(p)
+        t = 0
+        for t in range(40):                                  # a dancer tracked at x, then lost
+            c1 = cand(1, x + 2 * (t % 10), 700)
+            c1.conf = 0.9
+            s.update([c1], t / FPS, bounds=bounds)
+        for t in range(40, 40 + gap_frames):
+            s.update([], t / FPS, bounds=bounds)
+        out = []
+        for t in range(40 + gap_frames, 70 + gap_frames):    # a new, faint, still track there
+            c = cand(2, x, 700)
+            c.conf = 0.2
+            out.append(s.update([c], t / FPS, bounds=bounds))
+        return out
+
+    assert lose_then_faint(1000, 40)[-1][0].state == STATE_LIVE     # 2 s after, mid-wall
+    assert all(o == [] for o in lose_then_faint(10, 40))             # at the left border: an exit
+    assert all(o == [] for o in lose_then_faint(1000, 600))          # 30 s later: no prior left
