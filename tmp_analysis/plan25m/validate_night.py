@@ -51,6 +51,17 @@ VARIANTS = {
               "--set", "gamma=0.73", "--set", "clahe_clip=2.5", "--set", "mog2_var_threshold=8.0",
               "--set", "mog2_scale=0.7"],
     "v2new": ["--set", "belt_backing=true", "--set", "fg_enabled=true", "--set", "entry_min_travel_h=0.25"],
+    # v3: v2 with the new-dancer travel weighted by YOLO confidence (still + confident enters), and
+    # the same with the automatic person height (core/auto_height.py) instead of the stale 45 px
+    "v3old": ["--set", "belt_backing=true", "--set", "fg_enabled=true", "--set", "entry_min_travel_h=0.25",
+              "--set", "gamma=0.73", "--set", "clahe_clip=2.5", "--set", "mog2_var_threshold=8.0",
+              "--set", "mog2_scale=0.7"],
+    "v3new": ["--set", "belt_backing=true", "--set", "fg_enabled=true", "--set", "entry_min_travel_h=0.25"],
+    "v3oldah": ["--set", "belt_backing=true", "--set", "fg_enabled=true", "--set", "entry_min_travel_h=0.25",
+                "--set", "gamma=0.73", "--set", "clahe_clip=2.5", "--set", "mog2_var_threshold=8.0",
+                "--set", "mog2_scale=0.7", "--set", "auto_height=true"],
+    "v3newah": ["--set", "belt_backing=true", "--set", "fg_enabled=true", "--set", "entry_min_travel_h=0.25",
+                "--set", "auto_height=true"],
     "oldcalfg": ["--set", "belt_backing=true", "--set", "fg_enabled=true", "--set", "gamma=0.73",
                  "--set", "clahe_clip=2.5", "--set", "mog2_var_threshold=8.0", "--set", "mog2_scale=0.7"],
 }
@@ -95,7 +106,7 @@ def main():
             for k, v in roi.items():
                 args += ["--set", f"{k}={v}"]
             args += ["--set", "roi_enabled=true"]
-            if "fg" in var or var.startswith("v2"):
+            if "fg" in var or var.startswith("v"):
                 args += ["--set", f"fg_plate={plate_rel(pk)}"]
             for kv in filter(None, a.extra.split(",")):
                 args += ["--set", kv]

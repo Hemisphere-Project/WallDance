@@ -486,3 +486,24 @@ def test_params_from_config_smart_hold_and_extended_stability():
     p = params_from_config({"smart_hold": False, "stability": 2.5, "coast_s": 8.0})
     assert p.smart_hold is False and p.coast_s == 8.0
     assert stability_params(p.stability) == pytest.approx(stability_params(2.5))
+
+
+def test_entry_travel_is_weighted_by_yolo_confidence():
+    """A NEW dancer needs movement unless YOLO sees it confidently: a faint static figure
+    (conf ~0.2, the night-take ghosts) never opens a slot, a still dancer at conf 0.8 does;
+    a faint one that moves 0.3 h does too."""
+    p = SlotParams(max_dancers=1, entry_min_travel_h=0.25, min_streak=1, entry_min_streak=1)
+
+    def run_conf(conf, dx=0.0, n=40):
+        s = IdentitySlots(p)
+        outs = []
+        for i in range(n):
+            c = cand(1, 400 + dx * i, 300)
+            c.conf = conf
+            outs.append(s.update([c], i / FPS))
+        return outs
+
+    assert all(o == [] for o in run_conf(0.2))                 # faint and static: a ghost
+    assert run_conf(0.8)[-1] and run_conf(0.8)[-1][0].state == STATE_LIVE   # confident, still
+    assert run_conf(0.2, dx=2.0)[-1]                          # faint but moving 80 px (0.4 h)
+    assert all(o == [] for o in run_conf(0.37, dx=0.5)[:30])  # half-confident needs half the travel

@@ -147,6 +147,7 @@ class ProcessingSettings:
     use_ir_belt: bool = IDENTITY_SLOTS_USE_IR_BELT
     belt_backing: bool = True                   # belt-only cap restarts on evidence (A/B switch)
     entry_min_travel_h: float = 0.0             # a NEW dancer must have moved this x h (0 = off)
+    auto_height: bool = False                   # learn person_height_px from confident full skeletons
     fg_enabled: bool = FOREGROUND_ENABLED       # use the clean plate when one is loaded
     fg_plate_path: str = ""                     # absolute path of the plate (.npz), "" = none
     osc_send_state: bool = OSC_SEND_STATE
@@ -486,6 +487,7 @@ class FrameProcessor:
         self._plate_capture_done = None     # callback(CleanPlate | None, error str)
         self.last_fg = None
         self._last_fg_ms = 0.0
+        self._auto_height = None            # core.auto_height.AutoHeight when settings.auto_height
         # Raw detection heights (original-space px) BEFORE the size gate — the
         # height-staleness alarm must see what the gate would reject (⑤d)
         self.last_raw_det_heights: List[float] = []
@@ -969,6 +971,8 @@ class FrameProcessor:
         timing["crossval_no_track_frames"] = self._crossval_no_track_frames
 
         scaled_tracks = [finalize(t) for t in tracked]
+        if self.settings.auto_height:
+            self._learn_person_height(scaled_tracks)
 
         # Attach the YOLO box conf of the detection that fed each track this
         # frame (calib2 sensitivity seed, ⑤a).  DancerTrack.update stores the
@@ -1241,6 +1245,17 @@ class FrameProcessor:
         self.last_fg = fg
         self._last_fg_ms = (time.perf_counter() - t0) * 1000
         return fg if fg.valid else None
+
+    def _learn_person_height(self, scaled_tracks) -> None:
+        """Automatic person height (core/auto_height.py): confident full skeletons this frame
+        move ``person_height_px`` toward the median of the last 10 s (used from the next frame)."""
+        if self._auto_height is None:
+            from core.auto_height import AutoHeight
+            self._auto_height = AutoHeight()
+        h = self._auto_height.update(scaled_tracks, float(self._output_clock()),
+                                     float(self.settings.person_height_px))
+        if h is not None:
+            self.settings.person_height_px = max(1, int(round(h)))
 
     def _fg_protect(self, cands, t: float):
         """Boxes (original px) the plate update must not absorb: slots measured live or by a

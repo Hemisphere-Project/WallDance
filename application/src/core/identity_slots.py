@@ -223,6 +223,7 @@ class SlotCandidate:
     hip: Optional[Tuple[float, float]] = None   # YOLO hip midpoint (belt height)
     fx: Optional[float] = None   # alternative One-Euro input (the tracker's raw KF centroid);
     fy: Optional[float] = None   # binding always uses (x, y) -- see SlotParams.filter_input
+    conf: Optional[float] = None # YOLO box confidence of this frame's detection (None: not YOLO-fed)
 
 
 @dataclass
@@ -245,7 +246,10 @@ class SlotParams:
     entry_min_hits: int = 12     # own warm-up already took ~0.75 s)
     entry_max_fss: int = 60      # entry: a real skeleton within 3 s (never blob-born)
     min_travel_h: float = 0.0    # optional displacement evidence (0 = off)
-    entry_min_travel_h: float = 0.0  # ... for an entry into a lost slot
+    entry_min_travel_h: float = 0.0  # ... for an entry into a lost slot (a NEW dancer), weighted by
+    entry_conf_lo: float = 0.25      # YOLO confidence: the median box conf of the track's last second
+    entry_conf_hi: float = 0.5       # <= lo needs the full travel, >= hi none (a still dancer YOLO sees
+                                     # well enters at once; a faint static figure must move first)
     # -- hidden continuation: the bound track is alive and updated but the
     # tracker hides it (frozen gate: a still dancer fed by motion blobs) --
     hidden_max_s: float = 3.0
@@ -439,6 +443,7 @@ class IdentitySlots:
         self._close_since: Dict[Tuple[int, int], float] = {}
         self._first_t: Dict[int, float] = {}
         self._hist: Dict[int, List[Tuple[float, float, float]]] = {}   # key -> [(t, x, y)] over static_after_s
+        self._confs: Dict[int, List[float]] = {}   # key -> last YOLO box confidences (entry weighting)
         self._t0: Optional[float] = None
         self._bounds: Optional[Tuple[float, float, float, float]] = None
         self._fg: Any = None                  # this frame's valid foreground (FgFrame) or None
@@ -490,6 +495,7 @@ class IdentitySlots:
         self._close_since.clear()
         self._first_t.clear()
         self._hist.clear()
+        self._confs.clear()
         self._t0 = None
         self._spots = []
         self.events = []
@@ -519,8 +525,9 @@ class IdentitySlots:
         if fg is not None and p.fg_veto > 0 and fg.support(c.x, c.y, max(1.0, c.h)) < p.fg_veto:
             self.counters["fg_veto"] = self.counters.get("fg_veto", 0) + 1
             return False
-        travel = p.entry_min_travel_h if entry else p.min_travel_h
+        travel = self._entry_travel(c) if entry else p.min_travel_h
         if travel > 0 and self._max_travel.get(c.key, 0.0) < travel * max(1.0, c.h):
+            self.counters["entry_wait_travel"] = self.counters.get("entry_wait_travel", 0) + 1
             return False
         if p.static_guard and self._static_blocked(c, self._entry_kind if entry else "rebind"):
             self.counters["static_blocked"] += 1
@@ -530,6 +537,20 @@ class IdentitySlots:
                 self.counters["implausible_wait"] = self.counters.get("implausible_wait", 0) + 1
                 return False
         return True
+
+    def _entry_travel(self, c: SlotCandidate) -> float:
+        """Travel (x h) a NEW dancer must show: ``entry_min_travel_h`` scaled down by the YOLO
+        confidence of the track's last second (median): full at <= entry_conf_lo, none at >=
+        entry_conf_hi.  Movement and confidence weigh against each other."""
+        p = self.p
+        if p.entry_min_travel_h <= 0:
+            return 0.0
+        cl = self._confs.get(c.key)
+        if not cl:
+            return p.entry_min_travel_h
+        med = sorted(cl)[len(cl) // 2]
+        span = max(1e-6, p.entry_conf_hi - p.entry_conf_lo)
+        return p.entry_min_travel_h * min(1.0, max(0.0, (p.entry_conf_hi - med) / span))
 
     def _surprising(self, c: SlotCandidate) -> bool:
         """An entry nobody expects: after the start-up window, away from the ROI
@@ -713,12 +734,17 @@ class IdentitySlots:
                     h.pop(0)
             d = float(np.linalg.norm(xy - self._first_pos[k]))
             self._max_travel[k] = max(self._max_travel.get(k, 0.0), d)
+            if c.conf is not None:
+                cl = self._confs.setdefault(k, [])
+                cl.append(float(c.conf))
+                del cl[:-20]
         for k in list(self._first_pos):
             if k not in cands:
                 self._first_pos.pop(k, None)
                 self._max_travel.pop(k, None)
                 self._first_t.pop(k, None)
                 self._hist.pop(k, None)
+                self._confs.pop(k, None)
 
         # 1. prediction for every non-lost slot
         decay = math.exp(-dt / p.vel_decay_tau_s) if p.vel_decay_tau_s > 0 else 0.0
@@ -1350,7 +1376,8 @@ def candidate_from_track(st, zone_ok: bool = True,
         age=int(getattr(st, "age", None) or 0),
         fss=None if fss is None else int(fss),
         tsu=int(getattr(st, "time_since_update", None) or 0),
-        src=getattr(st, "feed_src", None), zone_ok=bool(zone_ok), payload=st, hip=hip)
+        src=getattr(st, "feed_src", None), zone_ok=bool(zone_ok), payload=st, hip=hip,
+        conf=(None if getattr(st, "box_conf", None) is None else float(st.box_conf)))
 
 
 def params_from_config(cfg: Dict[str, Any], base: Optional[SlotParams] = None) -> SlotParams:
