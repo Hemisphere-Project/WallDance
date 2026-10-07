@@ -75,6 +75,10 @@ VARIANTS = {
               "--set", "mog2_scale=0.7", "--set", "height_guard=true"],
     "v6new": ["--set", "belt_backing=true", "--set", "fg_enabled=true", "--set", "entry_min_travel_h=0.25",
               "--set", "height_guard=true"],
+    # D31 isolation: v6old without the entry rule (a new dancer needs no movement)
+    "v6oldne": ["--set", "belt_backing=true", "--set", "fg_enabled=true", "--set", "entry_min_travel_h=0",
+                "--set", "gamma=0.73", "--set", "clahe_clip=2.5", "--set", "mog2_var_threshold=8.0",
+                "--set", "mog2_scale=0.7", "--set", "height_guard=true"],
     "oldcalfg": ["--set", "belt_backing=true", "--set", "fg_enabled=true", "--set", "gamma=0.73",
                  "--set", "clahe_clip=2.5", "--set", "mog2_var_threshold=8.0", "--set", "mog2_scale=0.7"],
 }
