@@ -342,7 +342,8 @@ class SlotParams:
     fg_gate_h: float = 0.75
     fg_gate_growth_h_per_s: float = 2.0
     fg_gate_max_h: float = 2.0
-    fg_max_s: float = 30.0       # foreground-only hold cap since the last live / belt measurement
+    fg_max_s: float = 30.0       # foreground-only hold cap since the last live / belt measurement, for a
+                                 # slot with reputation (as smart hold); hold_min_s for any other slot
     fg_min_area_h2: float = 0.02 # a blob smaller than this x h^2 is not a body
     fg_dup_h: float = 0.5        # a blob this close (x h) to another emitting slot is that dancer's
     fg_learn_h: float = 0.6      # while live, the blob within this x h teaches the blob->centroid offset
@@ -1189,6 +1190,14 @@ class IdentitySlots:
         a = p.fg_offset_alpha
         s.fg_offset = off if s.fg_offset is None else a * off + (1.0 - a) * s.fg_offset
 
+    def _reputed(self, s: _Slot) -> bool:
+        """The slot earned a long keepalive (smart-hold reputation): >= hold_rep_s of
+        skeleton-backed live tracking AND hold_rep_travel_h x h of travel since its entry.
+        A ghost that was live a few frames never gets the long foreground hold."""
+        p = self.p
+        h = max(1.0, float(s.wh[1]) if s.wh is not None else 1.0)
+        return s.rep_t >= p.hold_rep_s - 1e-9 and s.travel >= p.hold_rep_travel_h * h
+
     def _fg_round(self, measured, belt_res, weak_res, pred, t) -> Dict[int, np.ndarray]:
         """Slots that would coast follow a foreground blob near their prediction (one
         blob per slot, Hungarian, gate growing with the time since the last measurement),
@@ -1198,7 +1207,7 @@ class IdentitySlots:
         seekers = [s for s in self._slots
                    if s.state != STATE_LOST and s.sid not in measured and s.sid not in belt_res
                    and s.sid not in weak_res and s.sid in pred and s.wh is not None
-                   and t - s.strong_t <= p.fg_max_s]
+                   and t - s.strong_t <= (p.fg_max_s if self._reputed(s) else p.hold_min_s)]
         if not seekers or not fg.blobs:
             return {}
         others = []

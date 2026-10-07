@@ -106,13 +106,20 @@ def _p(**kw):
     return SlotParams(**base)
 
 
+def _live_moving(s, n=30, fg_dy=-20):
+    """n frames live, walking 2 px/frame (travel 0.3 h: the slot earns its reputation)."""
+    for i in range(n):
+        x = 340 + 2 * i
+        s.update([cand(1, x, 300)], i / FPS, fg=Fg([(x, 300 + fg_dy)]))
+    return 340 + 2 * (n - 1)
+
+
 def test_foreground_holds_a_dancer_yolo_lost_and_follows_the_blob():
     s = IdentitySlots(_p())
-    for i in range(30):                                     # live, blob 20 px above the centroid
-        s.update([cand(1, 400, 300)], i / FPS, fg=Fg([(400, 280)]))
-    outs = [s.update([], (30 + i) / FPS, fg=Fg([(400 + i, 280)])) for i in range(100)]
+    x0 = _live_moving(s)                                    # blob 20 px above the centroid
+    outs = [s.update([], (30 + i) / FPS, fg=Fg([(x0 + i, 280)])) for i in range(100)]
     assert all(o and o[0].state == STATE_FG for o in outs)  # 5 s, far beyond the 0.5 s hold
-    assert abs(outs[-1][0].raw_x - 499) < 2 and abs(outs[-1][0].raw_y - 300) < 2   # learned offset
+    assert abs(outs[-1][0].raw_x - (x0 + 99)) < 2 and abs(outs[-1][0].raw_y - 300) < 2   # learned offset
     outs = [s.update([], (130 + i) / FPS, fg=Fg()) for i in range(20)]
     assert outs[0][0].state == STATE_COASTING and outs[-1] == []
 
@@ -125,11 +132,21 @@ def test_foreground_hold_is_capped_and_never_takes_another_dancers_blob():
     outs = [s.update([cand(2, 600, 300)], (30 + i) / FPS, fg=Fg([(600, 300)])) for i in range(5)]
     assert [o.state for o in outs[-1] if o.slot_id == 1] in ([STATE_COASTING], [])
     s2 = IdentitySlots(_p(fg_max_s=2.0))
-    for i in range(30):
-        s2.update([cand(1, 400, 300)], i / FPS, fg=Fg([(400, 300)]))
-    outs = [s2.update([], (30 + i) / FPS, fg=Fg([(400, 300)])) for i in range(80)]
+    x0 = _live_moving(s2, fg_dy=0)
+    outs = [s2.update([], (30 + i) / FPS, fg=Fg([(x0, 300)])) for i in range(80)]
     states = [o[0].state if o else None for o in outs]
     assert states[0] == STATE_FG and STATE_FG not in states[45:] and states[-1] is None
+
+
+def test_foreground_hold_needs_reputation():
+    """A slot that never earned its hold (a still figure, a few live frames) is held by the
+    foreground for hold_min_s only, like the smart hold: a ghost does not live on a blob."""
+    s = IdentitySlots(_p(hold_min_s=1.5))
+    for i in range(30):                                      # live but never moved
+        s.update([cand(1, 400, 300)], i / FPS, fg=Fg([(400, 300)]))
+    outs = [s.update([], (30 + i) / FPS, fg=Fg([(400, 300)])) for i in range(80)]
+    states = [o[0].state if o else None for o in outs]
+    assert states[0] == STATE_FG and STATE_FG not in states[32:] and states[-1] is None
 
 
 def test_ghost_veto_a_track_without_foreground_cannot_take_a_slot():

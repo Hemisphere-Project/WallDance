@@ -272,6 +272,18 @@ byte-identical with slots on or off).
   faster than 0.5 h/s is released after 0.3 s. Bit-identical to plain hold at `coast_s` = 2 s
   (6 goldens); at 5 s it cuts the frames with a held point beyond the dancers by 24 % on the ghost-pressure
   take. The hold length is decided once, when the slot starts coasting.
+- **Empty-wall snapshot** (2026-10-07, `fg_enabled`, default ON, active only once a plate exists):
+  Calibrate (or "Capture empty wall", remote `CapturePlate`) records ~2 s of the EMPTY wall
+  (`projects/<P>/plates/latest.npz`).  Each frame the raw ROI is compared with it (4x downscaled,
+  brightness-normalised): (a) a tracker track whose box holds < 10 % foreground cannot take a slot
+  (fixed figures, stains); (b) a slot YOLO lost keeps following its foreground blob (state `fg`, the
+  blob->centroid offset learned while live, at most 30 s without YOLO or the belt); (c) it backs the
+  belt (below).  A plate from another camera crop is ignored; a frame where > 25 % of the ROI differs
+  from the plate (lights changed, camera moved) gets no foreground -- re-capture.
+- **Belt hold** (2026-10-07): a belt-only hold is capped at 8 s **unless backed**: the slot's own
+  tracker track still got a YOLO skeleton within 1 s (a still dancer YOLO only sees now and then), or
+  the foreground shows a body there.  Backed belts are also kept out of the online glint map (which
+  would learn a motionless belt in ~9 s).  `belt_backing=false` restores the flat 8 s cap.
 - **A new dancer** (an established tracker track: confirmed, a few frames reported, a real
   skeleton within 3 s, outside the exclusion mask) takes a free slot, lowest / nearest first.
   Extra tracks beyond `max_dancers` are not sent. A track sitting on a body another slot already
@@ -297,7 +309,8 @@ byte-identical with slots on or off).
 
 ### D.2 `/walldance/dancer/state` `[id, state, age_s]` — opt-in (`osc_send_state`, default OFF)
 - One message per slot **every frame, lost slots included**: `id` int32, `state` string
-  `live` (bound track updated this frame) / `belt` (held by the IR waist belt) / `weak` (a coasting
+  `live` (bound track updated this frame) / `belt` (held by the IR waist belt) / `fg` (held by the
+  empty-wall snapshot difference) / `weak` (a coasting
   slot re-found on weak evidence near its prediction; only with the `weak_enabled` slot option, off by
   default) / `coasting` (holding, no measurement) / `lost` (absent from `/count`), `age_s` float32 =
   seconds in that state. Causal: not delayed at `L > 1`.
@@ -313,6 +326,7 @@ byte-identical with slots on or off).
 | Hold (`coast_s`) | 2.0 s | 355 of the 356 tracker losses observed over all replays + the 2026-10-05 field takes re-acquire within 2.0 s (99 % within 1.5 s, longest 2.37 s); settable to 10 s |
 | Smart hold (`smart_hold`) | ON | earned hold, fast release at border exits (above); neutral at 2 s |
 | IR belt (`use_ir_belt`) | ON | no-op unless `core/belt_detector.py` is importable; plain coasting stays the base |
+| Use empty wall (`fg_enabled`) | ON | no-op without a plate; PLAN_25M §C.12 (night takes A/B) |
 | Send state (`osc_send_state`) | OFF | opt-in |
 | Ignore static figures (`static_ghost_guard`) | ON | PLAN_25M 2026-10-06 offline gate (`tmp_analysis/plan25m/slot_eval.py`) |
 | Static release (`static_release_s`) | 0 (off) | dropped a still floor dancer at 8 s |
@@ -320,7 +334,11 @@ byte-identical with slots on or off).
 
 Operator knobs live in phase **6 Live → Dancer IDs** and are remote-settable
 (`SetIdentitySlots`, `SetMaxDancers`, `SetStability`, `SetCoastSeconds`, `ToggleIrBelt`,
-`ToggleOscState`, `SetStaticGhostGuard`, `SetStaticRelease`, `SetSlotFilterInput`, `SetSmartHold`; policy `control`).
+`ToggleOscState`, `SetStaticGhostGuard`, `SetStaticRelease`, `SetSlotFilterInput`, `SetSmartHold`,
+`SetForeground`, `CapturePlate`; policy `control`).
 The preview draws each emitted slot as a **ball** at exactly the position `/centroid` sends
-(solid centre in a colour picked by the slot id; only the slim border takes the state colour). The FRAME_SUMMARY log carries `slots` (per slot: id,
+(solid centre in a colour picked by the slot id; only the slim border takes the state colour: green
+live, cyan belt, white fg, orange coasting, pink weak).  Its size follows the dancer's distance: the
+head-to-ankle length on frames with a fresh, confident full skeleton, smoothed (0.5x at a 25 m wall ..
+2x near the lens); `C` (View row) hides it. The FRAME_SUMMARY log carries `slots` (per slot: id,
 state, bound tracker id, age) and `emitted_slots`; `SLOT_EVENT` lines record binds and losses.

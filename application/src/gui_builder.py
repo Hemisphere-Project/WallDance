@@ -1031,17 +1031,6 @@ def build_phase_live(gui: Any):
         # detection dial above.  These shape what OSC/preview reports; they do
         # NOT change detection.  See docs/OSC_CONTRACT.md.
         dpg.add_text("Output", color=TEXT_NORMAL)
-        clamp_chk = dpg.add_checkbox(
-            label="Box-clamp (stable box during gaps)",
-            tag="box_clamp_checkbox",
-            default_value=bool(gui.config.get("box_clamp_enabled", True)),
-            callback=gui._on_box_clamp_toggle,
-        )
-        with dpg.tooltip(clamp_chk):
-            dpg.add_text("Report a last-known-YOLO-size box at the smoothed\n"
-                         "centroid while a dancer is motion-bridged, so the\n"
-                         "OSC/preview box stops flickering in detection gaps.\n"
-                         "Output-only; does not affect tracking. Default ON.")
         with dpg.group(horizontal=True):
             smooth_slider = dpg.add_slider_int(
                 tag="output_smoothing_slider",
@@ -1174,6 +1163,17 @@ def build_identity_slot_controls(gui: Any):
         dpg.add_text("A person-like shape that never moves (a coat, a poster, a\n"
                      "stain) cannot keep a dancer id when a moving dancer needs it,\n"
                      "and cannot take one back. Leave it ON.")
+    clamp_chk = dpg.add_checkbox(
+        label="Box clamp (stable size during gaps)",
+        tag="box_clamp_checkbox",
+        default_value=bool(gui.config.get("box_clamp_enabled", True)),
+        callback=gui._on_box_clamp_toggle,
+    )
+    with dpg.tooltip(clamp_chk):
+        dpg.add_text("While a dancer is bridged (no fresh skeleton), report a box of\n"
+                     "the last YOLO size at the smoothed centroid.  It does not move\n"
+                     "the centroid; it keeps the dancer size the ids rely on (search\n"
+                     "gates, smoothing speed) steady through detection gaps. Leave ON.")
     with dpg.group(horizontal=True):
         fg_chk = dpg.add_checkbox(
             label="Use empty wall", tag="foreground_checkbox",
