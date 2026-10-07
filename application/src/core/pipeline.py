@@ -41,6 +41,7 @@ from core.config import (
     IDENTITY_SLOTS_COAST_S, IDENTITY_SLOTS_STATIC_GUARD,
     IDENTITY_SLOTS_STATIC_RELEASE_S, IDENTITY_SLOTS_FILTER_INPUT, IDENTITY_SLOTS_SMART_HOLD,
     BELT_STATIC_EVERY_N, BELT_STATIC_ALPHA, BELT_STATIC_ON,
+    FOREGROUND_ENABLED,
     IDENTITY_SLOTS_USE_IR_BELT,
     OSC_SEND_STATE,
     TrackingMode,
@@ -67,7 +68,7 @@ from core.motion_model import MotionModel
 from core.calibration import ExclusionMaskBuilder
 from core.osc_output import OSCSender
 from core.output_smoother import OutputSmoother, SmootherInput
-from core.identity_slots import (IdentitySlots, SlotParams, STATE_LIVE,
+from core.identity_slots import (IdentitySlots, SlotParams, STATE_BELT, STATE_LIVE,
                                  candidate_from_track)
 from core.tracker import DancerTrack, DancerTracker
 from core.yolo_runner import PoseRunner
@@ -144,6 +145,9 @@ class ProcessingSettings:
     slot_filter_input: str = IDENTITY_SLOTS_FILTER_INPUT
     smart_hold: bool = IDENTITY_SLOTS_SMART_HOLD
     use_ir_belt: bool = IDENTITY_SLOTS_USE_IR_BELT
+    belt_backing: bool = True                   # belt-only cap restarts on evidence (A/B switch)
+    fg_enabled: bool = FOREGROUND_ENABLED       # use the clean plate when one is loaded
+    fg_plate_path: str = ""                     # absolute path of the plate (.npz), "" = none
     osc_send_state: bool = OSC_SEND_STATE
     use_gpu_path: bool = USE_GPU_PATH  # Enable GPU frame buffer
     bg_subtract_enabled: bool = BG_SUBTRACT_ENABLED  # Static BG subtraction
@@ -473,6 +477,14 @@ class FrameProcessor:
         self._belt_static = None
         self._belt_static_ok = True
         self._belt_frame = 0
+        # Clean-plate foreground (core/foreground.py): detector built from the plate file
+        # (settings.fg_plate_path) or a live capture; this frame's FgFrame for the slots.
+        self._fg_detector = None
+        self._fg_loaded_path: Optional[str] = None
+        self._plate_capture = None          # PlateCapture in progress (live "Capture empty wall")
+        self._plate_capture_done = None     # callback(CleanPlate | None, error str)
+        self.last_fg = None
+        self._last_fg_ms = 0.0
         # Raw detection heights (original-space px) BEFORE the size gate — the
         # height-staleness alarm must see what the gate would reject (⑤d)
         self.last_raw_det_heights: List[float] = []
@@ -998,6 +1010,8 @@ class FrameProcessor:
         out_tracks = (self._run_identity_slots(scaled_tracks, finalize,
                                                original_w, original_h)
                       if slots_on else scaled_tracks)
+        if slots_on and self.last_fg is not None:
+            timing["fg"] = self._last_fg_ms
 
         if L == 1:
             if osc_on:
@@ -1126,8 +1140,14 @@ class FrameProcessor:
                      if b.reason not in ("small", "static")]
             protect = []
             if self._slots is not None:
+                t_now = self._out_last_t if self._out_last_t is not None else 0.0
                 for s in self._slots.slots:
-                    if s.state == STATE_LIVE and s.pos is not None and s.wh is not None:
+                    # live slots, and belt-only slots backed by independent evidence (a recent
+                    # YOLO skeleton on their track, or the foreground): a still dancer's belt
+                    # must not be learned as a glint
+                    backed = (s.state == STATE_BELT
+                              and t_now - getattr(s, "belt_backed_t", -1e9) <= 1.0)
+                    if (s.state == STATE_LIVE or backed) and s.pos is not None and s.wh is not None:
                         protect.append((float(s.pos[0]) - ox, float(s.pos[1]) - oy,
                                         0.6 * float(s.wh[1])))
             self._belt_static.update(blobs, protect, alpha=BELT_STATIC_ALPHA, on=BELT_STATIC_ON)
@@ -1135,6 +1155,91 @@ class FrameProcessor:
         except Exception as exc:  # noqa: BLE001 - optional refinement
             self._belt_static_ok = False
             print(f"[Slots] belt static map disabled ({type(exc).__name__}: {exc})")
+
+    # ------------------------------------------------------------------
+    # Clean-plate foreground ("background snapshot", core/foreground.py)
+    # ------------------------------------------------------------------
+    def set_clean_plate(self, plate) -> None:
+        """Install a ``CleanPlate`` (or None to drop it) for the foreground."""
+        if plate is None:
+            self._fg_detector = None
+            return
+        from core.foreground import ForegroundDetector
+        self._fg_detector = ForegroundDetector(plate)
+
+    @property
+    def plate_status(self) -> str:
+        """``off`` | ``none`` (no plate) | ``ready`` | ``size`` (plate from another camera
+        crop) | ``stale`` (the scene no longer matches: re-capture) | ``capturing``."""
+        if self._plate_capture is not None:
+            return "capturing"
+        if not self.settings.fg_enabled:
+            return "off"
+        det = self._fg_detector
+        if det is None:
+            return "none"
+        last = self.last_fg
+        if last is not None and not last.valid:
+            return {"plate size": "size", "plate stale": "stale"}.get(last.reason, "ready")
+        return "ready"
+
+    def start_plate_capture(self, n_frames: int, done) -> None:
+        """Average the next ``n_frames`` raw frames into a new plate (the wall must be
+        empty); ``done(plate, error)`` runs on the processing thread when finished."""
+        from core.foreground import PlateCapture
+        self._plate_capture = PlateCapture(n_frames)
+        self._plate_capture_done = done
+
+    def _feed_plate_capture(self, raw_frame) -> None:
+        cap = self._plate_capture
+        if cap is None or raw_frame is None:
+            return
+        try:
+            if cap.add(raw_frame):
+                plate = cap.plate(source="live")
+                self._plate_capture = None
+                self.set_clean_plate(plate)
+                done, self._plate_capture_done = self._plate_capture_done, None
+                if done is not None:
+                    done(plate, "")
+        except Exception as exc:  # noqa: BLE001 - a failed capture must not stop the show
+            self._plate_capture = None
+            done, self._plate_capture_done = self._plate_capture_done, None
+            if done is not None:
+                done(None, f"{type(exc).__name__}: {exc}")
+
+    def _fg_frame(self, original_w: int, original_h: int):
+        """This frame's foreground (``FgFrame``) for the slot layer, or None (off, no plate,
+        another camera crop).  Loads the plate file named by ``settings.fg_plate_path``
+        once; a load failure is logged and leaves the foreground off."""
+        self.last_fg = None
+        if not self.settings.fg_enabled:
+            return None
+        path = self.settings.fg_plate_path or ""
+        if path and path != self._fg_loaded_path:
+            self._fg_loaded_path = path
+            try:
+                from core.foreground import CleanPlate
+                self.set_clean_plate(CleanPlate.load(path))
+                print(f"[Foreground] plate loaded: {path}")
+            except Exception as exc:  # noqa: BLE001
+                self._fg_detector = None
+                print(f"[Foreground] plate not loaded ({type(exc).__name__}: {exc})")
+        det = self._fg_detector
+        gray = self._belt_gray
+        if det is None or gray is None:
+            return None
+        t0 = time.perf_counter()
+        try:
+            fg = det.process(gray, int(self._belt_gray_offset[0]), int(self._belt_gray_offset[1]),
+                             (int(original_w), int(original_h)))
+        except Exception as exc:  # noqa: BLE001 - optional evidence, never fatal
+            print(f"[Foreground] disabled ({type(exc).__name__}: {exc})")
+            self._fg_detector = None
+            return None
+        self.last_fg = fg
+        self._last_fg_ms = (time.perf_counter() - t0) * 1000
+        return fg if fg.valid else None
 
     def _zone_ok_fn(self, original_w: int, original_h: int):
         """Original-px point -> outside the exclusion mask (normalized over the
@@ -1161,7 +1266,8 @@ class FrameProcessor:
                 static_guard=g, static_yield=g,
                 static_release_s=float(self.settings.static_release_s),
                 filter_input=str(self.settings.slot_filter_input),
-                smart_hold=bool(self.settings.smart_hold)))
+                smart_hold=bool(self.settings.smart_hold),
+                belt_backing=bool(self.settings.belt_backing)))
         t = float(self._output_clock())
         if self._out_last_t is not None and t > self._out_last_t:
             self._out_dt = min(0.25, t - self._out_last_t)
@@ -1183,7 +1289,9 @@ class FrameProcessor:
                         hidden[c.key] = c
         roi = self._resolve_roi(original_w, original_h)
         bounds = tuple(float(v) for v in roi) if roi is not None else (0.0, 0.0, float(original_w), float(original_h))
-        outs = self._slots.update(cands, t, belt=self._belt_hook(), hidden=hidden, bounds=bounds)
+        belt_hook = self._belt_hook()
+        fg = self._fg_frame(original_w, original_h)
+        outs = self._slots.update(cands, t, belt=belt_hook, hidden=hidden, bounds=bounds, fg=fg)
         self._log_slots(outs)
         return [self._slot_track(o) for o in outs]
 
@@ -1384,6 +1492,8 @@ class FrameProcessor:
         for this frame (``GpuPipeline._resolve_roi``), so the motion crop and
         the GPU crop always agree.
         """
+        if self._plate_capture is not None:
+            self._feed_plate_capture(raw_frame)
         if raw_frame is None or (self.bridge_motion_detector is None
                                  and self.crossval_motion_detector is None):
             return None

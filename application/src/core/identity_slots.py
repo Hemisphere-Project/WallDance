@@ -11,6 +11,9 @@ States (per slot):
 * ``live``      its bound tracker track was updated this frame;
 * ``belt``      no track, but the IR waist-belt hook found the belt near the
                 slot's prediction -> position = belt + learned offset;
+* ``fg``        no track, no belt, but the clean-plate foreground (an empty-wall
+                snapshot, ``core/foreground.py``) shows a body at the slot's
+                prediction -> position = blob + learned offset (capped at ``fg_max_s``);
 * ``coasting``  no fresh measurement: hold/predict (constant velocity, decaying
                 with ``vel_decay_tau_s``) for up to ``coast_s`` seconds;
 * ``lost``      not emitted (keeps its id for the next dancer that appears).
@@ -60,7 +63,15 @@ maps to (min_cutoff, beta) - see ``stability_params``.
 Belt hook: ``BeltMeasure`` (``measure(slot_id, x, y, gate_px) ->
 Optional[(x, y, quality)]``).  While a slot is live the belt->centroid offset is
 learned (EMA); when it would coast, the hook is asked and a hit keeps the slot
-alive in state ``belt`` (capped at ``belt_max_s`` without any track).
+alive in state ``belt`` (capped at ``belt_max_s`` without any track, unless
+the hold is *backed*: the slot's own track still got a YOLO skeleton within
+``belt_refresh_fss`` frames, or the foreground shows a body there -- a still
+dancer YOLO only sees intermittently keeps the belt; a glint has neither).
+
+Foreground hook (``fg``: ``core.foreground.FgFrame``, duck-typed: ``valid``,
+``blobs``, ``support(x, y, h)``): ghost veto at (re)binding (a track whose box
+holds less than ``fg_veto`` foreground cannot take a slot), the ``fg`` state
+above, and the belt backing.  Without a plate every foreground rule is off.
 
 Pure: numpy (+ scipy's Hungarian when available).  Time is passed in by the
 caller (seconds), so replays are frame-clocked and deterministic.
@@ -81,9 +92,10 @@ except Exception:  # pragma: no cover - exercised only without scipy
 STATE_LIVE = "live"
 STATE_BELT = "belt"
 STATE_COASTING = "coasting"
+STATE_FG = "fg"
 STATE_WEAK = "weak"
 STATE_LOST = "lost"
-EMITTING_STATES = (STATE_LIVE, STATE_BELT, STATE_WEAK, STATE_COASTING)
+EMITTING_STATES = (STATE_LIVE, STATE_BELT, STATE_FG, STATE_WEAK, STATE_COASTING)
 
 # Stability knob (0..1) -> One-Euro (min_cutoff [Hz], beta [Hz per h/s]),
 # interpolated geometrically.  Tuned on replays (OSC_CONTRACT.md §D.3) with
@@ -318,8 +330,24 @@ class SlotParams:
     belt_band_w_h: float = 0.22  # expected band width hint (25-35 px at 25 m)
     belt_min_learn: int = 5      # consistent live sightings before the belt may hold a slot
     belt_learn_tol_h: float = 0.15
-    belt_max_s: float = 8.0      # belt-only hold cap (a glint must not hold a slot forever)
+    belt_max_s: float = 8.0      # belt-only hold cap (a glint must not hold a slot forever) ...
+    belt_backing: bool = True    # the belt-only cap restarts on independent evidence (below); off = 8 s flat
+    belt_refresh_fss: int = 20   # ... restarted while the slot's own track got a YOLO skeleton this
+                                 # recently (frames; a still dancer YOLO sees intermittently,
+                                 # 2026-10-06 night takes) or the foreground shows a body there
     belt_min_quality: float = 0.0
+    # -- clean-plate foreground (core/foreground.py; active only when a plate is loaded) --
+    fg_veto: float = 0.10        # a track box with less foreground than this cannot (re)bind (0 = off)
+    fg_hold: bool = True         # a slot that would coast follows the foreground blob at its prediction
+    fg_gate_h: float = 0.75
+    fg_gate_growth_h_per_s: float = 2.0
+    fg_gate_max_h: float = 2.0
+    fg_max_s: float = 30.0       # foreground-only hold cap since the last live / belt measurement
+    fg_min_area_h2: float = 0.02 # a blob smaller than this x h^2 is not a body
+    fg_dup_h: float = 0.5        # a blob this close (x h) to another emitting slot is that dancer's
+    fg_learn_h: float = 0.6      # while live, the blob within this x h teaches the blob->centroid offset
+    fg_offset_alpha: float = 0.1
+    fg_support_min: float = 0.10 # belt backing: foreground share of the slot's box
 
 
 @dataclass
@@ -370,6 +398,8 @@ class _Slot:
     travel: float = 0.0                     # max distance (px, 5-sample median) from the entry point
     recent5: List[np.ndarray] = field(default_factory=list)
     hold_s: Optional[float] = None          # the hold granted when the slot started coasting
+    belt_backed_t: float = -1e9             # last time a belt-only hold had independent evidence
+    fg_offset: Optional[np.ndarray] = None  # foreground blob -> slot centroid (learned while live)
     filt: Optional[OneEuro2D] = None
     size_filt: Optional[OneEuro2D] = None
 
@@ -410,6 +440,7 @@ class IdentitySlots:
         self._hist: Dict[int, List[Tuple[float, float, float]]] = {}   # key -> [(t, x, y)] over static_after_s
         self._t0: Optional[float] = None
         self._bounds: Optional[Tuple[float, float, float, float]] = None
+        self._fg: Any = None                  # this frame's valid foreground (FgFrame) or None
         self._entry_kind = "entry"
         # static spots: [x, y, h, t_last, kind]; kind "static" (soft: a track or a slot that
         # never moved) or "ghost" (hard: a static slot that had to yield to a moving dancer)
@@ -482,6 +513,10 @@ class IdentitySlots:
         if c.fss is not None and int(c.fss) > (p.entry_max_fss if entry else p.max_fss_bind):
             return False
         if not c.zone_ok:
+            return False
+        fg = self._fg
+        if fg is not None and p.fg_veto > 0 and fg.support(c.x, c.y, max(1.0, c.h)) < p.fg_veto:
+            self.counters["fg_veto"] = self.counters.get("fg_veto", 0) + 1
             return False
         travel = p.entry_min_travel_h if entry else p.min_travel_h
         if travel > 0 and self._max_travel.get(c.key, 0.0) < travel * max(1.0, c.h):
@@ -606,7 +641,7 @@ class IdentitySlots:
 
     def _measure(self, s: _Slot, x: np.ndarray, wh: Optional[np.ndarray],
                  t: float, dt: float, state: str, fpos: Optional[np.ndarray] = None) -> None:
-        if s.pos is not None and dt > 0 and s.state in (STATE_LIVE, STATE_BELT, STATE_WEAK):
+        if s.pos is not None and dt > 0 and s.state in (STATE_LIVE, STATE_BELT, STATE_FG, STATE_WEAK):
             v = (x - s.pos) / dt
             a = self.p.vel_alpha
             s.vel = a * v + (1.0 - a) * s.vel
@@ -641,14 +676,17 @@ class IdentitySlots:
                belt: Optional[BeltMeasure] = None,
                hidden: Optional[Dict[int, SlotCandidate]] = None,
                weak: Optional[Sequence["WeakMeasure"]] = None,
-               bounds: Optional[Tuple[float, float, float, float]] = None) -> List[SlotOutput]:
+               bounds: Optional[Tuple[float, float, float, float]] = None,
+               fg: Any = None) -> List[SlotOutput]:
         """One output frame.  ``candidates`` = the tracker's REPORTED tracks;
         ``hidden`` = {track id: candidate} for bound tracks the tracker kept
-        alive but did not report this frame (``bound_keys``)."""
+        alive but did not report this frame (``bound_keys``); ``fg`` = this
+        frame's clean-plate foreground (``core.foreground.FgFrame``) or None."""
         p = self.p
         hidden = hidden or {}
         self.events = []
         self._bounds = bounds
+        self._fg = fg if (fg is not None and getattr(fg, "valid", False)) else None
         if self._t0 is None:
             self._t0 = t
         dt_raw = 0.0 if self._t is None else max(0.0, t - self._t)
@@ -845,9 +883,12 @@ class IdentitySlots:
 
         # 5. belt queries (one batch: a belt answers at most one slot), then
         # apply measurements; belt / coast / lost for the rest
+        self._belt_backing(cands, hidden, measured, pred, t)
         belt_res = self._belt_round(belt, measured, pred, t) if belt is not None else {}
         weak_res = (self._weak_round(weak, measured, belt_res, pred, t)
                     if (p.weak_enabled and weak) else {})
+        fg_res = (self._fg_round(measured, belt_res, weak_res, pred, t)
+                  if (self._fg is not None and p.fg_hold) else {})
         for s in self._slots:
             if s.sid in measured:
                 xy, wh, c = measured[s.sid]
@@ -860,6 +901,8 @@ class IdentitySlots:
                         and np.isfinite(c.fx) and np.isfinite(c.fy):
                     fpos = np.array([c.fx, c.fy], dtype=np.float64)
                 self._measure(s, xy, wh, t, dt, STATE_LIVE, fpos=fpos)
+                if self._fg is not None:
+                    self._learn_fg(s, xy, float(wh[1]))
                 s.strong_t = t
                 s.hold_s = None
                 if c.fss is not None and int(c.fss) == 0:
@@ -875,12 +918,18 @@ class IdentitySlots:
             if res is not None:
                 got = np.array(res[:2], dtype=np.float64) + s.belt_offset
             if got is not None:
-                if s.belt_since is None:
-                    s.belt_since = t
+                if s.belt_since is None or t - s.belt_backed_t <= 0.0:
+                    s.belt_since = t          # first belt frame, or backed this frame: the cap restarts
                 self._measure(s, got, None, t, dt, STATE_BELT)
                 s.strong_t = t
                 s.fss = None
                 self.counters["belt_frames"] += 1
+                continue
+            fgm = fg_res.get(s.sid)
+            if fgm is not None:
+                self._measure(s, fgm, None, t, dt, STATE_FG)
+                s.fss = None
+                self.counters["fg_frames"] = self.counters.get("fg_frames", 0) + 1
                 continue
             w = weak_res.get(s.sid)
             if w is not None:
@@ -1094,12 +1143,101 @@ class IdentitySlots:
             if pair not in seen:
                 self._close_since.pop(pair, None)
 
+    def _belt_backing(self, cands, hidden, measured, pred, t: float) -> None:
+        """Independent evidence that a belt-only hold is a dancer, not a glint: the
+        slot's own track (reported or kept alive by the tracker) got a YOLO skeleton
+        within ``belt_refresh_fss`` frames near the slot, or the foreground shows a body
+        at the slot.  Sets ``belt_backed_t`` (the belt cap restarts; the pipeline also
+        keeps the belt out of the online glint map)."""
+        p = self.p
+        fg = self._fg
+        for s in self._slots:
+            if s.state == STATE_LOST:
+                continue
+            if s.sid in measured:
+                s.belt_backed_t = t
+                continue
+            if not p.belt_backing or s.sid not in pred or s.wh is None:
+                continue
+            h = max(1.0, float(s.wh[1]))
+            at = pred[s.sid]
+            c = cands.get(s.key) if s.key is not None else None
+            if c is None and s.key is not None:
+                c = hidden.get(s.key)
+            if (c is not None and c.fss is not None and int(c.fss) <= p.belt_refresh_fss
+                    and float(np.hypot(c.x - at[0], c.y - at[1])) <= p.jump_h * h):
+                s.belt_backed_t = t
+                continue
+            if fg is not None and fg.support(float(at[0]), float(at[1]), h) >= p.fg_support_min:
+                s.belt_backed_t = t
+
+    def _learn_fg(self, s: _Slot, xy: np.ndarray, h: float) -> None:
+        """While live: the foreground blob under the slot teaches the blob->centroid
+        offset (shadows and blur bias the blob's mass centre)."""
+        fg, p = self._fg, self.p
+        h = max(1.0, h)
+        best, bd = None, p.fg_learn_h * h
+        for b in fg.blobs:
+            if b.area < p.fg_min_area_h2 * h * h:
+                continue
+            d = float(np.hypot(b.x - xy[0], b.y - xy[1]))
+            if d < bd:
+                best, bd = b, d
+        if best is None:
+            return
+        off = xy - np.array([best.x, best.y], dtype=np.float64)
+        a = p.fg_offset_alpha
+        s.fg_offset = off if s.fg_offset is None else a * off + (1.0 - a) * s.fg_offset
+
+    def _fg_round(self, measured, belt_res, weak_res, pred, t) -> Dict[int, np.ndarray]:
+        """Slots that would coast follow a foreground blob near their prediction (one
+        blob per slot, Hungarian, gate growing with the time since the last measurement),
+        never a blob next to another emitting slot; capped at ``fg_max_s`` since the
+        slot's last live / belt measurement."""
+        p, fg = self.p, self._fg
+        seekers = [s for s in self._slots
+                   if s.state != STATE_LOST and s.sid not in measured and s.sid not in belt_res
+                   and s.sid not in weak_res and s.sid in pred and s.wh is not None
+                   and t - s.strong_t <= p.fg_max_s]
+        if not seekers or not fg.blobs:
+            return {}
+        others = []
+        for o in self._slots:
+            if o.sid in measured:
+                others.append((o.sid, measured[o.sid][0], float(measured[o.sid][1][1])))
+            elif o.sid in belt_res and o.belt_offset is not None:
+                others.append((o.sid, np.array(belt_res[o.sid][:2]) + o.belt_offset,
+                               float(o.wh[1]) if o.wh is not None else 1.0))
+        cost = np.full((len(seekers), len(fg.blobs)), np.inf)
+        for i, s in enumerate(seekers):
+            h = max(1.0, float(s.wh[1]))
+            off = s.fg_offset if s.fg_offset is not None else np.zeros(2)
+            gate = min(p.fg_gate_max_h, p.fg_gate_h + p.fg_gate_growth_h_per_s
+                       * max(0.0, t - s.last_meas_t)) * h
+            for j, b in enumerate(fg.blobs):
+                if b.area < p.fg_min_area_h2 * h * h:
+                    continue
+                pos = np.array([b.x, b.y]) + off
+                if any(o_sid != s.sid and float(np.linalg.norm(pos - o_pos)) < p.fg_dup_h * max(h, o_h)
+                       for o_sid, o_pos, o_h in others):
+                    continue
+                d = float(np.linalg.norm(pos - pred[s.sid]))
+                if d <= gate:
+                    cost[i, j] = d / h
+        out: Dict[int, np.ndarray] = {}
+        for i, j in _assign(cost):
+            s, b = seekers[i], fg.blobs[j]
+            off = s.fg_offset if s.fg_offset is not None else np.zeros(2)
+            out[s.sid] = np.array([b.x, b.y], dtype=np.float64) + off
+        return out
+
     def _belt_round(self, belt: BeltMeasure, measured: dict, pred: dict,
                     t: float) -> Dict[int, Optional[Tuple[float, float, float]]]:
         """This frame's belt queries: a live slot looks at its YOLO hips (else
         at centroid - learned offset) to learn the belt->centroid offset; a
         slot about to coast looks around its predicted belt position (only
-        once the offset is confirmed, and for at most ``belt_max_s``)."""
+        once the offset is confirmed, and for at most ``belt_max_s`` unless the
+        hold is backed this frame -- ``_belt_backing``)."""
         p = self.p
         queries = []
         for s in self._slots:
@@ -1114,7 +1252,8 @@ class IdentitySlots:
                     at, gate = xy + np.array([0.0, 0.1 * h]), p.belt_gate_h * h
             elif (s.state != STATE_LOST and s.belt_offset is not None and s.wh is not None
                   and s.belt_seen >= p.belt_min_learn and s.sid in pred
-                  and (s.belt_since is None or t - s.belt_since <= p.belt_max_s)):
+                  and (s.belt_since is None or t - s.belt_since <= p.belt_max_s
+                       or s.belt_backed_t >= t)):
                 h = max(1.0, float(s.wh[1]))
                 at, gate = pred[s.sid] - s.belt_offset, p.belt_gate_h * h
             else:
@@ -1223,4 +1362,6 @@ def params_from_config(cfg: Dict[str, Any], base: Optional[SlotParams] = None) -
         p.smart_hold = bool(cfg["smart_hold"])
     if cfg.get("slot_filter_input") in ("smoothed", "raw", "raw_skeleton"):
         p.filter_input = str(cfg["slot_filter_input"])
+    if cfg.get("belt_backing") is not None:
+        p.belt_backing = bool(cfg["belt_backing"])
     return p

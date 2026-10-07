@@ -55,7 +55,7 @@ from core.config import (
 )
 from core.config_store import sanitize_project_name
 from core.pipeline import ScaledTrack
-from core.visualization import draw_dancer, draw_slot
+from core.visualization import BallSizer, draw_dancer, draw_slot
 from runtime import api
 from runtime.api import SystemState
 from services.web_monitor import WebMonitor
@@ -149,6 +149,7 @@ class LoopHost(Protocol):
     show_bbox: bool
     show_trails: bool
     show_ids: bool
+    show_ball: bool
 
     # OSC / stats payload
     osc_enabled: bool
@@ -1011,8 +1012,16 @@ class MainLoop:
                         thickness_scale=thickness_scale,
                         id_prefix="T" if slot_tracks is not None else "D",
                     )
-                for st in slot_tracks or ():
-                    draw_slot(preview_frame, st, scale_x, scale_y, thickness_scale)
+                if slot_tracks:
+                    sizer = getattr(self, "_ball_sizer", None)
+                    if sizer is None:
+                        sizer = self._ball_sizer = BallSizer()
+                    now = time.monotonic()
+                    show_ball = getattr(app, "show_ball", True)
+                    for st in slot_tracks:
+                        draw_slot(preview_frame, st, scale_x, scale_y, thickness_scale,
+                                  show_ball=show_ball,
+                                  ball_scale=sizer.scale(int(st.track_id), st, src_h, now))
                 self._draw_height_ruler(preview_frame, scale=ruler_scale, thickness_scale=thickness_scale)
                 # Phase 0: frame number overlay (top-right)
                 self._draw_frame_number_overlay(preview_frame, t.display_frame_num)

@@ -16,7 +16,7 @@ import numpy as np
 
 from core.config import (RECORDING_SLOTS, IDENTITY_SLOTS_ENABLED, IDENTITY_SLOTS_MAX_DANCERS,
                          IDENTITY_SLOTS_STABILITY, IDENTITY_SLOTS_COAST_S,
-                         IDENTITY_SLOTS_STATIC_GUARD, IDENTITY_SLOTS_SMART_HOLD,
+                         IDENTITY_SLOTS_STATIC_GUARD, IDENTITY_SLOTS_SMART_HOLD, FOREGROUND_ENABLED,
                          IDENTITY_SLOTS_USE_IR_BELT, OSC_SEND_STATE)
 from gui_icons import Icons
 from gui_constants import (
@@ -1174,6 +1174,24 @@ def build_identity_slot_controls(gui: Any):
         dpg.add_text("A person-like shape that never moves (a coat, a poster, a\n"
                      "stain) cannot keep a dancer id when a moving dancer needs it,\n"
                      "and cannot take one back. Leave it ON.")
+    with dpg.group(horizontal=True):
+        fg_chk = dpg.add_checkbox(
+            label="Use empty wall", tag="foreground_checkbox",
+            default_value=bool(cfg.get("fg_enabled", FOREGROUND_ENABLED)),
+            callback=gui._on_foreground_toggle,
+        )
+        with dpg.tooltip(fg_chk):
+            dpg.add_text("Compares each frame with a snapshot of the EMPTY wall:\n"
+                         "a shape that is not on the snapshot is somebody.  Keeps a\n"
+                         "dancer's point when YOLO loses them (state 'fg'), stops\n"
+                         "fixed figures (coat, stain) from taking an id, and lets the\n"
+                         "belt hold a still dancer.  Calibrate records the snapshot;\n"
+                         "re-capture after moving the camera or changing the lights.")
+        cap_btn = dpg.add_button(label="Capture empty wall", callback=gui._on_capture_plate)
+        with dpg.tooltip(cap_btn):
+            dpg.add_text("Records 2 s of the wall: NOBODY in the picture.\n"
+                         "(Calibrate does it automatically.)")
+    dpg.add_text("empty wall: -", tag="fg_status_text", color=TEXT_DIM)
     dpg.add_text("ids: -", tag="identity_slots_status_text", color=TEXT_DIM)
 
 
@@ -1415,7 +1433,7 @@ def build_visualization_toolbar(gui: Any):
             width=scaled(28),
             callback=lambda: gui._on_vis_toolbar_toggle("keypoints"),
         )
-        dpg.bind_item_theme(kp_btn, gui._vis_btn_on_theme if gui.config.get("show_keypoints", True) else gui._vis_btn_off_theme)
+        dpg.bind_item_theme(kp_btn, gui._vis_btn_on_theme if gui.config.get("show_keypoints", False) else gui._vis_btn_off_theme)
         with dpg.tooltip(kp_btn):
             dpg.add_text("Keypoints [K]")
         
@@ -1437,7 +1455,7 @@ def build_visualization_toolbar(gui: Any):
             width=scaled(28),
             callback=lambda: gui._on_vis_toolbar_toggle("trails"),
         )
-        dpg.bind_item_theme(trails_btn, gui._vis_btn_on_theme if gui.config.get("show_trails", True) else gui._vis_btn_off_theme)
+        dpg.bind_item_theme(trails_btn, gui._vis_btn_on_theme if gui.config.get("show_trails", False) else gui._vis_btn_off_theme)
         with dpg.tooltip(trails_btn):
             dpg.add_text("Motion Trails [T]")
         
@@ -1451,6 +1469,17 @@ def build_visualization_toolbar(gui: Any):
         dpg.bind_item_theme(ids_btn, gui._vis_btn_on_theme if gui.config.get("show_ids", True) else gui._vis_btn_off_theme)
         with dpg.tooltip(ids_btn):
             dpg.add_text("Dancer IDs [I]")
+
+        # Output ball toggle (the emitted OSC centroid)
+        ball_btn = dpg.add_button(
+            label="C",
+            tag="vis_ball_btn",
+            width=scaled(28),
+            callback=lambda: gui._on_vis_toolbar_toggle("ball"),
+        )
+        dpg.bind_item_theme(ball_btn, gui._vis_btn_on_theme if gui.config.get("show_ball", True) else gui._vis_btn_off_theme)
+        with dpg.tooltip(ball_btn):
+            dpg.add_text("Circle ball = what OSC sends (/centroid), sized by the dancer's distance [C]")
 
 
 def build_osc_section(gui: Any):

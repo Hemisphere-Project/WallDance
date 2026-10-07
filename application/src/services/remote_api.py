@@ -67,6 +67,7 @@ POLICY: Dict[str, str] = {
     "SetCoastSeconds": CONTROL, "ToggleIrBelt": CONTROL, "ToggleOscState": CONTROL,
     "SetStaticGhostGuard": CONTROL, "SetStaticRelease": CONTROL, "SetSlotFilterInput": CONTROL,
     "SetIntermittentConfirm": CONTROL, "SetTrackingMode": CONTROL, "SetSmartHold": CONTROL,
+    "CapturePlate": CONTROL, "SetForeground": CONTROL,
     "SetPersonHeight": CONTROL, "SetTrackerMaxAge": CONTROL, "SetMog2Scale": CONTROL,
     "ResetTracker": CONTROL, "ToggleEnhance": CONTROL, "ToggleEnhanceLite": CONTROL,
     "ToggleEnhanceForce": CONTROL, "ToggleGreyscale": CONTROL,

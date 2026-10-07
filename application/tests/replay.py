@@ -257,7 +257,7 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
                              IDENTITY_SLOTS_STABILITY, IDENTITY_SLOTS_COAST_S,
                              IDENTITY_SLOTS_USE_IR_BELT, IDENTITY_SLOTS_STATIC_GUARD,
                              IDENTITY_SLOTS_STATIC_RELEASE_S, IDENTITY_SLOTS_FILTER_INPUT,
-                             IDENTITY_SLOTS_SMART_HOLD)
+                             IDENTITY_SLOTS_SMART_HOLD, FOREGROUND_ENABLED)
     settings.identity_slots_enabled = bool(config.get("identity_slots_enabled",
                                                       IDENTITY_SLOTS_ENABLED))
     settings.max_dancers = int(config.get("max_dancers", IDENTITY_SLOTS_MAX_DANCERS))
@@ -268,6 +268,11 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
     settings.static_release_s = float(config.get("static_release_s", IDENTITY_SLOTS_STATIC_RELEASE_S))
     settings.slot_filter_input = str(config.get("slot_filter_input", IDENTITY_SLOTS_FILTER_INPUT))
     settings.smart_hold = bool(config.get("smart_hold", IDENTITY_SLOTS_SMART_HOLD))
+    # clean-plate foreground: "fg_plate" (project-relative .npz, resolved by main() into
+    # "fg_plate_path"); absent = no plate = the base behaviour (goldens unchanged)
+    settings.fg_enabled = bool(config.get("fg_enabled", FOREGROUND_ENABLED))
+    settings.belt_backing = bool(config.get("belt_backing", True))
+    settings.fg_plate_path = str(config.get("fg_plate_path", "") or "")
     settings.roi_enabled = bool(config.get("roi_enabled", False))
     settings.roi_x = int(config.get("roi_x", 0))
     settings.roi_y = int(config.get("roi_y", 0))
@@ -726,6 +731,10 @@ def main():
     if args.var is not None:
         config["mog2_var_threshold"] = args.var
     apply_overrides(config, args.sets)
+    if config.get("fg_plate"):
+        plate = Path(str(config["fg_plate"]))
+        config["fg_plate_path"] = str(plate if plate.is_absolute()
+                                      else PROJECTS_DIR / args.project / plate)
     video = args.video
     if video is None and scenario is not None and scenario.get("video"):
         # A manifest may pin a file other than the slot's recording (e.g. a

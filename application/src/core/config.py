@@ -322,6 +322,13 @@ IDENTITY_SLOTS_SMART_HOLD = True        # Hold earned by reputation (>= 1 s of s
 BELT_STATIC_EVERY_N = 10
 BELT_STATIC_ALPHA = 0.05
 BELT_STATIC_ON = 0.6
+# Clean-plate foreground ("background snapshot", core/foreground.py, 2026-10-07): a median of
+# ~2 s of the EMPTY wall (Calibrate captures it; "Capture empty wall" re-takes it), saved in the
+# project as plates/plate_<stamp>.npz (config key fg_plate).  Each frame the raw ROI is compared
+# with it (4x downscaled, brightness-normalised): ghost veto at slot binding, a foreground hold
+# for slots YOLO lost, and the belt backing.  No plate = no foreground (the base behaviour).
+FOREGROUND_ENABLED = True
+PLATE_CAPTURE_FRAMES = 40               # 2 s at 20 fps
 OSC_SEND_STATE = False                  # opt-in /walldance/dancer/state [id, state, age_s]
 
 # =============================================================================
@@ -460,10 +467,11 @@ PREVIEW_DISPLAY_SCALE = 0.5        # On-screen preview area scale relative to ca
 PREVIEW_MAX_FPS = 15.0             # default cap (the 20 fps stream: 3 frames in 4)
 PREVIEW_CAPPED_FPS = 10.0          # with the "Preview FPS cap" toggle on
 SHOW_SKELETON = True                # Draw skeleton
-SHOW_KEYPOINTS = True               # Draw keypoints
+SHOW_KEYPOINTS = False              # Draw keypoints (off by default, Thomas 2026-10-07)
 SHOW_BBOX = True                    # Draw bounding box
-SHOW_TRAILS = True                  # Draw motion trails
+SHOW_TRAILS = False                 # Draw motion trails (off by default, Thomas 2026-10-07)
 SHOW_ID = True                      # Draw track ID
+SHOW_BALL = True                    # Draw the output ball (the emitted OSC centroid)
 
 # =============================================================================
 # WEB MONITOR (smartphone preview + focus / lighting assist)

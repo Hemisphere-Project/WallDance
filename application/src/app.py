@@ -61,6 +61,9 @@ from core.config import (
     SHOW_ID,
     SHOW_KEYPOINTS,
     SHOW_SKELETON,
+    FOREGROUND_ENABLED,
+    PLATE_CAPTURE_FRAMES,
+    SHOW_BALL,
     SHOW_TRAILS,
     TRACKER_MAX_AGE,
     IDS_RATIO,
@@ -635,6 +638,7 @@ class WallDanceApp:
         self.show_keypoints = SHOW_KEYPOINTS
         self.show_bbox = SHOW_BBOX
         self.show_ids = SHOW_ID
+        self.show_ball = SHOW_BALL
 
         # State for metrics
         self.frame_count = 0
@@ -717,6 +721,7 @@ class WallDanceApp:
             sync_mask_ui=self.roi._sync_mask_ui,
             request_reprocess=self._request_reprocess,
             imgsz_change=self._cb_imgsz_change,
+            capture_plate=lambda source: self._cb_capture_plate(PLATE_CAPTURE_FRAMES, source),
         )
         
         # Pending operations (deferred to main loop)
@@ -782,6 +787,7 @@ class WallDanceApp:
             "show_bbox": self.show_bbox,
             "show_trails": self.show_trails,
             "show_ids": self.show_ids,
+            "show_ball": self.show_ball,
             "tracker_max_age": TRACKER_MAX_AGE,
             "tracker_smoothing": 1,
             "tracking_mode": self.tracker.tracking_mode.value,
@@ -821,6 +827,7 @@ class WallDanceApp:
             "static_release_s": self.settings.static_release_s,
             "slot_filter_input": self.settings.slot_filter_input,
             "smart_hold": self.settings.smart_hold,
+            "fg_enabled": self.settings.fg_enabled,
             "use_ir_belt": self.settings.use_ir_belt,
             "osc_send_state": self.settings.osc_send_state,
         }
@@ -870,6 +877,8 @@ class WallDanceApp:
         reg(api.SetIntermittentConfirm, lambda c: self._cb_intermittent_confirm(c.enabled))
         reg(api.SetTrackingMode, lambda c: self._cb_tracking_mode(c.value))
         reg(api.SetSmartHold, lambda c: self._cb_identity_slots(smart_hold=c.enabled))
+        reg(api.CapturePlate, lambda c: self._cb_capture_plate(int(c.frames), "command"))
+        reg(api.SetForeground, lambda c: self._cb_foreground(c.enabled))
         reg(api.SetStaticGhostGuard,
             lambda c: self._cb_identity_slots(static_ghost_guard=c.enabled))
         reg(api.SetStaticRelease, lambda c: self._cb_identity_slots(static_release_s=c.value))
@@ -1166,6 +1175,7 @@ class WallDanceApp:
         "bbox": ("show_bbox", "Bounding box"),
         "trails": ("show_trails", "Trails"),
         "ids": ("show_ids", "IDs"),
+        "ball": ("show_ball", "Output ball"),
     }
 
     def _cmd_toggle_overlay(self, c: api.ToggleOverlay):
@@ -1233,6 +1243,7 @@ class WallDanceApp:
             "show_bbox": self.show_bbox,
             "show_trails": self.show_trails,
             "show_ids": self.show_ids,
+            "show_ball": self.show_ball,
             "tracking_mode": self.tracker.tracking_mode.value,
             "tracker_max_age": self.tracker.max_age,
             "tracker_smoothing": self.tracker.smoothing_depth,
@@ -1250,6 +1261,7 @@ class WallDanceApp:
             "static_release_s": self.settings.static_release_s,
             "slot_filter_input": self.settings.slot_filter_input,
             "smart_hold": self.settings.smart_hold,
+            "fg_enabled": self.settings.fg_enabled,
             "use_ir_belt": self.settings.use_ir_belt,
             "osc_send_state": self.settings.osc_send_state,
             "motion_sensitivity": self.processor.get_motion_sensitivity(),
@@ -1398,6 +1410,9 @@ class WallDanceApp:
         if "show_ids" in config:
             self.show_ids = config["show_ids"]
             self._sync("checkbox","ids", config["show_ids"])
+        if "show_ball" in config:
+            self.show_ball = bool(config["show_ball"])
+            self._sync("checkbox","ball", self.show_ball)
 
         # Tracker
         if "tracker_distance" in config:
@@ -1465,6 +1480,10 @@ class WallDanceApp:
                 slot_kw[key] = config.get(key, default)
         if slot_kw:
             self._cb_identity_slots(**slot_kw)
+        if "fg_enabled" in config or full_config:
+            self._cb_foreground(bool(config.get("fg_enabled", FOREGROUND_ENABLED)))
+        if full_config:
+            self._load_project_plate()
         # Conditional Dial-B visibility (OPERATOR_V2 P3 / build #3): calibration
         # writes `dial_b_relevant` (drop-rate at the tuned config still leaves
         # gaps gap-bridging could address). Absent = visible (no regression);
@@ -1802,6 +1821,81 @@ class WallDanceApp:
               f"release={s.static_release_s:.0f}s filter={s.slot_filter_input} "
               f"state_msg={'on' if s.osc_send_state else 'off'}")
 
+    # ------------------------------------------------------------------
+    # Clean plate ("background snapshot", core/foreground.py)
+    # ------------------------------------------------------------------
+    def _plate_dir(self) -> str:
+        return os.path.join(self.configs.config_store.config_dir,
+                            self.configs._current_project, "plates")
+
+    def _plate_status_text(self) -> str:
+        st = self.processor.plate_status
+        det = getattr(self.processor, "_fg_detector", None)
+        src = ""
+        if det is not None:
+            p = det.plate
+            src = f" ({p.created[5:16].replace('T', ' ')}, {p.frame_size[0]}x{p.frame_size[1]})"
+        return {"off": "empty wall: off",
+                "none": "empty wall: none - run Calibrate on the empty wall",
+                "ready": "empty wall: ready" + src,
+                "size": "empty wall: other camera crop - re-capture" + src,
+                "stale": "empty wall: scene changed - re-capture" + src,
+                "capturing": "empty wall: capturing..."}.get(st, st)
+
+    def _publish_plate_status(self) -> None:
+        self._sync("input", "fg_status", self._plate_status_text())
+
+    def _load_project_plate(self) -> None:
+        """The project's latest plate (plates/latest.npz), if any."""
+        path = os.path.join(self._plate_dir(), "latest.npz")
+        if os.path.isfile(path):
+            self.settings.fg_plate_path = path
+            self.processor._fg_loaded_path = None      # (re)load on the next frame
+        else:
+            self.settings.fg_plate_path = ""
+            self.processor._fg_loaded_path = None
+            self.processor.set_clean_plate(None)
+        self._publish_plate_status()
+
+    def _cb_foreground(self, enabled: bool) -> None:
+        self.settings.fg_enabled = bool(enabled)
+        self._sync("checkbox", "foreground", self.settings.fg_enabled)
+        print(f"Foreground (empty-wall snapshot): {'ON' if enabled else 'OFF'}")
+        self._publish_plate_status()
+
+    def _cb_capture_plate(self, frames: int = PLATE_CAPTURE_FRAMES, source: str = "button") -> None:
+        """Record the empty wall as the clean plate; saved as plates/plate_<stamp>.npz and
+        plates/latest.npz (loaded with the project)."""
+        plate_dir = self._plate_dir()
+
+        def done(plate, error):
+            if plate is None:
+                print(f"[Foreground] plate capture failed: {error}")
+                self.bus.publish(api.Toast(f"Empty-wall capture failed: {error}",
+                                           duration=5.0, color=(255, 120, 90)))
+                self._publish_plate_status()
+                return
+            stamp = time.strftime("%Y%m%d_%H%M%S")
+            plate.source = f"{source}:{self.configs._current_project}"
+            try:
+                path = plate.save(os.path.join(plate_dir, f"plate_{stamp}.npz"))
+                latest = plate.save(os.path.join(plate_dir, "latest.npz"))
+                self.settings.fg_plate_path = str(latest)
+                self.processor._fg_loaded_path = str(latest)   # already installed
+                print(f"[Foreground] empty wall captured ({source}): {path} "
+                      f"({plate.frame_size[0]}x{plate.frame_size[1]}, noise {plate.sigma:.2f} DN)")
+                self.bus.publish(api.Toast("Empty wall captured (dancer-id evidence ready)",
+                                           duration=3.0, color=(120, 220, 120)))
+            except Exception as exc:  # noqa: BLE001
+                print(f"[Foreground] plate not saved ({type(exc).__name__}: {exc})")
+            self._publish_plate_status()
+
+        self.processor.start_plate_capture(int(frames), done)
+        print(f"[Foreground] capturing the empty wall ({frames} frames, {source})")
+        self.bus.publish(api.Toast("Capturing the empty wall (2 s): keep the wall empty",
+                                   duration=2.5, color=(255, 200, 100)))
+        self._publish_plate_status()
+
     def _cb_imgsz_change(self, value: int):
         new_imgsz = int(value)
         old_imgsz = self.settings.imgsz
@@ -1861,6 +1955,8 @@ class WallDanceApp:
             self.show_trails = enabled
         elif name == "ids":
             self.show_ids = enabled
+        elif name == "ball":
+            self.show_ball = enabled
         print(f"{name.capitalize()}: {'ON' if enabled else 'OFF'}")
 
     def _cb_tracker_age_change(self, value: int):

@@ -667,6 +667,14 @@ class WallDanceGUI:
         if 'on_static_guard_toggle' in self.callbacks:
             self.callbacks['on_static_guard_toggle'](bool(value))
 
+    def _on_foreground_toggle(self, sender, value):
+        if 'on_foreground_toggle' in self.callbacks:
+            self.callbacks['on_foreground_toggle'](bool(value))
+
+    def _on_capture_plate(self, sender=None, value=None):
+        if 'on_capture_plate' in self.callbacks:
+            self.callbacks['on_capture_plate']()
+
     def _on_ir_belt_toggle(self, sender, value):
         if 'on_ir_belt_toggle' in self.callbacks:
             self.callbacks['on_ir_belt_toggle'](bool(value))
@@ -817,12 +825,13 @@ class WallDanceGUI:
             "bbox": "show_bbox",
             "trails": "show_trails",
             "ids": "show_ids",
+            "ball": "show_ball",
         }
         config_key = key_map.get(name)
         if not config_key:
             return
         
-        current = self.config.get(config_key, True)
+        current = self.config.get(config_key, config_key not in ("show_keypoints", "show_trails"))
         new_value = not current
         self.config[config_key] = new_value
         
@@ -1853,10 +1862,11 @@ class WallDanceGUI:
             'ir_belt': ['ir_belt_checkbox'],
             'static_guard': ['static_guard_checkbox'],
             'smart_hold': ['smart_hold_checkbox'],
+            'foreground': ['foreground_checkbox'],
             'osc_state': ['osc_state_checkbox'],
         }
         # Visualization toggles - update toolbar button themes instead of checkboxes
-        vis_toggles = ['skeleton', 'keypoints', 'bbox', 'trails', 'ids']
+        vis_toggles = ['skeleton', 'keypoints', 'bbox', 'trails', 'ids', 'ball']
         if name in vis_toggles:
             btn_tag = f"vis_{name}_btn"
             if dpg.does_item_exist(btn_tag):
@@ -2068,6 +2078,7 @@ class WallDanceGUI:
         tag_map = {
             'osc_ip': 'osc_ip_input',
             'osc_port': 'osc_port_input',
+            'fg_status': 'fg_status_text',
         }
         if name.startswith('rig.'):
             tag = f"rig_{name[4:]}_input"

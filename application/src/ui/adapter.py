@@ -162,6 +162,8 @@ class DpgUiAdapter:
             "on_ir_belt_toggle": lambda v: submit(api.ToggleIrBelt(bool(v))),
             "on_static_guard_toggle": lambda v: submit(api.SetStaticGhostGuard(bool(v))),
             "on_smart_hold_toggle": lambda v: submit(api.SetSmartHold(bool(v))),
+            "on_foreground_toggle": lambda v: submit(api.SetForeground(bool(v))),
+            "on_capture_plate": lambda: submit(api.CapturePlate()),
             "on_osc_state_toggle": lambda v: submit(api.ToggleOscState(bool(v))),
             "on_check_readiness": lambda: submit(api.CheckReadiness()),
             "on_dryrun": lambda: submit(api.RunDryRunReplay()),
@@ -281,6 +283,8 @@ class DpgUiAdapter:
             submit(api.ToggleOverlay("bbox"))
         elif key == dpg.mvKey_I:
             submit(api.ToggleOverlay("ids"))
+        elif key == dpg.mvKey_C and not ctrl_down:
+            submit(api.ToggleOverlay("ball"))
         elif key == dpg.mvKey_P:
             submit(api.TogglePreview(enabled=None, quiet=True))
         elif key == dpg.mvKey_F8:

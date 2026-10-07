@@ -190,6 +190,25 @@ class SetSmartHold(Command):
 
 
 @dataclass(frozen=True)
+class CapturePlate(Command):
+    """Record the EMPTY wall for ``frames`` frames (~2 s) as the clean plate (the
+    "background snapshot" the dancer ids use as evidence).  The pipeline must be
+    running (RUN, or playback of an empty-wall take).  Calibrate does it too."""
+    frames: int = 40
+
+    def __post_init__(self):
+        if not 9 <= int(self.frames) <= 400:
+            raise ValueError("CapturePlate.frames must be within 9..400")
+
+
+@dataclass(frozen=True)
+class SetForeground(Command):
+    """Use the empty-wall snapshot (clean plate) as evidence for the dancer ids: ghost
+    veto, hold a dancer YOLO lost, back the belt (default ON; no plate = no effect)."""
+    enabled: bool
+
+
+@dataclass(frozen=True)
 class SetStaticGhostGuard(Command):
     """Static-ghost guard: a figure that never moves cannot take or keep a slot
     a moving dancer needs (default ON)."""
@@ -357,13 +376,13 @@ class SetBgSensitivity(Command):
 
 @dataclass(frozen=True)
 class ToggleOverlay(Command):
-    """enabled=None flips (keyboard shortcuts T/S/K/B/I)."""
-    name: str  # skeleton | keypoints | bbox | trails | ids
+    """enabled=None flips (keyboard shortcuts T/S/K/B/I/C)."""
+    name: str  # skeleton | keypoints | bbox | trails | ids | ball
     enabled: Optional[bool] = None
 
     def __post_init__(self):
         _check_member(self.name, ("skeleton", "keypoints", "bbox", "trails",
-                                  "ids"), "ToggleOverlay.name")
+                                  "ids", "ball"), "ToggleOverlay.name")
 
 
 @dataclass(frozen=True)

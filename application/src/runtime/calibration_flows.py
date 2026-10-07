@@ -87,6 +87,7 @@ class CalibrationFlows:
         sync_mask_ui: Callable[[], None],
         request_reprocess: Callable[[], None],
         imgsz_change: Callable[[int], None],
+        capture_plate: Optional[Callable[[str], None]] = None,
     ) -> None:
         self.processor = processor
         self.enhancer = enhancer
@@ -107,6 +108,7 @@ class CalibrationFlows:
         self.sync_mask_ui = sync_mask_ui
         self.request_reprocess = request_reprocess
         self.imgsz_change = imgsz_change
+        self.capture_plate = capture_plate
 
         self._calibrator = SceneCalibrator()    # Go-Live scene calibration (P2)
         self._calibrating = False               # True while a calibration window is collecting
@@ -384,6 +386,13 @@ class CalibrationFlows:
         self._stamp_calib_state("aim", *touched)
         print(result.log_line())
         self.request_reprocess()
+        # Calibrate runs on the EMPTY wall: record it as the clean plate (the foreground
+        # evidence for the dancer ids; the "clean-plate" Aim always promised, D16).
+        if self.capture_plate is not None:
+            try:
+                self.capture_plate("calibrate")
+            except Exception as exc:  # noqa: BLE001 - never fail a calibration on it
+                print(f"[Foreground] plate capture not started ({type(exc).__name__}: {exc})")
         if self.ui.available:
             self.ui.set_calibrate_status(None)
             self.ui.update_aim_calib_state(self._aim_calib_line())  # Track S
