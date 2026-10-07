@@ -11,9 +11,11 @@ ladder, strongest first, and keeps the first one where YOLO finds nobody:
   gamma g0 (the calibrated one) -> 2/3 and 1/3 of the way to 1.0 -> 1.0 -> 0.8,
   then CLAHE lowered at the weakest gamma.
 
-A candidate passes when at most ``max_ghost_frames`` of its ``frames`` observed frames hold a raw YOLO
-person (before the tracker and every filter) with a box confidence >= ``margin`` x the live
-confidence: the margin leaves room for the operator's sensitivity dial.  When no candidate passes,
+A candidate passes when at most ``max_ghost_frames`` (1) of its ``frames`` (40) observed frames hold a raw
+YOLO person (before the tracker and every filter) with a box confidence >= ``margin`` x the live
+confidence: the margin leaves room for the operator's sensitivity dial.  (First 2 of 30: gamma 1.27 on the
+bright empty take sat on that edge -- 3/30, 1/30 at another confidence -- and on the night takes 1.27 gives
+38-681 ghost frames where 1.0 gives none, so a borderline rung must fail.)  When no candidate passes,
 the weakest is kept and the result names where the ghost is (an object to remove or an exclusion to
 paint).  Pure logic: the caller sets the enhancer from ``current()`` and feeds each processed frame's
 raw detections (``FrameProcessor.last_raw_dets``: conf, x, y, h in original px).
@@ -95,8 +97,8 @@ def ladder(gamma0: float, clahe0: float) -> List[Tuple[float, float]]:
 
 
 class EmptyWallCheck:
-    def __init__(self, gamma0: float, clahe0: float, confidence: float, *, frames: int = 30,
-                 settle: int = 4, margin: float = 0.8, max_ghost_frames: int = 2):
+    def __init__(self, gamma0: float, clahe0: float, confidence: float, *, frames: int = 40,
+                 settle: int = 4, margin: float = 0.8, max_ghost_frames: int = 1):
         self.conf_limit = max(0.05, float(margin) * float(confidence))
         self.frames = int(frames)
         self.settle = int(settle)

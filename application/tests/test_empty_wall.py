@@ -33,7 +33,7 @@ def test_a_clean_wall_keeps_the_calibrated_enhancement():
     chk = EmptyWallCheck(1.8, 1.5, confidence=0.25)
     applied = _run(chk, lambda g, c: 0.0)
     assert applied == [(1.8, 1.5)] and chk.result.clean
-    assert chk.result.gamma == pytest.approx(1.8) and chk.tried[0].frames == 30
+    assert chk.result.gamma == pytest.approx(1.8) and chk.tried[0].frames == 40
 
 
 def test_a_ghost_under_strong_gamma_steps_down_until_yolo_sees_nobody():
@@ -42,9 +42,9 @@ def test_a_ghost_under_strong_gamma_steps_down_until_yolo_sees_nobody():
     applied = _run(chk, lambda g, c: 0.30 if g > 1.3 else 0.12)
     r = chk.result
     assert r.clean and r.gamma == pytest.approx(1 + 0.8 / 3)
-    assert len(applied) == 3 and chk.tried[0].ghost_frames == 3            # a ghost fails fast
+    assert len(applied) == 3 and chk.tried[0].ghost_frames == 2            # a ghost fails fast
     assert chk.tried[-1].max_conf == pytest.approx(0.12)                   # below 0.8 x 0.25: allowed
-    assert "ok" in r.summary() and "3/" in r.summary()
+    assert "ok" in r.summary() and "2/" in r.summary()
 
 
 def test_the_margin_leaves_room_for_the_sensitivity_dial():
@@ -61,13 +61,21 @@ def test_a_ghost_at_every_setting_keeps_the_weakest_and_names_the_place():
     assert "x=300, y=400" in r.summary() and "exclusion" in r.summary()
 
 
-def test_isolated_blips_do_not_fail_a_candidate():
-    chk = EmptyWallCheck(1.5, 2.5, confidence=0.25, frames=30, max_ghost_frames=2)
+def test_one_isolated_blip_does_not_fail_a_candidate_but_two_do():
+    chk = EmptyWallCheck(1.5, 2.5, confidence=0.25)
     n = [0]
 
     def blip(g, c):
         n[0] += 1
-        return 0.3 if n[0] in (10, 20) else 0.0
+        return 0.3 if n[0] == 20 else 0.0
     _run(chk, blip)
     assert chk.result.clean and chk.result.gamma == pytest.approx(1.5)
     assert 0.0 < chk.progress() <= 1.0
+    chk2 = EmptyWallCheck(1.5, 2.5, confidence=0.25)
+    m = [0]
+
+    def two(g, c):                     # the borderline gamma-1.27 case: 2-3 ghost frames must fail
+        m[0] += 1
+        return 0.3 if g > 1.4 and m[0] in (12, 30) else 0.0
+    _run(chk2, two)
+    assert chk2.result.gamma < 1.5 and chk2.tried[0].ghost_frames == 2
