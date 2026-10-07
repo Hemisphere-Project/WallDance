@@ -207,3 +207,18 @@ def test_belt_hold_restarts_on_foreground():
     hidden = lambda i: {1: cand(1, 400, 300, fss=100 + i, tsu=1)}
     states = _belt_run(_p(belt_max_s=8.0), 30, hidden_fn=hidden)
     assert STATE_BELT not in states[170:]
+
+
+def test_selective_plate_update_absorbs_a_light_change_but_not_a_protected_dancer():
+    rng = np.random.default_rng(7)
+    from core.foreground import FgParams
+    det = ForegroundDetector(CleanPlate.from_frames([_wall(rng) for _ in range(12)]),
+                             FgParams(update_every=1, update_alpha=0.1))
+    frame = _wall(rng)
+    frame[100:200, 600:760] = 60                           # a lamp switched on (lasting change)
+    frame[200:400, 300:360] = 60                           # a still dancer, protected
+    for _ in range(60):
+        fg = det.process(frame, 0, 0, (800, 600))
+        det.update_plate([(280, 180, 380, 420)])
+    xs = sorted(round(b.x) for b in fg.blobs)
+    assert len(fg.blobs) == 1 and abs(xs[0] - 330) < 8   # the lamp faded into the plate, the dancer did not

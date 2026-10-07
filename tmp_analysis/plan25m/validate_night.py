@@ -42,6 +42,15 @@ VARIANTS = {
     # scale 0.7) instead of the project's latest (re-calibrated 2026-10-07 10:33 on the empty-wall take)
     "oldcal": ["--set", "belt_backing=false", "--set", "fg_enabled=false", "--set", "gamma=0.73",
                "--set", "clahe_clip=2.5", "--set", "mog2_var_threshold=8.0", "--set", "mog2_scale=0.7"],
+    "oldcalfgh150": ["--set", "belt_backing=true", "--set", "fg_enabled=true", "--set", "gamma=0.73",
+                     "--set", "clahe_clip=2.5", "--set", "mog2_var_threshold=8.0", "--set", "mog2_scale=0.7",
+                     "--set", "person_height_px=150"],
+    # v2 (2026-10-07 noon): foreground with the selective plate update + a new dancer must have
+    # moved 0.25 h (skeleton AND movement to open a slot; a still dancer keeps the slot it has)
+    "v2old": ["--set", "belt_backing=true", "--set", "fg_enabled=true", "--set", "entry_min_travel_h=0.25",
+              "--set", "gamma=0.73", "--set", "clahe_clip=2.5", "--set", "mog2_var_threshold=8.0",
+              "--set", "mog2_scale=0.7"],
+    "v2new": ["--set", "belt_backing=true", "--set", "fg_enabled=true", "--set", "entry_min_travel_h=0.25"],
     "oldcalfg": ["--set", "belt_backing=true", "--set", "fg_enabled=true", "--set", "gamma=0.73",
                  "--set", "clahe_clip=2.5", "--set", "mog2_var_threshold=8.0", "--set", "mog2_scale=0.7"],
 }
@@ -86,7 +95,7 @@ def main():
             for k, v in roi.items():
                 args += ["--set", f"{k}={v}"]
             args += ["--set", "roi_enabled=true"]
-            if var in ("fg", "nobelt", "fgh150", "oldcalfg"):
+            if "fg" in var or var.startswith("v2"):
                 args += ["--set", f"fg_plate={plate_rel(pk)}"]
             for kv in filter(None, a.extra.split(",")):
                 args += ["--set", kv]

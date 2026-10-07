@@ -126,6 +126,11 @@ class FgParams:
                                   # (two dancers at 25 m cover < 10 % of a wall ROI)
     open_k: int = 3
     close_k: int = 7
+    # selective plate update: every update_every frames the plate moves toward the current frame by
+    # update_alpha, except under protected boxes (YOLO-confirmed dancers, backed belts).  A lighting
+    # change that left a lasting difference fades in ~update_every / fps / update_alpha s (~25 s).
+    update_every: int = 10
+    update_alpha: float = 0.02
 
 
 @dataclass
@@ -177,6 +182,10 @@ class ForegroundDetector:
         self._kc = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (self.p.close_k, self.p.close_k))
         self.stale_frames = 0     # consecutive frames rejected as "plate stale"
         self.last: Optional[FgFrame] = None
+        self._live = plate.plate.copy()   # the plate in use (selective update); the file stays as captured
+        self._cur: Optional[np.ndarray] = None
+        self._cur_at: Tuple[int, int] = (0, 0)
+        self._frames = 0
 
     def matches(self, frame_w: int, frame_h: int) -> bool:
         return (int(frame_w), int(frame_h)) == tuple(self.plate.frame_size)
@@ -201,7 +210,7 @@ class ForegroundDetector:
             return self.last
         cur = _down(g[:h, :w], ds)
         ph, pw = cur.shape
-        B = self.plate.plate[gy0:gy0 + ph, gx0:gx0 + pw]
+        B = self._live[gy0:gy0 + ph, gx0:gx0 + pw]
         if B.shape != cur.shape:   # ROI partly outside the plate (should not happen)
             ph, pw = min(ph, B.shape[0]), min(pw, B.shape[1])
             cur, B = cur[:ph, :pw], B[:ph, :pw]
@@ -211,6 +220,7 @@ class ForegroundDetector:
             if ok.mean() >= p.gain_min_px:
                 gain = float(np.median(cur[ok] / B[ok]))
                 gain = min(p.gain_range[1], max(p.gain_range[0], gain))
+        self._cur, self._cur_at, self._gain = cur, (gy0, gx0), gain
         thr = max(p.thr_floor, p.k * self.plate.sigma * math.sqrt(max(1.0, gain)))
         m = (np.abs(cur - gain * B) > thr).astype(np.uint8)
         m = cv2.morphologyEx(cv2.morphologyEx(m, cv2.MORPH_OPEN, self._ko), cv2.MORPH_CLOSE, self._kc)
@@ -247,3 +257,29 @@ class ForegroundDetector:
                                       x0 + (bx + bw) * ds, y0 + (by + bh) * ds)))
         self.last = FgFrame(m, x0, y0, ds, blobs=blobs, gain=gain, fg_ratio=ratio)
         return self.last
+
+    def update_plate(self, protect: Sequence[Tuple[float, float, float, float]] = ()) -> bool:
+        """Selective plate update after ``process``: every ``update_every`` calls, blend the
+        analysed area toward the current frame (brightness-normalised) except inside the
+        ``protect`` boxes (x0, y0, x1, y1 original px: the dancers).  Returns True when it ran."""
+        self._frames += 1
+        p = self.p
+        if self._cur is None or p.update_alpha <= 0 or self._frames % max(1, p.update_every):
+            return False
+        ds = self.plate.ds
+        gy0, gx0 = self._cur_at
+        cur = self._cur / max(1e-6, self._gain)
+        ph, pw = cur.shape
+        B = self._live[gy0:gy0 + ph, gx0:gx0 + pw]
+        ph, pw = min(ph, B.shape[0]), min(pw, B.shape[1])
+        keep = np.zeros((ph, pw), dtype=bool)
+        for x0, y0, x1, y1 in protect:
+            a0, a1 = int(x0 // ds) - gx0, int(math.ceil(x1 / ds)) - gx0
+            b0, b1 = int(y0 // ds) - gy0, int(math.ceil(y1 / ds)) - gy0
+            a0, a1, b0, b1 = max(0, a0), min(pw, a1), max(0, b0), min(ph, b1)
+            if a1 > a0 and b1 > b0:
+                keep[b0:b1, a0:a1] = True
+        upd = B[:ph, :pw]
+        blend = upd + p.update_alpha * (cur[:ph, :pw] - upd)
+        upd[~keep] = blend[~keep]
+        return True

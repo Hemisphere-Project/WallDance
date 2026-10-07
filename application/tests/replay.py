@@ -272,6 +272,7 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
     # "fg_plate_path"); absent = no plate = the base behaviour (goldens unchanged)
     settings.fg_enabled = bool(config.get("fg_enabled", FOREGROUND_ENABLED))
     settings.belt_backing = bool(config.get("belt_backing", True))
+    settings.entry_min_travel_h = float(config.get("entry_min_travel_h", 0.0))
     settings.fg_plate_path = str(config.get("fg_plate_path", "") or "")
     settings.roi_enabled = bool(config.get("roi_enabled", False))
     settings.roi_x = int(config.get("roi_x", 0))

@@ -146,6 +146,7 @@ class ProcessingSettings:
     smart_hold: bool = IDENTITY_SLOTS_SMART_HOLD
     use_ir_belt: bool = IDENTITY_SLOTS_USE_IR_BELT
     belt_backing: bool = True                   # belt-only cap restarts on evidence (A/B switch)
+    entry_min_travel_h: float = 0.0             # a NEW dancer must have moved this x h (0 = off)
     fg_enabled: bool = FOREGROUND_ENABLED       # use the clean plate when one is loaded
     fg_plate_path: str = ""                     # absolute path of the plate (.npz), "" = none
     osc_send_state: bool = OSC_SEND_STATE
@@ -1241,6 +1242,23 @@ class FrameProcessor:
         self._last_fg_ms = (time.perf_counter() - t0) * 1000
         return fg if fg.valid else None
 
+    def _fg_protect(self, cands, t: float):
+        """Boxes (original px) the plate update must not absorb: slots measured live or by a
+        backed belt, and every reported track with a recent YOLO skeleton (a still dancer)."""
+        boxes = []
+        for s in self._slots.slots:
+            if s.pos is None or s.wh is None:
+                continue
+            backed = s.state == STATE_BELT and t - getattr(s, "belt_backed_t", -1e9) <= 1.0
+            if s.state == STATE_LIVE or backed:
+                w, h = 0.6 * float(s.wh[1]), 1.2 * float(s.wh[1])
+                boxes.append((s.pos[0] - w / 2, s.pos[1] - h / 2, s.pos[0] + w / 2, s.pos[1] + h / 2))
+        for c in cands:
+            if c.fss is not None and int(c.fss) <= 20:
+                w, h = max(c.w, 0.6 * c.h), 1.2 * c.h
+                boxes.append((c.x - w / 2, c.y - h / 2, c.x + w / 2, c.y + h / 2))
+        return boxes
+
     def _zone_ok_fn(self, original_w: int, original_h: int):
         """Original-px point -> outside the exclusion mask (normalized over the
         ROI, like the MOG2 mask the cells are defined on)."""
@@ -1267,7 +1285,8 @@ class FrameProcessor:
                 static_release_s=float(self.settings.static_release_s),
                 filter_input=str(self.settings.slot_filter_input),
                 smart_hold=bool(self.settings.smart_hold),
-                belt_backing=bool(self.settings.belt_backing)))
+                belt_backing=bool(self.settings.belt_backing),
+                entry_min_travel_h=float(self.settings.entry_min_travel_h)))
         t = float(self._output_clock())
         if self._out_last_t is not None and t > self._out_last_t:
             self._out_dt = min(0.25, t - self._out_last_t)
@@ -1292,6 +1311,8 @@ class FrameProcessor:
         belt_hook = self._belt_hook()
         fg = self._fg_frame(original_w, original_h)
         outs = self._slots.update(cands, t, belt=belt_hook, hidden=hidden, bounds=bounds, fg=fg)
+        if self._fg_detector is not None and self.last_fg is not None:
+            self._fg_detector.update_plate(self._fg_protect(cands, t))
         self._log_slots(outs)
         return [self._slot_track(o) for o in outs]
 
