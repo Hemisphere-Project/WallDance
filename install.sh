@@ -74,6 +74,7 @@ if [ -f requirements-prod.txt ]; then
     # Linux dev boxes: drop Windows-only pins (pywin32 & co.) from the sync set.
     grep -viE '^(pywin32|pywin32-ctypes|pypiwin32|winshell)==' requirements-prod.txt \
         > .requirements-prod.platform.txt
+    export UV_HTTP_TIMEOUT="${UV_HTTP_TIMEOUT:-300}"   # slow links exceed uv's 30 s default
     uv pip sync .requirements-prod.platform.txt --python .venv/bin/python \
         --extra-index-url "$PIN_INDEX" --index-strategy unsafe-best-match \
         ${WALLDANCE_PIN_DRY_RUN:+--dry-run}

@@ -140,6 +140,9 @@ if not exist ".venv\Scripts\python.exe" (
     )
 )
 if not defined PIN_INDEX set "PIN_INDEX=%PYTORCH_INDEX%"
+rem Slow links (cafe wifi 2026-10-07: index pages took 12-30 s) exceed uv's 30 s default HTTP
+rem timeout and the launcher then refuses to start the app: give the sync 5 minutes per request.
+if not defined UV_HTTP_TIMEOUT set "UV_HTTP_TIMEOUT=300"
 %UV_CMD% pip sync requirements-prod.txt --python .venv\Scripts\python.exe --extra-index-url !PIN_INDEX! --index-strategy unsafe-best-match
 if errorlevel 1 (
     echo ERROR: Dependency installation failed ^(pinned sync^).
