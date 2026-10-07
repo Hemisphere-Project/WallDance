@@ -51,9 +51,11 @@ def main():
     ap.add_argument("--start", type=int, default=0)
     ap.add_argument("--span", type=int, default=200, help="frames of the take to loop over")
     ap.add_argument("--gamma", type=float)
+    ap.add_argument("--keep", default=None, help="G,C: the project's calibrated gamma,CLAHE, tried first "
+                                                 "(Calibrate keeps it when YOLO sees nobody with it)")
     ap.add_argument("--clahe", type=float)
     ap.add_argument("--conf", type=float, help="live confidence (default: the config's)")
-    ap.add_argument("--frames", type=int, default=40, help="observed frames per candidate (the app: 40)")
+    ap.add_argument("--frames", type=int, default=120, help="observed frames per candidate (the app: 120)")
     ap.add_argument("--full", action="store_true", help="measure every candidate")
     ap.add_argument("--model", default=None)
     ap.add_argument("--imgsz", type=int, default=None)
@@ -101,7 +103,8 @@ def main():
                   flush=True)
         out = {"limit": chk.conf_limit, "tried": [c.__dict__ for c in tried]}
     else:
-        chk = EmptyWallCheck(g0, c0, conf, frames=a.frames)
+        keep = tuple(float(v) for v in a.keep.split(",")) if a.keep else None
+        chk = EmptyWallCheck(g0, c0, conf, frames=a.frames, keep=keep)
         proc.settings.confidence = chk.conf_limit
         _set(proc, *chk.current())
         i = 0

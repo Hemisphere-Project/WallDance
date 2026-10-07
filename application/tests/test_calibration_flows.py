@@ -230,3 +230,32 @@ def test_playback_calibration_takes_the_exposure_and_gain_of_the_take():
     flows.cameras._cb_ids_gain_change.assert_called_once_with(36.0)
     assert flows.calibration_state["ids_exposure_us"]["source"] == "aim"
     assert "from the take" in flows._take_camera_line
+
+
+def test_calibrate_keeps_the_projects_calibrated_enhancement_when_it_passes():
+    flows, settings = _wall_flows(gamma=1.8, clahe=1.5)             # the scene step's pick
+    flows.calibration_state = {"gamma": {"source": "aim"}}
+    flows._pre_enhancement = (0.73, 2.5)                            # recorded by _cb_calibrate
+    flows._apply_calibration(_scene_result())
+    assert (flows.enhancer.gamma, flows.enhancer.clahe_clip) == (0.73, 2.5)   # tried first
+    _run_check(flows, lambda g, c: 0.3 if g > 1.3 else 0.0)
+    assert flows._wall_result.kept_current and flows.enhancer.gamma == 0.73
+    assert flows.enhancer.clahe_clip == 2.5 and settings.confidence == 0.25
+
+
+def test_calibrate_records_the_enhancement_to_keep_only_for_a_calibrated_project():
+    flows, _ = _wall_flows(gamma=0.73, clahe=2.5)
+    flows.models._model_loaded = True
+    flows.recorder.is_playing = True
+    flows.recorder.playback_camera = None
+    flows.unified_camera = None
+    flows._cb_calibrate()                                           # no provenance: nothing to keep
+    assert flows._pre_enhancement is None
+    flows2, _ = _wall_flows(gamma=0.73, clahe=2.5)
+    flows2.models._model_loaded = True
+    flows2.recorder.is_playing = True
+    flows2.recorder.playback_camera = None
+    flows2.unified_camera = None
+    flows2.calibration_state = {"gamma": {"source": "aim"}}
+    flows2._cb_calibrate()
+    assert flows2._pre_enhancement == (0.73, 2.5)

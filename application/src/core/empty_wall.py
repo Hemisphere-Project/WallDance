@@ -11,11 +11,15 @@ ladder, strongest first, and keeps the first one where YOLO finds nobody:
   gamma g0 (the calibrated one) -> 2/3 and 1/3 of the way to 1.0 -> 1.0 -> 0.8,
   then CLAHE lowered at the weakest gamma.
 
-A candidate passes when at most ``max_ghost_frames`` (1) of its ``frames`` (40) observed frames hold a raw
+A candidate passes when none (``max_ghost_frames`` = 0) of its ``frames`` (120, 6 s; a rung with a ghost
+fails at its first one, so only the kept rung is observed that long) observed frames holds a raw
 YOLO person (before the tracker and every filter) with a box confidence >= ``margin`` x the live
-confidence: the margin leaves room for the operator's sensitivity dial.  (First 2 of 30: gamma 1.27 on the
-bright empty take sat on that edge -- 3/30, 1/30 at another confidence -- and on the night takes 1.27 gives
-38-681 ghost frames where 1.0 gives none, so a borderline rung must fail.)  When no candidate passes,
+confidence: the margin leaves room for the operator's sensitivity dial.  A SPORADIC ghost is enough to
+fail: gamma 1.0 showed one stray frame in 40 (conf 0.14-0.15) on 3 of 4 runs on the bright empty take, and
+under the app's conditions (project ROI, whole dark takes) that same rare false person at the door equipment
+(conf 0.17-0.28) stole the dancer's bridged track on s2c / s4 / s6 (2026-10-07 demo; gamma 0.8 and 0.73: none).
+(Earlier tolerances, 2 of 30 then 1 of 40, let it through.)  The project's calibrated enhancement, when
+there is one, is tried FIRST (``keep``) and kept when it passes.  When no candidate passes,
 the weakest is kept and the result names where the ghost is (an object to remove or an exclusion to
 paint).  Pure logic: the caller sets the enhancer from ``current()`` and feeds each processed frame's
 raw detections (``FrameProcessor.last_raw_dets``: conf, x, y, h in original px).
@@ -55,6 +59,7 @@ class EmptyWallResult:
     clean: bool
     conf_limit: float
     tried: List[CandidateResult] = field(default_factory=list)
+    kept_current: bool = False             # the project's calibrated enhancement passed: left as it was
 
     def summary(self) -> str:
         lines = [f"Empty-wall YOLO check (persons >= {self.conf_limit:.2f}):"]
@@ -62,7 +67,10 @@ class EmptyWallResult:
             mark = "ok" if c.ghost_frames == 0 else f"{c.ghost_frames}/{c.frames} frames"
             near = f", max {c.max_conf:.2f}" if c.max_conf > 0 else ""
             lines.append(f"  {c.label}: {mark}{near}")
-        if self.clean:
+        if self.clean and self.kept_current:
+            lines.append(f"Kept the current gamma {self.gamma:.2f} / CLAHE {self.clahe:.1f}: YOLO sees nobody "
+                         "on the empty wall with it")
+        elif self.clean:
             lines.append(f"Kept gamma {self.gamma:.2f} / CLAHE {self.clahe:.1f}")
         else:
             w = max((c for c in self.tried if c.worst), key=lambda c: c.worst[0], default=None)
@@ -97,13 +105,24 @@ def ladder(gamma0: float, clahe0: float) -> List[Tuple[float, float]]:
 
 
 class EmptyWallCheck:
-    def __init__(self, gamma0: float, clahe0: float, confidence: float, *, frames: int = 40,
-                 settle: int = 4, margin: float = 0.8, max_ghost_frames: int = 1):
+    def __init__(self, gamma0: float, clahe0: float, confidence: float, *, frames: int = 120,
+                 settle: int = 4, margin: float = 0.8, max_ghost_frames: int = 0,
+                 keep: Optional[Tuple[float, float]] = None):
+        """``keep``: the project's already calibrated (gamma, CLAHE), tried FIRST and kept when YOLO
+        sees nobody with it -- Calibrate must not trade a working enhancement for the scene formula's
+        pick (2026-10-07 demo: gamma 0.73 / CLAHE 2.5 -> 1.0 / 1.5 let a sporadic false person at the
+        door equipment steal the dancer's track on the dark takes)."""
         self.conf_limit = max(0.05, float(margin) * float(confidence))
         self.frames = int(frames)
         self.settle = int(settle)
         self.max_ghost_frames = int(max_ghost_frames)
         self.steps = ladder(gamma0, clahe0)
+        self._keep = None
+        if keep is not None:
+            kg, kc = float(keep[0]), float(keep[1])
+            same = lambda s: abs(s[0] - kg) < 0.02 and abs(s[1] - kc) < 0.05
+            self.steps = [(kg, kc)] + [s for s in self.steps if not same(s)]
+            self._keep = (kg, kc)
         self._i = 0
         self._seen = 0
         self.tried: List[CandidateResult] = [CandidateResult(*self.steps[0])]
@@ -139,7 +158,8 @@ class EmptyWallCheck:
             c.ghost_frames += 1
         if c.ghost_frames > self.max_ghost_frames or c.frames >= self.frames:
             if c.ghost_frames <= self.max_ghost_frames:
-                self.result = EmptyWallResult(c.gamma, c.clahe, True, self.conf_limit, self.tried)
+                self.result = EmptyWallResult(c.gamma, c.clahe, True, self.conf_limit, self.tried,
+                                              kept_current=self._keep is not None and self._i == 0)
                 return None
             if self._i + 1 >= len(self.steps):
                 self.result = EmptyWallResult(c.gamma, c.clahe, False, self.conf_limit, self.tried)

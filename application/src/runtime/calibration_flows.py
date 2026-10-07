@@ -123,6 +123,7 @@ class CalibrationFlows:
         self._wall_conf: Optional[float] = None          # live confidence, restored after the check
         self._wall_result = None                         # EmptyWallResult for the result dialog
         self._scene_pending = None                       # (CalibrationResult, gamma_capped) for the dialog
+        self._pre_enhancement = None                     # the project's calibrated (gamma, CLAHE) at Calibrate
         # Calib2 (UX_PLAN U4): dancer evidence pool — accumulative across runs.
         self._calib2 = SubjectCollector()
         self._calibrating2 = False
@@ -243,6 +244,10 @@ class CalibrationFlows:
         self._servo = None
         self._servo_result = None
         self._take_camera_line = ""
+        # The project's calibrated enhancement, before the gamma seed below replaces it: the
+        # empty-wall check tries it first and keeps it when YOLO sees nobody with it.
+        self._pre_enhancement = ((float(self.enhancer.gamma), float(self.enhancer.clahe_clip))
+                                 if "gamma" in (self.calibration_state or {}) else None)
         live_ids = (
             not self.recorder.is_playing
             and self._use_unified_camera
@@ -449,11 +454,15 @@ class CalibrationFlows:
             return False
         try:
             chk = EmptyWallCheck(float(self.enhancer.gamma), float(self.enhancer.clahe_clip),
-                                 float(self.settings.confidence))
+                                 float(self.settings.confidence),
+                                 keep=getattr(self, "_pre_enhancement", None))
         except (TypeError, ValueError) as exc:
             print(f"[EmptyWall] check not started ({exc})")
             return False
         self._wall_check = chk
+        first = chk.current()
+        if first != (float(self.enhancer.gamma), float(self.enhancer.clahe_clip)):
+            self._set_enhancement(*first)         # the project's calibrated enhancement goes first
         self._wall_conf = float(self.settings.confidence)
         self.settings.confidence = chk.conf_limit
         self._calibrating = True                  # YOLO stays forced on; the loop keeps stepping

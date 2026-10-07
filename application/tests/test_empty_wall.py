@@ -33,7 +33,7 @@ def test_a_clean_wall_keeps_the_calibrated_enhancement():
     chk = EmptyWallCheck(1.8, 1.5, confidence=0.25)
     applied = _run(chk, lambda g, c: 0.0)
     assert applied == [(1.8, 1.5)] and chk.result.clean
-    assert chk.result.gamma == pytest.approx(1.8) and chk.tried[0].frames == 40
+    assert chk.result.gamma == pytest.approx(1.8) and chk.tried[0].frames == 120
 
 
 def test_a_ghost_under_strong_gamma_steps_down_until_yolo_sees_nobody():
@@ -42,9 +42,9 @@ def test_a_ghost_under_strong_gamma_steps_down_until_yolo_sees_nobody():
     applied = _run(chk, lambda g, c: 0.30 if g > 1.3 else 0.12)
     r = chk.result
     assert r.clean and r.gamma == pytest.approx(1 + 0.8 / 3)
-    assert len(applied) == 3 and chk.tried[0].ghost_frames == 2            # a ghost fails fast
+    assert len(applied) == 3 and chk.tried[0].ghost_frames == 1            # a ghost fails fast
     assert chk.tried[-1].max_conf == pytest.approx(0.12)                   # below 0.8 x 0.25: allowed
-    assert "ok" in r.summary() and "2/" in r.summary()
+    assert "ok" in r.summary() and "1/" in r.summary()
 
 
 def test_the_margin_leaves_room_for_the_sensitivity_dial():
@@ -61,21 +61,39 @@ def test_a_ghost_at_every_setting_keeps_the_weakest_and_names_the_place():
     assert "x=300, y=400" in r.summary() and "exclusion" in r.summary()
 
 
-def test_one_isolated_blip_does_not_fail_a_candidate_but_two_do():
-    chk = EmptyWallCheck(1.5, 2.5, confidence=0.25)
+def test_a_single_stray_ghost_frame_fails_the_rung():
+    # gamma 1.0 on the bright empty take: 1 stray in 40 frames -- the same rare false person that later
+    # stole the dancer's track on the dark takes; the rung must fail and the next one (0.8) be kept
+    chk = EmptyWallCheck(1.0, 1.5, confidence=0.15)
     n = [0]
 
-    def blip(g, c):
+    def stray(g, c):
         n[0] += 1
-        return 0.3 if n[0] == 20 else 0.0
-    _run(chk, blip)
-    assert chk.result.clean and chk.result.gamma == pytest.approx(1.5)
-    assert 0.0 < chk.progress() <= 1.0
-    chk2 = EmptyWallCheck(1.5, 2.5, confidence=0.25)
+        return 0.15 if g > 0.9 and n[0] == 20 else 0.0
+    _run(chk, stray)
+    assert chk.result.clean and chk.result.gamma == pytest.approx(0.8)
+    assert chk.tried[0].ghost_frames == 1 and 0.0 < chk.progress() <= 1.0
+    chk2 = EmptyWallCheck(1.5, 2.5, confidence=0.25, max_ghost_frames=1)   # the tolerance stays a knob
     m = [0]
 
-    def two(g, c):                     # the borderline gamma-1.27 case: 2-3 ghost frames must fail
+    def one(g, c):
         m[0] += 1
-        return 0.3 if g > 1.4 and m[0] in (12, 30) else 0.0
-    _run(chk2, two)
-    assert chk2.result.gamma < 1.5 and chk2.tried[0].ghost_frames == 2
+        return 0.3 if m[0] == 20 else 0.0
+    _run(chk2, one)
+    assert chk2.result.clean and chk2.result.gamma == pytest.approx(1.5)
+
+
+def test_a_calibrated_enhancement_that_passes_is_kept_before_the_scene_pick():
+    # the night project: calibrated 0.73 / 2.5; the scene formula picks 1.8 / 1.5 on the empty take
+    chk = EmptyWallCheck(1.8, 1.5, confidence=0.15, keep=(0.73, 2.5))
+    assert chk.current() == (0.73, 2.5)
+    applied = _run(chk, lambda g, c: 0.3 if g > 1.3 else 0.0)
+    assert applied == [(0.73, 2.5)] and chk.result.clean and chk.result.kept_current
+    assert "Kept the current gamma 0.73" in chk.result.summary()
+
+
+def test_a_calibrated_enhancement_with_ghosts_falls_back_to_the_ladder():
+    chk = EmptyWallCheck(1.8, 1.5, confidence=0.15, keep=(1.5, 2.5))
+    _run(chk, lambda g, c: 0.3 if c > 2.0 or g > 1.3 else 0.0)
+    r = chk.result
+    assert r.clean and not r.kept_current and r.gamma < 1.3 and chk.tried[0].clahe == 2.5
