@@ -47,6 +47,8 @@ from core.config import (
     TRACKER_TWO_OPT_MIN_GAIN,
     TRACKER_CLOSE_ACCEPT_RATIO,
     TRACKER_MAX_DISPLACEMENT_RATIO,
+    TRACKER_OWN_HEIGHT_GATES, TRACKER_OWN_HEIGHT_WINDOW, TRACKER_OWN_HEIGHT_MIN_SAMPLES,
+    TRACKER_TORSO_KPT_CONF, TRACKER_TORSO_TO_HEIGHT, TRACKER_OWN_HEIGHT_TRIGGER,
     MOTION_BRIDGE_ENABLED, MOTION_BRIDGE_MAX_FRAMES,
     MOTION_BRIDGE_GATE_RATIO, MOTION_BRIDGE_NOISE_STAGES,
     MOTION_BRIDGE_GATE_GROWTH_PER_MISS, MOTION_BRIDGE_GATE_ESTABLISHED_MULT,
@@ -232,6 +234,10 @@ class DancerTrack:
         # whenever a real skeleton arrives.
         self._last_yolo_wh = np.array([float(bbox[2]), float(bbox[3])],
                                       dtype=np.float64)
+        # Torso lengths (mid-shoulders to mid-hips) of its real skeletons: the track's own body size
+        # for its re-association gates (pose-invariant: lying, reaching, a spread climber).
+        self._torso_hist: deque = deque(maxlen=TRACKER_OWN_HEIGHT_WINDOW)
+        self._note_torso(keypoints, confidence)
         self.hits = 1
         self.age = 0
         self.time_since_update = 0
@@ -519,6 +525,7 @@ class DancerTrack:
             # Refresh the box-clamp output stage's size memory from this YOLO box.
             self._last_yolo_wh = np.array([float(bbox[2]), float(bbox[3])],
                                           dtype=np.float64)
+            self._note_torso(keypoints, confidence)
         self.bbox = np.array(bbox)
         self.bbox_area_history.append(float(bbox[2] * bbox[3]))
         self.hits += 1
@@ -724,6 +731,22 @@ class DancerTrack:
                             dtype=np.float64)
         return self.bbox.copy()
 
+    def _note_torso(self, keypoints, confidence) -> None:
+        sh = [i for i in (5, 6) if confidence[i] >= TRACKER_TORSO_KPT_CONF]
+        hp = [i for i in (11, 12) if confidence[i] >= TRACKER_TORSO_KPT_CONF]
+        if sh and hp:
+            torso = float(np.linalg.norm(keypoints[sh].mean(axis=0) - keypoints[hp].mean(axis=0)))
+            if torso > 1.0:
+                self._torso_hist.append(torso)
+
+    def own_height(self) -> float | None:
+        """This track's own body size as a standing height: the median torso of its recent real skeletons
+        x TRACKER_TORSO_TO_HEIGHT, or None before TRACKER_OWN_HEIGHT_MIN_SAMPLES confident torsos."""
+        if len(self._torso_hist) < TRACKER_OWN_HEIGHT_MIN_SAMPLES:
+            return None
+        ts = sorted(self._torso_hist)
+        return float(ts[len(ts) // 2]) * TRACKER_TORSO_TO_HEIGHT
+
     def get_last_known_position(self):
         """Get last measured position (not predicted)."""
         if len(self.history) > 0:
@@ -920,6 +943,7 @@ class DancerTracker:
         self.swap_correctors = TRACKER_SWAP_CORRECTORS
         self._smoothing_depth = 1  # Temporal confidence smoothing depth
         self._person_height_px = 150  # updated via set_person_height()
+        self.own_height_gates = TRACKER_OWN_HEIGHT_GATES   # config key tracker_own_height_gates
 
         # Scale-dependent thresholds — all derived from person_height_px.
         # Call set_person_height() to update; the master dial in config.py
@@ -1293,14 +1317,48 @@ class DancerTracker:
         rem = 1.0 - iw
         return 0.85 * rem * pos_cost + 0.15 * rem * size_cost + iw * iou_cost
 
+    def _track_height(self, track: DancerTrack) -> float:
+        """The height this track's re-association gates scale with: the global person height, or the
+        track's own size once it is established and the global height is clearly too big for it
+        (> TRACKER_OWN_HEIGHT_TRIGGER x; TRACKER_OWN_HEIGHT_GATES)."""
+        h = float(self._person_height_px)
+        if self.own_height_gates and track.is_established:
+            own = track.own_height()
+            if own is not None and own * TRACKER_OWN_HEIGHT_TRIGGER < h:
+                h = own
+        return h
+
+    def _track_match_gate(self, track: DancerTrack) -> float:
+        """``distance_threshold`` for this track (see _track_height); the global one otherwise."""
+        if not self.own_height_gates:
+            return float(self.distance_threshold)
+        h = self._track_height(track)
+        if h >= self._person_height_px:
+            return float(self.distance_threshold)
+        floor = max(5, int(h) // 10)
+        return float(max(floor, int(h * TRACKER_MATCH_GATE_RATIO)))
+
+    def _forced_update_allowed(self, track: DancerTrack, dist: float) -> bool:
+        """A forced / fallback update must not override this track's displacement gate when its gates are
+        own-height scaled (own size < the global height): a large forced innovation sends the Kalman
+        velocity off and the tight gates cannot bring the track back (s4 34.2 s, gamma 1.0: a false person
+        0.77 heights from the dancer, rejected by the gate, then forced onto the track -- lost for 13 s)."""
+        if not (self.own_height_gates and track.is_established
+                and track.time_since_update <= 1 and TRACKER_MAX_DISPLACEMENT_RATIO > 0):
+            return True
+        if self._track_height(track) >= self._person_height_px:
+            return True
+        return dist <= self._track_match_gate(track) * TRACKER_MAX_DISPLACEMENT_RATIO
+
     def _compute_dynamic_match_threshold(self, track: DancerTrack) -> float:
         """Dynamic acceptance threshold for a candidate detection-track match."""
+        gate = self._track_match_gate(track)
         track_speed = track.get_speed()
         time_bonus = min(
-            track.time_since_update * self.distance_threshold * 0.04,
-            self.distance_threshold * 0.3,
+            track.time_since_update * gate * 0.04,
+            gate * 0.3,
         )
-        return float(self.distance_threshold + track_speed * 1.0 + time_bonus)
+        return float(gate + track_speed * 1.0 + time_bonus)
 
     def _is_suspicious_merge_candidate(self, track: DancerTrack, bbox,
                                        det_centroid: np.ndarray) -> bool:
@@ -1387,7 +1445,7 @@ class DancerTracker:
                 if (TRACKER_MAX_DISPLACEMENT_RATIO > 0
                         and track.is_established
                         and track.time_since_update <= 1):
-                    max_disp = (self.distance_threshold
+                    max_disp = (self._track_match_gate(track)
                                 * TRACKER_MAX_DISPLACEMENT_RATIO)
                     raw_disp = float(np.linalg.norm(
                         det_centroid - track.get_last_known_position()))
@@ -1763,7 +1821,7 @@ class DancerTracker:
         if (TRACKER_MAX_DISPLACEMENT_RATIO > 0
                 and track.is_established
                 and track.time_since_update <= 1):
-            max_disp = (self.distance_threshold
+            max_disp = (self._track_match_gate(track)
                         * TRACKER_MAX_DISPLACEMENT_RATIO)
             raw_disp = float(np.linalg.norm(
                 det_centroid - track.get_last_known_position()))
@@ -1959,13 +2017,12 @@ class DancerTracker:
 
         row_idx, col_idx = linear_sum_assignment(cost_matrix)
 
-        close_accept_dist = self._person_height_px * TRACKER_CLOSE_ACCEPT_RATIO
-
         for row, col in zip(row_idx, col_idx):
             actual_det = det_indices[row]
             actual_trk = trk_indices[col]
             track = self.tracks[actual_trk]
             dynamic_thresh = self._compute_dynamic_match_threshold(track)
+            close_accept_dist = self._track_height(track) * TRACKER_CLOSE_ACCEPT_RATIO
             cost_val = round(float(cost_matrix[row, col]), 1)
 
             # Compute raw centroid distance for close-acceptance check
@@ -2519,7 +2576,7 @@ class DancerTracker:
 
                 # Gate 1: far enough from every track → new person (or resurrect)
                 # Center detections need a tighter gate to avoid ghost splits
-                creation_gate, is_edge_det = self._get_creation_gate(det_centroid)
+                creation_gate, is_edge_det = self._get_creation_gate(det_centroid, closest.track)
                 if closest.min_dist > creation_gate:
                     resurrected = self._try_resurrect(
                         kpts, conf, bbox, det_centroid, frame_ctx)
@@ -2623,6 +2680,9 @@ class DancerTracker:
             det_centroid, matched_trk, closest)
         if best_unmatched is None or best_unmatched_idx is None:
             return False
+        if not self._forced_update_allowed(best_unmatched, float(np.linalg.norm(
+                det_centroid - best_unmatched.get_last_known_position()))):
+            return False
 
         if TRACKER_DEBUG:
             print(f"[TRACKER] Force update track #{best_unmatched.track_id}: "
@@ -2657,7 +2717,7 @@ class DancerTracker:
             if idx in matched_trk:
                 continue
             dist = float(np.linalg.norm(det_centroid - track.get_last_known_position()))
-            if dist >= self.distance_threshold:
+            if dist >= self._track_match_gate(track) or not self._forced_update_allowed(track, dist):
                 continue
             if TRACKER_DEBUG:
                 print(f"[TRACKER] Fallback update track #{track.track_id}: dist={dist:.1f}")
@@ -2680,10 +2740,22 @@ class DancerTracker:
             return True
         return False
 
-    def _get_creation_gate(self, det_centroid: np.ndarray) -> tuple[int, bool]:
-        """Return new-track creation gate and whether the detection is at an edge."""
+    def _get_creation_gate(self, det_centroid: np.ndarray,
+                           near_track: DancerTrack | None = None) -> tuple[int, bool]:
+        """Return new-track creation gate and whether the detection is at an edge.
+
+        Inside the gate an unmatched detection is not a new person: it is FORCED onto the nearest
+        unmatched track (FORCE_UPDATE) whatever the cost / Mahalanobis gates said.  Around an
+        established track the gate therefore scales with that track's own size (see _track_height):
+        with the night project's walk-in height a false person 2 heights from a bridged dancer was
+        forced onto it (s6 28.0 s: 270 px in a 322 px gate for a 124 px dancer)."""
         is_edge_det = self._is_near_edge(float(det_centroid[0]))
         creation_gate = self.new_track_min_distance
+        if near_track is not None and self.own_height_gates:
+            h = self._track_height(near_track)
+            if h < self._person_height_px:
+                floor = max(5, int(h) // 10)
+                creation_gate = min(creation_gate, max(floor // 2, int(h * TRACKER_NEW_TRACK_GATE_RATIO)))
         if not is_edge_det:
             creation_gate = int(creation_gate * TRACKER_CENTER_NEW_TRACK_GATE_MULT)
         return creation_gate, is_edge_det

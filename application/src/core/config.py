@@ -453,6 +453,26 @@ TRACKER_TWO_OPT_MIN_GAIN = 0.10          # Minimum relative cost reduction to
                                          # accept a 2-opt swap (fraction of
                                          # original cost sum).  Prevents noisy
                                          # micro-swaps.
+# Own-height gates (2026-10-07): an established track's re-association gates (displacement gate, match
+# threshold, close accept) scale with min(global person height, the track's OWN YOLO box height) -- never
+# wider than before, tighter where the global height is too big.  The night project's height guard held
+# the walk-in height (427-605 px) while the dancer at the back wall was ~128 px, so a dancer track bridged
+# for a few frames re-associated with a false person 2-4.5 body heights away (s2c 38.55 s, s6 28.0 s,
+# s4 37.65 s at gamma 1.0).  The track's own size comes from its skeleton, not its box: the median torso
+# (mid-shoulders to mid-hips, both >= TRACKER_TORSO_KPT_CONF) over its last TRACKER_OWN_HEIGHT_WINDOW
+# real-skeleton frames (10 s) x TRACKER_TORSO_TO_HEIGHT (shoulders ~0.82, hips ~0.53 of the stature; a
+# standing box ~ the stature).  Box-based sizes failed both ways: box heights shrink with floor work (white
+# duo on-dancer -10), a high percentile of box sides inflates with a climber's reaches (s4 jump kept).
+# No confident torso yet (MIN_SAMPLES) -> the global height.  Only when the global height is clearly too big
+# for the track (> TRACKER_OWN_HEIGHT_TRIGGER x its own size; the night failures: 2.5-4.8 x) -- a well-
+# configured scene keeps its tuned gates (applied always, the duos moved: texture duo on-dancer -4.5, white
+# duo coverage -1; at 1.5 x the textured duo still moved: on-dancer -6.9).
+TRACKER_OWN_HEIGHT_TRIGGER = 2.0
+TRACKER_OWN_HEIGHT_GATES = True
+TRACKER_OWN_HEIGHT_WINDOW = 200
+TRACKER_OWN_HEIGHT_MIN_SAMPLES = 20
+TRACKER_TORSO_KPT_CONF = 0.5
+TRACKER_TORSO_TO_HEIGHT = 3.4
 TRACKER_CLOSE_ACCEPT_RATIO = 0.20        # Unconditional match acceptance: if
                                          # raw centroid distance < person_height
                                          # × this ratio, accept the Hungarian

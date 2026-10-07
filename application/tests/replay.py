@@ -296,6 +296,8 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
         tracker.smoothing_depth = config["tracker_smoothing"]
     if "tracker_intermittent_confirm" in config:
         tracker.intermittent_confirm = bool(config["tracker_intermittent_confirm"])
+    if "tracker_own_height_gates" in config:
+        tracker.own_height_gates = bool(config["tracker_own_height_gates"])
     if "tracker_ghost_skeleton_age" in config:
         tracker.ghost_skeleton_age = int(config["tracker_ghost_skeleton_age"])
     if "tracker_swap_correctors" in config:
