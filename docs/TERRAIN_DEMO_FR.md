@@ -5,7 +5,7 @@
 
 ## Ce qui change depuis le 6 octobre
 
-- **Trois étapes au lieu de six** : **1 Rig → 2 Mur vide → 3 Live**. Les anciennes étapes Profile, Aim, Calib et Verify
+- **Trois étapes au lieu de six** : **1 Rig → 2 Calibrate → 3 Live**. Les anciennes étapes Profile, Aim, Calib et Verify
   ont disparu (leurs outils restent dans *Advanced → Expert tools*, inutiles en séance).
 - **Mur vide** (nouveau) : une **prise de mur vide par éclairage** (jour, nuit, lumière du spectacle). CALIBRATE sur
   cette prise règle tout pour cet éclairage, y compris l'exposition de la caméra, et enregistre une **photo du mur
@@ -40,7 +40,7 @@
    la plus récente (Thomas l'a préparée).
 2. **1 Rig** : **Region of Interest = le mur seulement**. Mettre à jour la **Rig sheet** si quelque chose a changé.
    *Si la caméra ou le cadrage bouge, refaire l'étape 3.*
-3. **2 Mur vide** — une fois par éclairage, **mur vide, personne dans l'image** :
+3. **2 Calibrate** (mur vide) — une fois par éclairage, **mur vide, personne dans l'image** :
    - **REC**, puis un **slot libre** : **15 s**, puis arrêter. Noter sur la feuille : slot, heure, éclairage.
    - Pour régler l'éclairage du moment : **lire la prise de mur vide de cet éclairage** (clic sur son slot), puis
      **CALIBRATE**. Attendre le résultat (20 à 30 s, la ligne bleue indique l'avancement), puis **Save**.
@@ -64,7 +64,7 @@
    | Send /dancer/state | décoché (sauf si le patch TouchDesigner l'utilise) |
 
 5. **Taille des danseurs** : un danseur se tient **10 s debout contre le mur, à l'endroit le plus loin** de la caméra,
-   puis **2 Mur vide → Check readiness** : la ligne **« dancer size »** doit être verte. Orange = danseurs trop
+   puis **2 Calibrate → Check readiness** : la ligne **« dancer size »** doit être verte. Orange = danseurs trop
    petits pour la détection : resserrer la Region of Interest comme indiqué sur la ligne, ou passer
    *Advanced → Model → Image Size* à la valeur indiquée (1536) ; prévenir Thomas.
 6. Cocher **« Allow remote control during RUN »** pour que Thomas puisse ajuster à distance. **Ctrl+S**.
@@ -77,7 +77,7 @@
 | Le point **traîne** derrière les mouvements rapides | baisser **Stability** (0.3 à 0.4) |
 | TouchDesigner **perd la vidéo** quand un danseur est perdu un instant | monter **Hold** (3 à 5 s) |
 | Un point **reste** après le départ du danseur | baisser **Hold** (1 à 1.5 s) |
-| Un point apparaît sur un **objet fixe** | refaire **2 Mur vide → CALIBRATE** ; resserrer la Region of Interest |
+| Un point apparaît sur un **objet fixe** | refaire **2 Calibrate → CALIBRATE** ; resserrer la Region of Interest |
 | « empty wall: scene changed » ou « other camera crop » | lumière ou cadrage changé : refaire **CALIBRATE** sur le mur vide |
 | Alerte « The light is …x the empty-wall snapshot » (aussi à l'ouverture du projet) | l'éclairage n'est plus celui de la photo du mur vide : refaire **CALIBRATE** sur le mur vide — **en direct** si on peut vider la scène, sinon **sur la prise de mur vide de cet éclairage** (le spectacle continue) |
 | Message « Person height … » | rien à faire (correction automatique) |

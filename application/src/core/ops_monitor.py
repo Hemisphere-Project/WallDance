@@ -230,7 +230,7 @@ def check_empty_wall(*, status: str, detail: str = "", light_ratio: Optional[flo
                            f"{light_ratio_text(light_ratio)} the snapshot: {LIGHT_REMEDY}")
     return CheckResult("empty wall", "ok" if ok else "warn",
                        detail or f"empty wall: {status}"
-                       + ("" if ok else " - Calibrate on the empty wall (2 - Empty wall)"))
+                       + ("" if ok else " - Calibrate on the empty wall (2 - Calibrate)"))
 
 
 def check_dancer_size(*, measured: Optional[Tuple[float, int, float]], lb_scale: float, imgsz: int,

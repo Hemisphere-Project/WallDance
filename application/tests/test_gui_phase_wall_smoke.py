@@ -1,4 +1,4 @@
-"""Headless DPG build smoke for the phase-2 Empty wall panel (D29, 2026-10-07: Calibrate,
+"""Headless DPG build smoke for the phase-2 Calibrate (empty wall) panel (D29, 2026-10-07: Calibrate,
 the empty-wall snapshot and the pre-show readiness check; it replaced Profile / Aim / Calib /
 Verify) and the expert dry-run tool (Advanced).
 

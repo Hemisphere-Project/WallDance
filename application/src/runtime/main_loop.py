@@ -796,7 +796,7 @@ class MainLoop:
         # Exception: a scene calibration forces YOLO on (even in Standby /
         # during playback) so it can measure detection heights, and so does a
         # "Capture empty wall" in progress (its frames are fed by the processing
-        # path; the Empty wall phase is used in Standby).
+        # path; the Calibrate phase is used in Standby).
         if (app.system_state != SystemState.RUN
                 and not app.calibration._calibrating and not app.calibration._calibrating2
                 and getattr(app.processor, "_plate_capture", None) is None):
@@ -993,11 +993,9 @@ class MainLoop:
                             )
                         )
                     thickness_scale = min(scale_x, scale_y)
-                    ruler_scale = scale_x
                 else:
                     scaled_tracks = t.tracked
                     thickness_scale = 1.0
-                    ruler_scale = 1.0
 
                 preview_t0 = time.perf_counter()
                 if app.settings.roi_enabled:
@@ -1030,7 +1028,7 @@ class MainLoop:
                         draw_slot(preview_frame, st, scale_x, scale_y, thickness_scale,
                                   show_ball=show_ball,
                                   ball_scale=sizer.scale(int(st.track_id), st, src_h, now))
-                self._draw_height_ruler(preview_frame, scale=ruler_scale, thickness_scale=thickness_scale)
+                # (the yellow person-height ruler left the preview: the height is dynamic, height guard)
                 # Phase 0: frame number overlay (top-right)
                 self._draw_frame_number_overlay(preview_frame, t.display_frame_num)
                 if app.settings.roi_enabled:
@@ -1489,26 +1487,6 @@ class MainLoop:
             f"extract_cpu={float(timing.get('extract_cpu_total', 0.0)):.1f} "
             f"preview_sync={float(timing.get('preview_download_sync', 0.0)):.1f}"
         )
-
-    def _draw_height_ruler(self, frame, scale: float = 1.0, thickness_scale: float = 1.0):
-        h, w = frame.shape[:2]
-        height_px = int(self.app.settings.person_height_px * scale)
-        ts = max(0.3, thickness_scale)
-        x = int(30 * ts)
-        y_center = h // 2
-        y_top = max(10, y_center - height_px // 2)
-        y_bottom = min(h - 10, y_center + height_px // 2)
-        color = (0, 255, 255)
-        bg_color = (0, 0, 0)
-        line_thickness = max(1, int(2 * ts))
-        cap_width = max(8, int(15 * ts))
-        bg_thickness = line_thickness + max(2, int(4 * ts))
-        cv2.line(frame, (x, y_top), (x, y_bottom), bg_color, bg_thickness)
-        cv2.line(frame, (x - cap_width // 2, y_top), (x + cap_width // 2, y_top), bg_color, bg_thickness)
-        cv2.line(frame, (x - cap_width // 2, y_bottom), (x + cap_width // 2, y_bottom), bg_color, bg_thickness)
-        cv2.line(frame, (x, y_top), (x, y_bottom), color, line_thickness)
-        cv2.line(frame, (x - cap_width // 2, y_top), (x + cap_width // 2, y_top), color, line_thickness)
-        cv2.line(frame, (x - cap_width // 2, y_bottom), (x + cap_width // 2, y_bottom), color, line_thickness)
 
     def _draw_frame_number_overlay(self, frame, frame_number: int):
         """Phase 0: Draw frame number overlay in the top-right corner.

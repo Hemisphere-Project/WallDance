@@ -581,7 +581,7 @@ def build_control_panel(gui: Any):
 # Advanced > Expert tools (same widgets, same commands).
 PHASES = [
     ("rig", "1 Rig"),
-    ("wall", "2 Empty wall"),
+    ("wall", "2 Calibrate"),
     ("live", "3 Live"),
 ]
 
@@ -770,7 +770,7 @@ def build_phase_wall(gui: Any):
     """② Empty wall (D29) — Calibrate on the empty wall of the current lighting: exposure/gain,
     gamma/CLAHE, MOG2, the empty-wall YOLO check, the clean plate; then the pre-show check."""
     with dpg.group(tag="phase_panel_wall", show=False):
-        dpg.add_text("2 - Empty Wall", color=HEADING_GREEN)
+        dpg.add_text("2 - Calibrate (empty wall)", color=HEADING_GREEN)
         dpg.add_text("Keep one EMPTY take per lighting (day, night, show light): stage clear, "
                      "arm REC, ~15 s on a free slot. For that lighting, play its take and "
                      "press CALIBRATE, then Save. On the live camera, Calibrate with the stage "
@@ -1166,7 +1166,7 @@ def build_identity_slot_controls(gui: Any):
                          "dancer's point when YOLO loses them (state 'fg'), stops\n"
                          "fixed figures (coat, stain) from taking an id, and lets the\n"
                          "belt hold a still dancer.  Calibrate records the snapshot\n"
-                         "(2 - Empty wall); re-calibrate after moving the camera or\n"
+                         "(2 - Calibrate); re-calibrate after moving the camera or\n"
                          "changing the lights.")
     dpg.add_text("empty wall: -", tag="fg_status_text", color=TEXT_DIM)
     dpg.add_text("ids: -", tag="identity_slots_status_text", color=TEXT_DIM)
@@ -1329,7 +1329,7 @@ def build_detection_section(gui: Any):
             )
             _add_slider_row("person_height_slider", 5, 20, 800, gui._on_person_height_change)
         with dpg.tooltip(height_slider):
-            dpg.add_text("Expected dancer height in pixels at current\ncamera distance. All tracking thresholds\nscale from this value. Set by the DANCERS\ncalibration; adjust manually if needed.")
+            dpg.add_text("Expected dancer height in pixels: the tracking gates scale\nfrom it.  The height guard re-measures it on the dancers\n(confident full skeletons) and follows them; a value set\nhere is kept until it clearly drops the dancers.")
 
         dpg.add_spacer(height=scaled(6))
 
