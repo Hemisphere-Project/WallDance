@@ -62,6 +62,19 @@ VARIANTS = {
                 "--set", "mog2_scale=0.7", "--set", "auto_height=true"],
     "v3newah": ["--set", "belt_backing=true", "--set", "fg_enabled=true", "--set", "entry_min_travel_h=0.25",
                 "--set", "auto_height=true"],
+    # v5 = the v3 flags on the code with the belt / plate / re-appearance waivers (3cde9b3 + the prior);
+    # height_guard=false keeps the stale 45 px as in the v3/v5 runs
+    "v5old": ["--set", "belt_backing=true", "--set", "fg_enabled=true", "--set", "entry_min_travel_h=0.25",
+              "--set", "gamma=0.73", "--set", "clahe_clip=2.5", "--set", "mog2_var_threshold=8.0",
+              "--set", "mog2_scale=0.7", "--set", "height_guard=false"],
+    "v5new": ["--set", "belt_backing=true", "--set", "fg_enabled=true", "--set", "entry_min_travel_h=0.25",
+              "--set", "height_guard=false"],
+    # v6 = v5 + the height guard (D29 default): the stale 45 px is replaced by the measured height
+    "v6old": ["--set", "belt_backing=true", "--set", "fg_enabled=true", "--set", "entry_min_travel_h=0.25",
+              "--set", "gamma=0.73", "--set", "clahe_clip=2.5", "--set", "mog2_var_threshold=8.0",
+              "--set", "mog2_scale=0.7", "--set", "height_guard=true"],
+    "v6new": ["--set", "belt_backing=true", "--set", "fg_enabled=true", "--set", "entry_min_travel_h=0.25",
+              "--set", "height_guard=true"],
     "oldcalfg": ["--set", "belt_backing=true", "--set", "fg_enabled=true", "--set", "gamma=0.73",
                  "--set", "clahe_clip=2.5", "--set", "mog2_var_threshold=8.0", "--set", "mog2_scale=0.7"],
 }
@@ -145,6 +158,7 @@ def main():
                 row["holes"] = holes(win)
                 fgl = [l for l in pr.stdout.splitlines() if "[Foreground]" in l][:3]
                 row["fg_log"] = fgl
+                row["height_log"] = [l for l in pr.stdout.splitlines() if "[HeightGuard]" in l][:3]
             with open(res, "a") as f:
                 f.write(json.dumps(row) + "\n")
             print(json.dumps({k: row.get(k) for k in ("take", "variant", "rc", "coverage", "gap_max_s", "gaps_ge_1s",
