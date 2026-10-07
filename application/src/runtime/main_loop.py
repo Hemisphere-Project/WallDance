@@ -794,9 +794,12 @@ class MainLoop:
 
         # Skip YOLO inference if not in RUN state (Phase 3 gating).
         # Exception: a scene calibration forces YOLO on (even in Standby /
-        # during playback) so it can measure detection heights.
+        # during playback) so it can measure detection heights, and so does a
+        # "Capture empty wall" in progress (its frames are fed by the processing
+        # path; the Empty wall phase is used in Standby).
         if (app.system_state != SystemState.RUN
-                and not app.calibration._calibrating and not app.calibration._calibrating2):
+                and not app.calibration._calibrating and not app.calibration._calibrating2
+                and getattr(app.processor, "_plate_capture", None) is None):
             should_process = False
 
         # Phase 0: compute display frame number for tracker logging
