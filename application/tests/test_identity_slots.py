@@ -507,3 +507,32 @@ def test_entry_travel_is_weighted_by_yolo_confidence():
     assert run_conf(0.8)[-1] and run_conf(0.8)[-1][0].state == STATE_LIVE   # confident, still
     assert run_conf(0.2, dx=2.0)[-1]                          # faint but moving 80 px (0.4 h)
     assert all(o == [] for o in run_conf(0.37, dx=0.5)[:30])  # half-confident needs half the travel
+
+
+def test_faint_still_track_enters_with_a_belt_or_foreground_but_not_without():
+    """The movement waiver: a faint (conf 0.2), still track opens a slot when the IR belt is at
+    its hips or empty-wall foreground is under it (a still dancer YOLO barely sees); without
+    either it waits (a static ghost)."""
+    p = SlotParams(max_dancers=1, entry_min_travel_h=0.25, min_streak=1, entry_min_streak=1)
+
+    class Belt:
+        def __call__(self, sid, x, y, gate):
+            return (x, y, 0.9)
+
+    class Fg:
+        valid, blobs = True, []
+        def support(self, cx, cy, h, wfrac=0.45):
+            return 0.6
+
+    def run(**kw):
+        s = IdentitySlots(p)
+        out = []
+        for i in range(30):
+            c = cand(1, 400, 300)
+            c.conf = 0.2
+            out.append(s.update([c], i / FPS, **kw))
+        return out
+
+    assert all(o == [] for o in run())
+    assert run(belt=Belt())[-1][0].state == STATE_LIVE
+    assert run(fg=Fg())[-1][0].state == STATE_LIVE

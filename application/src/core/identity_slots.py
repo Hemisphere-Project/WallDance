@@ -250,6 +250,9 @@ class SlotParams:
     entry_conf_lo: float = 0.25      # YOLO confidence: the median box conf of the track's last second
     entry_conf_hi: float = 0.5       # <= lo needs the full travel, >= hi none (a still dancer YOLO sees
                                      # well enters at once; a faint static figure must move first)
+    entry_fg_support: float = 0.3    # ... and none either when the track has a belt at its hips or this
+                                     # much empty-wall foreground under it (a faint still DANCER; a static
+                                     # ghost has neither)
     # -- hidden continuation: the bound track is alive and updated but the
     # tracker hides it (frozen gate: a still dancer fed by motion blobs) --
     hidden_max_s: float = 3.0
@@ -447,6 +450,8 @@ class IdentitySlots:
         self._t0: Optional[float] = None
         self._bounds: Optional[Tuple[float, float, float, float]] = None
         self._fg: Any = None                  # this frame's valid foreground (FgFrame) or None
+        self._belt_now: Any = None            # this frame's belt hook (entry evidence)
+        self._entry_ev: Dict[int, bool] = {}  # key -> person evidence this frame (cache)
         self._entry_kind = "entry"
         # static spots: [x, y, h, t_last, kind]; kind "static" (soft: a track or a slot that
         # never moved) or "ghost" (hard: a static slot that had to yield to a moving dancer)
@@ -547,10 +552,34 @@ class IdentitySlots:
             return 0.0
         cl = self._confs.get(c.key)
         if not cl:
-            return p.entry_min_travel_h
-        med = sorted(cl)[len(cl) // 2]
-        span = max(1e-6, p.entry_conf_hi - p.entry_conf_lo)
-        return p.entry_min_travel_h * min(1.0, max(0.0, (p.entry_conf_hi - med) / span))
+            need = p.entry_min_travel_h
+        else:
+            med = sorted(cl)[len(cl) // 2]
+            span = max(1e-6, p.entry_conf_hi - p.entry_conf_lo)
+            need = p.entry_min_travel_h * min(1.0, max(0.0, (p.entry_conf_hi - med) / span))
+        if need > 0 and self._person_evidence(c):
+            return 0.0
+        return need
+
+    def _person_evidence(self, c: SlotCandidate) -> bool:
+        """Evidence beyond YOLO that a track is a person: the IR belt at its hips, or
+        solid empty-wall foreground under its box.  Cached per track per frame."""
+        if c.key in self._entry_ev:
+            return self._entry_ev[c.key]
+        p, ok = self.p, False
+        h = max(1.0, float(c.h))
+        fg = self._fg
+        if fg is not None and p.entry_fg_support > 0 and fg.support(c.x, c.y, h) >= p.entry_fg_support:
+            ok = True
+        belt = self._belt_now
+        if not ok and belt is not None:
+            at = c.hip if c.hip is not None else (c.x, c.y + 0.1 * h)
+            try:
+                ok = belt(-int(c.key) - 1, float(at[0]), float(at[1]), p.belt_hip_gate_h * h) is not None
+            except Exception:   # a hook failure is no evidence
+                ok = False
+        self._entry_ev[c.key] = ok
+        return ok
 
     def _surprising(self, c: SlotCandidate) -> bool:
         """An entry nobody expects: after the start-up window, away from the ROI
@@ -709,6 +738,8 @@ class IdentitySlots:
         self.events = []
         self._bounds = bounds
         self._fg = fg if (fg is not None and getattr(fg, "valid", False)) else None
+        self._belt_now = belt
+        self._entry_ev = {}
         if self._t0 is None:
             self._t0 = t
         dt_raw = 0.0 if self._t is None else max(0.0, t - self._t)
