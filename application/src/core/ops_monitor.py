@@ -200,6 +200,15 @@ def check_calibration(*, saved_at_iso: Optional[str], active_profile: str,
     return CheckResult("calibration", "ok", detail)
 
 
+def check_empty_wall(*, status: str, detail: str = "") -> CheckResult:
+    """The empty-wall snapshot (clean plate, D29): present, from this camera crop, and the scene
+    still looks like it.  ``status`` is FrameProcessor.plate_status; ``detail`` its readable line."""
+    ok = status in ("ready", "capturing")
+    return CheckResult("empty wall", "ok" if ok else "warn",
+                       detail or f"empty wall: {status}"
+                       + ("" if ok else " - Calibrate on the empty wall (2 - Empty wall)"))
+
+
 def recording_gb_per_hour(codec: str = RECORDING_CODEC) -> Tuple[str, float]:
     """(codec actually used, estimated GB/h at the show resolution and fps).
 

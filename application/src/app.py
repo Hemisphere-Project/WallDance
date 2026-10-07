@@ -97,6 +97,7 @@ from core.ops_monitor import (
     check_calibration,
     check_camera,
     check_disk,
+    check_empty_wall,
     check_gpu_temp,
     check_osc,
     check_tensorrt,
@@ -1836,10 +1837,10 @@ class WallDanceApp:
             p = det.plate
             src = f" ({p.created[5:16].replace('T', ' ')}, {p.frame_size[0]}x{p.frame_size[1]})"
         return {"off": "empty wall: off",
-                "none": "empty wall: none - run Calibrate on the empty wall",
+                "none": "empty wall: none - Calibrate on the empty wall",
                 "ready": "empty wall: ready" + src,
-                "size": "empty wall: other camera crop - re-capture" + src,
-                "stale": "empty wall: scene changed - re-capture" + src,
+                "size": "empty wall: other camera crop - Calibrate on the empty wall" + src,
+                "stale": "empty wall: scene changed - Calibrate on the empty wall" + src,
                 "capturing": "empty wall: capturing..."}.get(st, st)
 
     def _publish_plate_status(self) -> None:
@@ -2268,6 +2269,8 @@ class WallDanceApp:
         results.append(check_calibration(
             saved_at_iso=saved_at, active_profile=self.configs._active_profile,
             warn_age_h=OPS_CALIB_AGE_WARN_H, mask_cells=mask_cells))
+        results.append(check_empty_wall(status=str(self.processor.plate_status),
+                                        detail=self._plate_status_text()))
         results.append(check_disk(
             recordings_dir=self.recorder.recordings_dir,
             warn_free_gb=OPS_DISK_WARN_FREE_GB,

@@ -42,7 +42,8 @@ from core.config import (
     IDENTITY_SLOTS_COAST_S, IDENTITY_SLOTS_STATIC_GUARD,
     IDENTITY_SLOTS_STATIC_RELEASE_S, IDENTITY_SLOTS_FILTER_INPUT, IDENTITY_SLOTS_SMART_HOLD,
     BELT_STATIC_EVERY_N, BELT_STATIC_ALPHA, BELT_STATIC_ON,
-    FOREGROUND_ENABLED, HEIGHT_GUARD,
+    FOREGROUND_ENABLED, HEIGHT_GUARD, HEIGHT_GUARD_MAX_SPREAD, HEIGHT_GUARD_MIN_SAMPLES,
+    HEIGHT_GUARD_OUTSIDE,
     IDENTITY_SLOTS_USE_IR_BELT,
     OSC_SEND_STATE,
     TrackingMode,
@@ -1273,23 +1274,30 @@ class FrameProcessor:
             self.settings.person_height_px = max(1, int(round(h)))
 
     def _guard_person_height(self, detections, inv_lb: float) -> None:
-        """Height guard (config.HEIGHT_GUARD): the median height of the confident full skeletons among
-        this frame's RAW detections (original px, before the size gate) over the last 10 s; adopted
-        only when it falls outside the size gate around ``person_height_px`` (used from the next frame)."""
+        """Height guard (config.HEIGHT_GUARD): the confident full skeletons among this frame's RAW
+        detections (original px, before the size gate), over the last 10 s.  When the size gate around
+        ``person_height_px`` rejects >= HEIGHT_GUARD_OUTSIDE of them and they agree on a height (spread
+        <= HEIGHT_GUARD_MAX_SPREAD), the configured height is wrong for the people actually seen: their
+        median is adopted (used from the next frame).  A minority outside the gate (somebody near the
+        camera) is what the gate is for; a spread-out population (people walking toward the lens) has
+        no single height to adopt."""
         if self._height_guard is None:
             from core.auto_height import AutoHeight
-            self._height_guard = AutoHeight()
+            self._height_guard = AutoHeight(min_samples=HEIGHT_GUARD_MIN_SAMPLES)
         dets = [_RawDet(0, d[1], (0.0, 0.0, 0.0, float(d[2][3]) * inv_lb)) for d in detections]
         ph = float(self.settings.person_height_px)
-        h = self._height_guard.update(dets, float(self._output_clock()), ph)
-        if h is None:
+        if self._height_guard.update(dets, float(self._output_clock()), ph) is None:
             return
+        hs = sorted(self._height_guard.window())
         lo = ph * float(self.settings.person_height_min_ratio)
         hi = ph * float(self.settings.person_height_max_ratio)
-        if not lo <= h <= hi:
-            new = max(1, int(round(h)))
-            print(f"[HeightGuard] person height {ph:.0f} -> {new} px: the confident full skeletons "
-                  f"measure {h:.0f} px, outside the size gate {lo:.0f}-{hi:.0f} px")
+        outside = sum(1 for h in hs if not lo <= h <= hi) / float(len(hs))
+        med = hs[len(hs) // 2]
+        spread = (hs[(3 * len(hs)) // 4] - hs[len(hs) // 4]) / max(med, 1.0)
+        if outside >= HEIGHT_GUARD_OUTSIDE and spread <= HEIGHT_GUARD_MAX_SPREAD:
+            new = max(1, int(round(med)))
+            print(f"[HeightGuard] person height {ph:.0f} -> {new} px: {outside:.0%} of the confident full "
+                  f"skeletons ({len(hs)}, median {med:.0f} px) fall outside the size gate {lo:.0f}-{hi:.0f} px")
             self.height_guard_event = (int(ph), new)
             self.settings.person_height_px = new
 

@@ -459,3 +459,12 @@ def test_watchdog_start_stop_joins():
     assert w._thread is not None and w._thread.is_alive()
     w.stop()
     assert w._thread is None
+
+
+def test_check_empty_wall_warns_without_a_usable_snapshot():
+    from core.ops_monitor import check_empty_wall
+    assert check_empty_wall(status="ready", detail="empty wall: ready (10-07 21:16)").status == "ok"
+    r = check_empty_wall(status="none")
+    assert r.status == "warn" and "Calibrate on the empty wall" in r.detail
+    assert check_empty_wall(status="stale", detail="empty wall: scene changed").status == "warn"
+    assert check_empty_wall(status="off").status == "warn"

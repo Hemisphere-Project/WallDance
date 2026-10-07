@@ -36,6 +36,10 @@ class AutoHeight:
         self._t = None
         self.value = None
 
+    def window(self) -> list:
+        """The heights sampled over the last ``window_s`` seconds (as of the last update)."""
+        return [h for _t, h in self._samples]
+
     def _sample(self, st) -> Optional[float]:
         if getattr(st, "frames_since_skeleton", None) != 0:
             return None

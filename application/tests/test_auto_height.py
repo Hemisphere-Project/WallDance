@@ -48,7 +48,11 @@ def _det(h, conf=0.9):
 
 def test_guard_replaces_a_stale_height_that_drops_the_dancers():
     host, clock, guard = _guard_host(45)                    # the night project: gate 13-112 px
-    for i in range(30):
+    for i in range(20):                                     # 1 s: not enough evidence yet
+        clock[0] = i / 20.0
+        guard([_det(150), _det(160)])
+    assert host.settings.person_height_px == 45
+    for i in range(20, 60):
         clock[0] = i / 20.0
         guard([_det(150), _det(160)])                       # a duo at the wall, both detected
     assert 150 <= host.settings.person_height_px <= 160
@@ -63,13 +67,32 @@ def test_guard_never_touches_a_height_whose_gate_holds_the_dancers():
     assert host.settings.person_height_px == 138 and host.height_guard_event is None
 
 
+def test_guard_ignores_a_minority_outside_the_gate():
+    # bdx1005-s5: a dancer inside the gate and a confident 569 px person near the camera
+    host, clock, guard = _guard_host(138)                   # gate 41-345 px
+    for i in range(60):
+        clock[0] = i / 20.0
+        guard([_det(200), _det(569)])
+    assert host.settings.person_height_px == 138 and host.height_guard_event is None
+
+
+def test_guard_leaves_a_spread_out_population_alone():
+    # bdx1005-s8-like: one person walking toward the lens, 120-595 px, all outside a 45 px gate:
+    # no single height to adopt (q3 - q1 ~ 0.6 x the median)
+    host, clock, guard = _guard_host(45)                    # gate 13-112 px
+    for i in range(200):
+        clock[0] = i / 20.0
+        guard([_det(120 + (i % 20) * 25)])
+    assert host.settings.person_height_px == 45 and host.height_guard_event is None
+
+
 def test_guard_ignores_unsure_skeletons_and_scales_from_the_letterbox():
     host, clock, guard = _guard_host(45)
-    for i in range(30):
+    for i in range(120):
         clock[0] = i / 20.0
         guard([_det(150, conf=0.3)])                        # no confident head + ankle
     assert host.settings.person_height_px == 45
-    for i in range(30, 60):
+    for i in range(120, 240):
         clock[0] = i / 20.0
         guard([_det(75)], inv_lb=2.0)                       # 75 px in the YOLO tensor = 150 px
     assert host.settings.person_height_px == 150

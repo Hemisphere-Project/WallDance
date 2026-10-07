@@ -333,9 +333,17 @@ PLATE_CAPTURE_FRAMES = 40               # 2 s at 20 fps
 # person_height_px.  A stale value makes the size gate (0.3-2.5 x, frames with >= 2 detections) drop
 # the real dancers: the night project kept 45 px for bodies of 120-190 px, so a duo at the wall loses
 # both boxes whenever both are detected.  The guard measures the height of confident full skeletons in
-# the RAW detections (before that gate) and adopts it only when it falls outside the gate; a right
-# configured height is never touched.  auto_height (continuous learning) is the ground-stage option.
+# the RAW detections (before that gate) and adopts their median only when the gate rejects most of
+# them (>= HEIGHT_GUARD_OUTSIDE): a right configured height is never touched, and a minority outside the
+# gate (somebody near the camera: a 569 px person on bdx1005-s5) cannot hijack it.  auto_height
+# (continuous learning) is the ground-stage option.
 HEIGHT_GUARD = True
+HEIGHT_GUARD_OUTSIDE = 0.8
+HEIGHT_GUARD_MIN_SAMPLES = 100     # in the 10 s window: >= 5 s of one dancer (a 1 s close-up on
+                                   # bdx1005-s8 must not re-scale the gates: 20 samples -> 569 px)
+HEIGHT_GUARD_MAX_SPREAD = 0.5      # (q3 - q1) / median of the window: a wall show (fixed distance)
+                                   # is tight; a floor walk toward the lens (bdx1005-s5/s8, 187-507 px)
+                                   # has no single height -> left alone (that is auto_height's case)
 # Empty-wall YOLO check (core/empty_wall.py, D29): Calibrate ends by stepping the enhancement down
 # (gamma, then CLAHE) until YOLO finds no person on the empty wall.
 EMPTY_WALL_CHECK = True
