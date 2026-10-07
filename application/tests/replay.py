@@ -535,6 +535,12 @@ def replay_recording(
                 per_frame[-1]["ref"] = ref_holder["ref"]
             if internal:
                 per_frame[-1]["int"] = internal_tracks(proc.tracker, ref_holder["space"])
+                fg = getattr(proc, "last_fg", None)
+                if fg is not None:     # clean-plate foreground summary (offline studies)
+                    per_frame[-1]["fg"] = {
+                        "v": bool(fg.valid), "why": fg.reason, "r": round(float(fg.fg_ratio), 4),
+                        "g": round(float(fg.gain), 3),
+                        "b": [[round(b.x), round(b.y), round(b.area)] for b in fg.blobs[:6]]}
             processed += 1
             consumed += 1
             # Frame-skip (stride): advance past the next stride-1 source frames
