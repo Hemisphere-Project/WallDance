@@ -403,7 +403,8 @@ class HealthMonitor:
                     f"Person height calibration looks stale - live median "
                     f"detection ~{height_median:.0f}px outside the gate "
                     f"{lo:.0f}-{hi:.0f}px for "
-                    f"{now - self._height_stale_since:.0f}s - run Calib2",
+                    f"{now - self._height_stale_since:.0f}s - no confident full skeleton to "
+                    f"re-measure it yet (Advanced > Person height)",
                     {"median": height_median, "lo": lo, "hi": hi}), out)
         else:
             self._height_stale_since = None

@@ -329,6 +329,16 @@ BELT_STATIC_ON = 0.6
 # for slots YOLO lost, and the belt backing.  No plate = no foreground (the base behaviour).
 FOREGROUND_ENABLED = True
 PLATE_CAPTURE_FRAMES = 40               # 2 s at 20 fps
+# Height guard (D29, 2026-10-07): Calib2 (Dancers) left the operator flow and was the only writer of
+# person_height_px.  A stale value makes the size gate (0.3-2.5 x, frames with >= 2 detections) drop
+# the real dancers: the night project kept 45 px for bodies of 120-190 px, so a duo at the wall loses
+# both boxes whenever both are detected.  The guard measures the height of confident full skeletons in
+# the RAW detections (before that gate) and adopts it only when it falls outside the gate; a right
+# configured height is never touched.  auto_height (continuous learning) is the ground-stage option.
+HEIGHT_GUARD = True
+# Empty-wall YOLO check (core/empty_wall.py, D29): Calibrate ends by stepping the enhancement down
+# (gamma, then CLAHE) until YOLO finds no person on the empty wall.
+EMPTY_WALL_CHECK = True
 OSC_SEND_STATE = False                  # opt-in /walldance/dancer/state [id, state, age_s]
 
 # =============================================================================

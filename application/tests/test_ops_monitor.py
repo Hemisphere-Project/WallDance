@@ -345,7 +345,7 @@ def test_height_stale_fires_on_sustained_out_of_gate_median():
         t += 1.0
         alerts += m.tick(t, **_live(), height_median=350.0, height_gate=gate)
     assert [a.kind for a in alerts] == ["height_stale"]
-    assert "run Calib2" in alerts[0].message
+    assert "Person height" in alerts[0].message
     assert alerts[0].data["median"] == 350.0
     # No data (None) resets the sustain instead of firing.
     m2 = _mk(height_stale_s=5.0)

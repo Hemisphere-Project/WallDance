@@ -1240,6 +1240,13 @@ class MainLoop:
         # heights (pre-size-gate, original-space px) over a rolling window.
         for h in getattr(app.processor, "last_raw_det_heights", ()):
             self._height_samples.append((now, h))
+        guard = getattr(app.processor, "height_guard_event", None)
+        if guard is not None:                     # the height guard re-measured a stale height (D29)
+            app.processor.height_guard_event = None
+            old_h, new_h = guard
+            app._sync("slider", "person_height", new_h)
+            app.bus.publish(api.Toast(f"Person height {old_h} -> {new_h} px (measured on the dancers)",
+                                      5.0, (160, 200, 255)))
         cutoff = now - OPS_HEIGHT_WINDOW_S
         while self._height_samples and self._height_samples[0][0] < cutoff:
             self._height_samples.popleft()

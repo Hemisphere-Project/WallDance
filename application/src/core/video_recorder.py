@@ -308,6 +308,20 @@ class VideoRecorder:
         return self._status.state == RecorderState.PLAYING
 
     @property
+    def playback_camera(self) -> Optional[dict]:
+        """IDS exposure (us) and gain (dB) the playing take was recorded with (its ``.meta``
+        v2 config snapshot), or None for another source / a legacy or imported take."""
+        meta = self._playback_meta or {}
+        cfg = meta.get("config")
+        cam = meta.get("camera") or {}
+        if not isinstance(cfg, dict) or (cam.get("source") or cfg.get("camera_source")) != "ids":
+            return None
+        try:
+            return {"exposure_us": float(cfg["ids_exposure_us"]), "gain_db": float(cfg["ids_gain_db"])}
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    @property
     def playback_path(self) -> Optional[str]:
         """Return the currently playing recording path, if any."""
         return self._playback_path

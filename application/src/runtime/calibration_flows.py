@@ -6,8 +6,9 @@ dependencies. The calibration *math* stays untouched in
 ``core/calibration.py`` / ``core/calib2.py`` — this controller owns only
 the orchestration state machines the main loop steps per frame:
 
-- Calib1 (CALIBRATE): optional exposure/gain servo phase (live IDS only),
-  then the SceneCalibrator collection window → apply result + report card.
+- Calib1 (CALIBRATE, the EMPTY WALL phase): exposure/gain from the servo (live IDS) or
+  from the played take's ``.meta``, then the SceneCalibrator collection window → apply
+  result → the empty-wall YOLO check (core/empty_wall.py) → report card.
 - Calib2 (DANCERS): SubjectCollector evidence run → pool save → review
   dialog → pooled apply.
 
@@ -32,7 +33,8 @@ from core.calibration import (ExposureServo, SceneCalibrator,
                               cap_gamma_for_noise, seed_gamma)
 from core.config import (AUTOCAL_BLUR_BUDGET_MS, AUTOCAL2_FRAME_SAMPLES,
                          AUTOCAL2_NOISE_REUSE_S, AUTOCAL2_WINDOW_FRAMES,
-                         MODELS_DIR)
+                         EMPTY_WALL_CHECK, MODELS_DIR)
+from core.empty_wall import EmptyWallCheck
 
 try:
     from camera.ids_camera import CameraSource
@@ -114,6 +116,13 @@ class CalibrationFlows:
         self._calibrating = False               # True while a calibration window is collecting
         self._servo: Optional[ExposureServo] = None      # Calib1 phase A (live IDS only)
         self._servo_result = None                        # ServoResult for the result dialog
+        self._take_camera_line = ""                      # exposure/gain restored from the take
+        # D29 empty-wall YOLO check (after the scene window; _calibrating stays True)
+        self.wall_check_enabled: bool = EMPTY_WALL_CHECK
+        self._wall_check: Optional[EmptyWallCheck] = None
+        self._wall_conf: Optional[float] = None          # live confidence, restored after the check
+        self._wall_result = None                         # EmptyWallResult for the result dialog
+        self._scene_pending = None                       # (CalibrationResult, gamma_capped) for the dialog
         # Calib2 (UX_PLAN U4): dancer evidence pool — accumulative across runs.
         self._calib2 = SubjectCollector()
         self._calibrating2 = False
@@ -142,6 +151,7 @@ class CalibrationFlows:
         "gamma": "gamma", "mog2_var_threshold": "var", "mog2_scale": "scale",
         "clahe": "CLAHE", "person_height_px": "height", "confidence": "conf",
         "imgsz": "imgsz", "blur_budget_ms": "blur",
+        "ids_exposure_us": "exposure", "ids_gain_db": "gain",
     }
 
     @staticmethod
@@ -203,6 +213,10 @@ class CalibrationFlows:
             self._servo = None
             self._calibrator.cancel()
             self.processor.cancel_exclusion_calibration()
+            if self._wall_check is not None:   # stopped during the empty-wall check: the scene pick, unchecked
+                first = self._wall_check.tried[0]
+                self._set_enhancement(first.gamma, first.clahe)
+                self._end_wall_check(cancelled=True)
             if self.ui.available:
                 self.ui.set_calibrate_status(None)
                 self.ui.show_toast("Calibration cancelled",
@@ -228,6 +242,7 @@ class CalibrationFlows:
         # drive the sensor (live IDS camera, not playback).
         self._servo = None
         self._servo_result = None
+        self._take_camera_line = ""
         live_ids = (
             not self.recorder.is_playing
             and self._use_unified_camera
@@ -244,6 +259,19 @@ class CalibrationFlows:
                 self.ui.show_toast("Calibrating - driving exposure/gain, keep the stage clear",
                                    duration=2.5, color=(160, 200, 255))
         else:
+            # Playback of an empty-wall take (D29): the camera must run at the exposure/gain the
+            # take was recorded with, or the enhancement and the plate picked on it do not match live.
+            cam = self.recorder.playback_camera if self.recorder.is_playing else None
+            if cam is not None:
+                self.cameras._cb_ids_exposure_change(cam["exposure_us"])
+                self.cameras._cb_ids_gain_change(cam["gain_db"])
+                if self.ui.available:
+                    self.ui.sync_slider("ids_exposure_us", self.cameras.ids_exposure_us)
+                    self.ui.sync_slider("ids_gain_db", self.cameras.ids_gain_db)
+                self._stamp_calib_state("aim", "ids_exposure_us", "ids_gain_db")
+                self._take_camera_line = (f"Exposure {cam['exposure_us'] / 1000.0:.1f} ms / gain "
+                                          f"{cam['gain_db']:.1f} dB: from the take\n")
+                print("[Calibrate] " + self._take_camera_line.strip())
             # No camera control: seed gamma from the current raw brightness so
             # the var sweep sees the final motion-feed gamma, then collect.
             raw = self.last_raw_frame()
@@ -272,6 +300,9 @@ class CalibrationFlows:
 
     def _step_calibration(self, tracked, process_wall_ms):
         """Feed one processed frame to the active calibrator; finalize when ready."""
+        if self._wall_check is not None:
+            self._step_wall_check()
+            return
         # Phase A: exposure/gain servo (live IDS). Commands are applied through
         # the normal IDS callbacks so sliders/persistence stay in sync.
         if self._servo is not None:
@@ -393,20 +424,98 @@ class CalibrationFlows:
                 self.capture_plate("calibrate")
             except Exception as exc:  # noqa: BLE001 - never fail a calibration on it
                 print(f"[Foreground] plate capture not started ({type(exc).__name__}: {exc})")
+        self._scene_pending = (result, gamma_capped)
+        self._wall_result = None
+        if not self._start_wall_check():
+            self._finish_calibration()
+
+    # ------------------------------------------------------------------
+    # D29 — empty-wall YOLO check (the last stage of Calibrate)
+    # ------------------------------------------------------------------
+    def _set_enhancement(self, gamma: float, clahe: float) -> None:
+        self.enhancer.gamma = float(gamma)
+        self.enhancer._update_gamma_lut()
+        self.enhancer.clahe_clip = float(clahe)
+        self.enhancer._update_clahe()
         if self.ui.available:
-            self.ui.set_calibrate_status(None)
-            self.ui.update_aim_calib_state(self._aim_calib_line())  # Track S
-            servo_line = (self._servo_result.summary_line() + "\n"
-                          if self._servo_result else "")
-            gamma_line = (f"Gamma seeded: {self.enhancer.gamma:.3f}"
-                          + ("  (capped: scene noise high)" if gamma_capped else "")
-                          + "\n")
-            # "Save to project" must be a normal timestamped save (what startup
-            # and the picker load) — safe-defaults stays a separate explicit
-            # action (ROADMAP bug #6).
-            self.ui.show_calibration_result_dialog(
-                servo_line + gamma_line + result.summary(),
-                on_save=self.configs._cb_save_config)
+            self.ui.sync_slider("gamma", float(gamma))
+            self.ui.sync_slider("clahe", float(clahe))
+
+    def _start_wall_check(self) -> bool:
+        """Run the pipeline on the same empty wall with each enhancement of the ladder, strongest
+        first, until YOLO finds nobody (core/empty_wall.py).  YOLO runs at the check's lower
+        confidence meanwhile, so near misses count too; the live confidence comes back after."""
+        if not self.wall_check_enabled:
+            return False
+        try:
+            chk = EmptyWallCheck(float(self.enhancer.gamma), float(self.enhancer.clahe_clip),
+                                 float(self.settings.confidence))
+        except (TypeError, ValueError) as exc:
+            print(f"[EmptyWall] check not started ({exc})")
+            return False
+        self._wall_check = chk
+        self._wall_conf = float(self.settings.confidence)
+        self.settings.confidence = chk.conf_limit
+        self._calibrating = True                  # YOLO stays forced on; the loop keeps stepping
+        if self.ui.available:
+            self.ui.set_calibrate_status("Checking the empty wall 0%")
+        print(f"[EmptyWall] YOLO check: {len(chk.steps)} candidates, persons >= {chk.conf_limit:.2f}")
+        return True
+
+    def _step_wall_check(self) -> None:
+        chk = self._wall_check
+        nxt = chk.feed(list(getattr(self.processor, "last_raw_dets", None) or ()))
+        if nxt is not None:
+            self._set_enhancement(*nxt)
+        if chk.done:
+            self._set_enhancement(chk.result.gamma, chk.result.clahe)
+            self._end_wall_check()
+            self._finish_calibration()
+        elif self.ui.available:
+            self.ui.set_calibrate_status(f"Checking the empty wall {int(chk.progress() * 100)}%")
+
+    def _end_wall_check(self, cancelled: bool = False) -> None:
+        chk = self._wall_check
+        self._wall_check = None
+        self._calibrating = False
+        if self._wall_conf is not None:
+            self.settings.confidence = self._wall_conf
+            self._wall_conf = None
+        if chk is None or cancelled or chk.result is None:
+            if cancelled:
+                print("[EmptyWall] check cancelled: the scene pick is kept, unchecked")
+            return
+        r = chk.result
+        self._wall_result = r
+        print(r.log_line())
+        if (r.gamma, r.clahe) != (chk.tried[0].gamma, chk.tried[0].clahe):
+            self._stamp_calib_state("aim", "gamma", "clahe")
+        self.request_reprocess()
+        if not r.clean and self.ui.available:
+            self.ui.show_toast("YOLO sees a person on the EMPTY wall at every setting: remove the "
+                               "object or paint an exclusion there, then calibrate again.",
+                               duration=8.0, color=(255, 140, 70))
+
+    def _finish_calibration(self) -> None:
+        """The report card: servo / take exposure, gamma, the scene window, the empty-wall check."""
+        result, gamma_capped = self._scene_pending or (None, False)
+        self._scene_pending = None
+        if not self.ui.available or result is None:
+            return
+        self.ui.set_calibrate_status(None)
+        self.ui.update_aim_calib_state(self._aim_calib_line())  # Track S
+        servo_line = (self._servo_result.summary_line() + "\n"
+                      if self._servo_result else self._take_camera_line)
+        gamma_line = (f"Gamma: {self.enhancer.gamma:.3f}"
+                      + ("  (capped: scene noise high)" if gamma_capped else "")
+                      + "\n")
+        wall = (self._wall_result.summary() + "\n") if self._wall_result is not None else ""
+        # "Save to project" must be a normal timestamped save (what startup
+        # and the picker load) — safe-defaults stays a separate explicit
+        # action (ROADMAP bug #6).
+        self.ui.show_calibration_result_dialog(
+            servo_line + gamma_line + result.summary() + "\n" + wall,
+            on_save=self.configs._cb_save_config)
 
     # ------------------------------------------------------------------
     # Calib2 — dancer evidence pool (UX_PLAN U4)

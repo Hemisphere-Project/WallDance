@@ -10,6 +10,7 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
+from collections import namedtuple
 from typing import Dict, List, Optional, Tuple, Union
 
 import cv2
@@ -41,7 +42,7 @@ from core.config import (
     IDENTITY_SLOTS_COAST_S, IDENTITY_SLOTS_STATIC_GUARD,
     IDENTITY_SLOTS_STATIC_RELEASE_S, IDENTITY_SLOTS_FILTER_INPUT, IDENTITY_SLOTS_SMART_HOLD,
     BELT_STATIC_EVERY_N, BELT_STATIC_ALPHA, BELT_STATIC_ON,
-    FOREGROUND_ENABLED,
+    FOREGROUND_ENABLED, HEIGHT_GUARD,
     IDENTITY_SLOTS_USE_IR_BELT,
     OSC_SEND_STATE,
     TrackingMode,
@@ -97,6 +98,8 @@ except ImportError:
 # (motion outputs are bit-identical: tests/test_cv2_threads_bit_identity.py).
 cv2.setNumThreads(CV2_NUM_THREADS)
 
+_RawDet = namedtuple("_RawDet", "frames_since_skeleton confidence bbox")   # height guard sample
+
 
 @dataclass
 class ProcessingSettings:
@@ -148,6 +151,7 @@ class ProcessingSettings:
     belt_backing: bool = True                   # belt-only cap restarts on evidence (A/B switch)
     entry_min_travel_h: float = 0.0             # a NEW dancer must have moved this x h (0 = off)
     auto_height: bool = False                   # learn person_height_px from confident full skeletons
+    height_guard: bool = HEIGHT_GUARD           # re-measure a person_height_px whose gate drops the dancers
     fg_enabled: bool = FOREGROUND_ENABLED       # use the clean plate when one is loaded
     fg_plate_path: str = ""                     # absolute path of the plate (.npz), "" = none
     osc_send_state: bool = OSC_SEND_STATE
@@ -488,9 +492,12 @@ class FrameProcessor:
         self.last_fg = None
         self._last_fg_ms = 0.0
         self._auto_height = None            # core.auto_height.AutoHeight when settings.auto_height
+        self._height_guard = None           # core.auto_height.AutoHeight on raw detections (height guard)
+        self.height_guard_event: Optional[Tuple[int, int]] = None   # (old, new) px, popped by the main loop
         # Raw detection heights (original-space px) BEFORE the size gate — the
         # height-staleness alarm must see what the gate would reject (⑤d)
         self.last_raw_det_heights: List[float] = []
+        self.last_raw_dets: List[Tuple[float, float, float, float]] = []
 
         # GPU pipeline (zero-copy path)
         self._gpu_pipeline: Optional[GpuPipeline] = None
@@ -712,6 +719,14 @@ class FrameProcessor:
         # height-staleness alarm must see what the gate would reject (⑤d).
         inv_lb = 1.0 / lb_scale if lb_scale > 0 else 1.0
         self.last_raw_det_heights = [float(d[2][3]) * inv_lb for d in detections]
+        # (box conf, centre x, centre y, height) in original px: the empty-wall ghost check (D29)
+        self.last_raw_dets = [
+            (self._last_box_confs.get(self._bbox_conf_key(d[2]), 0.0),
+             roi_x + (float(d[2][0]) + float(d[2][2]) / 2 - pad_x) * inv_lb,
+             roi_y + (float(d[2][1]) + float(d[2][3]) / 2 - pad_y) * inv_lb,
+             float(d[2][3]) * inv_lb) for d in detections]
+        if self.settings.height_guard and not self.settings.auto_height:
+            self._guard_person_height(detections, inv_lb)
         detections = self._filter_duplicate_detections(detections, effective_person_height=scaled_person_height)
         timing["extract"] = (time.perf_counter() - t0) * 1000
         timing.update(self._extract_transfer_timing)
@@ -1256,6 +1271,27 @@ class FrameProcessor:
                                      float(self.settings.person_height_px))
         if h is not None:
             self.settings.person_height_px = max(1, int(round(h)))
+
+    def _guard_person_height(self, detections, inv_lb: float) -> None:
+        """Height guard (config.HEIGHT_GUARD): the median height of the confident full skeletons among
+        this frame's RAW detections (original px, before the size gate) over the last 10 s; adopted
+        only when it falls outside the size gate around ``person_height_px`` (used from the next frame)."""
+        if self._height_guard is None:
+            from core.auto_height import AutoHeight
+            self._height_guard = AutoHeight()
+        dets = [_RawDet(0, d[1], (0.0, 0.0, 0.0, float(d[2][3]) * inv_lb)) for d in detections]
+        ph = float(self.settings.person_height_px)
+        h = self._height_guard.update(dets, float(self._output_clock()), ph)
+        if h is None:
+            return
+        lo = ph * float(self.settings.person_height_min_ratio)
+        hi = ph * float(self.settings.person_height_max_ratio)
+        if not lo <= h <= hi:
+            new = max(1, int(round(h)))
+            print(f"[HeightGuard] person height {ph:.0f} -> {new} px: the confident full skeletons "
+                  f"measure {h:.0f} px, outside the size gate {lo:.0f}-{hi:.0f} px")
+            self.height_guard_event = (int(ph), new)
+            self.settings.person_height_px = new
 
     def _fg_protect(self, cands, t: float):
         """Boxes (original px) the plate update must not absorb: slots measured live or by a

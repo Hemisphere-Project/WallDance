@@ -164,3 +164,69 @@ def test_make_imgsz_probe_none_when_no_model():
     flows.models.model_manager.is_using_tensorrt.return_value = False
     flows.processor.model = None
     assert flows._make_imgsz_probe([]) is None
+
+
+# --- D29: the empty-wall YOLO check + the take's exposure/gain -----------------
+def _wall_flows(gamma=1.8, clahe=1.5, conf=0.25):
+    flows, settings = _flows()
+    flows.enhancer.gamma, flows.enhancer.clahe_clip = gamma, clahe
+    settings.confidence = conf
+    flows.processor.last_raw_dets = []
+    return flows, settings
+
+
+def _run_check(flows, ghost_conf_at):
+    for _ in range(600):
+        if flows._wall_check is None:
+            break
+        c = ghost_conf_at(flows.enhancer.gamma, flows.enhancer.clahe_clip)
+        flows.processor.last_raw_dets = [(c, 300.0, 400.0, 150.0)] if c > 0 else []
+        flows._step_calibration([], 30.0)
+
+
+def test_calibrate_ends_with_the_empty_wall_check():
+    flows, settings = _wall_flows()
+    flows._apply_calibration(_scene_result())
+    assert flows._wall_check is not None and flows._calibrating          # YOLO stays forced on
+    assert settings.confidence == 0.2                                      # near misses count
+    _run_check(flows, lambda g, c: 0.3 if g > 1.3 else 0.0)               # a ghost under strong gamma
+    assert flows._wall_check is None and not flows._calibrating
+    assert settings.confidence == 0.25                                     # live confidence back
+    assert 1.0 < flows.enhancer.gamma < 1.3 and flows._wall_result.clean
+    assert flows.calibration_state["clahe"]["source"] == "aim"
+
+
+def test_a_clean_empty_wall_keeps_the_scene_pick_and_the_check_can_be_disabled():
+    flows, settings = _wall_flows()
+    flows._apply_calibration(_scene_result())
+    _run_check(flows, lambda g, c: 0.0)
+    assert flows.enhancer.gamma == 1.8 and flows._wall_result.clean
+    flows2, _ = _wall_flows()
+    flows2.wall_check_enabled = False
+    flows2._apply_calibration(_scene_result())
+    assert flows2._wall_check is None and not flows2._calibrating
+
+
+def test_cancel_during_the_check_restores_the_confidence():
+    flows, settings = _wall_flows()
+    flows.models._model_loaded = True
+    flows._apply_calibration(_scene_result())
+    flows.processor.last_raw_dets = [(0.3, 1.0, 1.0, 100.0)] * 1
+    for _ in range(10):
+        flows._step_calibration([], 30.0)
+    flows._cb_calibrate()                                                  # second press = cancel
+    assert flows._wall_check is None and not flows._calibrating
+    assert settings.confidence == 0.25 and flows.enhancer.gamma == 1.8
+
+
+def test_playback_calibration_takes_the_exposure_and_gain_of_the_take():
+    flows, _ = _wall_flows()
+    flows.models._model_loaded = True
+    flows.recorder.is_playing = True
+    flows.recorder.playback_camera = {"exposure_us": 25000.0, "gain_db": 36.0}
+    flows.unified_camera = None
+    flows._cb_calibrate()
+    flows.cameras._cb_ids_exposure_change.assert_called_once_with(25000.0)
+    flows.cameras._cb_ids_gain_change.assert_called_once_with(36.0)
+    assert flows.calibration_state["ids_exposure_us"]["source"] == "aim"
+    assert "from the take" in flows._take_camera_line
