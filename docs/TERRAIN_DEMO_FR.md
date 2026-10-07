@@ -14,7 +14,7 @@
   détection ne voit **personne** sur le mur vide. Sinon il baisse l'éclaircissement de l'image jusqu'à ce que ce soit
   le cas (le 7 octobre, un réglage trop éclairci faisait voir un « danseur » près du matériel à gauche de la porte).
 - **Taille des danseurs automatique** : plus besoin de calibrer avec des danseurs. Si la taille réglée ne correspond
-  pas aux danseurs vus, le logiciel la corrige seul (message « Person height 45 -> 152 px »).
+  pas aux danseurs vus, le logiciel la corrige seul (message « Person height 45 -> 127 px »).
 - **Ceinture IR** : tenue tant que la détection ou la photo du mur vide confirme qu'un danseur est là (avant : 8 s au
   plus).
 - **Boule** : sa taille suit la distance du danseur (plus petite au fond, plus grande devant ; affichage seulement).
