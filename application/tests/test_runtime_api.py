@@ -199,6 +199,7 @@ EVENT_SAMPLES = {
     api.KnownNResult: dict(result={"baseline_score": 0.6, "tuned_score": 0.5}),
     api.DialBVisible: dict(visible=False),
     api.Alert: dict(kind="fps_low", message="FPS 9.8", data={"fps": 9.8}),
+    api.AlertCleared: dict(kind="light_changed"),
     api.IssueReportContext: dict(context={"frame": 12, "slot": 3}),
     api.QrDialog: dict(url="http://x", matrix=[[True, False]]),
     api.PreviewResize: dict(width=960, height=540),

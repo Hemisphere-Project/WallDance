@@ -222,3 +222,54 @@ def test_selective_plate_update_absorbs_a_light_change_but_not_a_protected_dance
         det.update_plate([(280, 180, 380, 420)])
     xs = sorted(round(b.x) for b in fg.blobs)
     assert len(fg.blobs) == 1 and abs(xs[0] - 330) < 8   # the lamp faded into the plate, the dancer did not
+
+
+# --------------------------------------------------------------------------- #
+# Light vs the snapshot (the light-change warning)
+# --------------------------------------------------------------------------- #
+def test_light_ratio_is_the_scene_brightness_over_the_snapshot():
+    rng = np.random.default_rng(8)
+    det = ForegroundDetector(CleanPlate.from_frames([_wall(rng, level=40) for _ in range(12)]))
+    assert abs(det.light_ratio(_wall(rng, level=40), 0, 0, (800, 600)) - 1.0) < 0.05
+    assert abs(det.light_ratio(_wall(rng, level=14), 0, 0, (800, 600)) - 0.35) < 0.03   # ~3x darker
+    frame = _wall(rng, level=40)
+    frame[200:400, 300:360] = 90                           # a dancer does not move the median
+    assert abs(det.light_ratio(frame, 0, 0, (800, 600)) - 1.0) < 0.05
+    crop = _wall(rng, level=60)[53:500, 101:700]          # an ROI crop, origin off the plate grid
+    assert abs(det.light_ratio(crop, 101, 53, (800, 600)) - 1.5) < 0.06
+    assert det.light_ratio(_wall(rng, w=600, h=800), 0, 0, (600, 800)) is None   # another camera crop
+    dark = ForegroundDetector(CleanPlate.from_frames([_wall(rng, level=1, noise=0.3) for _ in range(12)]))
+    assert dark.light_ratio(_wall(rng, level=20), 0, 0, (800, 600)) is None     # snapshot too dark
+
+
+def test_light_ratio_ignores_the_slow_plate_update_and_a_stale_frame_still_has_one():
+    from core.foreground import FgParams
+    rng = np.random.default_rng(9)
+    det = ForegroundDetector(CleanPlate.from_frames([_wall(rng, level=40) for _ in range(12)]),
+                             FgParams(update_every=1, update_alpha=0.5))
+    dim = _wall(rng, level=16)
+    for _ in range(20):                                    # the live plate keeps being updated...
+        det.process(dim, 0, 0, (800, 600))
+        det.update_plate([])
+    assert abs(det.light_ratio(dim, 0, 0, (800, 600)) - 0.4) < 0.04   # ...the reference is the snapshot
+    other = _wall(rng, level=40)
+    other[:, :500] = 120                                   # most of the scene changed: "plate stale"
+    assert not det.process(other, 0, 0, (800, 600)).valid
+    assert det.light_ratio(other, 0, 0, (800, 600)) is not None
+
+
+def test_processor_light_ratio_uses_the_roi():
+    from types import SimpleNamespace
+    from core.pipeline import FrameProcessor
+    rng = np.random.default_rng(10)
+    det = ForegroundDetector(CleanPlate.from_frames([_wall(rng, level=40) for _ in range(12)]))
+    frame = _wall(rng, level=40)
+    frame[:, 500:] = 10                                    # the right part went dark
+    host = SimpleNamespace(_ensure_plate=lambda: det,
+                           settings=SimpleNamespace(roi_enabled=True, roi_x=550, roi_y=100,
+                                                    roi_w=200, roi_h=400))
+    assert abs(FrameProcessor.light_ratio(host, frame) - 0.25) < 0.03
+    host.settings.roi_enabled = False                      # whole frame: the lit majority wins
+    assert abs(FrameProcessor.light_ratio(host, frame) - 1.0) < 0.1
+    assert FrameProcessor.light_ratio(SimpleNamespace(_ensure_plate=lambda: None,
+                                                      settings=host.settings), frame) is None

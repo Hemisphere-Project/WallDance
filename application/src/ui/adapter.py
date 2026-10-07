@@ -30,6 +30,9 @@ from gui import WallDanceGUI, get_display_scale
 from runtime import api
 from ui.calibrate_all_wizard import CalibrateAllWizard
 
+# Ops alerts that also stay in the alerts strip until their api.AlertCleared (the others are toasts)
+STRIP_ALERTS = ("light_changed",)
+
 
 # REQ-1 import status -> toast (duration, color) per ImportProgress.state.
 _IMPORT_TOASTS = {
@@ -338,8 +341,11 @@ class DpgUiAdapter:
             api.KnownNResult: lambda e: self.gui.show_known_n_result(
                 e.result, e.error),
             api.DialBVisible: lambda e: self.gui.set_dial_b_visible(e.visible),
-            api.Alert: lambda e: self.gui.show_toast(
-                f"/!\\ {e.message}", duration=8.0, color=(255, 80, 80)),
+            api.Alert: lambda e: (
+                self.gui.show_toast(f"/!\\ {e.message}", duration=8.0, color=(255, 80, 80)),
+                # a condition that lasts until the operator acts stays in the alerts strip
+                self.gui.push_alert(e.kind, e.message) if e.kind in STRIP_ALERTS else None),
+            api.AlertCleared: lambda e: self.gui.clear_alert(e.kind),
             # Calibration events route through the wizard first; when it is
             # closed (or mid-intro) they fall back to the classic dialogs, so
             # the plain CALIBRATE / DANCERS buttons behave exactly as before.

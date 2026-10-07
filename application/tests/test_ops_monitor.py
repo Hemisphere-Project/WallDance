@@ -20,6 +20,7 @@ from core.ops_monitor import (
     check_calibration,
     check_camera,
     check_disk,
+    check_empty_wall,
     check_gpu_temp,
     check_osc,
     check_tensorrt,
@@ -485,3 +486,52 @@ def test_check_dancer_size_reads_the_dancers_in_yolos_input():
     assert r.status == "warn" and "Image Size 1280" in r.detail
     # an old measurement does not count
     assert check_dancer_size(measured=(127.0, 200, now - 4000), lb_scale=1.0, imgsz=1280, now=now).status == "skip"
+
+
+# ------------------------------------------- light changed since the empty-wall snapshot
+
+def _light_tick(m, t, ratio, ref="10-06 21:16"):
+    """A STANDBY tick (project open, not in RUN) carrying the 10 s light median."""
+    return m.tick(t, fps=0.0, n_tracked=0, in_run=False, model_ready=False, camera_open=True,
+                  camera_reconnecting=False, playback_active=False, light_ratio=ratio, light_ref=ref)
+
+
+def test_light_change_alerts_once_per_episode_even_in_standby():
+    m = HealthMonitor()
+    assert _light_tick(m, 0.0, None) == []                          # not measured yet
+    alerts = _light_tick(m, 1.0, 0.4)
+    assert [a.kind for a in alerts] == ["light_changed"]
+    assert "0.40x the empty-wall snapshot (10-06 21:16)" in alerts[0].message
+    assert "empty take" in alerts[0].message and alerts[0].data["ratio"] == 0.4
+    assert all(_light_tick(m, 2.0 + i, 0.4) == [] for i in range(400))   # no re-ring in the episode
+    assert _light_tick(m, 500.0, None) == [] and m.pop_cleared() == []    # no measure keeps it
+    assert _light_tick(m, 501.0, 0.9) == [] and m.pop_cleared() == ["light_changed"]
+    brighter = _light_tick(m, 502.0, 2.0)                           # a new episode: re-armed
+    assert [a.kind for a in brighter] == ["light_changed"] and "2.00x" in brighter[0].message
+
+
+def test_light_band_edges_and_the_gain_range_text():
+    m = HealthMonitor()
+    assert _light_tick(m, 0.0, 1.5) == [] and _light_tick(m, 1.0, 1 / 1.5) == []
+    assert [a.kind for a in _light_tick(m, 2.0, 1.51)] == ["light_changed"]
+    m2 = HealthMonitor()
+    assert "<= 0.25x" in _light_tick(m2, 0.0, 0.1)[0].message
+    assert ">= 4x" in _light_tick(HealthMonitor(), 0.0, 6.0)[0].message
+
+
+def test_a_new_snapshot_rearms_the_light_alert():
+    m = HealthMonitor()
+    assert _light_tick(m, 0.0, 0.4)
+    assert _light_tick(m, 1.0, 0.4) == []
+    again = _light_tick(m, 2.0, 0.4, ref="10-07 14:02")             # re-captured, still off: a new episode
+    assert [a.kind for a in again] == ["light_changed"] and m.pop_cleared() == ["light_changed"]
+    assert _light_tick(m, 3.0, 1.0, ref="10-07 14:02") == [] and m.pop_cleared() == ["light_changed"]
+
+
+def test_check_empty_wall_warns_when_the_light_moved():
+    r = check_empty_wall(status="ready", detail="empty wall: ready (10-06 21:16, 1776x1300)", light_ratio=0.35)
+    assert r.status == "warn" and "0.35x the snapshot" in r.detail and "empty take" in r.detail
+    assert check_empty_wall(status="ready", detail="x", light_ratio=1.2).status == "ok"
+    assert check_empty_wall(status="ready", detail="x", light_ratio=None).status == "ok"
+    none = check_empty_wall(status="none", light_ratio=0.3)          # no snapshot: that text wins
+    assert none.status == "warn" and "the light" not in none.detail

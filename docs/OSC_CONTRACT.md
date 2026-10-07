@@ -285,6 +285,10 @@ byte-identical with slots on or off).
   the **empty-wall YOLO check** (D29, `core/empty_wall.py`): the enhancement steps down (gamma toward
   1.0 then 0.8, then CLAHE) until YOLO finds no person on the empty wall at 0.8 x the live confidence;
   playback Calibrate also restores the exposure/gain the take was recorded with (its `.meta`).
+  **Light-change warning** (no wire change): the raw ROI brightness over the snapshot's is sampled at
+  1 Hz in standby and RUN; when its 10 s median leaves [1/1.5, 1.5] (`LIGHT_CHANGE_RATIO`), one
+  `light_changed` alert per episode (toast + alerts strip, also at project start) and the readiness
+  "empty wall" row ask for a Calibrate on the empty wall (live, or on that lighting's empty take).
 - **Height guard** (D29, `height_guard`, default ON): `person_height_px` scales the detection size gate
   (0.3-2.5 x in frames with >= 2 detections) and the tracker gates.  The median height of confident
   full skeletons in the raw detections (10 s) replaces it only when it falls outside that gate (a stale

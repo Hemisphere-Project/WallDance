@@ -329,6 +329,15 @@ BELT_STATIC_ON = 0.6
 # for slots YOLO lost, and the belt backing.  No plate = no foreground (the base behaviour).
 FOREGROUND_ENABLED = True
 PLATE_CAPTURE_FRAMES = 40               # 2 s at 20 fps
+# Light changed since the empty-wall snapshot (Thomas 2026-10-07: "luminosity change is a killer"): the
+# raw ROI brightness over the snapshot's (core/foreground.ForegroundDetector.light_ratio), sampled at 1 Hz
+# in standby and RUN alike; when its median over LIGHT_CHANGE_S leaves [1/RATIO, RATIO] the operator is
+# told once per episode (alert + alerts strip + readiness) to Calibrate on the empty wall again.  The
+# night project's light fell ~3x from 21:33: far outside; a 1.5x band ignores small drifts the plate's
+# gain normalisation absorbs.
+LIGHT_CHANGE_RATIO = 1.5
+LIGHT_CHANGE_S = 10.0
+LIGHT_CHANGE_MIN_SAMPLES = 5            # 1 Hz samples needed before the median counts (~5 s after start)
 # Height guard (D29, 2026-10-07): Calib2 (Dancers) left the operator flow and was the only writer of
 # person_height_px.  A stale value makes the size gate (0.3-2.5 x, frames with >= 2 detections) drop
 # the real dancers: the night project kept 45 px for bodies of 120-190 px, so a duo at the wall loses

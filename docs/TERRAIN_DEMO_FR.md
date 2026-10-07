@@ -79,6 +79,7 @@
 | Un point **reste** après le départ du danseur | baisser **Hold** (1 à 1.5 s) |
 | Un point apparaît sur un **objet fixe** | refaire **2 Mur vide → CALIBRATE** ; resserrer la Region of Interest |
 | « empty wall: scene changed » ou « other camera crop » | lumière ou cadrage changé : refaire **CALIBRATE** sur le mur vide |
+| Alerte « The light is …x the empty-wall snapshot » (aussi à l'ouverture du projet) | l'éclairage n'est plus celui de la photo du mur vide : refaire **CALIBRATE** sur le mur vide — **en direct** si on peut vider la scène, sinon **sur la prise de mur vide de cet éclairage** (le spectacle continue) |
 | Message « Person height … » | rien à faire (correction automatique) |
 | Alerte « Person height calibration looks stale » | prévenir Thomas |
 

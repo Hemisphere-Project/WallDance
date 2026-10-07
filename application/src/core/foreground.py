@@ -190,14 +190,10 @@ class ForegroundDetector:
     def matches(self, frame_w: int, frame_h: int) -> bool:
         return (int(frame_w), int(frame_h)) == tuple(self.plate.frame_size)
 
-    def process(self, roi_gray: np.ndarray, ox: int, oy: int,
-                frame_size: Tuple[int, int]) -> FgFrame:
-        """``roi_gray``: the raw ROI crop (or the whole frame) at original resolution,
-        whose top-left pixel is (ox, oy) of a ``frame_size`` (W, H) frame."""
-        ds, p = self.plate.ds, self.p
-        if not self.matches(*frame_size):
-            self.last = FgFrame(None, ox, oy, ds, valid=False, reason="plate size")
-            return self.last
+    def _align(self, roi_gray: np.ndarray, ox: int, oy: int, base: np.ndarray):
+        """The crop downscaled on the plate grid and the matching window of ``base`` (a plate):
+        (cur, B, gx0, gy0), or None for an empty crop."""
+        ds = self.plate.ds
         g = _gray(roi_gray)
         # align the crop on the plate grid: start at the first multiple of ds inside it
         sx, sy = (-ox) % ds, (-oy) % ds
@@ -206,14 +202,45 @@ class ForegroundDetector:
         h, w = g.shape[:2]
         h, w = (h // ds) * ds, (w // ds) * ds
         if h <= 0 or w <= 0:
-            self.last = FgFrame(None, ox, oy, ds, valid=False, reason="empty roi")
-            return self.last
+            return None
         cur = _down(g[:h, :w], ds)
         ph, pw = cur.shape
-        B = self._live[gy0:gy0 + ph, gx0:gx0 + pw]
+        B = base[gy0:gy0 + ph, gx0:gx0 + pw]
         if B.shape != cur.shape:   # ROI partly outside the plate (should not happen)
             ph, pw = min(ph, B.shape[0]), min(pw, B.shape[1])
             cur, B = cur[:ph, :pw], B[:ph, :pw]
+        return cur, B, gx0, gy0
+
+    def light_ratio(self, roi_gray: np.ndarray, ox: int, oy: int,
+                    frame_size: Tuple[int, int]) -> Optional[float]:
+        """Brightness of this raw crop over the SNAPSHOT as captured (not the slowly updated live
+        plate): the median pixel ratio where the snapshot is lit enough to measure (the gain
+        normalisation's rule), unclamped.  None for another camera crop, an empty crop or a
+        snapshot too dark to measure.  Read-only: safe to sample between ``process`` calls."""
+        if not self.matches(*frame_size):
+            return None
+        al = self._align(roi_gray, ox, oy, self.plate.plate)
+        if al is None:
+            return None
+        cur, B = al[0], al[1]
+        ok = B >= self.p.gain_plate_dn
+        if not ok.size or ok.mean() < self.p.gain_min_px:
+            return None
+        return float(np.median(cur[ok] / B[ok]))
+
+    def process(self, roi_gray: np.ndarray, ox: int, oy: int,
+                frame_size: Tuple[int, int]) -> FgFrame:
+        """``roi_gray``: the raw ROI crop (or the whole frame) at original resolution,
+        whose top-left pixel is (ox, oy) of a ``frame_size`` (W, H) frame."""
+        ds, p = self.plate.ds, self.p
+        if not self.matches(*frame_size):
+            self.last = FgFrame(None, ox, oy, ds, valid=False, reason="plate size")
+            return self.last
+        al = self._align(roi_gray, ox, oy, self._live)
+        if al is None:
+            self.last = FgFrame(None, ox, oy, ds, valid=False, reason="empty roi")
+            return self.last
+        cur, B, gx0, gy0 = al
         gain = 1.0
         if p.gain_norm:
             ok = B >= p.gain_plate_dn

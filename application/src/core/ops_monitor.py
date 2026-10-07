@@ -26,6 +26,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 import shutil
 
 from core.config import (
+    LIGHT_CHANGE_RATIO,
     OPS_ALERT_COOLDOWN_S,
     OPS_CAMERA_DOWN_ALERT_S,
     OPS_FPS_BASELINE_WINDOW_S,
@@ -200,10 +201,33 @@ def check_calibration(*, saved_at_iso: Optional[str], active_profile: str,
     return CheckResult("calibration", "ok", detail)
 
 
-def check_empty_wall(*, status: str, detail: str = "") -> CheckResult:
+def light_ratio_text(ratio: float) -> str:
+    """"0.40x" -- or "<= 0.25x" / ">= 4x" beyond what the plate's gain normalisation follows."""
+    if ratio <= 0.25:
+        return "<= 0.25x"
+    if ratio >= 4.0:
+        return ">= 4x"
+    return f"{ratio:.2f}x"
+
+
+def light_out_of_band(ratio: Optional[float], band: float = LIGHT_CHANGE_RATIO) -> bool:
+    return ratio is not None and not (1.0 / band <= ratio <= band)
+
+
+LIGHT_REMEDY = ("Calibrate on the empty wall: live if the stage can be cleared, else play this "
+                "lighting's empty take and Calibrate on it")
+
+
+def check_empty_wall(*, status: str, detail: str = "", light_ratio: Optional[float] = None,
+                     band: float = LIGHT_CHANGE_RATIO) -> CheckResult:
     """The empty-wall snapshot (clean plate, D29): present, from this camera crop, and the scene
-    still looks like it.  ``status`` is FrameProcessor.plate_status; ``detail`` its readable line."""
+    still looks like it.  ``status`` is FrameProcessor.plate_status; ``detail`` its readable line;
+    ``light_ratio`` the live / snapshot brightness (the ops tick's 10 s median), None if unknown."""
     ok = status in ("ready", "capturing")
+    if ok and light_out_of_band(light_ratio, band):
+        return CheckResult("empty wall", "warn",
+                           f"{detail or 'empty wall: ' + status} - the light is "
+                           f"{light_ratio_text(light_ratio)} the snapshot: {LIGHT_REMEDY}")
     return CheckResult("empty wall", "ok" if ok else "warn",
                        detail or f"empty wall: {status}"
                        + ("" if ok else " - Calibrate on the empty wall (2 - Empty wall)"))
@@ -313,7 +337,8 @@ class HealthMonitor:
                  gpu_poll_s: float = OPS_GPU_POLL_S,
                  cooldown_s: float = OPS_ALERT_COOLDOWN_S,
                  min_baseline_samples: int = 30,
-                 gpu_stats_fn: Optional[Callable[[], dict]] = None):
+                 gpu_stats_fn: Optional[Callable[[], dict]] = None,
+                 light_band: float = LIGHT_CHANGE_RATIO):
         self.fps_window_s = fps_window_s
         self.fps_drop_fraction = fps_drop_fraction
         self.fps_sustain_s = fps_sustain_s
@@ -327,6 +352,7 @@ class HealthMonitor:
         self.cooldown_s = cooldown_s
         self.min_baseline_samples = min_baseline_samples
         self.gpu_stats_fn = gpu_stats_fn
+        self.light_band = light_band
 
         self._fps_samples: List[Tuple[float, float]] = []  # (t, fps)
         self._was_in_run = False
@@ -339,6 +365,13 @@ class HealthMonitor:
         self._last_gpu_poll = 0.0
         self._last_gpu_stats: Optional[dict] = None
         self._last_fired: Dict[str, float] = {}
+        self._light_alerted = False          # one "light_changed" alert per episode
+        self._light_ref: Optional[str] = None
+        self.cleared: List[str] = []         # alert kinds whose condition ended (strip entries to drop)
+
+    def pop_cleared(self) -> List[str]:
+        out, self.cleared = self.cleared, []
+        return out
 
     def _fire(self, now: float, alert: Alert, out: List[Alert]) -> None:
         last = self._last_fired.get(alert.kind)
@@ -357,7 +390,8 @@ class HealthMonitor:
              model_ready: bool, camera_open: bool, camera_reconnecting: bool,
              playback_active: bool, n_over_cap: int = 0,
              height_median: Optional[float] = None,
-             height_gate: Optional[Tuple[float, float]] = None) -> List[Alert]:
+             height_gate: Optional[Tuple[float, float]] = None,
+             light_ratio: Optional[float] = None, light_ref: str = "") -> List[Alert]:
         out: List[Alert] = []
         live = (in_run and camera_open and not camera_reconnecting
                 and not playback_active and model_ready)
@@ -448,6 +482,28 @@ class HealthMonitor:
                     {"median": height_median, "lo": lo, "hi": hi}), out)
         else:
             self._height_stale_since = None
+
+        # --- light changed since the empty-wall snapshot -----------------------
+        # ``light_ratio``: the caller's 10 s median (that is the sustain), in standby too -- a project
+        # opened under other light is the case to catch.  One alert per episode, no cooldown re-ring
+        # (the alerts strip keeps it visible); re-armed when the light is back in the band or when
+        # the snapshot changes (a Calibrate / re-capture).  None = no measure: the state is kept.
+        if light_ref != self._light_ref:
+            if self._light_alerted:
+                self.cleared.append("light_changed")
+            self._light_ref, self._light_alerted = light_ref, False
+        if light_out_of_band(light_ratio, self.light_band):
+            if not self._light_alerted:
+                self._light_alerted = True
+                when = f" ({light_ref})" if light_ref else ""
+                out.append(Alert(
+                    "light_changed",
+                    f"The light is {light_ratio_text(light_ratio)} the empty-wall snapshot{when}: "
+                    f"{LIGHT_REMEDY}",
+                    {"ratio": round(float(light_ratio), 3), "snapshot": light_ref}))
+        elif light_ratio is not None and self._light_alerted:
+            self._light_alerted = False
+            self.cleared.append("light_changed")
 
         # --- camera down ----------------------------------------------------
         if camera_reconnecting or not camera_open:

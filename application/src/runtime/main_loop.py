@@ -37,6 +37,8 @@ from core.config import (
     CAMERA_HEIGHT,
     CAMERA_WIDTH,
     IDS_USE_GPU_DIRECT,
+    LIGHT_CHANGE_MIN_SAMPLES,
+    LIGHT_CHANGE_S,
     OPS_HEIGHT_MIN_SAMPLES,
     OPS_HEIGHT_WINDOW_S,
     OPS_TICK_ERROR_ALERT_INTERVAL_S,
@@ -214,6 +216,9 @@ class MainLoop:
         self._last_render_t = 0.0        # perf_counter of the last DPG render
         # Rolling (t, raw det height px) samples for the staleness alarm (⑤d)
         self._height_samples: deque = deque()
+        # Rolling (t, live / empty-wall-snapshot brightness) samples for the light-change alert
+        self._light_samples: deque = deque()
+        self._light_plate_id = None
         self._rec_ui_update_counter = 0
         # Crash hygiene (audit 2026-10 ARCH-6): <repo>/logs holds the crash
         # marker; consecutive-failure streaks decide "transient, skip the
@@ -1257,6 +1262,7 @@ class MainLoop:
             height_gate = (ph * float(app.settings.person_height_min_ratio),
                            ph * float(app.settings.person_height_max_ratio))
             height_median = float(np.median([h for _t, h in self._height_samples]))
+        light_median, light_ref = self._light_median(now)
         try:
             alerts = app._health.tick(
                 now,
@@ -1270,12 +1276,66 @@ class MainLoop:
                 n_over_cap=app.tracker.last_over_cap,
                 height_median=height_median,
                 height_gate=height_gate,
+                light_ratio=light_median,
+                light_ref=light_ref,
             )
         except Exception as e:  # noqa: BLE001 - monitoring must never kill the loop
             print(f"[Alert] health tick failed: {e}")
             return
         for alert in alerts:
             self._emit_ops_alert(alert)
+        for kind in app._health.pop_cleared():
+            app.bus.publish(api.AlertCleared(kind))
+
+    def _latest_raw_frame(self):
+        """The newest raw frame on the CPU: the camera's (the IDS GPU path keeps a CPU copy), else
+        the one the loop stashed (playback, OpenCV cameras)."""
+        app = self.app
+        cam = getattr(app, "unified_camera", None)
+        if cam is not None and getattr(cam, "is_open", False) and not app.recorder.is_playing:
+            try:
+                frame = cam.get_last_cpu_frame()
+            except Exception:  # noqa: BLE001 - monitoring only
+                frame = None
+            if frame is not None:
+                return frame
+        return getattr(app, "_last_raw_frame", None)
+
+    def _light_median(self, now: float):
+        """Live / empty-wall-snapshot brightness (FrameProcessor.light_ratio) sampled at 1 Hz in
+        standby and RUN alike -> (median of the last LIGHT_CHANGE_S or None, snapshot stamp).
+        Paused while Calibrate runs or a snapshot is being captured (the remedy at work), and
+        while no frames flow; restarted when the snapshot changes."""
+        app = self.app
+        proc = app.processor
+        det = getattr(proc, "_fg_detector", None)
+        plate_id = id(getattr(det, "plate", None)) if det is not None else None
+        busy = (bool(getattr(app.calibration, "_calibrating", False))
+                or getattr(proc, "_plate_capture", None) is not None)
+        if busy or plate_id != self._light_plate_id:
+            self._light_samples.clear()
+            self._light_plate_id = plate_id
+        flowing = bool(app.camera.state.is_open or app.recorder.is_playing)
+        if not busy and flowing:
+            try:
+                ratio = proc.light_ratio(self._latest_raw_frame())
+            except Exception:  # noqa: BLE001 - monitoring must never kill the loop
+                ratio = None
+            if ratio is not None:
+                self._light_samples.append((now, ratio))
+        # the plate may have been (re)loaded by that call: a new one restarts the window
+        det = getattr(proc, "_fg_detector", None)
+        plate_id = id(getattr(det, "plate", None)) if det is not None else None
+        if plate_id != self._light_plate_id:
+            self._light_samples.clear()
+            self._light_plate_id = plate_id
+        cutoff = now - LIGHT_CHANGE_S
+        while self._light_samples and self._light_samples[0][0] < cutoff:
+            self._light_samples.popleft()
+        median = (float(np.median([r for _t, r in self._light_samples]))
+                  if len(self._light_samples) >= LIGHT_CHANGE_MIN_SAMPLES else None)
+        app._light_ratio = median            # the pre-show check's empty-wall row reads it
+        return median, str(getattr(proc, "plate_stamp", "") or "")
 
     def _poll_osc_alert(self) -> None:
         """Surface a (rate-limited) OSC send failure as an operator alert.

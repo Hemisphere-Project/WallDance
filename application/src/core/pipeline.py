@@ -1233,13 +1233,9 @@ class FrameProcessor:
             if done is not None:
                 done(None, f"{type(exc).__name__}: {exc}")
 
-    def _fg_frame(self, original_w: int, original_h: int):
-        """This frame's foreground (``FgFrame``) for the slot layer, or None (off, no plate,
-        another camera crop).  Loads the plate file named by ``settings.fg_plate_path``
-        once; a load failure is logged and leaves the foreground off."""
-        self.last_fg = None
-        if not self.settings.fg_enabled:
-            return None
+    def _ensure_plate(self):
+        """The ForegroundDetector of the plate named by ``settings.fg_plate_path`` (loaded once per
+        path; a load failure is logged and leaves it None)."""
         path = self.settings.fg_plate_path or ""
         if path and path != self._fg_loaded_path:
             self._fg_loaded_path = path
@@ -1250,7 +1246,42 @@ class FrameProcessor:
             except Exception as exc:  # noqa: BLE001
                 self._fg_detector = None
                 print(f"[Foreground] plate not loaded ({type(exc).__name__}: {exc})")
+        return self._fg_detector
+
+    def light_ratio(self, frame) -> Optional[float]:
+        """Live / empty-wall-snapshot brightness of the ROI of a raw frame (``ForegroundDetector
+        .light_ratio``), or None (no plate, another camera crop, a snapshot too dark to measure).
+        Independent of ``fg_enabled`` and of RUN: the ops tick samples it at 1 Hz, so a light
+        change is caught in standby too (the plate comparison itself only runs in the pipeline)."""
+        det = self._ensure_plate()
+        if det is None or frame is None:
+            return None
+        h, w = frame.shape[:2]
+        s = self.settings
+        if s.roi_enabled and s.roi_w > 0 and s.roi_h > 0:
+            x0, y0 = max(0, int(s.roi_x)), max(0, int(s.roi_y))
+            x1, y1 = min(w, x0 + int(s.roi_w)), min(h, y0 + int(s.roi_h))
+        else:
+            x0, y0, x1, y1 = 0, 0, w, h
+        if x1 <= x0 or y1 <= y0:
+            return None
+        return det.light_ratio(frame[y0:y1, x0:x1], x0, y0, (w, h))
+
+    @property
+    def plate_stamp(self) -> str:
+        """When the loaded snapshot was taken ("10-06 21:16"), "" without one."""
         det = self._fg_detector
+        created = getattr(getattr(det, "plate", None), "created", "") or ""
+        return created[5:16].replace("T", " ")
+
+    def _fg_frame(self, original_w: int, original_h: int):
+        """This frame's foreground (``FgFrame``) for the slot layer, or None (off, no plate,
+        another camera crop).  Loads the plate file named by ``settings.fg_plate_path``
+        once; a load failure is logged and leaves the foreground off."""
+        self.last_fg = None
+        if not self.settings.fg_enabled:
+            return None
+        det = self._ensure_plate()
         gray = self._belt_gray
         if det is None or gray is None:
             return None

@@ -1038,6 +1038,12 @@ class Alert(Event):
 
 
 @dataclass(frozen=True)
+class AlertCleared(Event):
+    """The condition behind an ops alert ended (e.g. ``light_changed``): drop its strip entry."""
+    kind: str
+
+
+@dataclass(frozen=True)
 class IssueReportContext(Event):
     context: Dict[str, Any]
 

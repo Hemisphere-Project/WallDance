@@ -667,6 +667,7 @@ class WallDanceApp:
         self.last_tracked: List[ScaledTrack] = []
         self._total_frame_count: int = 0  # Phase 0: cumulative frame counter (live mode)
         self._last_raw_frame: Optional[np.ndarray] = None  # Last raw camera frame for BG capture
+        self._light_ratio: Optional[float] = None  # live / empty-wall snapshot light (ops tick, 10 s median)
         self._last_review_frame: Optional[np.ndarray] = None
         self._startup_review = startup_review or ReviewStartupOptions()
         # Recording/playback orchestration (DECOMPOSITION_PLAN Phase 2 (1)):
@@ -2271,7 +2272,8 @@ class WallDanceApp:
             saved_at_iso=saved_at, active_profile=self.configs._active_profile,
             warn_age_h=OPS_CALIB_AGE_WARN_H, mask_cells=mask_cells))
         results.append(check_empty_wall(status=str(self.processor.plate_status),
-                                        detail=self._plate_status_text()))
+                                        detail=self._plate_status_text(),
+                                        light_ratio=getattr(self, "_light_ratio", None)))
         results.append(check_dancer_size(measured=getattr(self.processor, "dancer_height", None),
                                          lb_scale=float(getattr(self.processor, "last_lb_scale", 0.0)),
                                          imgsz=int(self.settings.imgsz)))
