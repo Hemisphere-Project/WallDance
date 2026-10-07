@@ -53,17 +53,16 @@ def test_phase_live_builds_with_output_controls():
         assert dpg.does_item_exist("sensitivity_slider")        # Dial A
         assert dpg.does_item_exist("gap_bridging_slider")       # Dial B
         assert dpg.does_item_exist("box_clamp_checkbox")
-        assert dpg.does_item_exist("output_smoothing_slider")
+        assert not dpg.does_item_exist("output_smoothing_slider")   # D30: smooth L left LIVE
         assert dpg.does_item_exist("remote_control_checkbox")   # REMOTE_OPS gate
         assert dpg.get_value("remote_control_checkbox") is False  # off by default
-        assert dpg.does_item_exist("lagged_latency_text")
+        assert not dpg.does_item_exist("lagged_latency_text")
         # The lagged-tap + case-2 suppression checkboxes were removed (2026-06):
         # the single /walldance/dancer/* stream is selected by L alone.
         assert not dpg.does_item_exist("lagged_tap_checkbox")
         assert not dpg.does_item_exist("lagged_suppress_checkbox")
-        # defaults: box-clamp ON, smoothing L=1 (causal/live).
+        # defaults: box-clamp ON.
         assert dpg.get_value("box_clamp_checkbox") is True
-        assert dpg.get_value("output_smoothing_slider") == 1
         # Dancer ids (identity slots, CONT-6): the on-site knobs + defaults.
         from core import config as C
         assert dpg.get_value("identity_slots_checkbox") is C.IDENTITY_SLOTS_ENABLED

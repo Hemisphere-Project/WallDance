@@ -11,7 +11,9 @@ defaults: box-clamp ON, smoothing L = 1.** The output is a **single stream** sel
 `L = 1` is causal/live; `L > 1` is the fixed-lag RTS-smoothed stream, released `L` frames late, on
 the **same** `/walldance/dancer/*` namespace. (The earlier "dual tap" `/walldance/dancer_lagged/*`
 and the opt-in case-2 flying-ghost suppression were **removed, 2026-06** — one stream, no
-suppression.)
+suppression.)  **2026-10-07 (D30): the "smooth L" slider left the LIVE panel**: `L > 1` replaced the
+slot One-Euro for OSC and desynced OSC from the preview ball, so the operator output is `L = 1`; the
+remote `SetOutputSmoothing` command stays for the replay tools.
 
 Companion: [ROADMAP.md](ROADMAP.md) §3 (Track X) · design history:
 [archives/TRACK_X_SMOOTHER.md](archives/TRACK_X_SMOOTHER.md).
@@ -279,7 +281,14 @@ byte-identical with slots on or off).
   (fixed figures, stains); (b) a slot YOLO lost keeps following its foreground blob (state `fg`, the
   blob->centroid offset learned while live, at most 30 s without YOLO or the belt); (c) it backs the
   belt (below).  A plate from another camera crop is ignored; a frame where > 25 % of the ROI differs
-  from the plate (lights changed, camera moved) gets no foreground -- re-capture.
+  from the plate (lights changed, camera moved) gets no foreground -- re-capture.  Calibrate ends with
+  the **empty-wall YOLO check** (D29, `core/empty_wall.py`): the enhancement steps down (gamma toward
+  1.0 then 0.8, then CLAHE) until YOLO finds no person on the empty wall at 0.8 x the live confidence;
+  playback Calibrate also restores the exposure/gain the take was recorded with (its `.meta`).
+- **Height guard** (D29, `height_guard`, default ON): `person_height_px` scales the detection size gate
+  (0.3-2.5 x in frames with >= 2 detections) and the tracker gates.  The median height of confident
+  full skeletons in the raw detections (10 s) replaces it only when it falls outside that gate (a stale
+  value would drop both dancers of a duo); the dancers pass (Calib2) left the operator flow.
 - **Belt hold** (2026-10-07): a belt-only hold is capped at 8 s **unless backed**: the slot's own
   tracker track still got a YOLO skeleton within 1 s (a still dancer YOLO only sees now and then), or
   the foreground shows a body there.  Backed belts are also kept out of the online glint map (which
@@ -327,12 +336,13 @@ byte-identical with slots on or off).
 | Smart hold (`smart_hold`) | ON | earned hold, fast release at border exits (above); neutral at 2 s |
 | IR belt (`use_ir_belt`) | ON | no-op unless `core/belt_detector.py` is importable; plain coasting stays the base |
 | Use empty wall (`fg_enabled`) | ON | no-op without a plate; PLAN_25M §C.12 (night takes A/B) |
+| Height guard (`height_guard`) | ON | inactive while the configured height's gate holds the dancers; PLAN_25M §C.12 |
 | Send state (`osc_send_state`) | OFF | opt-in |
 | Ignore static figures (`static_ghost_guard`) | ON | PLAN_25M 2026-10-06 offline gate (`tmp_analysis/plan25m/slot_eval.py`) |
 | Static release (`static_release_s`) | 0 (off) | dropped a still floor dancer at 8 s |
 | Filter input (`slot_filter_input`) | `smoothed` | `raw_skeleton` to be judged by eye on TD (D18) |
 
-Operator knobs live in phase **6 Live → Dancer IDs** and are remote-settable
+Operator knobs live in phase **3 Live → Dancer IDs** (the rail is RIG → EMPTY WALL → LIVE since D29) and are remote-settable
 (`SetIdentitySlots`, `SetMaxDancers`, `SetStability`, `SetCoastSeconds`, `ToggleIrBelt`,
 `ToggleOscState`, `SetStaticGhostGuard`, `SetStaticRelease`, `SetSlotFilterInput`, `SetSmartHold`,
 `SetForeground`, `CapturePlate`; policy `control`).

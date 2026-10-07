@@ -35,6 +35,7 @@ def test_phase_rail_has_advanced_button():
             gui_builder.build_phase_rail(mock)
 
         assert dpg.does_item_exist("phase_rail_table")
+        assert [pid for pid, _l in PHASES] == ["rig", "wall", "live"]   # D29
         # Advanced toggle promoted onto the rail (right column).
         assert dpg.does_item_exist("advanced_drawer_btn")
         # Every phase still has its button + status chip (tag-addressed by

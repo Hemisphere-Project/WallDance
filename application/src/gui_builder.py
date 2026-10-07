@@ -574,14 +574,15 @@ def build_control_panel(gui: Any):
 # --------------------------------------------------------------------------- #
 # Phase rail + per-phase right panel (OPERATOR_V2 Track O §2.1)
 # --------------------------------------------------------------------------- #
-# (id, rail label) — the canonical operator spine.
+# (id, rail label) — the canonical operator spine.  D29 (2026-10-07): RIG -> EMPTY WALL -> LIVE.
+# Profile / Aim / Calib (dancers) / Verify left the rail: Calibrate on an empty take of each
+# lighting replaces the lighting profiles, the height guard replaces the dancers pass for the
+# person height, and the pre-show check sits under Calibrate.  The retired tools live on in
+# Advanced > Expert tools (same widgets, same commands).
 PHASES = [
     ("rig", "1 Rig"),
-    ("profile", "2 Profile"),
-    ("aim", "3 Aim"),
-    ("calibrate", "4 Calib"),
-    ("verify", "5 Verify"),
-    ("live", "6 Live"),
+    ("wall", "2 Empty wall"),
+    ("live", "3 Live"),
 ]
 
 
@@ -610,7 +611,7 @@ def build_phase_rail(gui: Any):
                     btn = dpg.add_button(
                         label=label,
                         tag=f"phase_btn_{pid}",
-                        width=scaled(92),
+                        width=scaled(112),
                         height=scaled(26),
                         callback=lambda s, a, u: gui._on_phase_select(u),
                         user_data=pid,
@@ -640,10 +641,7 @@ def build_phase_panel(gui: Any):
     with dpg.child_window(width=scaled(CONTROL_PANEL_WIDTH), height=gui._middle_height,
                           border=False, tag="phase_panel"):
         build_phase_rig(gui)
-        build_phase_profile(gui)
-        build_phase_aim(gui)
-        build_phase_calibrate(gui)
-        build_phase_verify(gui)
+        build_phase_wall(gui)
         build_phase_live(gui)
 
 
@@ -660,6 +658,8 @@ def build_phase_rig(gui: Any):
                      "ROI, paint known dead zones. Masked cells stay dimmed on the "
                      "preview at all times.",
                      color=TEXT_MUTED, wrap=scaled(_PHASE_WRAP))
+        dpg.add_spacer(height=scaled(8))
+        build_project_config_section(gui)   # config version / safe defaults / phone QR (was Profile)
         dpg.add_spacer(height=scaled(8))
         build_input_section(gui)            # camera selector + input (rig setup)
         dpg.add_spacer(height=scaled(8))
@@ -714,67 +714,67 @@ def build_rig_sheet_section(gui: Any):
                          "the camera cannot report them. Fill once per venue.")
 
 
-def build_phase_profile(gui: Any):
-    """② Profile — Show/Rehearsal lighting toggle + project/config management."""
-    with dpg.group(tag="phase_panel_profile", show=False):
-        dpg.add_text("2 - Profile", color=HEADING_GREEN)
-        dpg.add_text("Pick the lighting profile (Show = night / Rehearsal = day) and "
-                     "manage the project config. Each profile keeps its own "
-                     "calibrated settings.",
-                     color=TEXT_MUTED, wrap=scaled(_PHASE_WRAP))
-        dpg.add_spacer(height=scaled(8))
-        dpg.add_text("Lighting profile", color=TEXT_NORMAL)
-        profile_radio = dpg.add_radio_button(
-            items=["Show", "Rehearsal"],
-            tag="profile_switch_radio",
-            default_value=str(gui.config.get("active_profile", "show")).capitalize(),
-            horizontal=True,
-            callback=gui._on_profile_switch,
+def build_project_config_section(gui: Any):
+    """Project config management (config version picker, safe defaults, phone QR)."""
+    dpg.add_text("Config version", color=TEXT_NORMAL)
+    with dpg.group(horizontal=True):
+        dpg.add_combo(
+            items=[],
+            tag="topbar_config_combo",
+            default_value="",
+            width=scaled(200),
+            callback=gui._on_topbar_config_change,
         )
-        with dpg.tooltip(profile_radio):
-            dpg.add_text("Lighting profile (day vs night): separate calibrated\nsettings (exposure/gain, gamma/CLAHE, MOG2, exclusion\nmask, sensitivity) per lighting condition.\nShow = live-performance / night lighting;\nRehearsal = day / setup lighting.\nCalibrate once per profile, then switch freely.")
-        dpg.add_spacer(height=scaled(10))
-        # Project / config management (relocated off the cluttered top bar).
-        dpg.add_text("Config version", color=TEXT_NORMAL)
-        with dpg.group(horizontal=True):
-            dpg.add_combo(
-                items=[],
-                tag="topbar_config_combo",
-                default_value="",
-                width=scaled(200),
-                callback=gui._on_topbar_config_change,
-            )
-            safe_btn = dpg.add_button(
-                label=Icons.ROTATE,
-                tag="topbar_safe_btn",
-                width=scaled(26),
-                height=scaled(26),
-                callback=gui._on_safe_defaults,
-            )
-            if gui._icon_font:
-                dpg.bind_item_font(safe_btn, gui._icon_font)
-            with dpg.tooltip(safe_btn):
-                dpg.add_text("Click: Load safe defaults\nCtrl+click: Save as safe defaults")
-            qr_btn = dpg.add_button(
-                label=Icons.QRCODE,
-                tag="topbar_qr_btn",
-                width=scaled(26),
-                height=scaled(26),
-                callback=gui._on_show_qr,
-            )
-            if gui._icon_font:
-                dpg.bind_item_font(qr_btn, gui._icon_font)
-            with dpg.tooltip(qr_btn):
-                dpg.add_text("Phone monitor: show a QR code to open the web UI")
+        safe_btn = dpg.add_button(
+            label=Icons.ROTATE,
+            tag="topbar_safe_btn",
+            width=scaled(26),
+            height=scaled(26),
+            callback=gui._on_safe_defaults,
+        )
+        if gui._icon_font:
+            dpg.bind_item_font(safe_btn, gui._icon_font)
+        with dpg.tooltip(safe_btn):
+            dpg.add_text("Click: Load safe defaults\nCtrl+click: Save as safe defaults")
+        qr_btn = dpg.add_button(
+            label=Icons.QRCODE,
+            tag="topbar_qr_btn",
+            width=scaled(26),
+            height=scaled(26),
+            callback=gui._on_show_qr,
+        )
+        if gui._icon_font:
+            dpg.bind_item_font(qr_btn, gui._icon_font)
+        with dpg.tooltip(qr_btn):
+            dpg.add_text("Phone monitor: show a QR code to open the web UI")
 
 
-def build_phase_aim(gui: Any):
-    """③ Aim & empty scene — scene calibration (Calib1)."""
-    with dpg.group(tag="phase_panel_aim", show=False):
-        dpg.add_text("3 - Aim & Empty Scene", color=HEADING_GREEN)
-        dpg.add_text("Clear stage. Drives IDS exposure/gain to the blur budget, "
-                     "seeds gamma/CLAHE, sweeps MOG2, captures the clean plate. "
-                     "Re-run after each focus/IR change.",
+def build_profile_tools(gui: Any):
+    """Lighting profiles (expert): two stored sets of scene knobs.  The operator flow now
+    re-calibrates on the empty take of each lighting instead (D29)."""
+    dpg.add_text("Lighting profile", color=TEXT_NORMAL)
+    profile_radio = dpg.add_radio_button(
+        items=["Show", "Rehearsal"],
+        tag="profile_switch_radio",
+        default_value=str(gui.config.get("active_profile", "show")).capitalize(),
+        horizontal=True,
+        callback=gui._on_profile_switch,
+    )
+    with dpg.tooltip(profile_radio):
+        dpg.add_text("Two stored sets of scene settings (exposure/gain, gamma/CLAHE,\n"
+                     "MOG2, exclusion mask, sensitivity).  The operator flow no longer\n"
+                     "uses them: Calibrate on the empty take of the lighting instead.")
+
+
+def build_phase_wall(gui: Any):
+    """② Empty wall (D29) — Calibrate on the empty wall of the current lighting: exposure/gain,
+    gamma/CLAHE, MOG2, the empty-wall YOLO check, the clean plate; then the pre-show check."""
+    with dpg.group(tag="phase_panel_wall", show=False):
+        dpg.add_text("2 - Empty Wall", color=HEADING_GREEN)
+        dpg.add_text("Keep one EMPTY take per lighting (day, night, show light): stage clear, "
+                     "arm REC, ~15 s on a free slot. For that lighting, play its take and "
+                     "press CALIBRATE, then Save. On the live camera, Calibrate with the stage "
+                     "clear also drives exposure/gain.",
                      color=TEXT_MUTED, wrap=scaled(_PHASE_WRAP))
         dpg.add_spacer(height=scaled(10))
         calib_btn = dpg.add_button(
@@ -786,31 +786,59 @@ def build_phase_aim(gui: Any):
         )
         dpg.bind_item_theme(calib_btn, gui._btn_standby_theme)
         with dpg.tooltip(calib_btn):
-            dpg.add_text("Calib 1 - SCENE (empty stage, during rigging):\n"
-                         "drives IDS exposure/gain to the blur budget, seeds\n"
-                         "gamma/CLAHE, sweeps MOG2 var+scale, captures the\n"
-                         "clean plate. Re-click after each focus/IR change.\n"
-                         "(Exclusion masks are a manual paint step in phase ①.)")
-        dpg.add_spacer(height=scaled(10))
-        # Last-calibration line: a real per-run timestamp + the exact applied
-        # values need the gated calibration_state metadata (Track S); until then
-        # this shows the deterministic influence + a placeholder for the time.
+            dpg.add_text("On the EMPTY wall (live, or the playback of an empty take):\n"
+                         "exposure/gain (live: driven to the blur budget; playback: the\n"
+                         "take's own), gamma/CLAHE, MOG2 var+scale, then a YOLO check that\n"
+                         "steps the enhancement down until YOLO sees nobody on the wall,\n"
+                         "and the clean plate.  ~20 s.  Press again to cancel.")
+        dpg.add_spacer(height=scaled(6))
+        # Shared calibration status line (Calibrate + the expert dancers pass).
+        dpg.add_text("", tag="calibrate_status", color=(160, 200, 255), show=False)
         dpg.add_text("Last calibrated: --", tag="aim_last_calib_text", color=TEXT_HINT)
-        dpg.add_text("Aim sets: exposure / gain -> gamma -> MOG2 var+scale -> "
-                     "clean-plate.", color=TEXT_DIM, wrap=scaled(_PHASE_WRAP))
-
-
-def build_phase_calibrate(gui: Any):
-    """④ Calibrate dancers — run a pass, then review/apply the evidence pool
-    inline (the pool used to be a separate POOL modal; the rail panel has room
-    so it lives here, populated on entry + after each run)."""
-    with dpg.group(tag="phase_panel_calibrate", show=False):
-        dpg.add_text("4 - Calibrate Dancers", color=HEADING_GREEN)
-        dpg.add_text("Run a pass on 1-4 dancers (live or playback) to add evidence, "
-                     "then review the pool below and Apply. Add more runs (costumes "
-                     "/ positions) for a more robust result.",
-                     color=TEXT_MUTED, wrap=scaled(_PHASE_WRAP))
+        dpg.add_text("Sets: exposure / gain -> gamma / CLAHE -> MOG2 -> YOLO check on the "
+                     "empty wall -> clean plate.", color=TEXT_DIM, wrap=scaled(_PHASE_WRAP))
         dpg.add_spacer(height=scaled(10))
+        dpg.add_separator()
+        dpg.add_spacer(height=scaled(6))
+        dpg.add_text("Empty wall snapshot", color=TEXT_NORMAL)
+        cap_btn = dpg.add_button(label="Capture empty wall", callback=gui._on_capture_plate)
+        with dpg.tooltip(cap_btn):
+            dpg.add_text("Records 2 s of the wall: NOBODY in the picture.\n"
+                         "(Calibrate does it automatically.)")
+        dpg.add_text("empty wall: -", tag="fg_status_wall_text", color=TEXT_DIM,
+                     wrap=scaled(_PHASE_WRAP))
+        dpg.add_spacer(height=scaled(10))
+        dpg.add_separator()
+        dpg.add_spacer(height=scaled(6))
+        dpg.add_text("Pre-show check", color=TEXT_NORMAL)
+        check_btn = dpg.add_button(
+            label="Check readiness",
+            tag="check_readiness_btn",
+            width=scaled(160),
+            height=scaled(30),
+            callback=gui._on_check_readiness,
+        )
+        dpg.bind_item_theme(check_btn, gui._btn_standby_theme)
+        with dpg.tooltip(check_btn):
+            dpg.add_text("Camera/FPS, TensorRT, OSC, calibration age, disk, GPU temp.\n"
+                         "~0.3 s; never blocks RUN.  Also runs when you open this phase.")
+        dpg.add_spacer(height=scaled(6))
+        # Readiness rows render here on demand (gui.show_readiness_rows).
+        with dpg.group(tag="readiness_rows_container"):
+            dpg.add_text("Press 'Check readiness' (or open this phase) to run "
+                         "the checks.", color=TEXT_HINT, wrap=scaled(_PHASE_WRAP))
+
+
+def build_dancer_tools(gui: Any):
+    """Dancer passes (expert; out of the operator flow since D29): the Calib2 evidence pool
+    (person height / image size / sensitivity seed), the CLAHE x confidence auto-tune and the
+    known-N tune.  The height guard keeps person_height_px right without them."""
+    with dpg.group(tag="expert_dancer_tools"):
+        dpg.add_text("Calibrate with dancers", color=TEXT_NORMAL)
+        dpg.add_text("Run a pass on 1-4 dancers (live or playback) to add evidence, "
+                     "then review the pool below and Apply.",
+                     color=TEXT_MUTED, wrap=scaled(_PHASE_WRAP))
+        dpg.add_spacer(height=scaled(6))
         dancers_btn = dpg.add_button(
             label="Calibrate with Dancers",
             tag="calib2_btn",
@@ -824,12 +852,9 @@ def build_phase_calibrate(gui: Any):
                          "collects one evidence run (sizes, confidences, speeds)\n"
                          "into the project pool below; review + Apply the pooled\n"
                          "result: person height, image size, sensitivity seed.")
-        dpg.add_spacer(height=scaled(8))
-        # Shared calibration status line (Calib1 + Calib2 messages).
-        dpg.add_text("", tag="calibrate_status", color=(160, 200, 255), show=False)
         dpg.add_spacer(height=scaled(6))
-        # Evidence pool, rendered inline by gui.show_calib2_dialog (populated on
-        # entering this phase and after each run via Calib2PoolChanged).
+        # Evidence pool, rendered inline by gui.show_calib2_dialog (populated when
+        # Advanced opens and after each run via Calib2PoolChanged).
         dpg.add_group(tag="calib2_pool_inline")
         # --- Auto-tune (CLAHE + confidence) — the segment/slot pass-line sweep.
         dpg.add_spacer(height=scaled(12))
@@ -907,36 +932,10 @@ def build_phase_calibrate(gui: Any):
                          "push them onto the running session.")
 
 
-def build_phase_verify(gui: Any):
-    """⑤ Verify — Go-Live readiness glance (+ dry-run on the last recording)."""
-    with dpg.group(tag="phase_panel_verify", show=False):
-        dpg.add_text("5 - Verify", color=HEADING_GREEN)
-        dpg.add_text("Glance at readiness (camera / FPS / TensorRT / OSC / "
-                     "calib-age / disk / GPU) before the room fills. Nothing here "
-                     "blocks Go-Live - it's a pre-flight glance.",
-                     color=TEXT_MUTED, wrap=scaled(_PHASE_WRAP))
-        dpg.add_spacer(height=scaled(8))
-        check_btn = dpg.add_button(
-            label="Check readiness",
-            tag="check_readiness_btn",
-            width=scaled(160),
-            height=scaled(30),
-            callback=gui._on_check_readiness,
-        )
-        dpg.bind_item_theme(check_btn, gui._btn_standby_theme)
-        with dpg.tooltip(check_btn):
-            dpg.add_text("Run the Go-Live checks now (camera/FPS, TensorRT, OSC,\n"
-                         "calibration age, disk, GPU temp). ~0.3 s; never blocks RUN.\n"
-                         "Also runs automatically when you open this phase.")
-        dpg.add_spacer(height=scaled(8))
-        # Readiness rows render here on demand (gui.show_readiness_rows).
-        with dpg.group(tag="readiness_rows_container"):
-            dpg.add_text("Press 'Check readiness' (or open this phase) to run "
-                         "the checks.", color=TEXT_HINT, wrap=scaled(_PHASE_WRAP))
-        dpg.add_spacer(height=scaled(14))
-        dpg.add_separator()
-        dpg.add_spacer(height=scaled(6))
-        dpg.add_text("Dry-run (optional)", color=TEXT_NORMAL)
+def build_dryrun_tools(gui: Any):
+    """Dry-run of the newest recording through the saved config (expert; was in Verify)."""
+    with dpg.group(tag="expert_dryrun_tools"):
+        dpg.add_text("Dry-run", color=TEXT_NORMAL)
         dpg.add_text("Replay the last recording through the current settings "
                      "for a quick track/drop sanity check. STANDBY only.",
                      color=TEXT_MUTED, wrap=scaled(_PHASE_WRAP))
@@ -1027,28 +1026,9 @@ def build_phase_live(gui: Any):
             with dpg.tooltip(bridge_slider):
                 dpg.add_text("Dial B (gap bridging). 50 = calibrated.\nDancer dropping out during fast / aerial moves?\nRaise it to bridge YOLO gaps (monotonic\n'fewer drops'). Modest fine-tune; inert on\nclean scenes. Calibration re-centers it at 50.\nHidden when calibration finds it inert (raw\nslider stays in Advanced).")
         dpg.add_spacer(height=scaled(12))
-        # --- Output controls (Track X) — OUTPUT-domain, distinct from the
-        # detection dial above.  These shape what OSC/preview reports; they do
-        # NOT change detection.  See docs/OSC_CONTRACT.md.
-        dpg.add_text("Output", color=TEXT_NORMAL)
-        with dpg.group(horizontal=True):
-            smooth_slider = dpg.add_slider_int(
-                tag="output_smoothing_slider",
-                label="smooth L",
-                default_value=int(gui.config.get("output_smoothing_l", 1)),
-                min_value=1,
-                max_value=6,
-                width=scaled(-120),
-                callback=gui._on_output_smoothing_change,
-            )
-        with dpg.tooltip(smooth_slider):
-            dpg.add_text("Output smoothness vs latency — selects the single\n"
-                         "/walldance/dancer/* stream.\n"
-                         "L=1 = causal / live: zero look-ahead (default).\n"
-                         "L>1 = fixed-lag RTS-smoothed stream, released L frames\n"
-                         "late (smoother + retroactively gap-corrected), with\n"
-                         "/walldance/meta/latency_ms published. Output-only.")
-        dpg.add_text("output: live (L=1, 0 ms)", tag="lagged_latency_text", color=TEXT_DIM)
+        # The output smoothing slider (Track X 'smooth L') left LIVE on 2026-10-07 (D30): L > 1
+        # delayed OSC by L frames and desynced it from the preview ball.  The output is the
+        # causal slot stream (L = 1); SetOutputSmoothing stays for the replay tools.
         dpg.add_spacer(height=scaled(6))
         build_identity_slot_controls(gui)
         dpg.add_spacer(height=scaled(12))
@@ -1185,12 +1165,9 @@ def build_identity_slot_controls(gui: Any):
                          "a shape that is not on the snapshot is somebody.  Keeps a\n"
                          "dancer's point when YOLO loses them (state 'fg'), stops\n"
                          "fixed figures (coat, stain) from taking an id, and lets the\n"
-                         "belt hold a still dancer.  Calibrate records the snapshot;\n"
-                         "re-capture after moving the camera or changing the lights.")
-        cap_btn = dpg.add_button(label="Capture empty wall", callback=gui._on_capture_plate)
-        with dpg.tooltip(cap_btn):
-            dpg.add_text("Records 2 s of the wall: NOBODY in the picture.\n"
-                         "(Calibrate does it automatically.)")
+                         "belt hold a still dancer.  Calibrate records the snapshot\n"
+                         "(2 - Empty wall); re-calibrate after moving the camera or\n"
+                         "changing the lights.")
     dpg.add_text("empty wall: -", tag="fg_status_text", color=TEXT_DIM)
     dpg.add_text("ids: -", tag="identity_slots_status_text", color=TEXT_DIM)
 
@@ -1226,6 +1203,22 @@ def build_advanced_drawer(gui: Any):
                     width=scaled(CONTROL_PANEL_WIDTH + 26), height=scaled(680),
                     pos=(scaled(40), scaled(90))):
         build_control_panel(gui)
+        build_expert_tools(gui)
+
+
+def build_expert_tools(gui: Any):
+    """Tools retired from the operator rail by D29, kept for experts and the remote API."""
+    with dpg.collapsing_header(label="Expert tools (not in the operator flow)",
+                               tag="section_expert", default_open=False):
+        build_profile_tools(gui)
+        dpg.add_spacer(height=scaled(10))
+        dpg.add_separator()
+        dpg.add_spacer(height=scaled(6))
+        build_dancer_tools(gui)
+        dpg.add_spacer(height=scaled(10))
+        dpg.add_separator()
+        dpg.add_spacer(height=scaled(6))
+        build_dryrun_tools(gui)
 
 
 def build_recordings_content(gui: Any):

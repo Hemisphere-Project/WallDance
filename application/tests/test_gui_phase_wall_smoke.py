@@ -1,7 +1,9 @@
-"""Headless DPG build smoke for the phase-5 Verify panel (OPERATOR_V2 Phase 5).
+"""Headless DPG build smoke for the phase-2 Empty wall panel (D29, 2026-10-07: Calibrate,
+the empty-wall snapshot and the pre-show readiness check; it replaced Profile / Aim / Calib /
+Verify) and the expert dry-run tool (Advanced).
 
-Builds the real ``gui_builder.build_phase_verify`` in a viewport-less DearPyGui
-context and renders readiness rows via the real ``WallDanceGUI.show_readiness_rows``
+Builds the real ``gui_builder.build_phase_wall`` / ``build_dryrun_tools`` in a viewport-less
+DearPyGui context and renders readiness rows via the real ``WallDanceGUI.show_readiness_rows``
 (called unbound -- it never touches ``self``).  Pure UI smoke; no model/camera.
 """
 from types import SimpleNamespace
@@ -11,7 +13,7 @@ import pytest
 dpg = pytest.importorskip("dearpygui.dearpygui")
 
 
-def test_phase_verify_builds_and_renders_readiness_rows():
+def test_phase_wall_builds_and_renders_readiness_rows():
     import gui_builder
     from gui import WallDanceGUI
 
@@ -22,13 +24,20 @@ def test_phase_verify_builds_and_renders_readiness_rows():
         mock = SimpleNamespace(
             config={},
             _on_check_readiness=noop,
+            _on_calibrate=noop,
+            _on_capture_plate=noop,
             _on_dryrun=noop,
             _btn_standby_theme=th,
         )
         with dpg.window(label="smoke"):
-            gui_builder.build_phase_verify(mock)
+            gui_builder.build_phase_wall(mock)
+            gui_builder.build_dryrun_tools(mock)
 
-        assert dpg.does_item_exist("phase_panel_verify")
+        assert dpg.does_item_exist("phase_panel_wall")
+        assert dpg.does_item_exist("calibrate_btn")
+        assert dpg.does_item_exist("calibrate_status")
+        assert dpg.does_item_exist("aim_last_calib_text")
+        assert dpg.does_item_exist("fg_status_wall_text")
         assert dpg.does_item_exist("check_readiness_btn")
         assert dpg.does_item_exist("readiness_rows_container")
         assert dpg.does_item_exist("dryrun_btn")

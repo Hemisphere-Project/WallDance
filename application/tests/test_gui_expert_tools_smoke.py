@@ -1,7 +1,8 @@
-"""Headless DPG build smoke for the phase-4 Calibrate panel + the auto-tune
-(CLAHE x confidence sweep) result renderer (OPERATOR_V2 / AUTOTUNE_DESIGN §7).
+"""Headless DPG build smoke for Advanced > Expert tools (D29, 2026-10-07: the lighting
+profiles, the dancers pass, the auto-tune and the known-N tune left the operator rail) + the
+auto-tune (CLAHE x confidence sweep) result renderer (OPERATOR_V2 / AUTOTUNE_DESIGN §7).
 
-Builds the real ``gui_builder.build_phase_calibrate`` viewport-less and renders a
+Builds the real ``gui_builder.build_expert_tools`` viewport-less and renders a
 sweep result via the real ``WallDanceGUI.show_calib_sweep_result`` (unbound).
 Pure UI smoke; no model/camera/subprocess.
 """
@@ -12,7 +13,7 @@ import pytest
 dpg = pytest.importorskip("dearpygui.dearpygui")
 
 
-def test_phase_calibrate_builds_and_renders_sweep_result():
+def test_expert_tools_build_and_render_sweep_result():
     import gui_builder
     from gui import WallDanceGUI
 
@@ -22,6 +23,9 @@ def test_phase_calibrate_builds_and_renders_sweep_result():
         noop = lambda *a, **k: None
         mock = SimpleNamespace(
             config={},
+            _icon_font=None,
+            _on_profile_switch=noop,
+            _on_dryrun=noop,
             _on_calib2=noop,
             _on_calib_sweep=noop,
             _on_calib_sweep_apply=noop,
@@ -30,10 +34,14 @@ def test_phase_calibrate_builds_and_renders_sweep_result():
             _btn_standby_theme=th,
         )
         with dpg.window(label="smoke"):
-            gui_builder.build_phase_calibrate(mock)
+            gui_builder.build_expert_tools(mock)
 
-        assert dpg.does_item_exist("phase_panel_calibrate")
+        assert not dpg.does_item_exist("phase_panel_calibrate")   # off the rail (D29)
+        assert dpg.does_item_exist("section_expert")
+        assert dpg.does_item_exist("profile_switch_radio")
+        assert dpg.does_item_exist("dryrun_btn")
         assert dpg.does_item_exist("calib2_btn")
+        assert dpg.does_item_exist("calib2_pool_inline")
         # Auto-tune (segment/slot CLAHE x confidence sweep) widgets.
         assert dpg.does_item_exist("calib_sweep_n")
         assert dpg.does_item_exist("calib_sweep_slot")

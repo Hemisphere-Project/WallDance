@@ -37,7 +37,7 @@ Everything else is reference, operator procedure, or archived design.
 | [PLAN_25M_2026-10.md](PLAN_25M_2026-10.md) | This week's plan: offline work on dev37 + the laptop-window playbook, the demo KPI | 🟢 Live (2026-10-06) |
 | [ROADMAP_v2_REVIEW.md](ROADMAP_v2_REVIEW.md) | Measured critical review of what shipped 2026-10-06 (replays, sweeps, belt, perf, release path) | 🟢 Live (2026-10-06) |
 | [REMOTE_OPS.md](REMOTE_OPS.md) | Working on the prod laptop over the tailnet: `wdremote`, in-app API, DEV slot, delivery | 🟢 Live (2026-10-06) |
-| [TOURNAGE_2026-10-06_FR.md](TOURNAGE_2026-10-06_FR.md) · [TERRAIN_2026-10-07_FR.md](TERRAIN_2026-10-07_FR.md) | Operator session notes (FR) | 🟢 Live |
+| [TOURNAGE_2026-10-06_FR.md](TOURNAGE_2026-10-06_FR.md) · [TERRAIN_2026-10-07_FR.md](TERRAIN_2026-10-07_FR.md) · [TERRAIN_DEMO_FR.md](TERRAIN_DEMO_FR.md) (RIG → EMPTY WALL → LIVE, D29) | Operator session notes (FR) | 🟢 Live |
 | [TODO.md](TODO.md) | Build / hardware checklist (phase inventory + procurement) | 🟢 Live |
 | [TRACKING_ROBUSTNESS.md](TRACKING_ROBUSTNESS.md) | IR-marker direction (June: ankles + wrists); the field chose a waist belt — see ROADMAP §5/§7 | 📘 Reference, direction changed |
 | [OSC_CONTRACT.md](OSC_CONTRACT.md) | Canonical `/walldance/*` output contract (box-clamp, L-driven stream, latency) | 🟢 Live |

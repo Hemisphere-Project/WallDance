@@ -345,7 +345,7 @@ class WallDanceGUI:
 
         # Phase rail (OPERATOR_V2 Track O): the right panel shows one phase at a
         # time; the rail drives existing commands via the phase panels.
-        self._phases = ["rig", "profile", "aim", "calibrate", "verify", "live"]
+        self._phases = ["rig", "wall", "live"]      # D29: RIG -> EMPTY WALL -> LIVE
         self._active_phase = "rig"
         self._exit_edit_modes = None  # wired by the adapter to roi.exit_edit_modes
         self._on_phase_select(self._active_phase)  # initial panel + rail highlight
@@ -532,16 +532,13 @@ class WallDanceGUI:
                 theme = (self._btn_run_active_theme if pid == phase_id
                          else self._btn_standby_theme)
                 dpg.bind_item_theme(btn, theme)
-        # Entering Calibrate: populate the inline evidence pool (same read-only
-        # fetch the old POOL button did; renders via show_calib2_dialog).
-        if phase_id == "calibrate" and 'on_view_calib2_pool' in self.callbacks:
-            self.callbacks['on_view_calib2_pool']()
-        # Entering Aim: refresh the "Last calibrated" provenance line (Track S).
-        if phase_id == "aim" and 'on_view_aim_state' in self.callbacks:
-            self.callbacks['on_view_aim_state']()
-        # Entering Verify: auto-run the readiness glance (cheap, off-thread).
-        if phase_id == "verify" and 'on_check_readiness' in self.callbacks:
-            self.callbacks['on_check_readiness']()
+        # Entering Empty wall: refresh the "Last calibrated" provenance line (Track S)
+        # and auto-run the readiness glance (cheap, off-thread).
+        if phase_id == "wall":
+            if 'on_view_aim_state' in self.callbacks:
+                self.callbacks['on_view_aim_state']()
+            if 'on_check_readiness' in self.callbacks:
+                self.callbacks['on_check_readiness']()
 
     def _toggle_window(self, tag: str):
         """Flip a floating drawer window's visibility."""
@@ -552,6 +549,11 @@ class WallDanceGUI:
     def _toggle_advanced_drawer(self):
         """Show/hide the floating Advanced (numeric knobs) panel."""
         self._toggle_window("advanced_drawer_window")
+        # Opening it: populate the expert dancers pool (read-only fetch; show_calib2_dialog).
+        if (dpg.does_item_exist("advanced_drawer_window")
+                and dpg.get_item_configuration("advanced_drawer_window").get("show")
+                and 'on_view_calib2_pool' in self.callbacks):
+            self.callbacks['on_view_calib2_pool']()
 
     # --- Alerts strip (OPERATOR_V2 §2.3c) -------------------------------------
     def push_alert(self, key: str, message: str):
@@ -2089,6 +2091,8 @@ class WallDanceGUI:
             return
         if name in tag_map and dpg.does_item_exist(tag_map[name]):
             dpg.set_value(tag_map[name], value)
+        if name == 'fg_status' and dpg.does_item_exist('fg_status_wall_text'):
+            dpg.set_value('fg_status_wall_text', value)       # the Empty wall panel copy
     
     # === Top Bar Methods ===
     
