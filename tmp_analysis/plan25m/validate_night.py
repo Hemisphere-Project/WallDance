@@ -75,6 +75,13 @@ VARIANTS = {
               "--set", "mog2_scale=0.7", "--set", "height_guard=true"],
     "v6new": ["--set", "belt_backing=true", "--set", "fg_enabled=true", "--set", "entry_min_travel_h=0.25",
               "--set", "height_guard=true"],
+    # input-size bench (Thomas 2026-10-07: tomorrow ~30 m, smaller dancers): v6old at other YOLO input sizes --
+    # a smaller input = smaller dancers in YOLO's eyes (night bodies ~127 px in a ~1320 px ROI: 800 -> 77 px,
+    # 960 -> 92, 1280 -> 123, 1536 -> 148); argparse keeps the last --imgsz
+    **{f"v6old_{sz}": ["--set", "belt_backing=true", "--set", "fg_enabled=true", "--set", "entry_min_travel_h=0.25",
+                       "--set", "gamma=0.73", "--set", "clahe_clip=2.5", "--set", "mog2_var_threshold=8.0",
+                       "--set", "mog2_scale=0.7", "--set", "height_guard=true", "--imgsz", str(sz)]
+       for sz in (800, 960, 1536)},
     # D31 isolation: v6old without the entry rule (a new dancer needs no movement)
     "v6oldne": ["--set", "belt_backing=true", "--set", "fg_enabled=true", "--set", "entry_min_travel_h=0",
                 "--set", "gamma=0.73", "--set", "clahe_clip=2.5", "--set", "mog2_var_threshold=8.0",
