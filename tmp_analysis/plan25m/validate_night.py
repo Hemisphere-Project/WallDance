@@ -82,6 +82,16 @@ VARIANTS = {
                        "--set", "gamma=0.73", "--set", "clahe_clip=2.5", "--set", "mog2_var_threshold=8.0",
                        "--set", "mog2_scale=0.7", "--set", "height_guard=true", "--imgsz", str(sz)]
        for sz in (800, 960, 1536)},
+    # what a Calibrate on slot_1 (the bright empty take) now gives: the scene step as at 10:33 (gamma 1.8 capped,
+    # CLAHE 1.5, MOG2 16 @ 0.5), then the empty-wall check steps gamma down to 1.0 at confidence 0.15
+    # (cal1*: slot_1's LAND plate for every take, as after a single Calibrate on slot_1 -- the PORT takes then
+    # run without a plate: "other camera crop"); cal1b = the ladder stopping one rung earlier (gamma 1.27)
+    "cal1": ["--set", "belt_backing=true", "--set", "fg_enabled=true", "--set", "entry_min_travel_h=0.25",
+             "--set", "gamma=1.0", "--set", "clahe_clip=1.5", "--set", "mog2_var_threshold=16.0",
+             "--set", "mog2_scale=0.5", "--set", "height_guard=true"],
+    "cal1b": ["--set", "belt_backing=true", "--set", "fg_enabled=true", "--set", "entry_min_travel_h=0.25",
+              "--set", "gamma=1.27", "--set", "clahe_clip=1.5", "--set", "mog2_var_threshold=16.0",
+              "--set", "mog2_scale=0.5", "--set", "height_guard=true"],
     # D31 isolation: v6old without the entry rule (a new dancer needs no movement)
     "v6oldne": ["--set", "belt_backing=true", "--set", "fg_enabled=true", "--set", "entry_min_travel_h=0",
                 "--set", "gamma=0.73", "--set", "clahe_clip=2.5", "--set", "mog2_var_threshold=8.0",
@@ -130,7 +140,9 @@ def main():
             for k, v in roi.items():
                 args += ["--set", f"{k}={v}"]
             args += ["--set", "roi_enabled=true"]
-            if "fg" in var or var.startswith("v"):
+            if var.startswith("cal1"):
+                args += ["--set", f"fg_plate={plate_rel('land')}"]
+            elif "fg" in var or var.startswith("v"):
                 args += ["--set", f"fg_plate={plate_rel(pk)}"]
             for kv in filter(None, a.extra.split(",")):
                 args += ["--set", kv]
