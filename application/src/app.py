@@ -1216,6 +1216,7 @@ class WallDanceApp:
     def _get_saveable_config(self) -> Dict:
         excl_grid, excl_cells, excl_add, excl_remove = \
             self.processor.get_exclusion_state()
+        roi_x, roi_y, roi_w, roi_h, roi_src_w, roi_src_h = self.roi.state.stored_roi()
         return {
             "camera_source": self.camera.state.source,
             "model": self.models.current_model_name,
@@ -1276,12 +1277,14 @@ class WallDanceApp:
             "input_fps_cap": self.input_fps_cap,
             "preview_scale": self.preview.render_scale,
             "roi_enabled": self.settings.roi_enabled,
-            "roi_x": self.settings.roi_x,
-            "roi_y": self.settings.roi_y,
-            "roi_w": self.settings.roi_w,
-            "roi_h": self.settings.roi_h,
-            "roi_source_w": self.roi.state.source_size[0],
-            "roi_source_h": self.roi.state.source_size[1],
+            # the operator's drawn ROI and its source frame, not the rect fitted to a take
+            # of another camera crop that may be playing (RoiState.stored_roi)
+            "roi_x": roi_x,
+            "roi_y": roi_y,
+            "roi_w": roi_w,
+            "roi_h": roi_h,
+            "roi_source_w": roi_src_w,
+            "roi_source_h": roi_src_h,
             "ids_ratio": self.cameras.ids_ratio,
             "ids_gain_db": self.cameras.ids_gain_db,
             "ids_exposure_us": self.cameras.ids_exposure_us,

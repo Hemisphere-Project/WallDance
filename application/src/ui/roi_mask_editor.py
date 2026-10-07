@@ -83,7 +83,11 @@ class RoiMaskEditor:
         frame_h: Optional[int] = None,
         sync_ui: bool = True,
         request_reprocess: bool = True,
+        drawn: bool = True,
     ):
+        """Set the live ROI for frames of ``frame_w`` x ``frame_h``.  ``drawn`` (an operator edit, a
+        config load, a remote set) also makes it the operator's ROI that a save persists; the
+        frame-size clamp passes False so a foreign-size frame never overwrites it."""
         if frame_w is None or frame_h is None:
             frame_w, frame_h = self.state.source_size
         x, y, w, h = self.state.normalize_rect(x, y, w, h, frame_w, frame_h)
@@ -92,21 +96,25 @@ class RoiMaskEditor:
         self.settings.roi_w = w
         self.settings.roi_h = h
         self.state.source_size = (frame_w, frame_h)
+        if drawn:
+            self.state.set_drawn(x, y, w, h, frame_w, frame_h)
         if sync_ui:
             self._sync_roi_ui()
         if request_reprocess:
             self.request_reprocess()
 
     def _clamp_roi_to_source(self, frame_w: int, frame_h: int, *, sync_ui: bool = True):
+        """Frames of a new size (camera crop change, a take of another crop played back): the
+        live ROI becomes the operator's drawn ROI fitted to them -- exactly as drawn when the
+        size is its own, clamped otherwise -- without touching the drawn ROI."""
+        x, y, w, h = self.state.rect_for_frame(frame_w, frame_h)
         self._set_roi_rect(
-            self.settings.roi_x,
-            self.settings.roi_y,
-            self.settings.roi_w or frame_w,
-            self.settings.roi_h or frame_h,
+            x, y, w, h,
             frame_w=frame_w,
             frame_h=frame_h,
             sync_ui=sync_ui,
             request_reprocess=False,
+            drawn=False,
         )
 
     # ------------------------------------------------------------------
