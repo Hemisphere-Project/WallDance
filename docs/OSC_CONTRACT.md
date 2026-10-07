@@ -292,7 +292,11 @@ byte-identical with slots on or off).
 - **Height guard** (D29, `height_guard`, default ON): `person_height_px` scales the detection size gate
   (0.3-2.5 x in frames with >= 2 detections) and the tracker gates.  The median height of confident
   full skeletons in the raw detections (10 s) replaces it only when it falls outside that gate (a stale
-  value would drop both dancers of a duo); the dancers pass (Calib2) left the operator flow.
+  value would drop both dancers of a duo); the dancers pass (Calib2) left the operator flow.  A slow
+  sampler (60 s, keypoints >= 0.3, each second weighing 1) also adopts a dark, sparse wall the 10 s rule
+  never sees, and once the guard has set the height it follows the dancers beyond 1.5 x (>= 15 s that
+  agree): the first population it sees can be a walk-in close to the camera (night takes: 45 -> ~300 px),
+  the wall comes after (~127 px).
 - **Belt hold** (2026-10-07): a belt-only hold is capped at 8 s **unless backed**: the slot's own
   tracker track still got a YOLO skeleton within 1 s (a still dancer YOLO only sees now and then), or
   the foreground shows a body there.  Backed belts are also kept out of the online glint map (which

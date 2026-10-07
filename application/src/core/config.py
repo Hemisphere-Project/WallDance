@@ -353,6 +353,26 @@ HEIGHT_GUARD_MIN_SAMPLES = 100     # in the 10 s window: >= 5 s of one dancer (a
 HEIGHT_GUARD_MAX_SPREAD = 0.5      # (q3 - q1) / median of the window: a wall show (fixed distance)
                                    # is tight; a floor walk toward the lens (bdx1005-s5/s8, 187-507 px)
                                    # has no single height -> left alone (that is auto_height's case)
+# Follow (2026-10-07 laptop pass): on all six night takes the guard first adopted the operator's WALK-IN
+# height (285-384 px, close to the camera, the first population seen) and never came back to the wall
+# height (~127 px), which sits inside the new gate -- a duo's tracker gates would stay ~2.4x too wide.
+# A second, slow sampler sees what the dense one misses: over the last HEIGHT_GUARD_FOLLOW_S, every
+# full skeleton at a lower keypoint threshold, weighted so each second counts once (the walk-in close to
+# the camera gives ~20 skeletons a second, a dark dancer at the back wall one -- per sample the walk-in
+# would win; on s4 the dense rule never fired at the wall at all).  With >= HEIGHT_GUARD_FOLLOW_MIN_SECONDS
+# seconds that agree on a height (spread rule above): before the guard owns the height, >= OUTSIDE of them
+# outside the gate -> adopted (the first rule, slow); once it owns it (it set it last; a configured height
+# it never fired on stays untouched), a median beyond HEIGHT_GUARD_FOLLOW_RATIO either way -> adopted
+# (the follow).  A close-up of a few seconds stays a minority of the minute; a bimodal window (walk-in +
+# wall) waits until one population dominates; anything else setting the height (config load, the
+# Advanced slider) ends the guard's ownership.
+HEIGHT_GUARD_FOLLOW_S = 60.0
+HEIGHT_GUARD_FOLLOW_MIN_SECONDS = 15
+HEIGHT_GUARD_FOLLOW_RATIO = 1.5
+HEIGHT_GUARD_FOLLOW_KPT_CONF = 0.3     # head / ankle keypoint confidence of a follow sample: on the dark
+                                       # night take s2c the still dancer at the back wall gives NO head + ankle
+                                       # >= 0.5 for 140 s, ~1 s in 4 at 0.4, every second at 0.3 (median
+                                       # 127-128 px = its box height); the first adoption keeps 0.5
 # Empty-wall YOLO check (core/empty_wall.py, D29): Calibrate ends by stepping the enhancement down
 # (gamma, then CLAHE) until YOLO finds no person on the empty wall.
 EMPTY_WALL_CHECK = True

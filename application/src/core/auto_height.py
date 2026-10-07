@@ -40,6 +40,17 @@ class AutoHeight:
         """The heights sampled over the last ``window_s`` seconds (as of the last update)."""
         return [h for _t, h in self._samples]
 
+    def per_second(self, bin_s: float = 1.0):
+        """Every sample of the window, weighted so that each ``bin_s`` holding samples weighs 1 in all:
+        (sorted [(height, weight)], number of such seconds).  A dense close-up (20 skeletons a second)
+        cannot outvote a sparse far dancer (one a second), and two people seen in the same second share
+        it instead of the taller one taking it."""
+        bins = {}
+        for t, h in self._samples:
+            bins.setdefault(int(t // bin_s), []).append(h)
+        hw = sorted((h, 1.0 / len(v)) for v in bins.values() for h in v)
+        return hw, len(bins)
+
     def _sample(self, st) -> Optional[float]:
         if getattr(st, "frames_since_skeleton", None) != 0:
             return None
@@ -75,3 +86,14 @@ class AutoHeight:
         else:
             self.value = base + min(1.0, self.rate * dt) * (med - base)
         return self.value
+
+
+def weighted_quantile(hw, q: float) -> float:
+    """``q`` quantile of sorted (value, weight) pairs (AutoHeight.per_second)."""
+    total = sum(w for _h, w in hw)
+    acc = 0.0
+    for h, w in hw:
+        acc += w
+        if acc >= q * total - 1e-9:
+            return h
+    return hw[-1][0]

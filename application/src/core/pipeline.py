@@ -43,7 +43,8 @@ from core.config import (
     IDENTITY_SLOTS_STATIC_RELEASE_S, IDENTITY_SLOTS_FILTER_INPUT, IDENTITY_SLOTS_SMART_HOLD,
     BELT_STATIC_EVERY_N, BELT_STATIC_ALPHA, BELT_STATIC_ON,
     FOREGROUND_ENABLED, HEIGHT_GUARD, HEIGHT_GUARD_MAX_SPREAD, HEIGHT_GUARD_MIN_SAMPLES,
-    HEIGHT_GUARD_OUTSIDE,
+    HEIGHT_GUARD_OUTSIDE, HEIGHT_GUARD_FOLLOW_S, HEIGHT_GUARD_FOLLOW_MIN_SECONDS, HEIGHT_GUARD_FOLLOW_RATIO,
+    HEIGHT_GUARD_FOLLOW_KPT_CONF,
     IDENTITY_SLOTS_USE_IR_BELT,
     OSC_SEND_STATE,
     TrackingMode,
@@ -495,6 +496,8 @@ class FrameProcessor:
         self._auto_height = None            # core.auto_height.AutoHeight when settings.auto_height
         self._height_guard = None           # core.auto_height.AutoHeight on raw detections (height guard)
         self.height_guard_event: Optional[Tuple[int, int]] = None   # (old, new) px, popped by the main loop
+        self._height_owned_px: Optional[int] = None   # the height the guard set last (it then follows)
+        self._height_follow = None          # AutoHeight over HEIGHT_GUARD_FOLLOW_S while the guard owns it
         # The dancers' measured height (median px of the confident full skeletons over >= 2 s, samples,
         # wall time) and the original -> YOLO-input scale: the readiness "dancer size" row (D29)
         self.dancer_height: Optional[Tuple[float, int, float]] = None
@@ -1315,30 +1318,66 @@ class FrameProcessor:
         <= HEIGHT_GUARD_MAX_SPREAD), the configured height is wrong for the people actually seen: their
         median is adopted (used from the next frame).  A minority outside the gate (somebody near the
         camera) is what the gate is for; a spread-out population (people walking toward the lens) has
-        no single height to adopt."""
+        no single height to adopt.  Once the guard has set the height it follows the dancers over a
+        longer window (HEIGHT_GUARD_FOLLOW_*): the first population it saw may be a walk-in close to
+        the camera, not the wall."""
         if self._height_guard is None:
             from core.auto_height import AutoHeight
             self._height_guard = AutoHeight(min_samples=HEIGHT_GUARD_MIN_SAMPLES)
         dets = [_RawDet(0, d[1], (0.0, 0.0, 0.0, float(d[2][3]) * inv_lb)) for d in detections]
         ph = float(self.settings.person_height_px)
-        ready = self._height_guard.update(dets, float(self._output_clock()), ph) is not None
+        t = float(self._output_clock())
+        ready = self._height_guard.update(dets, t, ph) is not None
         if dets and len(self._height_guard.window()) >= 40:          # >= 2 s of a dancer: measured
             win = sorted(self._height_guard.window())
             self.dancer_height = (float(win[len(win) // 2]), len(win), time.time())
-        if not ready or not self.settings.height_guard or self.settings.auto_height:
+        if self._height_follow is None:
+            from core.auto_height import AutoHeight
+            self._height_follow = AutoHeight(window_s=HEIGHT_GUARD_FOLLOW_S, min_samples=1,
+                                             kpt_conf=HEIGHT_GUARD_FOLLOW_KPT_CONF)
+        self._height_follow.update(dets, t, ph)
+        if self._height_owned_px is not None and int(ph) != self._height_owned_px:
+            self._height_owned_px = None              # set by someone else (config, slider): theirs now
+        if not self.settings.height_guard or self.settings.auto_height:
             return
-        hs = sorted(self._height_guard.window())
         lo = ph * float(self.settings.person_height_min_ratio)
         hi = ph * float(self.settings.person_height_max_ratio)
+        hw, seconds = self._height_follow.per_second()     # each second with a skeleton weighs 1
+        if seconds >= HEIGHT_GUARD_FOLLOW_MIN_SECONDS:
+            from core.auto_height import weighted_quantile
+            med = weighted_quantile(hw, 0.5)
+            spread = (weighted_quantile(hw, 0.75) - weighted_quantile(hw, 0.25)) / max(med, 1.0)
+            if spread <= HEIGHT_GUARD_MAX_SPREAD:
+                if self._height_owned_px is not None:
+                    if not ph / HEIGHT_GUARD_FOLLOW_RATIO <= med <= ph * HEIGHT_GUARD_FOLLOW_RATIO:
+                        self._adopt_person_height(
+                            ph, med, f"the dancers measure {med:.0f} px over {seconds} s of confident full "
+                                     f"skeletons in the last {HEIGHT_GUARD_FOLLOW_S:.0f} s")
+                        return
+                else:
+                    outside = sum(w for h, w in hw if not lo <= h <= hi) / float(seconds)
+                    if outside >= HEIGHT_GUARD_OUTSIDE:
+                        self._adopt_person_height(
+                            ph, med, f"{outside:.0%} of {seconds} s of confident full skeletons (median "
+                                     f"{med:.0f} px) fall outside the size gate {lo:.0f}-{hi:.0f} px")
+                        return
+        if not ready or self._height_owned_px is not None:   # owned: only the follow moves it (no ping-pong)
+            return
+        hs = sorted(self._height_guard.window())
         outside = sum(1 for h in hs if not lo <= h <= hi) / float(len(hs))
         med = hs[len(hs) // 2]
         spread = (hs[(3 * len(hs)) // 4] - hs[len(hs) // 4]) / max(med, 1.0)
         if outside >= HEIGHT_GUARD_OUTSIDE and spread <= HEIGHT_GUARD_MAX_SPREAD:
-            new = max(1, int(round(med)))
-            print(f"[HeightGuard] person height {ph:.0f} -> {new} px: {outside:.0%} of the confident full "
-                  f"skeletons ({len(hs)}, median {med:.0f} px) fall outside the size gate {lo:.0f}-{hi:.0f} px")
-            self.height_guard_event = (int(ph), new)
-            self.settings.person_height_px = new
+            self._adopt_person_height(
+                ph, med, f"{outside:.0%} of the confident full skeletons ({len(hs)}, median {med:.0f} px) "
+                         f"fall outside the size gate {lo:.0f}-{hi:.0f} px")
+
+    def _adopt_person_height(self, old: float, med: float, why: str) -> None:
+        new = max(1, int(round(med)))
+        print(f"[HeightGuard] person height {old:.0f} -> {new} px: {why}")
+        self.height_guard_event = (int(old), new)
+        self.settings.person_height_px = new
+        self._height_owned_px = new
 
     def _fg_protect(self, cands, t: float):
         """Boxes (original px) the plate update must not absorb: slots measured live or by a

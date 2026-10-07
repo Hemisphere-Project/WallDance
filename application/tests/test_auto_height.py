@@ -39,7 +39,9 @@ def _guard_host(ph):
     host = SimpleNamespace(settings=SimpleNamespace(person_height_px=ph, person_height_min_ratio=0.3,
                                                     person_height_max_ratio=2.5, height_guard=True,
                                                     auto_height=False), dancer_height=None,
-                           _height_guard=None, height_guard_event=None, _output_clock=lambda: clock[0])
+                           _height_guard=None, height_guard_event=None, _output_clock=lambda: clock[0],
+                           _height_owned_px=None, _height_follow=None)
+    host._adopt_person_height = lambda old, med, why: FrameProcessor._adopt_person_height(host, old, med, why)
     return host, clock, (lambda dets, inv_lb=1.0: FrameProcessor._guard_person_height(host, dets, inv_lb))
 
 
@@ -107,3 +109,88 @@ def test_the_dancers_height_is_measured_even_with_the_guard_off():
         guard([_det(105), _det(108)])
     med, n, _when = host.dancer_height
     assert 105 <= med <= 108 and n >= 40 and host.settings.person_height_px == 138
+
+
+# --------------------------------------------------------------------------- #
+# Follow (laptop pass 2026-10-07: the guard locked onto the walk-in height)
+# --------------------------------------------------------------------------- #
+def _run(host, clock, guard, t0, seconds, heights_fn, fps=20.0):
+    events = []
+    for i in range(int(seconds * fps)):
+        clock[0] = t0 + i / fps
+        before = host.settings.person_height_px
+        guard([_det(h) for h in heights_fn(i)])
+        if host.settings.person_height_px != before:
+            events.append((round(clock[0], 1), before, host.settings.person_height_px))
+    return t0 + seconds, events
+
+
+def test_guard_follows_the_dancer_from_the_walk_in_to_the_wall():
+    host, clock, guard = _guard_host(45)                    # the night project's stale height
+    t, ev = _run(host, clock, guard, 0.0, 8, lambda i: [300])          # walk-in near the camera
+    assert ev and ev[0][1:] == (45, 300)                    # the first population: the walk-in
+    t, ev = _run(host, clock, guard, t, 70, lambda i: [127])           # at the wall
+    assert 120 <= host.settings.person_height_px <= 135 and len(ev) == 1
+    assert ev[0][0] < 8 + 60                                # within the follow window
+
+
+def test_guard_follows_a_sparse_far_dancer_after_a_dense_walk_in():
+    # s2c-like: ~20 skeletons/s on the walk-in near the camera, then one every 3 s at the dark back wall
+    host, clock, guard = _guard_host(45)
+    t, ev = _run(host, clock, guard, 0.0, 8, lambda i: [300])
+    assert ev and ev[0][1:] == (45, 300)
+    t, ev = _run(host, clock, guard, t, 75, lambda i: [127] if i % 60 == 0 else [])
+    assert len(ev) == 1 and 120 <= host.settings.person_height_px <= 135
+    assert ev[0][0] < 8 + 70
+
+
+def test_guard_adopts_a_sparse_dark_wall_the_dense_rule_never_sees():
+    # s4-like: too few skeletons on the walk-in for the dense rule, then one every 2 s at the dark wall
+    # (120 px, outside the stale 45 px gate 13-112): the slow rule adopts it within about a minute
+    host, clock, guard = _guard_host(45)
+    t, ev = _run(host, clock, guard, 0.0, 10, lambda i: [300] if i % 5 == 0 else [])
+    assert ev == []
+    t, ev = _run(host, clock, guard, t, 80, lambda i: [120] if i % 40 == 0 else [])
+    assert len(ev) == 1 and 115 <= host.settings.person_height_px <= 125
+
+
+def test_a_configured_height_the_guard_never_set_is_never_followed():
+    host, clock, guard = _guard_host(138)                   # white duo: 138 configured, ~200 measured
+    _run(host, clock, guard, 0.0, 120, lambda i: [200, 210])
+    assert host.settings.person_height_px == 138 and host.height_guard_event is None
+
+
+def test_a_technician_near_the_lens_is_outvoted_while_the_dancers_are_seen():
+    host, clock, guard = _guard_host(45)
+    t, _ = _run(host, clock, guard, 0.0, 8, lambda i: [127, 130])      # adopted: the duo at the wall
+    assert 125 <= host.settings.person_height_px <= 130
+    t, ev = _run(host, clock, guard, t, 90, lambda i: [127, 130, 400])  # + somebody close to the lens
+    assert ev == [] and 125 <= host.settings.person_height_px <= 130
+
+
+def test_no_ping_pong_on_alternating_short_episodes():
+    host, clock, guard = _guard_host(45)
+    t, _ = _run(host, clock, guard, 0.0, 8, lambda i: [127])
+    t, ev = _run(host, clock, guard, t, 180, lambda i: [300] if (i // 200) % 2 else [127])  # 10 s / 10 s
+    assert len(ev) <= 1
+
+
+def test_an_owned_height_is_only_moved_by_the_follow():
+    # bdx1005-s5: the dense 10 s rule kept re-adopting the operator near the lens (~430 px) and the follow
+    # kept bringing it back to the dancer (~203 px) -- 20 flips; owned, only the follow may move it
+    host, clock, guard = _guard_host(45)
+    t, ev = _run(host, clock, guard, 0.0, 8, lambda i: [203])
+    assert ev and ev[0][1:] == (45, 203)
+    for _ in range(3):                                      # 10 s close to the lens, 50 s at the wall
+        t, ev1 = _run(host, clock, guard, t, 10, lambda i: [600])
+        t, ev2 = _run(host, clock, guard, t, 50, lambda i: [203])
+        assert ev1 == [] and ev2 == []
+    assert host.settings.person_height_px == 203
+
+
+def test_ownership_ends_when_someone_else_sets_the_height():
+    host, clock, guard = _guard_host(45)
+    t, _ = _run(host, clock, guard, 0.0, 8, lambda i: [300])
+    host.settings.person_height_px = 150                    # the Advanced slider / a config load
+    t, ev = _run(host, clock, guard, t, 90, lambda i: [300])   # 300 sits inside 150's gate (45-375)
+    assert ev == [] and host.settings.person_height_px == 150
