@@ -53,7 +53,7 @@ def main():
     ap.add_argument("--gamma", type=float)
     ap.add_argument("--clahe", type=float)
     ap.add_argument("--conf", type=float, help="live confidence (default: the config's)")
-    ap.add_argument("--frames", type=int, default=30, help="observed frames per candidate")
+    ap.add_argument("--frames", type=int, default=40, help="observed frames per candidate (the app: 40)")
     ap.add_argument("--full", action="store_true", help="measure every candidate")
     ap.add_argument("--model", default=None)
     ap.add_argument("--imgsz", type=int, default=None)
