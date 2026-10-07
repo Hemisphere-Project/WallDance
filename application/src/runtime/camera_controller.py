@@ -274,6 +274,7 @@ class CameraController:
         else:
             camera_source = source
 
+        self.unified_camera.crop_ratio = self.ids_ratio     # open in the project's crop, not the default
         opened = self.unified_camera.open(camera_source)
 
         if opened:
@@ -396,10 +397,11 @@ class CameraController:
         else:
             self.unified_camera.set_gain(self.ids_gain_db)
             print(f"[IDS Reopen] Gain: {self.ids_gain_db:.1f} dB")
-        # Crop ratio: a reopen starts at the default IDS_RATIO (1.0 = portrait 1488x1528), and the
+        # Crop ratio: the open uses the project's ratio (unified_camera.crop_ratio); this is the safety
+        # net.  Before, a reopen started at the default IDS_RATIO (1.0 = portrait 1488x1528), and the
         # silent reconnect after a playback -> LIVE switch reopens the camera (the acquisition restart
-        # fails, PEAK GCWritePort -1001).  On 2026-10-06 that flipped the night takes between
-        # landscape and portrait while the project (and every saved config) still said 1.38.
+        # fails, PEAK GCWritePort -1001): on 2026-10-06 that flipped the night takes between landscape
+        # and portrait while the project (and every saved config) still said 1.38.
         w, h = int(self.unified_camera.width or 0), int(self.unified_camera.height or 0)
         if w > 0 and h > 0 and abs(w / h - self.ids_ratio) > 0.05 * self.ids_ratio:
             print(f"[IDS Reopen] Crop {w}x{h} does not match the project's ratio "

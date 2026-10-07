@@ -1674,6 +1674,9 @@ class UnifiedCamera:
         self._ids_camera: Optional[IDSCamera] = None
         self._cv_camera = None  # Will be CameraManager if needed
         self._source_type: Optional[CameraSource] = None
+        # IDS crop ratio (W/H) to open with -- the project's, set by the camera controller before
+        # every open; None = the config default IDS_RATIO (a reconnect must not reset the crop).
+        self.crop_ratio: Optional[float] = None
         
         # State. width/height are what read()/read_gpu() deliver, i.e. AFTER
         # the input transform; sensor_size is the raw size (recordings).
@@ -1730,7 +1733,7 @@ class UnifiedCamera:
                 width=0,
                 height=0,
                 crop_pixels=APP_IDS_CROP_PIXELS,
-                crop_ratio=APP_IDS_RATIO,
+                crop_ratio=float(self.crop_ratio) if self.crop_ratio else APP_IDS_RATIO,
                 target_fps=float(max(1.0, min(float(APP_CAMERA_FPS), float(APP_IDS_MAX_FPS)))),
                 exposure_auto=True,
                 gain_auto=True,
