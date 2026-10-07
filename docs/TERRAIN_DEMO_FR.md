@@ -20,12 +20,16 @@
 - **Boule** : sa taille suit la distance du danseur (plus petite au fond, plus grande devant ; affichage seulement).
   Touche **C** ou case **C** dans *View* pour la masquer. K et T sont décochés par défaut.
 - Le curseur « smooth L » a disparu de Live (il retardait TouchDesigner par rapport à l'aperçu).
+- **Détection plus fine** : l'image envoyée à la détection passe de 800 à **1280** (réglages validés sur les prises
+  de nuit). Le projet préparé par Thomas les contient : **garder ce projet** (ou l'enregistrer sous un autre nom),
+  ne pas repartir d'un projet vide.
 
 ## Les bonnes conditions (inchangé, le plus important)
 
 1. **Projecteurs IR collés à l'objectif** (moins de 10 cm), orientés vers le mur ; **aucune lampe ni projecteur dans
    l'image**.
-2. **Region of Interest = le mur seulement**, avec une petite marge pour les entrées et sorties.
+2. **Region of Interest = la zone des danseurs seulement**, avec une petite marge pour les entrées et sorties.
+   À 30 m les danseurs sont petits : plus la Region of Interest est étroite, plus la détection les voit grands.
 3. **Personne près de la caméra dans l'image** pendant le spectacle.
 4. **Mise au point sous IR**, cadrage et objectif du spectacle.
 5. **Portable sur secteur, mode Performance, arrière surélevé**. Surveiller les FPS avec TouchDesigner.
@@ -59,7 +63,11 @@
    | Use empty wall | **coché** — la ligne dessous doit dire « empty wall: ready » |
    | Send /dancer/state | décoché (sauf si le patch TouchDesigner l'utilise) |
 
-5. Cocher **« Allow remote control during RUN »** pour que Thomas puisse ajuster à distance. **Ctrl+S**.
+5. **Taille des danseurs** : un danseur se tient **10 s debout contre le mur, à l'endroit le plus loin** de la caméra,
+   puis **2 Mur vide → Check readiness** : la ligne **« dancer size »** doit être verte. Orange = danseurs trop
+   petits pour la détection : resserrer la Region of Interest comme indiqué sur la ligne, ou passer
+   *Advanced → Model → Image Size* à la valeur indiquée (1536) ; prévenir Thomas.
+6. Cocher **« Allow remote control during RUN »** pour que Thomas puisse ajuster à distance. **Ctrl+S**.
 
 ## Ajuster sur place
 

@@ -209,6 +209,37 @@ def check_empty_wall(*, status: str, detail: str = "") -> CheckResult:
                        + ("" if ok else " - Calibrate on the empty wall (2 - Empty wall)"))
 
 
+def check_dancer_size(*, measured: Optional[Tuple[float, int, float]], lb_scale: float, imgsz: int,
+                      target_px: float = 100.0, sizes: Tuple[int, ...] = (960, 1280, 1536),
+                      now: Optional[float] = None, max_age_s: float = 1800.0) -> CheckResult:
+    """The dancers' height in YOLO's input (D29; Calib2's image-size rule without the dancers pass).
+
+    ``measured`` = FrameProcessor.dancer_height (median px of the confident full skeletons, samples, wall
+    time), ``lb_scale`` = original px -> YOLO-input px.  YOLO wants the dancer at ~100 px in its input
+    (Phase 2b: quality knee 83-110 px).  Below that: the ROI long side that would reach it at the current
+    size, and the smallest image size that would (1920 is too slow on the show laptop)."""
+    import time as _time
+    now = _time.time() if now is None else now
+    if not measured or not lb_scale or now - measured[2] > max_age_s:
+        return CheckResult("dancer size", "skip",
+                           "not measured - have a dancer stand at the far wall for 10 s, then check again")
+    h = float(measured[0])
+    net = h * float(lb_scale)
+    detail = f"dancers ~{h:.0f} px -> ~{net:.0f} px in YOLO's input at {imgsz}"
+    if net >= target_px:
+        return CheckResult("dancer size", "ok", detail)
+    roi_long = float(imgsz) / float(lb_scale)            # the letterbox fits the ROI's long side
+    roi_ok = h * float(imgsz) / target_px
+    bigger = [s for s in sizes if s > imgsz and net * s / float(imgsz) >= target_px]
+    tips = [f"narrow the ROI to the dancers' area (long side {roi_long:.0f} -> <= {roi_ok:.0f} px)"]
+    if bigger:
+        tips.append(f"or Image Size {bigger[0]} (Advanced > Model)")
+    elif imgsz < max(sizes):
+        tips.append(f"Image Size {max(sizes)} gives ~{net * max(sizes) / float(imgsz):.0f} px")
+    return CheckResult("dancer size", "warn", f"{detail}, below the ~{target_px:.0f} px YOLO needs: "
+                       + "; ".join(tips))
+
+
 def recording_gb_per_hour(codec: str = RECORDING_CODEC) -> Tuple[str, float]:
     """(codec actually used, estimated GB/h at the show resolution and fps).
 

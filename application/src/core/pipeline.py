@@ -495,6 +495,10 @@ class FrameProcessor:
         self._auto_height = None            # core.auto_height.AutoHeight when settings.auto_height
         self._height_guard = None           # core.auto_height.AutoHeight on raw detections (height guard)
         self.height_guard_event: Optional[Tuple[int, int]] = None   # (old, new) px, popped by the main loop
+        # The dancers' measured height (median px of the confident full skeletons over >= 2 s, samples,
+        # wall time) and the original -> YOLO-input scale: the readiness "dancer size" row (D29)
+        self.dancer_height: Optional[Tuple[float, int, float]] = None
+        self.last_lb_scale: float = 0.0
         # Raw detection heights (original-space px) BEFORE the size gate — the
         # height-staleness alarm must see what the gate would reject (⑤d)
         self.last_raw_det_heights: List[float] = []
@@ -726,8 +730,8 @@ class FrameProcessor:
              roi_x + (float(d[2][0]) + float(d[2][2]) / 2 - pad_x) * inv_lb,
              roi_y + (float(d[2][1]) + float(d[2][3]) / 2 - pad_y) * inv_lb,
              float(d[2][3]) * inv_lb) for d in detections]
-        if self.settings.height_guard and not self.settings.auto_height:
-            self._guard_person_height(detections, inv_lb)
+        self.last_lb_scale = float(lb_scale) if lb_scale else self.last_lb_scale
+        self._guard_person_height(detections, inv_lb)
         detections = self._filter_duplicate_detections(detections, effective_person_height=scaled_person_height)
         timing["extract"] = (time.perf_counter() - t0) * 1000
         timing.update(self._extract_transfer_timing)
@@ -1286,7 +1290,11 @@ class FrameProcessor:
             self._height_guard = AutoHeight(min_samples=HEIGHT_GUARD_MIN_SAMPLES)
         dets = [_RawDet(0, d[1], (0.0, 0.0, 0.0, float(d[2][3]) * inv_lb)) for d in detections]
         ph = float(self.settings.person_height_px)
-        if self._height_guard.update(dets, float(self._output_clock()), ph) is None:
+        ready = self._height_guard.update(dets, float(self._output_clock()), ph) is not None
+        if dets and len(self._height_guard.window()) >= 40:          # >= 2 s of a dancer: measured
+            win = sorted(self._height_guard.window())
+            self.dancer_height = (float(win[len(win) // 2]), len(win), time.time())
+        if not ready or not self.settings.height_guard or self.settings.auto_height:
             return
         hs = sorted(self._height_guard.window())
         lo = ph * float(self.settings.person_height_min_ratio)

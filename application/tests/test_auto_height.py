@@ -37,7 +37,8 @@ def _guard_host(ph):
     from core.pipeline import FrameProcessor
     clock = [0.0]
     host = SimpleNamespace(settings=SimpleNamespace(person_height_px=ph, person_height_min_ratio=0.3,
-                                                    person_height_max_ratio=2.5),
+                                                    person_height_max_ratio=2.5, height_guard=True,
+                                                    auto_height=False), dancer_height=None,
                            _height_guard=None, height_guard_event=None, _output_clock=lambda: clock[0])
     return host, clock, (lambda dets, inv_lb=1.0: FrameProcessor._guard_person_height(host, dets, inv_lb))
 
@@ -96,3 +97,13 @@ def test_guard_ignores_unsure_skeletons_and_scales_from_the_letterbox():
         clock[0] = i / 20.0
         guard([_det(75)], inv_lb=2.0)                       # 75 px in the YOLO tensor = 150 px
     assert host.settings.person_height_px == 150
+
+
+def test_the_dancers_height_is_measured_even_with_the_guard_off():
+    host, clock, guard = _guard_host(138)
+    host.settings.height_guard = False
+    for i in range(30):
+        clock[0] = i / 20.0
+        guard([_det(105), _det(108)])
+    med, n, _when = host.dancer_height
+    assert 105 <= med <= 108 and n >= 40 and host.settings.person_height_px == 138

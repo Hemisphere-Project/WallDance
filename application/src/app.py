@@ -96,6 +96,7 @@ from core.ops_monitor import (
     ReadinessReport,
     check_calibration,
     check_camera,
+    check_dancer_size,
     check_disk,
     check_empty_wall,
     check_gpu_temp,
@@ -2271,6 +2272,9 @@ class WallDanceApp:
             warn_age_h=OPS_CALIB_AGE_WARN_H, mask_cells=mask_cells))
         results.append(check_empty_wall(status=str(self.processor.plate_status),
                                         detail=self._plate_status_text()))
+        results.append(check_dancer_size(measured=getattr(self.processor, "dancer_height", None),
+                                         lb_scale=float(getattr(self.processor, "last_lb_scale", 0.0)),
+                                         imgsz=int(self.settings.imgsz)))
         results.append(check_disk(
             recordings_dir=self.recorder.recordings_dir,
             warn_free_gb=OPS_DISK_WARN_FREE_GB,

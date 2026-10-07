@@ -468,3 +468,20 @@ def test_check_empty_wall_warns_without_a_usable_snapshot():
     assert r.status == "warn" and "Calibrate on the empty wall" in r.detail
     assert check_empty_wall(status="stale", detail="empty wall: scene changed").status == "warn"
     assert check_empty_wall(status="off").status == "warn"
+
+
+def test_check_dancer_size_reads_the_dancers_in_yolos_input():
+    from core.ops_monitor import check_dancer_size
+    now = 1000.0
+    r = check_dancer_size(measured=None, lb_scale=0.97, imgsz=1280, now=now)
+    assert r.status == "skip" and "far wall" in r.detail
+    # the night project: ~127 px dancers, ~1320 px ROI -> ~123 px at 1280
+    assert check_dancer_size(measured=(127.0, 200, now), lb_scale=1280 / 1320, imgsz=1280, now=now).status == "ok"
+    # ~30 m in a ~1800 px ROI: ~75 px at 1280 -> narrow the ROI or 1536 does not reach 100 either
+    r = check_dancer_size(measured=(105.0, 200, now), lb_scale=1280 / 1800, imgsz=1280, now=now)
+    assert r.status == "warn" and "<= 1344 px" in r.detail and "1536 gives ~90 px" in r.detail
+    # the field's 800: ~77 px -> 1280 would reach ~123 px
+    r = check_dancer_size(measured=(127.0, 200, now), lb_scale=800 / 1320, imgsz=800, now=now)
+    assert r.status == "warn" and "Image Size 1280" in r.detail
+    # an old measurement does not count
+    assert check_dancer_size(measured=(127.0, 200, now - 4000), lb_scale=1.0, imgsz=1280, now=now).status == "skip"
