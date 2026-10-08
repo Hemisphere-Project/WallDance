@@ -54,8 +54,9 @@ no two-dancer number (the 2026-10-06 night takes are solo), the first ones are t
 
 Flow check on 46a0262 (Calibrate on the empty slot 1, then the night takes recut to one frame): the calibration
 is kept (gamma 0.73 / CLAHE 2.5) and a point is sent on 0.82-0.98 of each take's frames. What is left: a 5-7 s
-hole at the start of each take, a right-edge exit outside the drawn ROI (s4), and a second point on one dancer
-for a few seconds on two takes (splits when the person walks near the lens).
+hole at the start of each take (an empty frame then the operator's walk-out beside the lens, not an entry delay:
+N-12), a right-edge exit outside the drawn ROI (s4), and a second point on one dancer for a few seconds on two
+takes (splits when the person walks near the lens).
 
 The 2026-10-06 table below is kept for its history:
 
@@ -101,7 +102,7 @@ The 2026-10-06 table below is kept for its history:
 | **N-9** | **Clean-plate foreground evidence** (BRAINSTORM §3.2, PLAN §C.10): run the foreground N-lock on tonight's takes with the empty wall as the plate; if it beats the slot stream there, build the output-side hook (ghost veto, held-slot measurement, known-N re-acquisition) + plate capture at Calibrate, behind a key (D26) | Claude, on Thomas's go | on-dancer / held share / longest hole vs the shipped stream on slots 4/5/6/9 + a by-eye audit | ✅ built and shipped with the Calibrate flow (D29) |
 | **N-10** | **The 2026-10-07 night takes at ~30 m** (two dancers, belt, an empty wall per lighting; TOURNAGE_2026-10-07_FR): `flow_check.py` on the laptop (Calibrate on the empty slot 1, then slots 3-7), report and images pulled, not the takes (~1 GB/min) | Claude, when the laptop is online | **the first KPI table with two dancers**; x@1280 vs 1536 at 30 m; how each lighting behaves | ⏳ laptop offline since 2026-10-07 ~16:45 |
 | **N-11** | Belt and IR verdict from the same takes: `belt_eval` and body brightness at 30 m with the projector at the lens | Claude → Thomas | D19; the floodlight order (HW-1) | ⏳ with N-10 |
-| **N-12** | The 5-7 s hole at the start of each take: a cold-start replay artefact or a real entry delay? If real, a fix behind a key | Claude | entry latency from the first confident skeleton; no new ghosts on the empty takes and the older corpus | 🔄 2026-10-08 |
+| **N-12** | The 5-7 s hole at the start of each take: a cold-start replay artefact or a real entry delay? If real, a fix behind a key | Claude | entry latency from the first confident skeleton; no new ghosts on the empty takes and the older corpus | ✅ an artefact, no fix (PLAN §C.14): 2.5-4.9 s of empty frame, then the operator walking out beside the lens (~660-690 px, gated out by the size gate); a dancer re-entering at the wall gets a point in 0.65-0.70 s |
 | **N-13** | DEV slot to `release` (46a0262); the app restarts | Claude | `wdremote slot status` | ⏳ laptop offline |
 
 Done when the client has seen the two-point stream hold through losses on the wall, and the KPI table from the
@@ -135,7 +136,7 @@ Only after §3 is demonstrated. Order and evidence in REVIEW §3–§4.
 | **P-1** | Venue numbers → optics + IR: lens (8 mm = 117 px at 40 m; 12 mm quote if the wall is ≤ 21 m wide, D20), tight ROI or imgsz 1536, projector count × beam (30° before more units) × offset ≤ 10 cm from the lens, exposure ≤ 25 ms only with the IR multiplied (D7). The camera's frame is the area to light: the sensor is 1536 px tall, so at 30 m it sees at most ~22 m tall with the 6 mm (~17 m with the 8 mm) | `venue_fit.py`; the IR budget from N-11; HW-1 |
 | **P-2** | **CONT-2 + CONT-9**: τ down to 0.30–0.35 with exclusion, calibration proposes exclusion cells, known-N searches `tracker_intermittent_confirm` + `tracker_ghost_skeleton_age`, re-pin the hangar manifests (CFG-1/2); textured-wall guard (tango-H2 s9) | audit s4_combo 94.2 → 99.5 %; tango-H2 52 % coasting with slots |
 | **P-3** | **CONT-3**: YOLO-first tiered assignment, blob suppression inside YOLO boxes, never discard a YOLO det for a blob-fed track — one replay-gated tracker change set | every off-body "live" point is a blob-fed drift (REVIEW §1.3) |
-| **P-4** | **CONT-4a**: continuation ≠ birth (an emitted track stays emitted while its last skeleton is ≤ ~1 s old) + `intermittent_confirm` per scene | the floor take still holes 24 s with slots; warm-up is the top uncovered cause (REVIEW §1.2); the start-of-take part is N-12 |
+| **P-4** | **CONT-4a**: continuation ≠ birth (an emitted track stays emitted while its last skeleton is ≤ ~1 s old) + `intermittent_confirm` per scene | the floor take still holes 24 s with slots; warm-up is the top uncovered cause (REVIEW §1.2); the start-of-take hole of the night takes is not one (N-12) |
 | **P-5** | **MRK-7-lite**: belt-only hold/acquisition of a still dancer through the slot layer; MRK-9 "belt seen" readiness row | gated on the belt being visible at show distance (N-1) |
 | **P-6** | **ARCH-5** engine stamps + loud fallback; emitted-stream pass lines in the long-span manifests | TRT goldens are per-engine; silent PyTorch fallback is a 3–7× regression |
 | **P-7** | **ARCH-7** readiness rows (power plan, AC, GPU temperature, pending reboot) · **DOC-2 MODE_EMPLOI** (FR, seeded from the two session notes) · DOC-14 README/index refresh | 87 °C observed; "easy on-site settings" is a goal |
