@@ -225,6 +225,68 @@ def test_selective_plate_update_absorbs_a_light_change_but_not_a_protected_dance
 
 
 # --------------------------------------------------------------------------- #
+# No plate update on a rejected frame (PLAN_25M §C.15)
+# --------------------------------------------------------------------------- #
+def _door_scene(rng, glare=None):
+    """The 30 m wall: plain wall ~7 DN, a lit roll-up door ~54 DN.  ``glare``: someone right in
+    front of the lens, most of the frame at that level."""
+    f = _wall(rng, level=7.0, noise=1.0)
+    f[200:400, 300:480] = np.clip(54 + rng.normal(0, 1.5, (200, 180)), 0, 255).astype(np.uint8)
+    if glare is not None:
+        f[:, :600] = glare
+    return f
+
+
+def test_a_walk_past_the_lens_is_not_blended_into_the_plate():
+    rng = np.random.default_rng(11)
+    det = ForegroundDetector(CleanPlate.from_frames([_door_scene(rng) for _ in range(12)]))
+    before = det._live.copy()
+    for _ in range(75):                                    # ~4 s right in front of the lens (default cadence)
+        fg = det.process(_door_scene(rng, glare=200), 0, 0, (800, 600))
+        assert not fg.valid and fg.reason == "plate stale"
+        assert not det.update_plate([])
+    assert np.array_equal(det._live, before)
+    fg = det.process(_door_scene(rng), 0, 0, (800, 600))   # the walker gone: the empty wall again
+    assert fg.valid and abs(fg.gain - 1.0) < 0.05 and fg.blobs == []   # no door blob, no gain drift
+
+
+def test_a_rejected_frame_does_not_reuse_the_last_valid_frame():
+    from core.foreground import FgParams
+    rng = np.random.default_rng(12)
+    det = ForegroundDetector(CleanPlate.from_frames([_wall(rng) for _ in range(12)]),
+                             FgParams(update_every=1, update_alpha=0.5))
+    lamp = _wall(rng)
+    lamp[100:200, 600:760] = 60
+    assert det.process(lamp, 0, 0, (800, 600)).valid       # analysed, but no update called after it
+    before = det._live.copy()
+    stale = _wall(rng)
+    stale[:, :500] = 120
+    for frame, size, why in ((_wall(rng, w=600, h=800), (600, 800), "plate size"),
+                             (lamp[:2, :2], (800, 600), "empty roi"),
+                             (stale, (800, 600), "plate stale")):
+        assert det.process(frame, 0, 0, size).reason == why
+        assert not det.update_plate([])
+    assert np.array_equal(det._live, before)
+    assert det.process(lamp, 0, 0, (800, 600)).valid and det.update_plate([])   # a valid frame still updates
+    assert not np.array_equal(det._live, before)
+
+
+def test_a_stale_frame_keeps_the_update_cadence():
+    """The every-N clock still counts a rejected frame: valid frames update exactly when they did."""
+    from core.foreground import FgParams
+    rng = np.random.default_rng(13)
+    det = ForegroundDetector(CleanPlate.from_frames([_wall(rng) for _ in range(12)]),
+                             FgParams(update_every=3))
+    stale = _wall(rng)
+    stale[:, :500] = 120
+    ran = []
+    for frame in (_wall(rng), _wall(rng), stale, _wall(rng), _wall(rng), _wall(rng), _wall(rng)):
+        det.process(frame, 0, 0, (800, 600))
+        ran.append(det.update_plate([]))
+    assert ran == [False, False, False, False, False, True, False]
+
+
+# --------------------------------------------------------------------------- #
 # Light vs the snapshot (the light-change warning)
 # --------------------------------------------------------------------------- #
 def test_light_ratio_is_the_scene_brightness_over_the_snapshot():

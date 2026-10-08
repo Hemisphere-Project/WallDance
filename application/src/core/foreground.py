@@ -14,8 +14,9 @@ it (``ForegroundMeasure``) as evidence next to YOLO and the belt:
 Plate: ``CleanPlate.capture`` over ~2 s of empty-wall frames (median, full frame,
 downscaled), saved as ``.npz`` in the project.  A plate whose size differs from the
 frame (another camera crop) is ignored; a frame where most of the ROI differs from the
-plate (lights changed, camera moved) disables the foreground for that frame and counts
-toward a "re-capture the empty wall" hint.
+plate (lights changed, camera moved, someone right in front of the lens) disables the
+foreground for that frame, is not blended into the plate, and counts toward a "re-capture
+the empty wall" hint.
 
 Pure numpy + OpenCV; ~1-2 ms per frame on the laptop CPU for a 1300x570 ROI.
 """
@@ -233,6 +234,7 @@ class ForegroundDetector:
         """``roi_gray``: the raw ROI crop (or the whole frame) at original resolution,
         whose top-left pixel is (ox, oy) of a ``frame_size`` (W, H) frame."""
         ds, p = self.plate.ds, self.p
+        self._cur = None          # a rejected frame (other crop, empty ROI, stale) leaves update_plate nothing
         if not self.matches(*frame_size):
             self.last = FgFrame(None, ox, oy, ds, valid=False, reason="plate size")
             return self.last
@@ -247,7 +249,6 @@ class ForegroundDetector:
             if ok.mean() >= p.gain_min_px:
                 gain = float(np.median(cur[ok] / B[ok]))
                 gain = min(p.gain_range[1], max(p.gain_range[0], gain))
-        self._cur, self._cur_at, self._gain = cur, (gy0, gx0), gain
         thr = max(p.thr_floor, p.k * self.plate.sigma * math.sqrt(max(1.0, gain)))
         m = (np.abs(cur - gain * B) > thr).astype(np.uint8)
         m = cv2.morphologyEx(cv2.morphologyEx(m, cv2.MORPH_OPEN, self._ko), cv2.MORPH_CLOSE, self._kc)
@@ -259,6 +260,9 @@ class ForegroundDetector:
                                 reason="plate stale")
             return self.last
         self.stale_frames = 0
+        # only now: a stale frame (someone right in front of the lens, a light change) must not
+        # be blended into the plate -- it would leave the gain off for tens of seconds (§C.15)
+        self._cur, self._cur_at, self._gain = cur, (gy0, gx0), gain
         n, lab, st, cen = cv2.connectedComponentsWithStats(m, connectivity=8)
         blobs: List[FgBlob] = []
         ad = np.abs(cur - gain * B)
@@ -288,7 +292,9 @@ class ForegroundDetector:
     def update_plate(self, protect: Sequence[Tuple[float, float, float, float]] = ()) -> bool:
         """Selective plate update after ``process``: every ``update_every`` calls, blend the
         analysed area toward the current frame (brightness-normalised) except inside the
-        ``protect`` boxes (x0, y0, x1, y1 original px: the dancers).  Returns True when it ran."""
+        ``protect`` boxes (x0, y0, x1, y1 original px: the dancers).  Returns True when it ran.
+        A frame ``process`` rejected (stale, other crop, empty ROI) is never blended in; it still
+        counts toward the cadence."""
         self._frames += 1
         p = self.p
         if self._cur is None or p.update_alpha <= 0 or self._frames % max(1, p.update_every):
