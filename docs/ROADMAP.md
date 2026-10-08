@@ -211,6 +211,10 @@ validated settings (`yolo_first`, confidence 0.15, intermittent confirm, x@1280)
 calibration (gamma 0.73 / CLAHE 2.5 / MOG2 8 @ 0.7) · **D29** rail 1 Rig → 2 Calibrate → 3 Live, Profile and Calib
 retired to Expert tools, height guard ON · **D30** smooth L removed · **D32** `remote-ops` + `pinned-install` in one
 release (46a0262).
+Answered 2026-10-08: **D33** the D27 settings are the code defaults (`config.DETECTION_DEFAULTS`: x@1280 TRT, `yolo_first`,
+confidence 0.15 = dial 50, intermittent ON) for a new project and for a key a project file lacks; a stored value is
+kept (`tmp_analysis/plan25m/apply_d33.py` moves a project, e.g. the laptop's `default`); `build_engines` builds x@1280
+first; a missing engine is loud (log, banner, readiness); the corpus manifests pin intermittent OFF, no golden moved.
 
 **Open (recommendations in REVIEW §7 and PLAN §C.12):**
 
@@ -222,7 +226,6 @@ release (46a0262).
 | D22 | `/dancer/state` ON for the TD patch | yes if the patch uses it (fade while coasting) |
 | D23 | Textured venues: operator paints exclusion now; calibration proposes before production | both |
 | D31 | Entry rule default (`entry_min_travel_h`) | keep OFF: inert on the night takes, and it kept a faint still dancer from re-entering |
-| D33 | The D27 settings as the code defaults for new projects (the operator recorded 2026-10-07 in `default`, which still starts at x@800 / conf 0.25 / intermittent OFF) | yes; regenerate the TEST-2 goldens |
 | D34 | Camera stalls (~1.7 s without frames): stop the hold clocks while the camera is silent, keep sending the last positions as coasting | yes if the A/B (N-15) does not remove the stalls at the source |
 | D6 | Latency budget | measured ~140–170 ms effective centroid on fast moves today; D18 is the lever |
 | D7 | Exposure ≤ 25 ms | only with the IR multiplied (P-1) |

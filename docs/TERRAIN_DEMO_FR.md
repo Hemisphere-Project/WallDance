@@ -21,8 +21,10 @@
   Touche **C** ou case **C** dans *View* pour la masquer. K et T sont décochés par défaut.
 - Le curseur « smooth L » a disparu de Live (il retardait TouchDesigner par rapport à l'aperçu).
 - **Détection plus fine** : l'image envoyée à la détection passe de 800 à **1280** (réglages validés sur les prises
-  de nuit). Le projet préparé par Thomas les contient : **garder ce projet** (ou l'enregistrer sous un autre nom),
-  ne pas repartir d'un projet vide.
+  de nuit). Le projet préparé par Thomas les contient : **garder ce projet** (ou l'enregistrer sous un autre nom).
+  Depuis le 8 octobre, un **nouveau projet** démarre aussi avec ces réglages. Un projet déjà enregistré garde les
+  siens : le projet `default` du 7 octobre est encore en 800, ne pas le réutiliser tel quel (à mettre à jour par
+  Thomas).
 
 ## Les bonnes conditions (inchangé, le plus important)
 
