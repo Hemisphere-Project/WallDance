@@ -1,5 +1,11 @@
 #!/bin/bash
-# Build TensorRT engines for all models and sizes
+# Build TensorRT engines: the app's DEFAULT engine first (core/config.py
+# YOLO_MODEL @ YOLO_IMGSZ -- yolo11x-pose @ 1280 since D33), then the m/l/x grid.
+#
+#   ./extra/build_engines.sh                 # default engine, then the whole grid
+#   ./extra/build_engines.sh --default-only  # only the default engine (a few minutes)
+DEFAULT_ONLY=0
+[ "$1" = "--default-only" ] && DEFAULT_ONLY=1
 
 # Get workspace root
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -55,10 +61,45 @@ for m in "${ALL_MODELS[@]}"; do
     fi
 done
 
+# The model/imgsz a new project runs (D33).  Read from config.py so the script
+# cannot drift from the app; the fallback only covers a broken venv.
+DEFAULT_BASE=yolo11x-pose
+DEFAULT_IMGSZ=1280
+if _def=$(uv run --no-sync python -c "
+import sys; sys.path.insert(0, 'src')
+from core.config import YOLO_MODEL, YOLO_IMGSZ
+print(YOLO_MODEL.replace('.pt', ''), YOLO_IMGSZ)" 2>/dev/null) && [ -n "$_def" ]; then
+    read -r DEFAULT_BASE DEFAULT_IMGSZ <<< "$_def"
+else
+    echo "=== Warning: could not read the default from core/config.py; assuming ${DEFAULT_BASE} @ ${DEFAULT_IMGSZ} ==="
+fi
+echo "=== Default engine: ${DEFAULT_BASE} @ ${DEFAULT_IMGSZ} ==="
+
+download_model() {
+    local m="$1"
+    echo "=== Downloading ${m}.pt ==="
+    uv run --no-sync python -c "
+from ultralytics import YOLO
+import shutil, os
+m = YOLO('${m}.pt')            # auto-downloads from Ultralytics hub
+src = '${m}.pt'
+dst = os.path.join(r'$MODELS_DIR', src)
+if os.path.abspath(src) != os.path.abspath(dst) and os.path.isfile(src):
+    shutil.move(src, dst)
+" || echo "=== Warning: failed to download ${m}.pt ==="
+}
+
+# The default model is not optional: fetch it without asking.
+if [ ! -f "$MODELS_DIR/${DEFAULT_BASE}.pt" ]; then
+    download_model "$DEFAULT_BASE"
+fi
+
 MISSING=()
-for m in "${ALL_MODELS[@]}"; do
-    [ ! -f "$MODELS_DIR/${m}.pt" ] && MISSING+=("$m")
-done
+if [ "$DEFAULT_ONLY" = 0 ]; then
+    for m in "${ALL_MODELS[@]}"; do
+        [ ! -f "$MODELS_DIR/${m}.pt" ] && MISSING+=("$m")
+    done
+fi
 
 if [ ${#MISSING[@]} -gt 0 ]; then
     echo "=== Missing pose models (${#MISSING[@]}/${#ALL_MODELS[@]}): ==="
@@ -68,19 +109,7 @@ if [ ${#MISSING[@]} -gt 0 ]; then
     answer=${answer:-Y}
     if [[ "$answer" =~ ^[Yy] ]]; then
         for m in "${MISSING[@]}"; do
-            echo "=== Downloading ${m}.pt ==="
-            uv run --no-sync python -c "
-from ultralytics import YOLO
-import shutil, os
-m = YOLO('${m}.pt')            # auto-downloads from Ultralytics hub
-src = '${m}.pt'
-dst = os.path.join(r'$MODELS_DIR', src)
-if os.path.abspath(src) != os.path.abspath(dst) and os.path.isfile(src):
-    shutil.move(src, dst)
-"
-            if [ $? -ne 0 ]; then
-                echo "=== Warning: failed to download ${m}.pt ==="
-            fi
+            download_model "$m"
         done
         echo "=== Downloads complete ==="
     else
@@ -89,39 +118,58 @@ if os.path.abspath(src) != os.path.abspath(dst) and os.path.isfile(src):
     echo ""
 fi
 
-SIZES=(640 800 960 1280 1536 1920)
-
-for base in "${ENGINE_MODELS[@]}"; do
-    model="$MODELS_DIR/${base}.pt"
-    if [ ! -f "$model" ]; then
-        echo "=== Skipping ${base} (no weights) ==="
-        continue
+# build_engine BASE SIZE -> 0 when models/BASE_SIZE.engine exists afterwards
+build_engine() {
+    local base="$1" size="$2"
+    local model="$MODELS_DIR/${base}.pt"
+    local engine="$MODELS_DIR/${base}_${size}.engine"
+    if [ -f "$engine" ]; then
+        echo "=== Skipping $engine (already exists) ==="
+        return 0
     fi
-
-    for size in "${SIZES[@]}"; do
-        engine="$MODELS_DIR/${base}_${size}.engine"
-        
-        if [ -f "$engine" ]; then
-            echo "=== Skipping $engine (already exists) ==="
-            continue
-        fi
-        
-        echo "=== Building $engine ==="
-        # Use python to run yolo through the venv (--no-sync to keep CUDA torch)
-        uv run --no-sync python -c "
+    if [ ! -f "$model" ]; then
+        echo "=== Skipping ${base} @ ${size} (no weights) ==="
+        return 1
+    fi
+    echo "=== Building $engine ==="
+    # Use python to run yolo through the venv (--no-sync to keep CUDA torch)
+    uv run --no-sync python -c "
 from ultralytics import YOLO
 model = YOLO('$model')
 model.export(format='engine', imgsz=$size, half=True, device=0)
 "
-        
-        # Rename to include size in filename
-        default_engine="$MODELS_DIR/${base}.engine"
-        if [ -f "$default_engine" ]; then
-            mv "$default_engine" "$engine"
-            echo "=== Created $engine ==="
-        else
-            echo "=== Warning: $default_engine not found after export ==="
-        fi
+    # Rename to include size in filename
+    local default_engine="$MODELS_DIR/${base}.engine"
+    if [ -f "$default_engine" ]; then
+        mv "$default_engine" "$engine"
+        echo "=== Created $engine ==="
+        return 0
+    fi
+    echo "=== Warning: $default_engine not found after export ==="
+    return 1
+}
+
+# ── The default engine FIRST (D33) ─────────────────────────────────
+# What a new project runs.  Without it the app runs PyTorch (3-7x slower) and
+# says so (banner + readiness FAIL).  Built before the grid, so an interrupted
+# or failed grid still leaves a show-ready box.
+if ! build_engine "$DEFAULT_BASE" "$DEFAULT_IMGSZ"; then
+    echo "================================================================"
+    echo "ERROR: the DEFAULT engine ${DEFAULT_BASE}_${DEFAULT_IMGSZ}.engine was NOT built."
+    echo "The app would run PyTorch (3-7x slower). Fix the error above and re-run."
+    echo "================================================================"
+    exit 1
+fi
+if [ "$DEFAULT_ONLY" = 1 ]; then
+    echo "=== Default engine ready: $MODELS_DIR/${DEFAULT_BASE}_${DEFAULT_IMGSZ}.engine ==="
+    exit 0
+fi
+
+SIZES=(640 800 960 1280 1536 1920)
+
+for base in "${ENGINE_MODELS[@]}"; do
+    for size in "${SIZES[@]}"; do
+        build_engine "$base" "$size"
     done
 done
 

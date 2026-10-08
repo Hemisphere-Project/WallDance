@@ -182,4 +182,9 @@ fi
 
 echo ""
 echo "Installation complete!"
+if [ "$HAS_GPU" -eq 1 ]; then
+    echo "Next: build the TensorRT engine of the default model (yolo11x-pose @ 1280, a few minutes):"
+    echo "    ./extra/build_engines.sh --default-only"
+    echo "Without it the app asks to build it at the first start, or runs PyTorch (3-7x slower)."
+fi
 echo "Run ./run.sh to start WallDance pose detection"

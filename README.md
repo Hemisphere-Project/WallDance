@@ -69,7 +69,7 @@ Requirements: Python 3.10+, `uv` installed (`pip install uv` if missing), a webc
 - Linux: `./extra/build_engines.sh`
 - Windows: `extra\build_engines.bat`
 
-Builds TensorRT engines for all `.pt` models in `models/` across preset image sizes.
+Builds the **default engine first** (`yolo11x-pose_1280.engine`: what a new project runs, D33), then the m/l/x engines across the preset image sizes. `--default-only` builds just the default (a few minutes).
 
 ### GPU power limiter (NVIDIA)
 
@@ -190,7 +190,7 @@ TensorRT provides significant inference speedup (~2×) by optimizing the model f
 ### Fallback Behavior
 - If TensorRT is unavailable, the checkbox will be disabled
 - If an engine fails to load, the app falls back to PyTorch
-- On startup, if saved config had TRT but engine is missing, PyTorch is used
+- On startup, if the config asks for TRT but the engine is missing, the log says so loudly and the app prompts to build it; declining runs PyTorch (3-7x slower) with the red banner and a readiness FAIL, never silently
 
 ## OSC Messages
 

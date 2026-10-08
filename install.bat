@@ -117,6 +117,11 @@ if errorlevel 1 (
 
 echo.
 echo Installation complete!
+if "%HAS_GPU%"=="1" (
+    echo Next: build the TensorRT engine of the default model ^(yolo11x-pose @ 1280, a few minutes^):
+    echo     extra\build_engines.bat --default-only
+    echo Without it the app asks to build it at the first start, or runs PyTorch ^(3-7x slower^).
+)
 echo Run run.bat to start WallDance pose detection.
 exit /b 0
 
