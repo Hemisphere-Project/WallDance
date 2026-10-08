@@ -33,7 +33,7 @@ from core.calibration import (ExposureServo, SceneCalibrator,
                               cap_gamma_for_noise, seed_gamma)
 from core.config import (AUTOCAL_BLUR_BUDGET_MS, AUTOCAL2_FRAME_SAMPLES,
                          AUTOCAL2_NOISE_REUSE_S, AUTOCAL2_WINDOW_FRAMES,
-                         EMPTY_WALL_CHECK, MODELS_DIR)
+                         AUTOCAL_SERVO_GAIN_MAX_DB, EMPTY_WALL_CHECK, MODELS_DIR)
 from core.empty_wall import EmptyWallCheck
 
 try:
@@ -258,7 +258,8 @@ class CalibrationFlows:
         self._calibrating = True
         if live_ids:
             self._servo = ExposureServo(self.cameras.ids_exposure_us, self.cameras.ids_gain_db,
-                                        blur_budget_ms=self.blur_budget_ms)
+                                        blur_budget_ms=self.blur_budget_ms,
+                                        gain_max_db=self._servo_gain_max_db())
             if self.ui.available:
                 self.ui.set_calibrate_status("Calibrating exposure...")
                 self.ui.show_toast("Calibrating - driving exposure/gain, keep the stage clear",
@@ -292,6 +293,19 @@ class CalibrationFlows:
         print("[Calibrate] started "
               f"({'playback' if self.recorder.is_playing else 'live'}"
               f"{', exposure servo' if self._servo else ''})")
+
+    def _servo_gain_max_db(self) -> float:
+        """The servo's gain ceiling: AUTOCAL_SERVO_GAIN_MAX_DB, cut to what the camera can do
+        (the IMX664 tops out at 30 dB = x31.6; steps above it would change nothing)."""
+        cap = float(AUTOCAL_SERVO_GAIN_MAX_DB)
+        try:
+            rng = self.unified_camera.get_gain_range_db()
+        except Exception:
+            return cap
+        if (isinstance(rng, (tuple, list)) and len(rng) == 2
+                and isinstance(rng[1], (int, float)) and rng[1] > 0):
+            return min(cap, float(rng[1]))
+        return cap
 
     def _seed_gamma_for_calibration(self, brightness: float):
         """Apply the gamma seed before the collection window (Calib1 phase B)."""

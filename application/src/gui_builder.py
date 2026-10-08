@@ -1736,18 +1736,20 @@ def build_input_section(gui: Any):
         # --- IDS hardware settings (gain/exposure) — toggled by gear button ---
         with dpg.group(tag="ids_hw_settings_group", show=False):
             dpg.add_spacer(height=scaled(4))
-            dpg.add_text("IDS Gain (dB)", color=TEXT_NORMAL)
+            # dB, converted to the camera's linear Gain factor in ids_camera (IMX664:
+            # x1..x31.6 = 0..30 dB; higher values are clamped to 30 dB by the camera layer).
+            dpg.add_text("IDS Gain (dB; max 30 dB = x31.6)", color=TEXT_NORMAL)
             with dpg.group(horizontal=True):
                 dpg.add_slider_float(
                     tag="adv_ids_gain_slider",
                     default_value=gui.config.get("ids_gain_db", 0.0),
                     min_value=0.0,
-                    max_value=48.0,
-                    format="%.1f",
+                    max_value=30.0,
+                    format="%.1f dB",
                     width=scaled(-90),
                     callback=gui._on_ids_gain_change,
                 )
-                _add_slider_row("adv_ids_gain_slider", 0.5, 0.0, 48.0, gui._on_ids_gain_change)
+                _add_slider_row("adv_ids_gain_slider", 0.5, 0.0, 30.0, gui._on_ids_gain_change)
 
             dpg.add_spacer(height=scaled(4))
             dpg.add_text("IDS Exposure (\u00b5s)", color=TEXT_NORMAL)

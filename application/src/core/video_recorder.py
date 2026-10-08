@@ -6,6 +6,7 @@ Manages 9 recording slots per project with timestamped history.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import time
@@ -310,16 +311,30 @@ class VideoRecorder:
     @property
     def playback_camera(self) -> Optional[dict]:
         """IDS exposure (us) and gain (dB) the playing take was recorded with (its ``.meta``
-        v2 config snapshot), or None for another source / a legacy or imported take."""
+        v2 config snapshot), or None for another source / a legacy or imported take.
+
+        The gain is what the camera really ran at: the sidecar's ``camera.gain_db``, else its
+        raw ``Gain`` node (a linear factor on IDS uEye+; before 2026-10-08 the config's
+        ``ids_gain_db`` was written into it unconverted, so "36 dB" ran at x31.6 = 30 dB),
+        else the config value."""
         meta = self._playback_meta or {}
         cfg = meta.get("config")
         cam = meta.get("camera") or {}
         if not isinstance(cfg, dict) or (cam.get("source") or cfg.get("camera_source")) != "ids":
             return None
         try:
-            return {"exposure_us": float(cfg["ids_exposure_us"]), "gain_db": float(cfg["ids_gain_db"])}
+            out = {"exposure_us": float(cfg["ids_exposure_us"]), "gain_db": float(cfg["ids_gain_db"])}
         except (KeyError, TypeError, ValueError):
             return None
+        try:
+            if cam.get("gain_db") is not None:
+                out["gain_db"] = float(cam["gain_db"])
+            elif float((cam.get("nodes") or {}).get("Gain") or 0.0) > 0.0:
+                factor = float(cam["nodes"]["Gain"])          # ids_camera.gain_factor_to_db
+                out["gain_db"] = round(20.0 * math.log10(factor), 2)
+        except (TypeError, ValueError):
+            pass
+        return out
 
     @property
     def playback_path(self) -> Optional[str]:

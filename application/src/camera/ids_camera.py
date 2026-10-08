@@ -139,6 +139,49 @@ def exposure_limited_fps(exposure_us: float) -> float:
     return 1_000_000.0 / exposure_us
 
 
+# --- Gain units ----------------------------------------------------------------
+# The app's gain is in dB everywhere: config ``ids_gain_db``, the slider, the
+# exposure servo, take metadata. IDS uEye+ cameras expose the GenICam ``Gain``
+# node as a LINEAR amplification factor (SFNC unit "-": x1.0 = no gain); on the
+# U3-34E0XCP (Sony IMX664) it spans x1.0 .. x31.6 = 0 .. 30 dB (datasheet
+# "Amplification 31.6x"). Until 2026-10-08 the dB value was written straight into
+# the node: "36 dB" gave x31.6 (clamped, really 30 dB), "27.8 dB" gave x27.8
+# (really 28.9 dB), "6 dB" gave x6 (really 15.6 dB). A node whose Unit() says
+# "dB" is written in dB, so another camera family keeps working.
+
+def gain_db_to_factor(gain_db: float) -> float:
+    """dB -> linear amplitude factor (0 dB = x1, 20 dB = x10, 30 dB = x31.6)."""
+    return 10.0 ** (float(gain_db) / 20.0)
+
+
+def gain_factor_to_db(factor: float) -> float:
+    """Linear amplitude factor -> dB (x1 = 0 dB)."""
+    return 20.0 * _math.log10(max(float(factor), 1e-6))
+
+
+def gain_node_is_db(node) -> bool:
+    """True when the GenICam ``Gain`` node declares a dB unit; IDS uEye+ cameras
+    declare none (a factor), and so does any node without ``Unit()``."""
+    try:
+        unit = str(node.Unit()).strip().lower()
+    except Exception:
+        return False
+    return unit in ("db", "decibel", "decibels")
+
+
+def gain_db_to_node_value(gain_db: float, node_min: float, node_max: float,
+                          node_is_db: bool = False) -> float:
+    """The value to write into the ``Gain`` node for ``gain_db``, clamped to the
+    node's real range (a factor unless the node is in dB)."""
+    value = float(gain_db) if node_is_db else gain_db_to_factor(gain_db)
+    return max(float(node_min), min(value, float(node_max)))
+
+
+def gain_node_value_to_db(value: float, node_is_db: bool = False) -> float:
+    """A ``Gain`` node reading -> dB."""
+    return float(value) if node_is_db else gain_factor_to_db(value)
+
+
 def compute_crop_from_budget(pixel_budget: int, ratio: float,
                              sensor_w: int = 0, sensor_h: int = 0) -> Tuple[int, int]:
     """Derive crop (W, H) from a pixel budget and aspect ratio.
@@ -761,15 +804,15 @@ class IDSCamera:
                     self.settings.gain_auto = False
 
             if not self.settings.gain_auto:
-                gain_node = nm.FindNode("Gain")
                 requested_gain = self.settings.gain_db if self.settings.gain_db > 0 else self.settings.fallback_gain_db
-                target_gain = max(gain_node.Minimum(), min(requested_gain, gain_node.Maximum()))
-                gain_node.SetValue(target_gain)
-                print(f"[IDSCamera] Gain: Manual {gain_node.Value():.1f} dB")
+                applied = self._apply_gain_db(nm, requested_gain)
+                print(f"[IDSCamera] Gain: Manual {applied:.1f} dB "
+                      f"(x{gain_db_to_factor(applied):.2f})")
 
             try:
                 gain_node = nm.FindNode("Gain")
-                self.state.gain_db = gain_node.Value()
+                self.state.gain_db = gain_node_value_to_db(gain_node.Value(),
+                                                           gain_node_is_db(gain_node))
             except Exception:
                 pass
         except Exception as e:
@@ -1472,18 +1515,36 @@ class IDSCamera:
             print("[IDSCamera] ExposureAuto node unavailable; staying in manual exposure mode")
             return False
     
+    def _apply_gain_db(self, nm, gain_db: float) -> float:
+        """Write ``gain_db`` (dB) into the ``Gain`` node in the node's own unit
+        (a linear factor on IDS uEye+), clamped to its real range; returns the
+        gain the camera actually took, in dB (also kept in ``state.gain_db``)."""
+        gain_node = nm.FindNode("Gain")
+        is_db = gain_node_is_db(gain_node)
+        lo, hi = float(gain_node.Minimum()), float(gain_node.Maximum())
+        gain_node.SetValue(gain_db_to_node_value(gain_db, lo, hi, is_db))
+        actual = float(gain_node.Value())
+        applied = gain_node_value_to_db(actual, is_db)
+        self.state.gain_db = applied
+        if abs(applied - float(gain_db)) > 0.05:
+            lo_db, hi_db = gain_node_value_to_db(lo, is_db), gain_node_value_to_db(hi, is_db)
+            print(f"[IDSCamera] Gain {float(gain_db):.1f} dB is outside the camera's "
+                  f"{lo_db:.1f}..{hi_db:.1f} dB: using {applied:.1f} dB"
+                  f"{'' if is_db else f' (x{actual:.2f})'}")
+        return applied
+
     def set_gain(self, gain_db: float) -> bool:
-        """Set gain in dB.
-        
+        """Set gain in dB (converted to the node's unit, clamped to its range).
+
         Args:
             gain_db: Gain in dB
-            
+
         Returns:
             True if successful
         """
         if not self.state.is_open or self._node_map is None:
             return False
-        
+
         try:
             # Disable auto gain first
             try:
@@ -1491,11 +1552,8 @@ class IDSCamera:
                 auto_node.SetCurrentEntry(auto_node.FindEntry("Off"))
             except:
                 pass
-            
-            gain_node = self._node_map.FindNode("Gain")
-            target = max(gain_node.Minimum(), min(gain_db, gain_node.Maximum()))
-            gain_node.SetValue(target)
-            self.state.gain_db = gain_node.Value()
+
+            self._apply_gain_db(self._node_map, gain_db)
             self.settings.gain_auto = False
             return True
         except Exception as e:
@@ -1542,17 +1600,19 @@ class IDSCamera:
             return (0.0, 0.0)
     
     def get_gain_range(self) -> Tuple[float, float]:
-        """Get gain range in dB.
-        
+        """Get gain range in dB (the node's range converted from its unit).
+
         Returns:
             (min_db, max_db)
         """
         if not self.state.is_open or self._node_map is None:
             return (0.0, 0.0)
-        
+
         try:
             gain_node = self._node_map.FindNode("Gain")
-            return (gain_node.Minimum(), gain_node.Maximum())
+            is_db = gain_node_is_db(gain_node)
+            return (gain_node_value_to_db(gain_node.Minimum(), is_db),
+                    gain_node_value_to_db(gain_node.Maximum(), is_db))
         except:
             return (0.0, 0.0)
     
@@ -1565,7 +1625,7 @@ class IDSCamera:
         "BinningHorizontal", "BinningVertical", "DecimationHorizontal",
         "BlackLevel", "Gamma", "AutoFeatureExposureTimeUpperLimit",
         "DeviceModelName", "DeviceSerialNumber", "DeviceFirmwareVersion",
-        "SensorName")
+        "SensorName", "GainSelector")
 
     def _read_node(self, name: str):
         """Best-effort GenICam read: numeric/string ``Value()`` or the
@@ -1600,6 +1660,14 @@ class IDSCamera:
             if value is not None:
                 nodes[name] = value
         out["nodes"] = nodes
+        # The node's Gain is a linear factor on IDS uEye+: also give it in dB.
+        gain = nodes.get("Gain")
+        if isinstance(gain, (int, float)) and not isinstance(gain, bool):
+            try:
+                is_db = gain_node_is_db(self._node_map.FindNode("Gain"))
+            except Exception:
+                is_db = False
+            out["gain_db"] = round(gain_node_value_to_db(gain, is_db), 2)
         out["measured_fps"] = round(float(self.state.fps or 0.0), 2)
         out["frame_count"] = int(self.state.frame_count)
         out["dropped_frames"] = int(self.state.dropped_frames)
@@ -1933,7 +2001,14 @@ class UnifiedCamera:
         if self._source_type == CameraSource.IDS_PEAK:
             return self._ids_camera.set_gain(gain_db)
         return False
-    
+
+    def get_gain_range_db(self) -> Optional[Tuple[float, float]]:
+        """The IDS camera's real gain range in dB, or None (no IDS camera open)."""
+        if self._source_type == CameraSource.IDS_PEAK and self._ids_camera is not None:
+            lo, hi = self._ids_camera.get_gain_range()
+            return (lo, hi) if hi > lo else None
+        return None
+
     def set_gain_auto(self, enabled: bool) -> bool:
         if self._source_type == CameraSource.IDS_PEAK:
             return self._ids_camera.set_gain_auto(enabled)
