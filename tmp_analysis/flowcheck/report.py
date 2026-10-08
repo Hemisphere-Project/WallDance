@@ -95,7 +95,16 @@ def events_list(t, label):
         seen = hh.get("yolo_saw_someone")
         tag = " <span class='bad'>YOLO saw someone during it</span>" if seen and seen > 0.3 else ""
         if hh.get("startup"):
-            tag = " <span class='mut'>(start of the take: the new-dancer warm-up)</span>"
+            # PLAN_25M §C.14: an empty frame, then the operator walking out from the camera (boxes far
+            # bigger than a wall dancer), then ~0.7 s of warm-up -- not a dancer entry
+            parts = []
+            if hh.get("empty_s") is not None:
+                parts.append(f"nobody in view for {hh['empty_s']:.1f} s")
+            if hh.get("h_med"):
+                parts.append(f"then YOLO boxes ~{hh['h_med']} px tall (a walk-out close to the camera when far "
+                             f"bigger than the dancer at the wall)")
+            tag = (" <span class='mut'>(start of the take: " + (", ".join(parts) or "warm-up") +
+                   "; not a dancer entry, PLAN_25M §C.14)</span>")
         items.append(f"<li>hole at {hh['t']:.1f} s for {hh['dur_s']:.1f} s{tag}</li>")
     for j in c["jumps"]:
         items.append(f"<li>jump at {j['t']:.1f} s: D{j['id']} moved {j['dist_h']:.1f} body heights "

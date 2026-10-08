@@ -209,9 +209,15 @@ def analyse(rows) -> dict:
         elif p and start is not None:
             if i - start >= FPS:
                 seen = sum(1 for j in range(start, min(i, n)) if refs[j])
+                # nobody in view at the hole's start, and the size of what YOLO saw during it: a take's
+                # start hole is mostly an empty frame, then the operator walking out from the camera
+                # (600-750 px boxes for a ~125 px wall dancer) -- not a dancer entry (PLAN_25M §C.14)
+                empty = next((j for j in range(start, min(i, n)) if refs[j]), min(i, n)) - start
+                hs = sorted(x["h"] for j in range(start, min(i, n)) for x in refs[j] if x.get("h"))
                 holes.append({"frame": start, "t": round(start / FPS, 2), "dur_s": round((i - start) / FPS, 2),
                               "yolo_saw_someone": round(seen / max(1, i - start), 2),
-                              "startup": start < 2 * FPS})
+                              "startup": start < 2 * FPS, "empty_s": round(empty / FPS, 2),
+                              "h_med": round(hs[len(hs) // 2]) if hs else None})
             start = None
     # jumps per id
     track = {}
