@@ -294,18 +294,22 @@ def _stat(p):
     st = p.stat()
     return {"size": st.st_size, "mtime": round(st.st_mtime, 3)}
 
+# Read-only git in the LIVE checkout: no optional locks, so `git status` does not
+# refresh (rewrite) .git/index behind the launcher's back (it could race its update).
+GIT_RO = ["git", "--no-optional-locks"]
+
 def _git(root):
     out = {}
     rc, _, _ = _run(["git", "--version"])
     out["git_cli"] = rc == 0
     if rc == 0:
         for key, argv in {
-            "status": ["git", "status", "--porcelain=v1", "-b"],
-            "log": ["git", "log", "--oneline", "-15"],
-            "branches": ["git", "branch", "-vv", "--all"],
-            "stash": ["git", "stash", "list"],
-            "ahead_behind": ["git", "rev-list", "--left-right", "--count", "origin/main...HEAD"],
-            "head": ["git", "rev-parse", "HEAD"],
+            "status": [*GIT_RO, "status", "--porcelain=v1", "-b"],
+            "log": [*GIT_RO, "log", "--oneline", "-15"],
+            "branches": [*GIT_RO, "branch", "-vv", "--all"],
+            "stash": [*GIT_RO, "stash", "list"],
+            "ahead_behind": [*GIT_RO, "rev-list", "--left-right", "--count", "origin/main...HEAD"],
+            "head": [*GIT_RO, "rev-parse", "HEAD"],
         }.items():
             rc2, so, se = _run(argv, cwd=str(root))
             out[key] = so if rc2 == 0 else ("ERROR: " + se)
@@ -1062,6 +1066,12 @@ def cmd_replay(tr, remote: Remote, a) -> int:
     return rc
 
 
+# Every git call in the laptop's LIVE checkout only reads: no optional locks, so
+# `git status` / `git diff` never refresh (rewrite) .git/index behind the launcher
+# (the agent's inventory uses the same flag, AGENT_PY GIT_RO).
+GIT_RO = ("git", "--no-optional-locks")
+
+
 def cmd_bundle(tr, remote: Remote, a) -> int:
     """git bundle --all on the laptop (or a .git zip without the git CLI) -> local."""
     stamp = new_stamp()
@@ -1073,14 +1083,14 @@ def cmd_bundle(tr, remote: Remote, a) -> int:
     if probe.returncode == 0:
         b = remote.path(f"{scratch}/prod.bundle")
         st = remote.path(f"{scratch}/status.txt")
-        if remote.win:
-            cmd = (remote.shell(["git", "bundle", "create", b, "--all"], cwd="")
-                   + f" && git status --porcelain=v1 -b > {_q_cmd(st)}"
-                   + f" && git diff >> {_q_cmd(st)}")
-        else:
-            cmd = (remote.shell(["git", "bundle", "create", b, "--all"], cwd="")
-                   + f" && git status --porcelain=v1 -b > {shlex.quote(st)}"
-                   + f" && git diff >> {shlex.quote(st)}")
+        q = _q_cmd if remote.win else shlex.quote
+        ro = " ".join(GIT_RO)
+        # `git diff` rewrites a stat-stale index even with --no-optional-locks
+        # (its quiet refresh ignores the flag, git 2.53); `diff-files -p` is the
+        # same worktree-vs-index patch without any index write.
+        cmd = (remote.shell([*GIT_RO, "bundle", "create", b, "--all"], cwd="")
+               + f" && {ro} status --porcelain=v1 -b > {q(st)}"
+               + f" && {ro} diff-files -p >> {q(st)}")
         files = ["prod.bundle", "status.txt"]
     else:
         z = remote.path(f"{scratch}/prod-git.zip")

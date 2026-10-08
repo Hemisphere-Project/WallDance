@@ -9,9 +9,11 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -186,3 +188,54 @@ def test_replay_passthrough_args(monkeypatch):
     got = seen["argv"]
     assert "--scenario" not in got and "--trt" in got
     assert got[-6:] == ["--project", "mur25m", "--slot", "4", "--imgsz", "1280"]
+
+
+def _git_checkout(root: Path):
+    """Make the fake laptop root a git checkout whose index is stat-stale: every
+    tracked file's mtime differs from the index (content unchanged), so a plain
+    `git status` refreshes -- rewrites -- .git/index."""
+    env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
+               GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+
+    def git(*args):
+        return subprocess.run(["git", "-C", str(root), *args], check=True,
+                              capture_output=True, env=env)
+
+    git("init", "-q")
+    git("add", "-A")
+    git("commit", "-q", "-m", "prod")
+    later = time.time() + 120
+    for rel in git("ls-files", "-z").stdout.decode().split("\0"):
+        if rel:
+            os.utime(root / rel, (later, later))
+    return git
+
+
+def test_inventory_and_bundle_never_rewrite_the_live_index(fake_remote, tmp_path, monkeypatch):
+    """The LIVE checkout is the launcher's: read-only git there (--no-optional-locks),
+    or `git status` rewrites .git/index and may race the launcher's update."""
+    remote, tr, root = fake_remote
+    git = _git_checkout(root)
+    index = root / ".git" / "index"
+    before = (index.read_bytes(), index.stat().st_mtime_ns)
+    inv = wdremote.run_agent(tr, remote, "inventory", {})
+    g = inv["git"]
+    assert g["git_cli"] is True and g["status"].startswith("## ") and len(g["head"]) == 40
+    monkeypatch.setattr(wdremote, "RUNS_DIR", tmp_path / "runs")
+    assert wdremote.cmd_bundle(tr, remote, SimpleNamespace()) == 0
+    assert list((tmp_path / "runs").glob("*/prod.bundle"))
+    assert list((tmp_path / "runs").glob("*/status.txt"))[0].read_text().startswith("## ")
+    assert (index.read_bytes(), index.stat().st_mtime_ns) == before
+    # the flag is what holds it: a plain `git status` does rewrite the stale index
+    git("status", "--porcelain")
+    assert (index.read_bytes(), index.stat().st_mtime_ns) != before
+
+
+def test_every_remote_git_call_is_lock_free():
+    agent_calls = [line for line in wdremote.AGENT_PY.splitlines()
+                   if '"git",' in line or "[*GIT_RO" in line]
+    assert len(agent_calls) >= 7
+    assert all("--version" in line or "GIT_RO" in line or "--no-optional-locks" in line
+               for line in agent_calls)
+    assert 'GIT_RO = ["git", "--no-optional-locks"]' in wdremote.AGENT_PY
+    assert wdremote.GIT_RO == ("git", "--no-optional-locks")
