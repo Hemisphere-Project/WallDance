@@ -461,9 +461,92 @@ class ConfigManager:
         self._show_startup_project_picker()  # refresh (may now be empty)
 
     def _cb_project_blank(self):
-        """Picker 'Start blank' → load the default model, no project."""
+        """Picker 'Start blank' → load the default model, no project.
+
+        The new project keeps the CAMERA RIG of the most recently used project
+        (crop, exposure/gain, mirror/rotation, camera source, on-camera rig
+        sheet): a blank start used to reopen the IDS at the code's crop 1.0
+        while every project ran 1.37.  The scene (ROI, mask, calibration,
+        empty-wall plate) starts from the code defaults."""
         print("[Picker] Starting blank (default model)")
-        self.models._load_default_model_startup()
+        source = self._inherit_camera_rig()
+        ok = self.models._load_default_model_startup()
+        # After the model load (it pauses/reopens the current camera): one open
+        # of the inherited camera, already at the inherited crop.
+        if ok and source is not None:
+            source = self.cameras._normalize_camera_source(source)
+            if source != self.cameras._normalize_camera_source(self.camera.state.source) \
+                    or not self.camera.state.is_open:
+                print(f"[New project] Opening the inherited camera {source}...")
+                self.cameras._attempt_camera_connect(source)
+        return ok
+
+    def _last_used_project_config(self):
+        """(project, config path, validated flat config, validation warnings) of
+        the most recently used project: the last-project pointer, else the most
+        recently saved project; an unreadable latest save falls through to the
+        next project.  None when there is no readable project."""
+        last = self.config_store.read_last_project()
+        names = [last] if last else []
+        names += [i.name for i in self.config_store.list_projects_by_date() if i.name != last]
+        for name in names:
+            path = self.config_store.latest_for_project(name)
+            if not path:
+                continue
+            try:
+                raw = self.config_store.load(path)
+            except (OSError, ValueError) as e:
+                print(f"[New project] {name}: {os.path.basename(path)} unreadable ({e})")
+                continue
+            flat, warnings = config_schema.validate_flat(config_schema.flatten(raw))
+            return name, path, flat, warnings
+        return None
+
+    def _inherit_camera_rig(self) -> Optional[str]:
+        """Apply the camera-rig subset (config_schema.inherited_rig) of the most
+        recently used project to the live session; log + toast what came from
+        where.  Returns the inherited camera source (None: nothing inherited)."""
+        found = self._last_used_project_config()
+        if found is None:
+            print("[New project] No previous project: camera rig at the code defaults")
+            return None
+        name, path, flat, warnings = found
+        rig = config_schema.inherited_rig(flat)
+        rig_keys = (*config_schema.RIG_INHERIT_KEYS, "rig")
+        for w in warnings:
+            if w.split(":", 1)[0].split(".", 1)[0] in rig_keys:
+                print(f"[New project] {name}: {w}")
+        source = rig.pop("camera_source", None)
+        source = str(source) if source is not None else None
+        if rig:
+            # A partial apply (no model/camera_source key): only these keys change.
+            self.apply_config(rig)
+        parts = []
+        if source is not None:
+            parts.append(f"camera {source}")
+        if "ids_ratio" in rig:
+            parts.append(f"crop {float(rig['ids_ratio']):.2f}")
+        if "ids_exposure_us" in rig:
+            parts.append(f"exposure {float(rig['ids_exposure_us']):.0f} us")
+        if "ids_gain_db" in rig:
+            parts.append(f"gain {float(rig['ids_gain_db']):.1f} dB")
+        if "input_mirror" in rig or "input_rotation" in rig:
+            parts.append(f"mirror {'on' if rig.get('input_mirror') else 'off'}"
+                         f" / rotation {int(rig.get('input_rotation') or 0)}")
+        sheet = rig.get("rig") or {}
+        parts.append("rig sheet " + (", ".join(f"{k}={v}" for k, v in sheet.items())
+                                     if sheet else "empty"))
+        print(f"[New project] Camera rig inherited from '{name}' "
+              f"({os.path.basename(path)}): " + "; ".join(parts))
+        print("[New project] Not inherited (per scene, code defaults): ROI, exclusion mask, "
+              "gamma/CLAHE/MOG2 calibration, sensitivity, empty-wall plate, rig distances/"
+              "focus/markers/notes")
+        if self.ui.available:
+            short = [p for p in parts if not p.startswith("rig sheet")]
+            self.ui.show_toast(f"New project: camera rig from '{name}' ("
+                               + ", ".join(short or ["rig sheet"]) + ")",
+                               duration=6.0, color=(150, 200, 255))
+        return source
 
     # ------------------------------------------------------------------
     # Safe defaults / validation warnings

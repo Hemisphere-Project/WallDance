@@ -409,9 +409,10 @@ def hold_error(k: float, *, scene: str = DEFAULT_SCENE, q: str = "p50") -> float
 PERSON_HEIGHT_CM = 170.0
 
 
-def mm_per_px(distance_m: float, focal_mm: float = 8.0, pixel_um: float = 2.9) -> float:
-    """Object-plane pixel footprint: 0.3625·D mm/px for the 8 mm lens on the
-    IMX664's 2.9 µm pixels (7.25 mm/px at 20 m), 02 §1.6."""
+def mm_per_px(distance_m: float, focal_mm: float, pixel_um: float = 2.9) -> float:
+    """Object-plane pixel footprint on the IMX664's 2.9 µm pixels: 0.3625·D mm/px
+    with the 8 mm lens (7.25 mm/px at 20 m), 0.483·D with the 6 mm, 02 §1.6.
+    ``focal_mm`` is required (the rig sheet's; no lens is assumed)."""
     return pixel_um * 1e-3 / focal_mm * distance_m * 1e3
 
 

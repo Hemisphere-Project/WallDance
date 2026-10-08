@@ -711,7 +711,10 @@ def build_rig_sheet_section(gui: Any):
         with dpg.tooltip("section_rig_sheet"):
             dpg.add_text("Aperture, focus and the IR light's offset from the lens\n"
                          "decide how bright retro markers and dancers come out;\n"
-                         "the camera cannot report them. Fill once per venue.")
+                         "the camera cannot report them. Fill once per venue.\n"
+                         "A new project (Start blank) keeps lens, aperture, filter\n"
+                         "and IR light of the last project; distances, focus,\n"
+                         "markers and notes start empty.")
 
 
 def build_project_config_section(gui: Any):

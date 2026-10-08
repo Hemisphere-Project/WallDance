@@ -136,7 +136,12 @@ Each `slot_N_<stamp>.avi.meta` holds:
   temperature, serial/firmware, UserSet;
 - app commit/branch, project, config file, profile, engine (model/imgsz/TRT active), the full live config;
 - the **rig sheet** (phase 1 Rig → *Rig sheet*): lens, f-number, focus, filter, IR light and its offset from
-  the lens, camera distance/height, markers, notes.
+  the lens, camera distance/height, markers, notes. A field nobody entered is **absent** (unknown): the code no
+  longer pre-fills the 8 mm lens (takes before 2026-10-08 claim `Tamron M118FM08 (8 mm)` / `focal_mm` 8 although
+  the laptop runs the 6 mm M118FM06; a saved sheet still exactly at that pre-fill loses lens/focal on load).
+  A new project (*Start blank*) inherits the camera rig of the last used project: camera, crop ratio, exposure,
+  gain, mirror/rotation and the on-camera sheet fields (lens, focal, f-number, filter, IR light + offset); the
+  scene (ROI, mask, gamma/CLAHE/MOG2, sensitivity, empty-wall plate, distances/focus/markers/notes) starts fresh.
 
 `slot_N_<stamp>.avi.camlog.jsonl` samples exposure, gain, AE/AG and temperature about once a second during the
 take, because auto-exposure drifts within takes.

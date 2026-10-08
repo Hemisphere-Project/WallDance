@@ -163,7 +163,8 @@ def test_r_lookup_values_and_kalman_conversion():
 
 
 def test_physics_helpers():
-    assert math.isclose(mm.mm_per_px(20.0), 7.25)
+    assert math.isclose(mm.mm_per_px(20.0, 8.0), 7.25)
+    assert math.isclose(mm.mm_per_px(20.0, 6.0), 7.25 * 8 / 6)
     assert math.isclose(mm.marker_diameter_px(5.0, 204.0), 6.0)
     assert math.isclose(mm.streak_length_px(10.0, 25000.0, 20.0), 5.0)
     assert math.isclose(mm.dwell_fraction(4, 12), 0.25)

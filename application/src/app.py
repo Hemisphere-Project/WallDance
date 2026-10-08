@@ -1319,8 +1319,9 @@ class WallDanceApp:
         full_config = "model" in config or "camera_source" in config
         if "calibration_state" in config or full_config:
             self.calibration.calibration_state = dict(config.get("calibration_state") or {})
-        # MRK-0 rig sheet: a project without one gets the known-hardware
-        # defaults (never the previous project's values).
+        # MRK-0 rig sheet: a project without one gets RIG_DEFAULTS (empty =
+        # unknown; never the previous project's values -- only a blank start
+        # inherits the on-camera part, ConfigManager._inherit_camera_rig).
         if "rig" in config or full_config:
             rig = config.get("rig")
             self.rig_sheet = (config_schema.sanitize_rig(rig)[0] if isinstance(rig, dict)

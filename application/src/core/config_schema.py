@@ -57,6 +57,7 @@ _RANGES = {
     "mog2_scale": (0.25, 1.0),
     "ids_gain_db": (0.0, 48.0),
     "ids_exposure_us": (50.0, 1_000_000.0),
+    "ids_ratio": (0.5, 2.0),                 # the apply path float()s it: junk is dropped here
     "person_height_px": (10, 1500),
     "person_height_min_ratio": (0.05, 1.0),
     "person_height_max_ratio": (1.0, 10.0),
@@ -91,8 +92,8 @@ INPUT_ROTATIONS = (0, 90, 180, 270)
 # per project in phase 1 Rig, copied into every recording's .meta. A shared key
 # (same rig for both lighting profiles). field -> (kind, lo, hi); str = max len.
 RIG_FIELDS = {
-    "lens": ("str", 0, 80),                  # e.g. "Tamron M118FM08 (8 mm)"
-    "focal_mm": ("num", 1.0, 200.0),
+    "lens": ("str", 0, 80),                  # e.g. "Tamron M118FM06 (6 mm)"; absent = unknown
+    "focal_mm": ("num", 1.0, 200.0),         # absent = unknown (never assume 8 mm)
     "f_number": ("num", 0.7, 32.0),          # iris ring position (manual lens)
     "focus_m": ("num", 0.1, 200.0),          # focus ring distance; 0/None = unknown
     "filter": ("str", 0, 80),                # e.g. "MidOpt BP850"
@@ -143,6 +144,53 @@ def sanitize_rig(raw) -> Tuple[Dict, List[str]]:
         if clean is not None:
             out[key] = clean
     return out, warnings
+
+
+# The rig sheet the code used to pre-fill for every new project (config.RIG_DEFAULTS
+# before 2026-10-08).  A saved sheet EXACTLY equal to it was never edited: its
+# lens/focal are the code's guess (the laptop runs the 6 mm M118FM06), not data.
+LEGACY_RIG_PREFILL = {"lens": "Tamron M118FM08 (8 mm)", "focal_mm": 8.0,
+                      "filter": "MidOpt BP850"}
+
+
+def drop_legacy_rig_prefill(rig: Dict) -> Tuple[Dict, List[str]]:
+    """An untouched old pre-fill loses lens + focal_mm (-> unknown); the filter
+    stays.  Any operator entry in the sheet leaves it alone.  Idempotent."""
+    if rig != LEGACY_RIG_PREFILL:
+        return rig, []
+    out = {k: v for k, v in rig.items() if k not in ("lens", "focal_mm")}
+    return out, [f"rig.lens/focal_mm: {rig['lens']!r} was the old code pre-fill, never "
+                 "entered -> unknown (enter the mounted lens in phase 1 Rig)"]
+
+
+# A new project ("Start blank") inherits the camera RIG of the most recently used
+# project: what stays mounted between scenes.  Everything else -- the SCENE: ROI,
+# exclusion mask, gamma/CLAHE/MOG2 calibration, sensitivity, calibration_state, the
+# empty-wall plate (a file of the project) -- starts from the code defaults.
+RIG_INHERIT_KEYS = (
+    "camera_source",            # which camera
+    "ids_ratio",                # sensor crop (W/H): landscape 1.37 vs portrait 1.0
+    "ids_exposure_us",          # IDS exposure / gain (active lighting profile)
+    "ids_gain_db",
+    "input_mirror",             # how the camera is mounted (REQ-5)
+    "input_rotation",
+)
+# The on-camera part of the rig sheet.  Where the camera stands (distance, height,
+# focus set for that distance), what the dancers wear (markers) and the notes are
+# per scene: not inherited.
+RIG_SHEET_INHERIT_FIELDS = ("lens", "focal_mm", "f_number", "filter", "illuminator",
+                            "illuminator_offset_cm")
+
+
+def inherited_rig(flat: Dict) -> Dict:
+    """The camera-rig subset of a (validated, flat) project config for a new
+    project: ``RIG_INHERIT_KEYS`` present in it + the on-camera rig-sheet fields
+    (as ``"rig"``, only when the project has a rig sheet)."""
+    out = {k: flat[k] for k in RIG_INHERIT_KEYS if flat.get(k) is not None}
+    rig = flat.get("rig")
+    if isinstance(rig, dict):
+        out["rig"] = {k: rig[k] for k in RIG_SHEET_INHERIT_FIELDS if k in rig}
+    return out
 
 
 def split_profile(flat: Dict) -> Tuple[Dict, Dict]:
@@ -281,6 +329,8 @@ def validate_flat(flat: Dict) -> Tuple[Dict, List[str]]:
 
     if "rig" in out:
         out["rig"], rig_warnings = sanitize_rig(out["rig"])
+        warnings.extend(rig_warnings)
+        out["rig"], rig_warnings = drop_legacy_rig_prefill(out["rig"])
         warnings.extend(rig_warnings)
 
     _validate_input_transform(out, warnings)

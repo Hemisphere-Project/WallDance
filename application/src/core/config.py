@@ -791,13 +791,14 @@ IMPORT_TRANSCODE_QUALITY = 98
 RECORDING_CAMLOG_INTERVAL_S = 1.0
 
 # Rig sheet defaults for a new project (phase 1 Rig; the fields the camera cannot
-# report). Known production hardware is pre-filled; aperture/focus/distances
-# stay empty until the operator enters them. Schema: config_schema.RIG_FIELDS.
-RIG_DEFAULTS = {
-    "lens": "Tamron M118FM08 (8 mm)",
-    "focal_mm": 8.0,
-    "filter": "MidOpt BP850",
-}
+# report). EMPTY = unknown: the code never claims hardware.  It used to pre-fill
+# "Tamron M118FM08 (8 mm)" / 8 mm / "MidOpt BP850", so every take's .meta claimed
+# the 8 mm while the 6 mm (M118FM06) was mounted.  A new project ("Start blank")
+# inherits the on-camera part of the most recently used project's rig sheet
+# instead (config_schema.RIG_SHEET_INHERIT_FIELDS); the operator enters the rest.
+# A saved sheet that is still exactly the old pre-fill loses its lens/focal on
+# load (config_schema.drop_legacy_rig_prefill).  Schema: config_schema.RIG_FIELDS.
+RIG_DEFAULTS: dict = {}
 
 # =============================================================================
 # BACKGROUND SUBTRACTION
