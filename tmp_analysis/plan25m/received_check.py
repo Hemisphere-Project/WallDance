@@ -9,6 +9,7 @@ size AND mtime match) fetches only what is still missing: the .meta / camlog / c
 
   python3 tmp_analysis/plan25m/received_check.py --received ~/incoming/2026-10-07 --since 2026-10-07T12:00
   python3 tmp_analysis/plan25m/received_check.py --received ... --since ... --place      # + link/copy in place
+  ... --since ... --save-manifest m.json   (laptop online: list + fingerprints)  /  --manifest m.json (offline)
 
 Needs the laptop online (wdremote's SSH config).  --project limits to one project folder.
 """
@@ -88,27 +89,41 @@ def fmt(n: float) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--received", required=True, help="folder with what came another way (searched recursively)")
+    ap.add_argument("--received", default=None, help="folder with what came another way (searched recursively)")
     ap.add_argument("--since", required=True, help="laptop files modified after this (YYYY-MM-DD[THH:MM], local)")
     ap.add_argument("--project", default=None, help="one project folder (default: every project changed since)")
     ap.add_argument("--place", action="store_true", help="put matched files at the laptop's path, laptop mtime")
     ap.add_argument("--json", default=None, help="write the comparison here")
+    ap.add_argument("--save-manifest", default=None, metavar="JSON",
+                    help="save the laptop's list + fingerprints (compare later, laptop offline)")
+    ap.add_argument("--manifest", default=None, metavar="JSON", help="use a saved list instead of the laptop")
     ap.add_argument("--local", default=None, metavar="ROOT", help="self-test: treat this local checkout as the laptop")
     a = ap.parse_args()
 
     since = dt.datetime.fromisoformat(a.since).timestamp()
-    if a.local:
-        remote = W.load_remote(host="local", root=a.local, os="posix")
-        tr = W.LocalTransport(remote)
+    if a.manifest:
+        man = json.loads(Path(a.manifest).read_text())
     else:
-        remote = W.load_remote()
-        tr = W.SshTransport(remote)
-    paths = [f"projects/{a.project}"] if a.project else ["projects"]
-    # tracking_events logs are big and only needed for forensics: listed, not hashed
-    man = W.run_agent(tr, remote, "manifest", {"paths": paths, "since": since,
-                                               "nohash": ["*tracking_events.jsonl"]},
-                      timeout=1800, script_src=SIG_AGENT)
+        if a.local:
+            remote = W.load_remote(host="local", root=a.local, os="posix")
+            tr = W.LocalTransport(remote)
+        else:
+            remote = W.load_remote()
+            tr = W.SshTransport(remote)
+        paths = [f"projects/{a.project}"] if a.project else ["projects"]
+        # tracking_events logs are big and only needed for forensics: listed, not hashed
+        man = W.run_agent(tr, remote, "manifest", {"paths": paths, "since": since,
+                                                   "nohash": ["*tracking_events.jsonl"]},
+                          timeout=1800, script_src=SIG_AGENT)
+    if a.save_manifest:
+        Path(a.save_manifest).write_text(json.dumps(man, indent=1))
+        print(f"saved the laptop's list to {a.save_manifest}")
     rfiles = man["files"]
+    if a.received is None:
+        for f in sorted(rfiles, key=lambda x: x["rel"]):
+            print(f"  {fmt(f['size']):>9}  {f['rel']}")
+        print(f"total {fmt(sum(f['size'] for f in rfiles))} in {len(rfiles)} file(s)")
+        return 0
     by_sig = {}
     for f in rfiles:
         if f.get("sig"):
