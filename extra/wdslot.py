@@ -196,14 +196,22 @@ def apply(args):
     return {"written": written, "deleted": deleted, "links": links,
             "compile_errors": bad[:20], "problems": problems[:20]}
 
+# The query's own powershell has '*main.py*' and 'WallDanceLauncher*' on its command
+# line, so it matched itself ("running: pid N [launcher] powershell ..."): skip $PID.
+PS_QUERY = ("Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and "
+            "$_.CommandLine -and ($_.CommandLine -like '*main.py*' -or "
+            "$_.Name -like 'WallDanceLauncher*') } | "
+            "Select-Object ProcessId,Name,CommandLine,CreationDate | ConvertTo-Json -Compress")
+
+def _is_query_itself(row):
+    """This agent or its process query (belt and braces for the $PID filter)."""
+    return row.get("pid") == os.getpid() or "Get-CimInstance Win32_Process" in (row.get("cmd") or "")
+
 def ps(args):
     """WallDance app / launcher processes with the slot they run from."""
     rows = []
     if os.name == "nt":
-        cmd = ("Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and "
-               "($_.CommandLine -like '*main.py*' -or $_.Name -like 'WallDanceLauncher*') } | "
-               "Select-Object ProcessId,Name,CommandLine,CreationDate | ConvertTo-Json -Compress")
-        r = subprocess.run(["powershell", "-NoProfile", "-Command", cmd],
+        r = subprocess.run(["powershell", "-NoProfile", "-Command", PS_QUERY],
                            capture_output=True, text=True)
         try:
             data = json.loads(r.stdout or "[]")
@@ -218,10 +226,14 @@ def ps(args):
             if "src/main.py" in line and "bash -c" not in line:
                 pid, _, cmd = line.strip().partition(" ")
                 rows.append({"pid": int(pid), "name": "python", "cmd": cmd})
+    rows = [r_ for r_ in rows if not _is_query_itself(r_)]
+    # Roots as directories: "C:/WallDance/WallDance" is also a prefix of the launcher's
+    # "C:/WallDance/WallDanceLauncher.exe", which was reported as the live slot.
+    dev = args["dev_root"].replace("\\", "/").lower().rstrip("/") + "/"
+    live = args["live_root"].replace("\\", "/").lower().rstrip("/") + "/"
     for r_ in rows:
         c = (r_.get("cmd") or "").replace("\\", "/").lower()
-        r_["slot"] = ("dev" if args["dev_root"].replace("\\", "/").lower() in c else
-                      "live" if args["live_root"].replace("\\", "/").lower() in c else
+        r_["slot"] = ("dev" if dev in c else "live" if live in c else
                       ("launcher" if "walldancelauncher" in c else "?"))
     return {"processes": rows}
 

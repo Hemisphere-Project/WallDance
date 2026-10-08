@@ -154,6 +154,51 @@ def test_windows_launch_script_is_interactive_task():
     assert enc[:4] == ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand"]
 
 
+def test_slot_ps_does_not_report_its_own_query():
+    """`slot status` listed its own PowerShell query as a running app ("running: pid 592
+    [launcher] powershell -NoProfile -Command Get-CimInstance ...", 2026-10-08): the
+    query's command line holds the '*main.py*' / 'WallDanceLauncher*' it searches for."""
+    from types import SimpleNamespace
+    ns = {}
+    exec(ws.SLOT_AGENT_PY, ns)                       # the agent as the laptop runs it
+    assert "$_.ProcessId -ne $PID" in ns["PS_QUERY"]
+    seen = {}
+
+    def fake_run(argv, **kw):
+        seen["argv"] = argv
+        rows = [
+            {"ProcessId": 592, "Name": "powershell.exe",
+             "CommandLine": 'powershell -NoProfile -Command "' + ns["PS_QUERY"] + '"'},
+            {"ProcessId": 4242, "Name": "python.exe",
+             "CommandLine": "C:\\WallDance\\WallDance\\application\\.venv\\Scripts\\python.exe -"},
+            {"ProcessId": 100, "Name": "python.exe",
+             "CommandLine": "C:\\WallDance\\WallDance-dev\\application\\.venv\\Scripts\\"
+                            "python.exe src\\main.py --project p"},
+            {"ProcessId": 200, "Name": "WallDanceLauncher.exe",      # not "live": the live
+             "CommandLine": "C:\\WallDance\\WallDanceLauncher.exe"},  # root is its prefix
+            {"ProcessId": 300, "Name": "python.exe",
+             "CommandLine": "C:\\WallDance\\WallDance\\application\\.venv\\Scripts\\"
+                            "python.exe src\\main.py"},
+        ]
+        return SimpleNamespace(stdout=json.dumps(rows), returncode=0)
+
+    ns["os"] = SimpleNamespace(name="nt", getpid=lambda: 4242)
+    ns["subprocess"] = SimpleNamespace(run=fake_run)
+    procs = ns["ps"]({"dev_root": "C:/WallDance/WallDance-dev",
+                      "live_root": "C:/WallDance/WallDance"})["processes"]
+    assert seen["argv"][:3] == ["powershell", "-NoProfile", "-Command"]
+    assert [(p["pid"], p["slot"]) for p in procs] == [(100, "dev"), (200, "launcher"),
+                                                      (300, "live")]
+
+    # nothing running -> nothing reported (the false "running" of 2026-10-08)
+    def only_self(argv, **kw):
+        return SimpleNamespace(stdout=json.dumps({"ProcessId": 592, "Name": "powershell.exe",
+                                                  "CommandLine": ns["PS_QUERY"]}), returncode=0)
+    ns["subprocess"] = SimpleNamespace(run=only_self)
+    assert ns["ps"]({"dev_root": "C:/WallDance/WallDance-dev",
+                     "live_root": "C:/WallDance/WallDance"})["processes"] == []
+
+
 def test_launcher_dir_and_dev_root():
     remote = wr.Remote(host="h", root="C:/WallDance/WallDance")
     assert ws.launcher_dir(remote) == "C:/WallDance"
