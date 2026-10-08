@@ -34,7 +34,7 @@ boundary `FrameProcessor` → `OSCSender.send_frame(scaled_tracks, original_w, o
 | Target port | `OSC_PORT` = `9000` (configurable) | `config.py:379` |
 | Enabled | `OSC_ENABLED` = `True`; live gate `settings.osc_enabled` | `config.py:377`, `pipeline.py:904` |
 | Bundling | **None today** — one UDP datagram per `send_message`. (`OscBundleBuilder` is imported but unused.) | `osc_output.py:7,62-116` |
-| Cadence | One full message set **per processed frame** (YOLO/tracker cadence, ~15–20 fps). Not resampled. | `pipeline.py:891-905` |
+| Cadence | One full message set **per processed frame** (YOLO/tracker cadence, ~15–20 fps). Not resampled. During a camera stall (no frame for > 3 frame periods, up to 5 s) the last set is repeated at the camera's frame rate (§D.1, D34). | `pipeline.py:891-905` |
 
 ### A.2 Coordinate system & normalization
 - All spatial values are **normalized to [0, 1]** against the **original camera frame**
@@ -321,6 +321,23 @@ byte-identical with slots on or off).
   every frame (fragile on textured walls). `/bbox` is the slot's smoothed box centred on the centroid; `/keypoints`
   are the bound track's skeleton translated onto the centroid (last skeleton while coasting);
   `/velocity` is the filtered slot velocity (px/frame, normalized as §A.3).
+- **Camera stalls** (D34, 2026-10-08, `camera_stall_hold`, default ON): the live camera sometimes
+  sends no frame for ~1.7 s, so nothing can be measured.  When no new frame has come for more than
+  3 frame periods (150 ms at 20 fps), the app re-sends the **last frame** at the camera's frame rate
+  (20 Hz) until frames come back: `/walldance/count` and every `/walldance/dancer/*` message, same ids,
+  positions, boxes and keypoints, `/velocity` 0.  No extrapolation: the points are frozen where they
+  were.  With `/dancer/state` on, each of those ids is `coasting` (`age_s` = seconds since it started
+  coasting); lost slots stay `lost`.  The silence beyond those 3 frame periods does not count on
+  any hold: the slot holds (`coast_s`, smart hold), the belt and empty-wall caps and the other slot
+  timers resume where they stopped, so a stall alone never drops an id.  The dancer kept moving,
+  though: when frames resume, the distances a slot accepts for its dancer (the jump check, the
+  re-acquire gates) widen by 2 heights per second of silence, so a dancer who walked away during
+  the stall keeps the same id instead of taking a new one.  A silence longer than
+  **5 s**, or the camera lost (closed, reconnecting -- the app reopens an IDS stream silent for
+  2.5 s), is a camera loss: the re-sending stops, the stream empties as before, the camera-lost path
+  and its alert are unchanged, and that time counts on the holds again.  Recorded
+  takes (playback) never trigger it.  With the key off: the old behaviour (OSC silent, the holds
+  count the stall).
 - **`L > 1`**: the RTS fixed-lag smoother now runs on the slot ids (no restart on tracker id
   churn).
 
@@ -330,7 +347,8 @@ byte-identical with slots on or off).
   empty-wall snapshot difference) / `weak` (a coasting
   slot re-found on weak evidence near its prediction; only with the `weak_enabled` slot option, off by
   default) / `coasting` (holding, no measurement) / `lost` (absent from `/count`), `age_s` float32 =
-  seconds in that state. Causal: not delayed at `L > 1`.
+  seconds in that state. Causal: not delayed at `L > 1`.  During a camera stall the re-sent frames
+  carry every emitting slot as `coasting` (§D.1 "Camera stalls").
 - Additive: consumers that ignore it are unaffected. Shared with the marker stream's proposed
   `/dancer/source` (audit 02 §3) — one message, extended later if needed.
 
@@ -346,6 +364,7 @@ byte-identical with slots on or off).
 | Use empty wall (`fg_enabled`) | ON | no-op without a plate; PLAN_25M §C.12 (night takes A/B) |
 | Height guard (`height_guard`) | ON | inactive while the configured height's gate holds the dancers; PLAN_25M §C.12 |
 | Send state (`osc_send_state`) | OFF | opt-in |
+| Camera stall bridge (`camera_stall_hold`, project key, no GUI) | ON | D34: the laptop's IDS camera stalls ~1.7 s, 0.7-2.9 times a minute; each stall dropped a fresh slot (1.5 s hold) and left an earned one ~0.3 s (PLAN_25M §C.16) |
 | Ignore static figures (`static_ghost_guard`) | ON | PLAN_25M 2026-10-06 offline gate (`tmp_analysis/plan25m/slot_eval.py`) |
 | Static release (`static_release_s`) | 0 (off) | dropped a still floor dancer at 8 s |
 | Filter input (`slot_filter_input`) | `smoothed` | `raw_skeleton` to be judged by eye on TD (D18) |
