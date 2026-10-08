@@ -1,0 +1,247 @@
+diff --git a/application/src/core/config.py b/application/src/core/config.py
+index e0370b9..ad28637 100644
+--- a/application/src/core/config.py
++++ b/application/src/core/config.py
+@@ -473,6 +473,16 @@ TRACKER_OWN_HEIGHT_WINDOW = 200
+ TRACKER_OWN_HEIGHT_MIN_SAMPLES = 20
+ TRACKER_TORSO_KPT_CONF = 0.5
+ TRACKER_TORSO_TO_HEIGHT = 3.4
++# Own-height gates the other way (2026-10-08, the start-of-take hole, PLAN_25M §C.14): a track whose own
++# size is > TRACKER_OWN_HEIGHT_TRIGGER x the global person height (somebody walking in close to the
++# camera: 600-750 px for a 45-127 px wall height) scales the same gates (match threshold, close accept,
++# displacement gate, new-track radius) with its own size.  With the global gates the walker's centroid
++# moved 0.06-0.17 of his height a frame, past a 42 px match gate and a 34 px new-track radius: 4-13 new
++# tracks in his first seconds, each restarting the warm-up -- 1.35-2.95 s from the first confident
++# skeleton to the first point.  Own size = the median torso x TRACKER_TORSO_TO_HEIGHT from the first
++# confident torso (a blob-born track never grows).  The warm-up itself is unchanged.
++TRACKER_OWN_HEIGHT_GROW = False
++TRACKER_OWN_HEIGHT_GROW_MIN_SAMPLES = 1
+ TRACKER_CLOSE_ACCEPT_RATIO = 0.20        # Unconditional match acceptance: if
+                                          # raw centroid distance < person_height
+                                          # × this ratio, accept the Hungarian
+diff --git a/application/src/core/tracker.py b/application/src/core/tracker.py
+index 745fa37..c6ff8d9 100644
+--- a/application/src/core/tracker.py
++++ b/application/src/core/tracker.py
+@@ -49,6 +49,7 @@ from core.config import (
+     TRACKER_MAX_DISPLACEMENT_RATIO,
+     TRACKER_OWN_HEIGHT_GATES, TRACKER_OWN_HEIGHT_WINDOW, TRACKER_OWN_HEIGHT_MIN_SAMPLES,
+     TRACKER_TORSO_KPT_CONF, TRACKER_TORSO_TO_HEIGHT, TRACKER_OWN_HEIGHT_TRIGGER,
++    TRACKER_OWN_HEIGHT_GROW, TRACKER_OWN_HEIGHT_GROW_MIN_SAMPLES,
+     MOTION_BRIDGE_ENABLED, MOTION_BRIDGE_MAX_FRAMES,
+     MOTION_BRIDGE_GATE_RATIO, MOTION_BRIDGE_NOISE_STAGES,
+     MOTION_BRIDGE_GATE_GROWTH_PER_MISS, MOTION_BRIDGE_GATE_ESTABLISHED_MULT,
+@@ -739,10 +740,12 @@ class DancerTrack:
+             if torso > 1.0:
+                 self._torso_hist.append(torso)
+ 
+-    def own_height(self) -> float | None:
++    def own_height(self, min_samples: int | None = None) -> float | None:
+         """This track's own body size as a standing height: the median torso of its recent real skeletons
+-        x TRACKER_TORSO_TO_HEIGHT, or None before TRACKER_OWN_HEIGHT_MIN_SAMPLES confident torsos."""
+-        if len(self._torso_hist) < TRACKER_OWN_HEIGHT_MIN_SAMPLES:
++        x TRACKER_TORSO_TO_HEIGHT, or None before ``min_samples`` (TRACKER_OWN_HEIGHT_MIN_SAMPLES)
++        confident torsos."""
++        need = TRACKER_OWN_HEIGHT_MIN_SAMPLES if min_samples is None else max(1, int(min_samples))
++        if len(self._torso_hist) < need:
+             return None
+         ts = sorted(self._torso_hist)
+         return float(ts[len(ts) // 2]) * TRACKER_TORSO_TO_HEIGHT
+@@ -944,6 +947,7 @@ class DancerTracker:
+         self._smoothing_depth = 1  # Temporal confidence smoothing depth
+         self._person_height_px = 150  # updated via set_person_height()
+         self.own_height_gates = TRACKER_OWN_HEIGHT_GATES   # config key tracker_own_height_gates
++        self.own_height_grow = TRACKER_OWN_HEIGHT_GROW     # config key tracker_own_height_grow
+ 
+         # Scale-dependent thresholds — all derived from person_height_px.
+         # Call set_person_height() to update; the master dial in config.py
+@@ -1320,20 +1324,25 @@ class DancerTracker:
+     def _track_height(self, track: DancerTrack) -> float:
+         """The height this track's re-association gates scale with: the global person height, or the
+         track's own size once it is established and the global height is clearly too big for it
+-        (> TRACKER_OWN_HEIGHT_TRIGGER x; TRACKER_OWN_HEIGHT_GATES)."""
++        (> TRACKER_OWN_HEIGHT_TRIGGER x; TRACKER_OWN_HEIGHT_GATES), or -- any track with a confident
++        torso -- clearly too small for it (TRACKER_OWN_HEIGHT_GROW: somebody close to the camera)."""
+         h = float(self._person_height_px)
+         if self.own_height_gates and track.is_established:
+             own = track.own_height()
+             if own is not None and own * TRACKER_OWN_HEIGHT_TRIGGER < h:
+-                h = own
++                return own
++        if self.own_height_grow:
++            own = track.own_height(TRACKER_OWN_HEIGHT_GROW_MIN_SAMPLES)
++            if own is not None and own > TRACKER_OWN_HEIGHT_TRIGGER * h:
++                return own
+         return h
+ 
+     def _track_match_gate(self, track: DancerTrack) -> float:
+         """``distance_threshold`` for this track (see _track_height); the global one otherwise."""
+-        if not self.own_height_gates:
++        if not (self.own_height_gates or self.own_height_grow):
+             return float(self.distance_threshold)
+         h = self._track_height(track)
+-        if h >= self._person_height_px:
++        if h == float(self._person_height_px):
+             return float(self.distance_threshold)
+         floor = max(5, int(h) // 10)
+         return float(max(floor, int(h * TRACKER_MATCH_GATE_RATIO)))
+@@ -2751,11 +2760,15 @@ class DancerTracker:
+         forced onto it (s6 28.0 s: 270 px in a 322 px gate for a 124 px dancer)."""
+         is_edge_det = self._is_near_edge(float(det_centroid[0]))
+         creation_gate = self.new_track_min_distance
+-        if near_track is not None and self.own_height_gates:
++        if near_track is not None and (self.own_height_gates or self.own_height_grow):
+             h = self._track_height(near_track)
+             if h < self._person_height_px:
+                 floor = max(5, int(h) // 10)
+                 creation_gate = min(creation_gate, max(floor // 2, int(h * TRACKER_NEW_TRACK_GATE_RATIO)))
++            elif h > self._person_height_px:
++                # TRACKER_OWN_HEIGHT_GROW: a detection a fraction of a big body away from that body's
++                # track is the same person moving, not a new one (the walk-in churn, PLAN_25M §C.14)
++                creation_gate = max(creation_gate, int(h * TRACKER_NEW_TRACK_GATE_RATIO))
+         if not is_edge_det:
+             creation_gate = int(creation_gate * TRACKER_CENTER_NEW_TRACK_GATE_MULT)
+         return creation_gate, is_edge_det
+diff --git a/application/tests/replay.py b/application/tests/replay.py
+index 3dc4523..866458d 100644
+--- a/application/tests/replay.py
++++ b/application/tests/replay.py
+@@ -298,6 +298,8 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
+         tracker.intermittent_confirm = bool(config["tracker_intermittent_confirm"])
+     if "tracker_own_height_gates" in config:
+         tracker.own_height_gates = bool(config["tracker_own_height_gates"])
++    if "tracker_own_height_grow" in config:
++        tracker.own_height_grow = bool(config["tracker_own_height_grow"])
+     if "tracker_ghost_skeleton_age" in config:
+         tracker.ghost_skeleton_age = int(config["tracker_ghost_skeleton_age"])
+     if "tracker_swap_correctors" in config:
+diff --git a/application/tests/test_tracker_own_height_grow.py b/application/tests/test_tracker_own_height_grow.py
+new file mode 100644
+index 0000000..994486d
+--- /dev/null
++++ b/application/tests/test_tracker_own_height_grow.py
+@@ -0,0 +1,124 @@
++"""Own-height gates the other way (2026-10-08, the start-of-take hole, PLAN_25M §C.14).
++
++On the night takes the operator walks in close to the camera (600-750 px tall) while the project's person
++height is 45 px (127 px at the wall): every gate scales with the global height, so his centroid moving
++0.06-0.17 of his height a frame left the 42 px match gate and the 34 px new-track radius -- 4-13 new
++tracks in his first seconds, each restarting the warm-up.  With ``own_height_grow`` a track whose own size
++(confident torso x 3.4) is > 2 x the global height scales those gates with its own size; the warm-up
++integral is unchanged.  No GPU, no footage.
++"""
++import sys
++import tempfile
++from pathlib import Path
++
++import numpy as np
++
++HERE = Path(__file__).resolve().parent
++sys.path.insert(0, str(HERE.parent / "src"))
++
++from core.config import TRACK_WARMUP_THRESHOLD, TRACKER_OWN_HEIGHT_GROW  # noqa: E402
++from core.tracker import DancerTracker  # noqa: E402
++
++# keypoint rows (COCO order) as a fraction of the height above (-) / below (+) the box centre:
++# shoulders at -0.30 h, hips at 0.0 -> torso 0.30 h -> own size 1.02 h
++_PROFILE = [-0.45] * 5 + [-0.30, -0.30, -0.15, -0.15, 0.0, 0.0, 0.0, 0.0, 0.25, 0.25, 0.45, 0.45]
++_DX = [0, -3, 3, -5, 5, -12, 12, -20, 20, -25, 25, -8, 8, -8, 8, -8, 8]
++
++
++def _det(x, y=650.0, h=700.0, torso_conf=0.8):
++    kpts = np.stack([x + np.array(_DX, float) * h / 120, y + np.array(_PROFILE) * h], axis=1)
++    conf = np.full(17, 0.8)
++    conf[[5, 6, 11, 12]] = torso_conf
++    xs, ys = kpts[:, 0], kpts[:, 1]
++    bbox = np.array([xs.min(), ys.min(), xs.max() - xs.min(), ys.max() - ys.min()])
++    return kpts, conf, bbox
++
++
++def _tracker(person_h, grow):
++    t = DancerTracker()
++    t.logger.start_session(tempfile.mkdtemp())
++    t.set_person_height(person_h)
++    t.own_height_grow = grow
++    return t
++
++
++# an irregular walk across the frame, close to the camera: steps of 0.01-0.13 of his height a frame,
++# with a missed detection now and then (the saturated, half-visible walker of the night takes)
++_STEPS = [90, 15, 70, 20, 85, 10, 60, 30, 95, 5, 75, 25, 80, 15, 65, 35, 90, 10, 70, 20,
++          85, 15, 60, 30, 95, 10, 75, 25, 80, 20]
++_MISSED = {6, 13, 21}
++
++
++def _walk(t, h=700.0, x0=300.0):
++    """Feed the walk; returns (tracks born, first frame anything was reported)."""
++    x, first = x0, None
++    born = set()
++    for i, s in enumerate(_STEPS):
++        x += s
++        rep = t.update([] if i in _MISSED else [_det(x, h=h)], frame_number=i)
++        born |= {tr.track_id for tr in t.tracks}
++        if rep and first is None:
++            first = i
++    return born, first
++
++
++def test_default_is_off():
++    assert TRACKER_OWN_HEIGHT_GROW is False
++    assert DancerTracker().own_height_grow is False
++
++
++def test_without_growth_a_close_walker_churns_through_tracks():
++    born, first = _walk(_tracker(45, grow=False))
++    assert len(born) >= 3                     # the global 45 px gates keep minting new tracks
++    assert first is None                      # ... and no track lives long enough to be reported
++
++
++def test_with_growth_a_close_walker_keeps_one_track():
++    born, first = _walk(_tracker(45, grow=True))
++    assert len(born) == 1
++    assert first is not None
++
++
++def test_the_warm_up_is_unchanged():
++    """Growth keeps the detection stream on one track; it does not shorten the warm-up: still the
++    full integral (score 1 at birth, +1 a match, -0.8 a miss, reported at the threshold)."""
++    t = _tracker(45, grow=True)
++    _born, first = _walk(t)
++    hits_before_report = first + 1 - sum(1 for m in _MISSED if m <= first)
++    assert hits_before_report >= TRACK_WARMUP_THRESHOLD
++
++
++def test_no_confident_torso_no_growth():
++    """A track without confident shoulders + hips (a blob-born or a faint track) keeps the global gates."""
++    t = _tracker(45, grow=True)
++    t.update([_det(500.0, torso_conf=0.3)], frame_number=0)
++    trk = t.tracks[0]
++    assert t._track_height(trk) == 45.0 and t._track_match_gate(trk) == t.distance_threshold
++
++
++def test_a_height_about_right_keeps_the_tuned_gates():
++    """Own size 714 px vs a global 400 px: 1.8 x < the 2 x trigger, nothing changes."""
++    t = _tracker(400, grow=True)
++    t.update([_det(500.0)], frame_number=0)
++    trk = t.tracks[0]
++    assert t._track_height(trk) == 400.0 and t._track_match_gate(trk) == t.distance_threshold
++
++
++def test_growth_scales_the_gates_with_the_own_size():
++    t = _tracker(45, grow=True)
++    t.update([_det(500.0)], frame_number=0)
++    trk = t.tracks[0]
++    own = 0.30 * 700 * 3.4
++    assert abs(t._track_height(trk) - own) < 1
++    assert t._track_match_gate(trk) > 10 * t.distance_threshold
++    gate, _edge = t._get_creation_gate(np.array([520.0, 650.0]), trk)
++    assert gate >= int(own * 0.55)
++
++
++def test_a_second_person_beyond_the_grown_radius_is_still_a_new_track():
++    t = _tracker(45, grow=True)
++    for i in range(5):
++        t.update([_det(300.0 + 10 * i)], frame_number=i)
++    assert len(t.tracks) == 1
++    t.update([_det(345.0), _det(1400.0)], frame_number=5)   # somebody else, 1.5 of his heights away
++    assert len(t.tracks) == 2
