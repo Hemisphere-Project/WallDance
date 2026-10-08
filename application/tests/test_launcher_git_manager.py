@@ -232,6 +232,45 @@ def test_release_switch_keeps_laptop_commits_on_main(remote, tmp_path):
     assert gm.current_version() == ("release", release_sha.decode()[:12])
 
 
+def test_first_release_switch_from_main_fast_forward(remote, tmp_path):
+    # The show laptop on 2026-10-08: LIVE on main (the old launcher's clone), no
+    # local release ref, never fetched since; GitHub's release = main + commits (a
+    # fast-forward), changing install.bat and adding the pinned requirements.
+    old = GitManager(remote, str(tmp_path / "local"), branch="main")
+    old.clone()
+    main_sha = _head(old.target_dir)
+    _write(old.target_dir, "projects/show/config.json", "{}\n")      # field data, untracked
+    _commit_on(remote, "release", "install.bat", "rem pinned install\n", "pinned installer")
+    release_sha = _commit_on(remote, "release", "application/requirements-prod.txt",
+                             "numpy==1.26.4\n", "freeze the laptop's stack")
+    with Repo(old.target_dir) as repo:
+        assert b"refs/heads/release" not in repo.refs
+        assert b"refs/remotes/origin/release" not in repo.refs
+
+    gm = GitManager(remote, old.target_dir)          # the new exe: launcher.json -> release
+    assert gm.branch == "release"
+    assert gm.dirty_files() == []
+    assert gm.check_updates() is UpdateStatus.BEHIND    # plain "update available" prompt
+    assert gm.update() is True                           # install.bat changed: it runs once
+
+    with Repo(gm.target_dir) as repo:
+        assert repo.refs.read_ref(b"HEAD") == b"ref: refs/heads/release"
+        assert repo.head() == release_sha
+        assert repo.refs[b"refs/heads/main"] == main_sha               # untouched
+        assert repo.refs[gm.last_backup_ref.encode()] == main_sha      # + backup ref
+        assert repo.refs[b"refs/remotes/origin/release"] == release_sha
+    with open(os.path.join(gm.target_dir, "install.bat")) as f:
+        assert f.read() == "rem pinned install\n"
+    assert os.path.exists(os.path.join(gm.target_dir, "application", "requirements-prod.txt"))
+    assert os.path.exists(os.path.join(gm.target_dir, "projects", "show", "config.json"))
+    assert gm.last_moved_aside == [] and gm.dirty_files() == []
+
+    # The next start: nothing to update, so no second install.bat run.
+    again = GitManager(remote, old.target_dir)
+    assert again.check_updates() is UpdateStatus.UP_TO_DATE
+    assert again.current_version() == ("release", release_sha.decode()[:12])
+
+
 def test_update_moves_untracked_collision_aside(manager, remote):
     _write(manager.target_dir, "notes.txt", "precious untracked notes\n")
     _commit(remote, "notes.txt", "upstream notes\n", "upstream starts tracking notes.txt")
