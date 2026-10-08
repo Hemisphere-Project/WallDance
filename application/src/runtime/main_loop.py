@@ -34,8 +34,10 @@ import cv2
 import numpy as np
 
 from core.config import (
+    CAMERA_FPS,
     CAMERA_HEIGHT,
     CAMERA_WIDTH,
+    IDS_MAX_FPS,
     IDS_USE_GPU_DIRECT,
     LIGHT_CHANGE_MIN_SAMPLES,
     LIGHT_CHANGE_S,
@@ -632,6 +634,7 @@ class MainLoop:
         preview_source_frame = None
 
         if app.recorder.is_playing:
+            self._stall_not_live()            # a take never triggers the stall bridge (D34)
             # Read from video file
             frame = app.recorder.read_frame()
             if frame is not None:
@@ -666,6 +669,7 @@ class MainLoop:
                     camera_ready = False
 
             if not camera_ready:
+                self._stall_not_live()        # camera lost: as before (D34)
                 if app.camera.state.is_open:
                     # Capture/acquisition error while the camera is still
                     # marked open (e.g. the IDS acquisition thread died
@@ -685,6 +689,7 @@ class MainLoop:
                 return None
 
             if app.cameras._ids_stream_timed_out():
+                self._stall_not_live()
                 print("[Camera] IDS stream stalled, reconnecting silently")
                 app.cameras._mark_camera_unavailable(app.camera.state.source, close_active=True)
                 app.cameras._schedule_camera_retry(delay=0.5)
@@ -717,6 +722,7 @@ class MainLoop:
 
             # ret=False means camera error, ret=True with frame=None means still initializing
             if not ret:
+                self._stall_not_live()
                 print("Camera read failed, marking as unavailable")
                 app.cameras._mark_camera_unavailable(app.camera.state.source, close_active=True)
                 app.cameras._schedule_camera_retry(delay=0.5)
@@ -735,6 +741,7 @@ class MainLoop:
                     gpu_tensor_available=False,
                     camera_waiting=True,
                 )
+                self._stall_keepalive()       # a camera stall: keep OSC alive (D34)
                 self._render_while_waiting()
                 # Update GPU stats periodically
                 self._update_gpu_stats_if_due()
@@ -745,6 +752,8 @@ class MainLoop:
                 preview_source_frame = frame
             elif gpu_tensor is not None and app.unified_camera is not None:
                 preview_source_frame = app.unified_camera.get_last_cpu_frame()
+
+            self._stall_frame()               # a new live frame: ends a stall, if any (D34)
 
             # Input FPS cap: wait if too soon since last processed frame
             if app.input_fps_cap and (frame is not None or gpu_tensor is not None):
@@ -1212,6 +1221,40 @@ class MainLoop:
     # from TouchDesigner on the same laptop) for nothing.  60 Hz is plenty for
     # an idle UI; the per-frame render at the tick tail is unaffected.
     IDLE_RENDER_MIN_INTERVAL_S = 1.0 / 60.0
+
+    # ------------------------------------------------------------------
+    # Camera stalls (D34, core/camera_stall.py via FrameProcessor)
+    # ------------------------------------------------------------------
+    def _camera_period_s(self) -> float:
+        """1 / the live camera's target fps: the IDS acquisition runs at
+        min(CAMERA_FPS, IDS_MAX_FPS) (20 fps), an OpenCV camera at CAMERA_FPS."""
+        fps = float(CAMERA_FPS)
+        if _safe(self.app.cameras._is_ids_camera_active, False):
+            fps = min(fps, float(IDS_MAX_FPS))
+        return 1.0 / max(1.0, fps)
+
+    def _stall_frame(self) -> None:
+        """A new live camera frame: tell the processor (it ends a stall, if any)."""
+        proc = getattr(self.app, "processor", None)
+        if proc is None or not hasattr(proc, "note_camera_frame"):
+            return
+        removed = proc.note_camera_frame(time.perf_counter(), self._camera_period_s())
+        if isinstance(removed, float) and removed > 0.0:
+            st = proc.stall.last_stall or {}
+            print(f"[CameraStall] {st.get('silence_s', 0.0):.2f} s without a frame: hold clocks "
+                  f"paused {removed:.2f} s, OSC re-sent {st.get('resends', 0)}x "
+                  f"(#{proc.stall.stalls})")
+
+    def _stall_keepalive(self) -> None:
+        """The live camera has no new frame: during a stall, re-send the last OSC frame."""
+        proc = getattr(self.app, "processor", None)
+        if proc is not None and hasattr(proc, "osc_keepalive"):
+            proc.osc_keepalive(time.perf_counter())
+
+    def _stall_not_live(self) -> None:
+        proc = getattr(self.app, "processor", None)
+        if proc is not None and hasattr(proc, "camera_not_live"):
+            proc.camera_not_live()
 
     def _render_while_waiting(self) -> None:
         now = time.perf_counter()

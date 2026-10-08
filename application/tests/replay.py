@@ -267,7 +267,7 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
                              IDENTITY_SLOTS_STABILITY, IDENTITY_SLOTS_COAST_S,
                              IDENTITY_SLOTS_USE_IR_BELT, IDENTITY_SLOTS_STATIC_GUARD,
                              IDENTITY_SLOTS_STATIC_RELEASE_S, IDENTITY_SLOTS_FILTER_INPUT,
-                             IDENTITY_SLOTS_SMART_HOLD, FOREGROUND_ENABLED)
+                             IDENTITY_SLOTS_SMART_HOLD, FOREGROUND_ENABLED, CAMERA_STALL_HOLD)
     settings.identity_slots_enabled = bool(config.get("identity_slots_enabled",
                                                       IDENTITY_SLOTS_ENABLED))
     settings.max_dancers = int(config.get("max_dancers", IDENTITY_SLOTS_MAX_DANCERS))
@@ -285,6 +285,8 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
     settings.entry_min_travel_h = float(config.get("entry_min_travel_h", 0.0))
     settings.auto_height = bool(config.get("auto_height", False))
     settings.height_guard = bool(config.get("height_guard", settings.height_guard))
+    # camera stalls (D34): only an injected stall (replay_recording(stalls=...)) feeds the clock
+    settings.camera_stall_hold = bool(config.get("camera_stall_hold", CAMERA_STALL_HOLD))
     settings.fg_plate_path = str(config.get("fg_plate_path", "") or "")
     settings.roi_enabled = bool(config.get("roi_enabled", False))
     settings.roi_x = int(config.get("roi_x", 0))
@@ -381,6 +383,36 @@ def _attach_frame_clock(proc, fps: Optional[float]) -> dict:
     if callable(setter):
         setter(lambda: clock["frame"] / rate)
     return clock
+
+
+class _StallOsc:
+    """A stand-in OSC sender for injected camera stalls (D34): records what the pipeline
+    sends, so a replay can show what the stall keep-alive re-sent."""
+
+    enabled = True
+
+    def __init__(self):
+        self.frames = 0
+        self.last_ids: list = []
+        self.last_states: list = []
+
+    def send_frame(self, tracks, frame_width, frame_height):
+        self.frames += 1
+        self.last_ids = sorted(int(t.track_id) for t in tracks)
+
+    def send_states(self, states):
+        self.last_states = [[int(a), str(b), float(c)] for a, b, c in states]
+
+
+def parse_stall(spec: str) -> tuple:
+    """``FRAME:SECONDS[:gap]`` -> (source frame, seconds, skip).  A camera stall just before
+    source frame FRAME: the camera sends nothing for SECONDS (that many frames are skipped, the
+    frame clock runs on); ``:gap`` = the frames are already missing from the recording (a stall
+    the take holds): only the clock jumps."""
+    parts = spec.split(":")
+    if len(parts) not in (2, 3) or (len(parts) == 3 and parts[2] != "gap"):
+        raise ValueError(f"bad --stall {spec!r} (FRAME:SECONDS[:gap])")
+    return int(parts[0]), float(parts[1]), len(parts) == 2
 
 
 def internal_tracks(tracker, space) -> list:
@@ -485,6 +517,7 @@ def replay_recording(
     reference: bool = False,
     internal: bool = False,
     fps: Optional[float] = None,
+    stalls: Optional[list] = None,
 ) -> Dict:
     """Replay a recording and return a compact metric summary.
 
@@ -498,6 +531,13 @@ def replay_recording(
     slot-layer studies).  The output stage (identity slots) runs on a frame
     clock at ``fps`` (default 20) so its seconds-based timers are replay-exact;
     the emitted stream is recorded under ``emitted`` in each row.
+
+    ``stalls`` = [(source frame, seconds, skip)] injects camera stalls (D34, ``parse_stall``) as
+    the live app sees them: the frame clock jumps, the main loop's 10 ms camera polls run during
+    the silence (the OSC keep-alive, into a recording stand-in), every frame feeds the stall clock
+    like a live camera frame, and the row of the frame that ends a stall gets ``stall``.  The
+    tracker's frame numbers stay consecutive (live counts acquired frames).  Without ``stalls``
+    nothing of this runs.
     """
     proc = _build_processor(config, model_name, imgsz,
                             use_gpu_path=use_gpu_path, use_trt=use_trt)
@@ -513,6 +553,16 @@ def replay_recording(
     ref_holder = (_attach_reference_capture(proc)
                   if (reference or internal) else None)
     clock = _attach_frame_clock(proc, fps)
+    rate = float(fps or 20.0)
+    stall_plan = {int(f): (max(1, int(round(sec * rate))), bool(skip))
+                  for f, sec, skip in (stalls or [])}
+    stall_osc = None
+    if stall_plan:
+        stall_osc = _StallOsc()
+        proc.osc = stall_osc
+        proc.settings.osc_enabled = True
+        proc.settings.osc_send_state = True
+    extra = 0          # frame-clock frames added by ':gap' stalls (frames already missing)
 
     tmp = log_dir or tempfile.mkdtemp(prefix="wd_replay_")
     proc.tracker.logger.start_session(tmp)
@@ -534,18 +584,45 @@ def replay_recording(
         while True:
             if max_frames is not None and consumed >= max_frames:
                 break
+            stall_info = None
+            plan = stall_plan.pop(start_frame + consumed, None) if stall_plan else None
+            if plan is not None:
+                n, skip = plan
+                t_last = (consumed - 1 + extra) / rate      # the last frame before the stall
+                if skip:
+                    for _ in range(n):
+                        if not cap.grab():
+                            break
+                        consumed += 1
+                else:
+                    extra += n
+                t_resume = (consumed + extra) / rate
+                sent0 = stall_osc.frames
+                polls = int((t_resume - t_last) / 0.01)
+                for k in range(1, polls):                  # the main loop polls the camera
+                    proc.osc_keepalive(t_last + 0.01 * k)
+                stall_info = {"silence_s": round(t_resume - t_last, 3),
+                              "resends": stall_osc.frames - sent0,
+                              "resent_ids": list(stall_osc.last_ids),
+                              "resent_states": list(stall_osc.last_states)}
             ok, frame = cap.read()
             if not ok:
                 break
             frame = xf.apply(frame)
             if ref_holder is not None:
                 ref_holder["ref"] = None
-            clock["frame"] = consumed
+            clock["frame"] = consumed + extra
+            if stall_osc is not None:      # every frame is a live camera frame to the stall clock
+                removed = proc.note_camera_frame((consumed + extra) / rate, 1.0 / rate)
+                if stall_info is not None:
+                    stall_info["removed_s"] = round(removed, 3)
             tracks, _enh, _timing, _lat = proc.process(
                 frame, need_preview=False, frame_number=processed)
             per_frame.append(per_frame_record(
                 processed, start_frame + consumed, tracks, track_details,
                 emitted=getattr(proc, "last_emitted", None)))
+            if stall_info is not None:
+                per_frame[-1]["stall"] = stall_info
             if reference and ref_holder["ref"] is not None:
                 per_frame[-1]["ref"] = ref_holder["ref"]
             if internal:
@@ -714,6 +791,11 @@ def main():
     ap.add_argument("--internal", action="store_true",
                     help="also record every internal tracker track per frame (row key "
                          "'int') -- offline identity-slot studies")
+    ap.add_argument("--stall", dest="stalls", action="append", default=[], metavar="FRAME:SECONDS[:gap]",
+                    help="inject a camera stall just before source frame FRAME (D34): SECONDS without "
+                         "frames (skipped, the clock runs on); ':gap' = the frames are already missing "
+                         "from the take, only the clock jumps.  Repeatable.  The stall bridge follows "
+                         "the config key camera_stall_hold (--set camera_stall_hold=false = before D34)")
     ap.add_argument("--quality", action="store_true",
                     help="output-quality block without ground truth (field takes): "
                          "records reference detections; prints ids, coasting share, "
@@ -807,6 +889,7 @@ def main():
             track_details=args.details or want_ref, use_gpu_path=True,   # Track P: GPU-only
             use_trt=args.trt, log_dir=args.log_dir, frame_skip=args.frame_skip,
             reference=want_ref, internal=args.internal, fps=fps,
+            stalls=[parse_stall(x) for x in args.stalls] or None,
         )
 
     # Split the per-frame timeline out of the lean (golden-comparable) summary.

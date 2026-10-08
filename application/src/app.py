@@ -77,6 +77,7 @@ from core.config import (
     IDENTITY_SLOTS_STATIC_RELEASE_S, IDENTITY_SLOTS_FILTER_INPUT, IDENTITY_SLOTS_SMART_HOLD,
     IDENTITY_SLOTS_USE_IR_BELT,
     OSC_SEND_STATE,
+    CAMERA_STALL_HOLD,
     YOLO_MODEL,
     TrackingMode,
     OPS_READINESS_ENABLED,
@@ -1269,6 +1270,7 @@ class WallDanceApp:
             "fg_enabled": self.settings.fg_enabled,
             "use_ir_belt": self.settings.use_ir_belt,
             "osc_send_state": self.settings.osc_send_state,
+            "camera_stall_hold": self.settings.camera_stall_hold,
             "motion_sensitivity": self.processor.get_motion_sensitivity(),
             "osc_enabled": self.osc_enabled,
             "osc_ip": self.osc_ip,
@@ -1488,6 +1490,8 @@ class WallDanceApp:
                 slot_kw[key] = config.get(key, default)
         if slot_kw:
             self._cb_identity_slots(**slot_kw)
+        if "camera_stall_hold" in config or full_config:     # D34 (no GUI: a project key)
+            self.settings.camera_stall_hold = bool(config.get("camera_stall_hold", CAMERA_STALL_HOLD))
         if "fg_enabled" in config or full_config:
             self._cb_foreground(bool(config.get("fg_enabled", FOREGROUND_ENABLED)))
         if full_config:

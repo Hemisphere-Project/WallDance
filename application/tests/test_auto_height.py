@@ -40,7 +40,9 @@ def _guard_host(ph):
                                                     person_height_max_ratio=2.5, height_guard=True,
                                                     auto_height=False), dancer_height=None,
                            _height_guard=None, height_guard_event=None, _output_clock=lambda: clock[0],
-                           _height_owned_px=None, _height_follow=None)
+                           _height_owned_px=None, _height_follow=None,
+                           stall=SimpleNamespace(offset=0.0))      # no camera stall (D34)
+    host._hold_now = lambda t_motion=None: FrameProcessor._hold_now(host, t_motion)
     host._adopt_person_height = lambda old, med, why: FrameProcessor._adopt_person_height(host, old, med, why)
     return host, clock, (lambda dets, inv_lb=1.0: FrameProcessor._guard_person_height(host, dets, inv_lb))
 

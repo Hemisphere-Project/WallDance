@@ -47,6 +47,7 @@ from core.config import (
     HEIGHT_GUARD_FOLLOW_KPT_CONF,
     IDENTITY_SLOTS_USE_IR_BELT,
     OSC_SEND_STATE,
+    CAMERA_STALL_HOLD, CAMERA_STALL_PERIODS, CAMERA_STALL_MAX_S,
     TrackingMode,
     MOTION_FIRST_BLOB_OVERLAP_RATIO,
     MOTION_FIRST_ASPECT_RANGE,
@@ -71,6 +72,7 @@ from core.motion_model import MotionModel
 from core.calibration import ExclusionMaskBuilder
 from core.osc_output import OSCSender
 from core.output_smoother import OutputSmoother, SmootherInput
+from core.camera_stall import CameraStallClock, stall_states
 from core.identity_slots import (IdentitySlots, SlotParams, STATE_BELT, STATE_LIVE,
                                  candidate_from_track)
 from core.tracker import DancerTrack, DancerTracker
@@ -157,6 +159,7 @@ class ProcessingSettings:
     fg_enabled: bool = FOREGROUND_ENABLED       # use the clean plate when one is loaded
     fg_plate_path: str = ""                     # absolute path of the plate (.npz), "" = none
     osc_send_state: bool = OSC_SEND_STATE
+    camera_stall_hold: bool = CAMERA_STALL_HOLD  # D34: camera stalls stop the hold clocks + OSC keep-alive
     use_gpu_path: bool = USE_GPU_PATH  # Enable GPU frame buffer
     bg_subtract_enabled: bool = BG_SUBTRACT_ENABLED  # Static BG subtraction
     bg_subtract_sensitivity: int = BG_SUBTRACT_SENSITIVITY  # Threshold 0-255
@@ -475,6 +478,13 @@ class FrameProcessor:
         self._output_clock = time.perf_counter
         self._out_last_t: Optional[float] = None
         self._out_dt = 0.05
+        # Camera stalls (D34, core/camera_stall.py): fed by the main loop on live camera
+        # frames only.  The hold clocks read ``output clock - stall.offset`` (camera-live
+        # time; offset 0.0 without a stall); ``_osc_last`` is what the keep-alive re-sends.
+        self.stall = CameraStallClock(period_s=1.0 / 20.0, stall_periods=CAMERA_STALL_PERIODS,
+                                      max_s=CAMERA_STALL_MAX_S,
+                                      enabled=bool(getattr(settings, "camera_stall_hold", True)))
+        self._osc_last: Optional[tuple] = None   # (tracks, w, h, states | None, camera frame no.)
         # IR waist-belt hook (core/belt_detector.py, lazily imported; absent =
         # no-op).  The raw gray of the current frame + its ROI offset.
         self._belt_detector = None
@@ -1041,22 +1051,34 @@ class FrameProcessor:
         if slots_on and self.last_fg is not None:
             timing["fg"] = self._last_fg_ms
 
+        self._emit(out_tracks, original_w, original_h, L, osc_on, lagged_active, slots_on)
+        return scaled_tracks
+
+    def _emit(self, out_tracks, original_w: int, original_h: int, L: int, osc_on: bool,
+              lagged_active: bool, slots_on: bool) -> None:
+        """Send this frame's output stream on OSC (the tail of ``_post_yolo_chain``)."""
+        sent = None
         if L == 1:
             if osc_on:
                 self.osc.send_frame(out_tracks, original_w, original_h)
+                sent = out_tracks
         elif lagged_active:
             # At L>1 the RTS smoother runs on the slot ids when slots are on
             # (no restart on tracker id churn).
             lagged_tracks = self._run_output_smoother(out_tracks, L)
             if lagged_tracks:  # empty during the first L-frame warm-up
                 self.osc.send_frame(lagged_tracks, original_w, original_h)
+                sent = lagged_tracks
+        states = None
         if osc_on and slots_on and self.settings.osc_send_state and self._slots is not None:
             # Opt-in /walldance/dancer/state (OSC_CONTRACT §D): every slot,
             # lost ones included, causal (not lagged at L>1).
-            self.osc.send_states(self.slot_states())
+            states = self.slot_states()
+            self.osc.send_states(states)
+        if sent is not None:
+            # what a camera stall's keep-alive re-sends (D34), stamped with the live frame
+            self._osc_last = (sent, original_w, original_h, states, self.stall.frames)
         self.last_emitted = out_tracks
-
-        return scaled_tracks
 
     # ------------------------------------------------------------------
     # Identity-slot output layer (CONT-6)
@@ -1066,6 +1088,54 @@ class FrameProcessor:
         Live = wall clock; replays install ``frame / fps`` (deterministic)."""
         self._output_clock = clock
         self._out_last_t = None
+
+    # ------------------------------------------------------------------
+    # Camera stalls (D34): camera-live hold clocks + the OSC keep-alive
+    # ------------------------------------------------------------------
+    def _hold_now(self, t_motion: Optional[float] = None) -> float:
+        """Camera-live seconds for the hold clocks: the output clock minus the camera-silent
+        time of the stalls so far (exactly the output clock without a stall)."""
+        tm = float(self._output_clock()) if t_motion is None else t_motion
+        return tm - self.stall.offset
+
+    def note_camera_frame(self, now: float, period_s: Optional[float] = None) -> float:
+        """Main loop, on every new LIVE camera frame (``now`` in the output clock's domain;
+        ``period_s`` = 1 / the camera's target fps).  Returns the silent time removed from the
+        hold clocks (> 0: this frame ends a stall)."""
+        st = self.stall
+        st.enabled = bool(self.settings.camera_stall_hold)
+        if period_s is not None and period_s > 0:
+            st.period_s = float(period_s)
+        return st.on_frame(now)
+
+    def camera_not_live(self) -> None:
+        """Main loop: the camera is closed / reconnecting, or a take is playing.  The silence
+        until the next live frame is not a stall (it counts on the hold clocks as before)."""
+        self.stall.forget()
+
+    def osc_keepalive(self, now: float) -> bool:
+        """Main loop, while the live camera delivers nothing.  During a stall (D34) re-send the
+        last OSC frame on the frame-period grid: same ids, positions, boxes and keypoints,
+        velocity 0, ``/dancer/state`` (when on) ``coasting`` for every emitting slot.  Only when
+        that frame came from the last live camera frame (not in Standby, not after a take);
+        stops when frames resume, the camera is lost, or the silence reaches the cap."""
+        st = self.stall
+        if not st.keepalive_due(now):
+            return False
+        last = self._osc_last
+        if (last is None or last[4] != st.frames or not self.osc
+                or not self.settings.osc_enabled):
+            return False
+        tracks, w, h, states, _ = last
+        silence = now - st.last_frame
+        held = [replace(tr, velocity=np.zeros(2, dtype=np.float64),
+                        slot_state=("coasting" if tr.slot_state is not None else None))
+                for tr in tracks]
+        self.osc.send_frame(held, w, h)
+        if states is not None and self.settings.osc_send_state:
+            self.osc.send_states(stall_states(states, silence))
+        st.keepalive_sent(now)
+        return True
 
     def configure_identity_slots(self, **kw) -> None:
         """Live operator knobs: ``identity_slots_enabled``, ``max_dancers``,
@@ -1103,6 +1173,7 @@ class FrameProcessor:
             self._slots.reset()
         self._out_last_t = None
         self.last_emitted = []
+        self._osc_last = None             # nothing for a stall keep-alive to re-send (D34)
         self._belt_static = None          # a new scene / take: relearn the glints
         if self._belt_detector is not None:
             self._belt_detector.static = None
@@ -1306,7 +1377,7 @@ class FrameProcessor:
         if self._auto_height is None:
             from core.auto_height import AutoHeight
             self._auto_height = AutoHeight()
-        h = self._auto_height.update(scaled_tracks, float(self._output_clock()),
+        h = self._auto_height.update(scaled_tracks, self._hold_now(),
                                      float(self.settings.person_height_px))
         if h is not None:
             self.settings.person_height_px = max(1, int(round(h)))
@@ -1326,7 +1397,7 @@ class FrameProcessor:
             self._height_guard = AutoHeight(min_samples=HEIGHT_GUARD_MIN_SAMPLES)
         dets = [_RawDet(0, d[1], (0.0, 0.0, 0.0, float(d[2][3]) * inv_lb)) for d in detections]
         ph = float(self.settings.person_height_px)
-        t = float(self._output_clock())
+        t = self._hold_now()                 # camera-live: a stall does not age the windows (D34)
         ready = self._height_guard.update(dets, t, ph) is not None
         if dets and len(self._height_guard.window()) >= 40:          # >= 2 s of a dancer: measured
             win = sorted(self._height_guard.window())
@@ -1424,7 +1495,11 @@ class FrameProcessor:
                 smart_hold=bool(self.settings.smart_hold),
                 belt_backing=bool(self.settings.belt_backing),
                 entry_min_travel_h=float(self.settings.entry_min_travel_h)))
-        t = float(self._output_clock())
+        # Two clocks (D34): the slots' motion model (velocity, prediction, One-Euro) on the
+        # output clock -- the dancer moved during a camera stall --, every hold / cap / window
+        # on camera-live time (``t``).  Without a stall they are the same number.
+        t_motion = float(self._output_clock())
+        t = self._hold_now(t_motion)
         if self._out_last_t is not None and t > self._out_last_t:
             self._out_dt = min(0.25, t - self._out_last_t)
         self._out_last_t = t
@@ -1447,7 +1522,8 @@ class FrameProcessor:
         bounds = tuple(float(v) for v in roi) if roi is not None else (0.0, 0.0, float(original_w), float(original_h))
         belt_hook = self._belt_hook()
         fg = self._fg_frame(original_w, original_h)
-        outs = self._slots.update(cands, t, belt=belt_hook, hidden=hidden, bounds=bounds, fg=fg)
+        outs = self._slots.update(cands, t, belt=belt_hook, hidden=hidden, bounds=bounds, fg=fg,
+                                  t_motion=t_motion)
         if self._fg_detector is not None and self.last_fg is not None:
             self._fg_detector.update_plate(self._fg_protect(cands, t))
         self._log_slots(outs)

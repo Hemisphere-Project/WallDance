@@ -80,7 +80,7 @@ _RANGES = {
 
 # Boolean keys: real bools pass, 0/1 and "true"/"off"-style strings are coerced,
 # anything else is dropped (the in-app default applies).
-_BOOL_KEYS = ("identity_slots_enabled", "use_ir_belt", "osc_send_state")
+_BOOL_KEYS = ("identity_slots_enabled", "use_ir_belt", "osc_send_state", "camera_stall_hold")
 
 _IMGSZ_PRESETS = (640, 800, 960, 1280, 1536, 1920)
 

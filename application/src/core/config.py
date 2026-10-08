@@ -124,6 +124,16 @@ IDS_RATIO = 1.0
 # Set in IDS Cockpit: Device → UserSet → Save to UserSet1.
 # "" = don't load (use defaults), "UserSet1", "UserSet2", etc.
 IDS_USER_SET = "UserSet1"
+# Camera stalls (D34, core/camera_stall.py): the live camera silent for more than
+# CAMERA_STALL_PERIODS frame periods of its target fps (3 x 50 ms at 20 fps), up to
+# CAMERA_STALL_MAX_S, is a stall: the output stage's hold clocks (slot holds, smart hold,
+# belt / foreground caps, height windows) do not count it, the slots' distance gates widen
+# by the dancer's possible travel, and OSC re-sends the last points as coasting at the frame
+# rate.  Longer, or the camera lost, = as before.  Project key camera_stall_hold (no GUI).
+# The laptop's IDS camera stalls ~1.7 s, 0.7-2.9 times a minute (PLAN_25M §C.16).
+CAMERA_STALL_HOLD = True
+CAMERA_STALL_PERIODS = 3.0
+CAMERA_STALL_MAX_S = 5.0
 
 # =============================================================================
 # PERSON SIZE CALIBRATION

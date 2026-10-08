@@ -74,7 +74,14 @@ holds less than ``fg_veto`` foreground cannot take a slot), the ``fg`` state
 above, and the belt backing.  Without a plate every foreground rule is off.
 
 Pure: numpy (+ scipy's Hungarian when available).  Time is passed in by the
-caller (seconds), so replays are frame-clocked and deterministic.
+caller (seconds), so replays are frame-clocked and deterministic.  Camera stalls
+(D34, ``core/camera_stall.py``): ``t`` is camera-live time (a stall does not age
+the holds, caps, windows or reputation); the optional ``t_motion`` keeps the
+motion model (velocity, prediction, One-Euro) on the caller's own clock, and
+every distance a dancer may have covered since the slot last saw it (the jump
+check, the hidden drift, the rebind / weak / foreground gates) widens by
+``gate_growth_h_per_s`` x the camera-silent time since then: the dancer kept
+moving while the camera was silent (a 1.7 s stall: + 3.4 h).
 """
 from __future__ import annotations
 
@@ -388,6 +395,7 @@ class _Slot:
     vel: np.ndarray = field(default_factory=lambda: np.zeros(2))   # px/s
     wh: Optional[np.ndarray] = None
     last_meas_t: float = -1e9
+    last_meas_tm: float = -1e9             # the motion clock at that measurement (D34)
     state_since: float = 0.0
     bound_since: float = 0.0
     belt_since: Optional[float] = None
@@ -398,6 +406,7 @@ class _Slot:
     ever: bool = False
     last_key: Optional[int] = None         # key when the slot went lost
     anchor: Optional[np.ndarray] = None    # last position the tracker REPORTED
+    anchor_skew: float = 0.0               # camera-silent time so far when the anchor was set (D34)
     hidden_since: Optional[float] = None   # following a hidden bound track since
     entry_pos: Optional[np.ndarray] = None  # where the slot was entered (static-ghost test)
     entry_t: float = 0.0
@@ -443,6 +452,7 @@ class IdentitySlots:
         self.p = params or SlotParams()
         self._slots: List[_Slot] = []
         self._t: Optional[float] = None
+        self._tm: Optional[float] = None      # motion clock (``t_motion``) of the last frame
         self._streak: Dict[int, int] = {}
         self._first_pos: Dict[int, np.ndarray] = {}
         self._max_travel: Dict[int, float] = {}
@@ -497,6 +507,7 @@ class IdentitySlots:
         n = len(self._slots)
         self._slots = [self._new_slot(i + 1) for i in range(n)]
         self._t = None
+        self._tm = None
         self._streak.clear()
         self._first_pos.clear()
         self._max_travel.clear()
@@ -713,6 +724,7 @@ class IdentitySlots:
         s.bound_since = t
         s.hidden_since = None
         s.anchor = np.array([c.x, c.y], dtype=np.float64)
+        s.anchor_skew = self._tm - self._t
         self._event(kind, s.sid, key=c.key, prev=prev_key)
 
     def _measure(self, s: _Slot, x: np.ndarray, wh: Optional[np.ndarray],
@@ -735,6 +747,7 @@ class IdentitySlots:
         if wh is not None:
             s.wh = wh.copy()
         s.last_meas_t = t
+        s.last_meas_tm = self._tm
         if s.state != state:
             s.state = state
             s.state_since = t
@@ -743,6 +756,11 @@ class IdentitySlots:
     # ------------------------------------------------------------------
     # main step
     # ------------------------------------------------------------------
+    def _silent_s(self, s: _Slot) -> float:
+        """Camera-silent time (D34) since the slot's last measurement: the motion clock ran
+        that much more than the camera-live one.  0.0 without a stall."""
+        return max(0.0, (self._tm - self._t) - (s.last_meas_tm - s.last_meas_t))
+
     def bound_keys(self) -> List[int]:
         """Tracker ids currently (or last) bound to a non-lost slot -- the
         caller passes their hidden (unreported) state to ``update``."""
@@ -753,11 +771,16 @@ class IdentitySlots:
                hidden: Optional[Dict[int, SlotCandidate]] = None,
                weak: Optional[Sequence["WeakMeasure"]] = None,
                bounds: Optional[Tuple[float, float, float, float]] = None,
-               fg: Any = None) -> List[SlotOutput]:
+               fg: Any = None, t_motion: Optional[float] = None) -> List[SlotOutput]:
         """One output frame.  ``candidates`` = the tracker's REPORTED tracks;
         ``hidden`` = {track id: candidate} for bound tracks the tracker kept
         alive but did not report this frame (``bound_keys``); ``fg`` = this
-        frame's clean-plate foreground (``core.foreground.FgFrame``) or None."""
+        frame's clean-plate foreground (``core.foreground.FgFrame``) or None.
+
+        Two clocks (D34, camera stalls): ``t`` drives every hold, cap, window and
+        reputation (camera-live time: a camera stall does not count); ``t_motion``
+        (default ``t``) drives the motion model -- velocity, prediction, One-Euro --
+        since the dancer kept moving.  Without a stall the two are equal."""
         p = self.p
         hidden = hidden or {}
         self.events = []
@@ -767,9 +790,12 @@ class IdentitySlots:
         self._entry_ev = {}
         if self._t0 is None:
             self._t0 = t
-        dt_raw = 0.0 if self._t is None else max(0.0, t - self._t)
-        dt = min(dt_raw, p.max_dt_s)
+        tm = t if t_motion is None else float(t_motion)
+        dt_live = min(0.0 if self._t is None else max(0.0, t - self._t), p.max_dt_s)
+        dt_raw = 0.0 if self._tm is None else max(0.0, tm - self._tm)
+        dt = min(dt_raw, p.max_dt_s)          # motion step
         self._t = t
+        self._tm = tm
 
         cands: Dict[int, SlotCandidate] = {}
         for c in candidates:
@@ -831,7 +857,8 @@ class IdentitySlots:
             h_ref = max(1.0, float(c.h))
             ref_pos = pred.get(s.sid, s.pos)
             if (ref_pos is not None and float(np.linalg.norm(xy - ref_pos))
-                    > p.jump_h * h_ref + float(np.linalg.norm(s.vel)) * dt):
+                    > p.jump_h * h_ref + float(np.linalg.norm(s.vel)) * dt
+                    + p.gate_growth_h_per_s * self._silent_s(s) * h_ref):
                 self.counters["unbind_jump"] += 1
                 self._event("unbind_jump", s.sid, key=s.key)
                 s.key = None
@@ -847,13 +874,15 @@ class IdentitySlots:
                 if s.hidden_since is None:
                     s.hidden_since = t
                 drift = (float(np.linalg.norm(xy - s.anchor)) if s.anchor is not None else 0.0)
+                silent = max(0.0, (self._tm - self._t) - s.anchor_skew)   # since the anchor (D34)
                 if (t - s.hidden_since > p.hidden_max_s
-                        or drift > p.hidden_drift_h * h_ref):
+                        or drift > (p.hidden_drift_h + p.gate_growth_h_per_s * silent) * h_ref):
                     continue      # coast (then lost): a frozen ghost is bounded
                 provisional.add(s.sid)
             else:
                 s.hidden_since = None
                 s.anchor = xy.copy()
+                s.anchor_skew = self._tm - self._t
             measured[s.sid] = (xy, np.array([c.w, c.h], dtype=np.float64), c)
 
         def emitting_positions(exclude_sid: int) -> List[Tuple[np.ndarray, float]]:
@@ -900,8 +929,9 @@ class IdentitySlots:
             cost = np.full((len(free_slots), len(pool)), np.inf)
             for i, s in enumerate(free_slots):
                 h_ref = max(1.0, float(s.wh[1]) if s.wh is not None else 1.0)
-                gate = min(p.gate_max_h, p.gate_h + p.gate_growth_h_per_s
-                           * max(0.0, t - s.last_meas_t)) * h_ref
+                gate = (min(p.gate_max_h, p.gate_h + p.gate_growth_h_per_s
+                            * max(0.0, t - s.last_meas_t))
+                        + p.gate_growth_h_per_s * self._silent_s(s)) * h_ref
                 for j, c in enumerate(pool):
                     if not self._established(c, entry=False) or is_duplicate(c, s.sid):
                         continue
@@ -989,7 +1019,7 @@ class IdentitySlots:
                 s.strong_t = t
                 s.hold_s = None
                 if c.fss is not None and int(c.fss) == 0:
-                    s.rep_t = min(p.hold_rep_s, s.rep_t + dt)
+                    s.rep_t = min(p.hold_rep_s, s.rep_t + dt_live)
                 s.fss = c.fss
                 s.payload = c.payload
                 s.belt_since = None
@@ -1059,9 +1089,9 @@ class IdentitySlots:
             if s.state == STATE_LOST or s.pos is None:
                 continue
             h_ref = max(1.0, float(s.wh[1]) if s.wh is not None else 1.0)
-            fx = s.filt(s.fpos if s.fpos is not None else s.pos, t, scale=h_ref)
+            fx = s.filt(s.fpos if s.fpos is not None else s.pos, tm, scale=h_ref)
             fwh = s.size_filt(s.wh if s.wh is not None else np.array([h_ref * 0.4, h_ref]),
-                              t, scale=h_ref)
+                              tm, scale=h_ref)
             v = s.filt.speed
             out.append(SlotOutput(
                 slot_id=s.sid, state=s.state, x=float(fx[0]), y=float(fx[1]),
@@ -1125,8 +1155,9 @@ class IdentitySlots:
         cost = np.full((len(seekers), len(ws)), np.inf)
         for i, s in enumerate(seekers):
             h = max(1.0, float(s.wh[1]) if s.wh is not None else 1.0)
-            gate = min(p.weak_gate_max_h, p.weak_gate_h + p.weak_gate_growth_h_per_s
-                       * max(0.0, t - s.last_meas_t)) * h
+            gate = (min(p.weak_gate_max_h, p.weak_gate_h + p.weak_gate_growth_h_per_s
+                        * max(0.0, t - s.last_meas_t))
+                    + p.weak_gate_growth_h_per_s * self._silent_s(s)) * h
             for j, w in enumerate(ws):
                 d = float(np.hypot(w.x - pred[s.sid][0], w.y - pred[s.sid][1]))
                 if d > gate:
@@ -1250,7 +1281,8 @@ class IdentitySlots:
             if c is None and s.key is not None:
                 c = hidden.get(s.key)
             if (c is not None and c.fss is not None and int(c.fss) <= p.belt_refresh_fss
-                    and float(np.hypot(c.x - at[0], c.y - at[1])) <= p.jump_h * h):
+                    and float(np.hypot(c.x - at[0], c.y - at[1]))
+                    <= (p.jump_h + p.gate_growth_h_per_s * self._silent_s(s)) * h):
                 s.belt_backed_t = t
                 continue
             if fg is not None and fg.support(float(at[0]), float(at[1]), h) >= p.fg_support_min:
@@ -1305,8 +1337,9 @@ class IdentitySlots:
         for i, s in enumerate(seekers):
             h = max(1.0, float(s.wh[1]))
             off = s.fg_offset if s.fg_offset is not None else np.zeros(2)
-            gate = min(p.fg_gate_max_h, p.fg_gate_h + p.fg_gate_growth_h_per_s
-                       * max(0.0, t - s.last_meas_t)) * h
+            gate = (min(p.fg_gate_max_h, p.fg_gate_h + p.fg_gate_growth_h_per_s
+                        * max(0.0, t - s.last_meas_t))
+                    + p.fg_gate_growth_h_per_s * self._silent_s(s)) * h
             for j, b in enumerate(fg.blobs):
                 if b.area < p.fg_min_area_h2 * h * h:
                     continue
