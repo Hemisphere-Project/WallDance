@@ -32,6 +32,7 @@ import glob
 import os
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Callable, List, Optional, Tuple
@@ -101,6 +102,9 @@ class IDSCameraState:
     exposure_us: float = 0.0
     gain_db: float = 0.0
     frame_count: int = 0
+    # Frames the newest-only slot overwrote before the app read them (the app was
+    # slower than the camera) -- NOT frames the camera or USB lost: see
+    # IDSCamera.get_stream_diagnostics() for those.
     dropped_frames: int = 0
     last_frame_time: float = 0.0
 
@@ -180,6 +184,44 @@ def gain_db_to_node_value(gain_db: float, node_min: float, node_max: float,
 def gain_node_value_to_db(value: float, node_is_db: bool = False) -> float:
     """A ``Gain`` node reading -> dB."""
     return float(value) if node_is_db else gain_factor_to_db(value)
+
+
+# --- Stream diagnostics (camera stalls) ------------------------------------------
+# The laptop's stalls (2026-10-06/07: 1651-1715 ms, queued=16/16, 0.4-2.9 per
+# minute, only at the landscape crops) were seen from the host clock alone. The
+# camera numbers its frames and timestamps them; across a stall:
+#   frame id +1  -> the camera sent nothing for the whole gap (camera / link side)
+#   frame id +N  -> N-1 frames were produced but never delivered (lost in transfer)
+STALL_CAMERA_SILENT = "camera_silent"
+STALL_LOST_IN_TRANSFER = "lost_in_transfer"
+STALL_UNKNOWN = "unknown"
+
+
+def classify_stall(id_delta: Optional[int]) -> str:
+    """What a stall was, from the camera's frame-id step across it."""
+    if id_delta is None or id_delta <= 0:
+        return STALL_UNKNOWN
+    return STALL_LOST_IN_TRANSFER if id_delta > 1 else STALL_CAMERA_SILENT
+
+
+def buffer_meta(buffer) -> Tuple[Optional[int], Optional[int], bool]:
+    """(camera frame id, camera timestamp in ns, incomplete) of an ids_peak buffer;
+    None for what the transport layer does not provide. Never raises."""
+    frame_id = ts_ns = None
+    incomplete = False
+    try:
+        frame_id = int(buffer.FrameID())
+    except Exception:
+        pass
+    try:
+        ts_ns = int(buffer.Timestamp_ns()) or None
+    except Exception:
+        pass
+    try:
+        incomplete = bool(buffer.IsIncomplete())
+    except Exception:
+        pass
+    return frame_id, ts_ns, incomplete
 
 
 def compute_crop_from_budget(pixel_budget: int, ratio: float,
@@ -312,6 +354,16 @@ class IDSCamera:
         self._stall_threshold_s: float = 0.4   # gap > this = stall
         self._stall_count: int = 0
         self._last_acq_frame_time: float = 0.0
+        # Stream diagnostics: the camera's own frame id / timestamp continuity and
+        # the GenTL stream counters at each stall (see classify_stall).
+        self._stall_ms_total: float = 0.0
+        self._last_frame_id: Optional[int] = None
+        self._last_dev_ts_ns: Optional[int] = None
+        self._frame_id_gaps: int = 0
+        self._frame_ids_skipped: int = 0
+        self._incomplete_frames: int = 0
+        self._recent_stalls: deque = deque(maxlen=8)
+        self._stall_counters_ref: dict = {}
 
         # Set during update_crop_ratio so read()/read_gpu() return
         # (True, None) instead of (False, None) while reconfiguring.
@@ -1112,6 +1164,7 @@ class IDSCamera:
         print(f"[IDSCamera] Acq loop: pf={self.state.pixel_format}, {width}x{height}")
 
         self._last_acq_frame_time = time.perf_counter()
+        self._reset_frame_tracking()
 
         while self._acquire_running:
             try:
@@ -1125,6 +1178,7 @@ class IDSCamera:
                 try:
                     ipl_image = ids_peak_ipl_extension.BufferToImage(buffer)
                     raw = ipl_image.get_numpy_1D().copy()      # ~1-2 ms memcpy
+                    meta = buffer_meta(buffer)                 # frame id / cam timestamp
                 finally:
                     self._datastream.QueueBuffer(buffer)       # buffer free!
 
@@ -1141,20 +1195,8 @@ class IDSCamera:
                     xf = self.input_transform
                     frame_xf = None if xf.is_identity else (xf, xf.apply(frame))
 
-                    # ---- Stall detection ----
-                    gap = timestamp - self._last_acq_frame_time
-                    self._last_acq_frame_time = timestamp
-                    if gap > self._stall_threshold_s:
-                        self._stall_count += 1
-                        severity = "SEVERE" if gap >= 1.0 else "stall"
-                        try:
-                            n_q = self._datastream.NumBuffersQueued()
-                            n_a = len(self._datastream.AnnouncedBuffers())
-                            pool = f"queued={n_q}/{n_a}"
-                        except Exception:
-                            pool = "?"
-                        print(f"[IDSCamera] USB3 {severity}: {gap*1000:.0f}ms gap "
-                              f"(#{self._stall_count}, {pool})")
+                    # ---- Stall detection (+ frame id / timestamp continuity) ----
+                    self._track_frame(timestamp, *meta)
 
                     with self._frame_lock:
                         if self.settings.newest_only and self._frame_ready:
@@ -1211,6 +1253,129 @@ class IDSCamera:
                 break
 
         print("[IDSCamera] Acquisition thread finished")
+
+    # ------------------------------------------------------------------
+    # Stream diagnostics
+    # ------------------------------------------------------------------
+    # GenTL data-stream counters of the IDS U3V producer, read best-effort (host
+    # side, no USB traffic). DeliveredFrameCount moves every frame: snapshot only.
+    _STREAM_COUNTER_NODES = (
+        "StreamDeliveredFrameCount", "StreamLostFrameCount", "StreamIncompleteFrameCount",
+        "StreamDroppedFrameCount", "StreamDiscardedFrameCount", "StreamUnderrunFrameCount",
+        "StreamPipeTotalErrorCount", "StreamPipeOrderErrorCount",
+        "StreamPipeErrorRecoveryCount", "StreamPayloadBufferOverflowCount")
+    _stream_lock = threading.Lock()       # the camlog (main thread) and a stall (acq thread)
+
+    def _read_stream_counters(self) -> dict:
+        """{counter (without the "Stream" prefix): value} of the data stream, plus
+        ``Underruns``; {} without a stream. Never raises."""
+        ds = getattr(self, "_datastream", None)
+        if ds is None:
+            return {}
+        out = {}
+        with self._stream_lock:
+            try:
+                nm = ds.NodeMaps()[0]
+            except Exception:
+                nm = None
+            if nm is not None:
+                for name in self._STREAM_COUNTER_NODES:
+                    try:
+                        out[name[len("Stream"):]] = int(nm.FindNode(name).Value())
+                    except Exception:
+                        pass
+            try:
+                out["Underruns"] = int(ds.NumUnderruns())
+            except Exception:
+                pass
+        return out
+
+    def _pool_text(self) -> str:
+        try:
+            n_q = self._datastream.NumBuffersQueued()
+            n_a = len(self._datastream.AnnouncedBuffers())
+            return f"queued={n_q}/{n_a}"
+        except Exception:
+            return "?"
+
+    def _reset_frame_tracking(self) -> None:
+        """New acquisition: frame ids restart; counters become the stall baseline."""
+        self._last_frame_id = None
+        self._last_dev_ts_ns = None
+        self._stall_counters_ref = self._read_stream_counters()
+
+    def _track_frame(self, timestamp: float, frame_id: Optional[int] = None,
+                     dev_ts_ns: Optional[int] = None,
+                     incomplete: bool = False) -> Optional[dict]:
+        """Per delivered frame (acquisition thread): host-clock gap, camera frame-id
+        and timestamp continuity, incomplete buffers. Returns the stall record when
+        this frame ends a stall (host gap > ``_stall_threshold_s``), else None."""
+        gap = timestamp - self._last_acq_frame_time
+        self._last_acq_frame_time = timestamp
+        id_delta = None
+        if frame_id is not None:
+            last = self._last_frame_id
+            if last is not None and frame_id > last:
+                id_delta = frame_id - last
+                if id_delta > 1:
+                    self._frame_id_gaps += 1
+                    self._frame_ids_skipped += id_delta - 1
+            self._last_frame_id = frame_id
+        cam_dt_ms = None
+        if dev_ts_ns:
+            last_ts = self._last_dev_ts_ns
+            if last_ts and dev_ts_ns > last_ts:
+                cam_dt_ms = (dev_ts_ns - last_ts) / 1e6
+            self._last_dev_ts_ns = dev_ts_ns
+        if incomplete:
+            self._incomplete_frames += 1
+            if self._incomplete_frames <= 5 or self._incomplete_frames % 100 == 0:
+                print(f"[IDSCamera] Incomplete buffer #{self._incomplete_frames} "
+                      f"(frame id {frame_id})")
+        if gap <= self._stall_threshold_s:
+            return None
+
+        self._stall_count += 1
+        self._stall_ms_total += gap * 1000.0
+        pool = self._pool_text()
+        counters = self._read_stream_counters()
+        ref = self._stall_counters_ref or {}
+        delta = {k: v - ref.get(k, 0) for k, v in counters.items()
+                 if k != "DeliveredFrameCount" and v != ref.get(k, 0)}
+        self._stall_counters_ref = counters
+        kind = classify_stall(id_delta)
+        rec = {"n": self._stall_count, "t": round(time.time(), 3),
+               "gap_ms": int(round(gap * 1000)), "id_delta": id_delta,
+               "cam_dt_ms": None if cam_dt_ms is None else int(round(cam_dt_ms)),
+               "kind": kind, "pool": pool, "stream_delta": delta}
+        self._recent_stalls.append(rec)
+        if id_delta is None:
+            what = "frame id n/a"
+        elif kind == STALL_LOST_IN_TRANSFER:
+            what = f"frame id +{id_delta}: {id_delta - 1} frame(s) lost in transfer"
+        else:
+            what = "frame id +1: the camera sent nothing"
+        if cam_dt_ms is not None:
+            what += f", camera clock +{cam_dt_ms:.0f}ms"
+        if delta:
+            what += ", stream " + " ".join(f"{k}+{v}" for k, v in sorted(delta.items()))
+        severity = "SEVERE" if gap >= 1.0 else "stall"
+        print(f"[IDSCamera] USB3 {severity}: {gap*1000:.0f}ms gap "
+              f"(#{self._stall_count}, {pool}) {what}")
+        return rec
+
+    def get_stream_diagnostics(self) -> dict:
+        """Cumulative stall / frame-id / stream-counter state (camlog + .meta)."""
+        return {
+            "stalls": int(getattr(self, "_stall_count", 0)),
+            "stall_ms_total": int(round(getattr(self, "_stall_ms_total", 0.0))),
+            "frame_id": getattr(self, "_last_frame_id", None),
+            "frame_id_gaps": int(getattr(self, "_frame_id_gaps", 0)),
+            "frame_ids_skipped": int(getattr(self, "_frame_ids_skipped", 0)),
+            "incomplete": int(getattr(self, "_incomplete_frames", 0)),
+            "counters": self._read_stream_counters(),
+            "recent_stalls": list(getattr(self, "_recent_stalls", ()))[-4:],
+        }
 
     # ------------------------------------------------------------------
     # Fast numpy-only format unpacking (no IPL dependency)
@@ -1671,6 +1836,7 @@ class IDSCamera:
         out["measured_fps"] = round(float(self.state.fps or 0.0), 2)
         out["frame_count"] = int(self.state.frame_count)
         out["dropped_frames"] = int(self.state.dropped_frames)
+        out["stream"] = self.get_stream_diagnostics()
         if not fast:
             st = self.settings
             out["app_settings"] = {
