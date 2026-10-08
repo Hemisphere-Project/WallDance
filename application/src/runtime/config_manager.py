@@ -460,6 +460,30 @@ class ConfigManager:
                                duration=3.0, color=(255, 180, 80))
         self._show_startup_project_picker()  # refresh (may now be empty)
 
+    def _cb_project_new(self, name: str) -> bool:
+        """Picker 'New': a project named by the operator, from the defaults (the
+        D33 detection settings: x@1280, confidence 0.15, intermittent confirm)
+        plus the last project's camera rig -- the blank start below -- saved at
+        once under its name, so the session never works in 'default'."""
+        project = sanitize_project_name(name or "")
+        if not (name or "").strip() or project == "default":
+            if self.ui.available:
+                self.ui.show_toast("New project: give it a name", duration=3.0,
+                                   color=(255, 180, 80))
+            self._show_startup_project_picker()
+            return False
+        if project in self.config_store.list_projects():
+            if self.ui.available:
+                self.ui.show_toast(f"'{project}' already exists - pick another name",
+                                   duration=3.0, color=(255, 180, 80))
+            self._show_startup_project_picker()
+            return False
+        print(f"[Picker] New project: {project}")
+        if not self._cb_project_blank():
+            return False
+        self._cb_do_save_config(project)
+        return True
+
     def _cb_project_blank(self):
         """Picker 'Start blank' → load the default model, no project.
 

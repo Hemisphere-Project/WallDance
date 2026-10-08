@@ -227,6 +227,7 @@ class DpgUiAdapter:
             "on_project_rename": lambda old, new: submit(api.RenameProject(old, new)),
             "on_project_delete": lambda name: submit(api.DeleteProject(name)),
             "on_project_blank": lambda: submit(api.StartBlankProject()),
+            "on_project_new": lambda name: submit(api.NewProject(name)),
             "on_rec_live": lambda: submit(api.PlaybackControl("live")),
             "on_rec_toggle": lambda: submit(api.PlaybackControl("record_toggle")),
             "on_rec_slot_click": lambda slot, ctrl: submit(

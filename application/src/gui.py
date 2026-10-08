@@ -2253,8 +2253,8 @@ class WallDanceGUI:
                 dpg.add_button(label="Delete", width=scaled(90), height=scaled(30),
                                callback=lambda: self._picker_action("delete"))
                 dpg.add_spacer(width=scaled(24))
-                dpg.add_button(label="Start blank", width=scaled(110), height=scaled(30),
-                               callback=lambda: self._picker_action("blank"))
+                dpg.add_button(label="New", width=scaled(110), height=scaled(30),
+                               callback=lambda: self._picker_action("new"))
             dpg.add_spacer(height=scaled(6))
             dpg.add_group(tag="picker_action_area")   # inline rename / delete UI
         self._picker_rebuild_list(projects)
@@ -2268,7 +2268,7 @@ class WallDanceGUI:
         self._picker_rows = []
         if not projects:
             dpg.add_text("No saved projects yet.", parent=area, color=WARN_AMBER)
-            dpg.add_text("Start blank below, then save to create one.",
+            dpg.add_text("New below: name it, it starts with the default settings.",
                          parent=area, color=TEXT_MUTED)
             return
         for name, saved, count in projects:
@@ -2296,6 +2296,9 @@ class WallDanceGUI:
             if cb:
                 cb()
             return
+        if action == "new":
+            self._picker_inline_new()
+            return
         if not sel:
             return
         if action == "launch":
@@ -2307,6 +2310,33 @@ class WallDanceGUI:
             self._picker_inline_rename(sel)
         elif action == "delete":
             self._picker_inline_delete(sel)
+
+    def _picker_inline_new(self):
+        """'New': name the project; it starts from the default settings (x@1280,
+        D33) and the last project's camera rig, and is saved under that name."""
+        area = "picker_action_area"
+        if not dpg.does_item_exist(area):
+            return
+        dpg.delete_item(area, children_only=True)
+
+        def do_new(*_):
+            name = (dpg.get_value("picker_new_input") or "").strip()
+            if not name:
+                return
+            dpg.delete_item(area, children_only=True)
+            self.hide_project_picker()
+            cb = self.callbacks.get("on_project_new")
+            if cb:
+                cb(name)   # app creates + saves it, or re-shows the picker (name taken)
+
+        dpg.add_text("New project name (default settings, last camera setup):", parent=area)
+        with dpg.group(horizontal=True, parent=area):
+            dpg.add_input_text(tag="picker_new_input", default_value="",
+                               width=scaled(240), on_enter=True, callback=do_new)
+            dpg.add_button(label="Create", width=scaled(70), callback=do_new)
+            dpg.add_button(label="Cancel", width=scaled(70),
+                           callback=lambda: dpg.delete_item(area, children_only=True))
+        dpg.focus_item("picker_new_input")
 
     def _picker_inline_rename(self, name: str):
         area = "picker_action_area"

@@ -650,6 +650,12 @@ class StartBlankProject(Command):
     pass
 
 
+@dataclass(frozen=True)
+class NewProject(Command):
+    """Picker 'New': a named project from the defaults + the last camera rig."""
+    name: str
+
+
 # --- recording / playback -----------------------------------------------------
 
 @dataclass(frozen=True)

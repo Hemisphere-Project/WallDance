@@ -951,6 +951,7 @@ class WallDanceApp:
         reg(api.RenameProject, lambda c: self.configs._cb_project_rename(c.old, c.new))
         reg(api.DeleteProject, lambda c: self.configs._cb_project_delete(c.name))
         reg(api.StartBlankProject, lambda c: self.configs._cb_project_blank())
+        reg(api.NewProject, lambda c: self.configs._cb_project_new(c.name))
         # recording / playback
         reg(api.PlaybackControl, self._cmd_playback_control)
         reg(api.SelectSlot,

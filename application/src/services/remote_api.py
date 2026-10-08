@@ -88,7 +88,8 @@ POLICY: Dict[str, str] = {
     "ImportVideoToSlot": HEAVY,   # multi-GB disk copy / transcode
     # never: destructive, or a GUI dialog nobody is there to answer
     "Quit": NEVER, "DeleteProject": NEVER, "RenameProject": NEVER,
-    "StartBlankProject": NEVER, "SaveSafeDefaults": NEVER, "SaveConfigAs": NEVER,
+    "StartBlankProject": NEVER, "NewProject": NEVER, "SaveSafeDefaults": NEVER,
+    "SaveConfigAs": NEVER,
     "RequestLoadConfigDialog": NEVER, "RequestIssueReport": NEVER,
     "SubmitIssue": NEVER, "IssueDialogClosed": NEVER, "ShowQr": NEVER,
     "ViewCalib2Pool": NEVER, "ViewAimCalibState": NEVER, "EditMask": NEVER,

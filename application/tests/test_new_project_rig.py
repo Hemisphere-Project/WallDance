@@ -297,3 +297,34 @@ def test_inherited_rig_subset():
     # no rig sheet in the project -> no "rig" key (the new project keeps its empty sheet)
     assert "rig" not in config_schema.inherited_rig({"ids_ratio": 1.37})
     assert json.dumps(rig)                               # plain data
+
+
+# --- the picker's "New" button (2026-10-08): name it, defaults + last rig, saved at once ---
+
+def _record_new_project_side_effects(s):
+    saved, shown = [], []
+    s.mgr._cb_do_save_config = lambda project: saved.append(project)
+    s.mgr._show_startup_project_picker = lambda: shown.append(True)
+    return saved, shown
+
+
+def test_new_project_is_saved_under_its_name_with_the_last_rig(tmp_path):
+    s = _session(tmp_path)
+    s.store.save("mur30m-0710", _project())
+    saved, shown = _record_new_project_side_effects(s)
+    assert s.mgr._cb_project_new("show 0810")
+    assert saved == ["show_0810"]                 # saved at once: never works in 'default'
+    assert s.uni.opened == [("ids", 1.37)]         # the blank start's inherited crop
+    assert ("model_load",) in s.events
+    assert not shown
+
+
+@pytest.mark.parametrize("name", ["mur30m-0710", "", "   ", "default"])
+def test_new_project_refuses_a_taken_or_missing_name(tmp_path, name):
+    s = _session(tmp_path)
+    s.store.save("mur30m-0710", _project())
+    saved, shown = _record_new_project_side_effects(s)
+    assert not s.mgr._cb_project_new(name)
+    assert saved == [] and ("model_load",) not in s.events
+    assert shown == [True]                        # back to the picker
+    assert s.toasts
