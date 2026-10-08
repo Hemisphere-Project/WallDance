@@ -138,7 +138,7 @@ def test_slow_path_duplicate_suppressed_at_report():
         tk.logger.start_session(tempfile.mkdtemp())
         tk._person_height_px = 180
         tk.frame_count = 10_000
-        tk.intermittent_confirm = True   # the per-scene switch (default off)
+        tk.intermittent_confirm = True   # the per-scene switch (default ON since D33)
         tk.tracks = tracks
         return {t.track_id for t in tk._collect_confirmed_tracks()}
 
@@ -163,10 +163,10 @@ def test_slow_path_duplicate_suppressed_at_report():
     assert dup.track_id not in ids
 
 
-def test_slow_path_default_off_at_report():
-    # With the per-scene switch at its default (off), a slow-path-only track
-    # is NOT reported — the report boundary behaves exactly like the shipped
-    # integral-only warmup.
+def test_slow_path_switch_at_report():
+    # With the per-scene switch off, a slow-path-only track is NOT reported --
+    # the report boundary behaves exactly like the integral-only warmup; on, it
+    # is.  The default is ON since D33 (2026-10-08, the validated D27 settings).
     import tempfile
     from core.tracker import DancerTracker
 
@@ -181,10 +181,11 @@ def test_slow_path_default_off_at_report():
     tk._person_height_px = 180
     tk.frame_count = 10_000
     tk.tracks = [t]
-    assert tk.intermittent_confirm is False          # default off
-    assert tk._collect_confirmed_tracks() == []      # ...so not reported
-    tk.intermittent_confirm = True
+    assert tk.intermittent_confirm is True           # D33 default
+    assert config.TRACK_WARMUP_INTERMITTENT_ENABLED is True
     assert [x.track_id for x in tk._collect_confirmed_tracks()] == [t.track_id]
+    tk.intermittent_confirm = False                  # a project that stores OFF
+    assert tk._collect_confirmed_tracks() == []      # ...so not reported
 
 
 def test_intermittent_path_is_live_not_latched():

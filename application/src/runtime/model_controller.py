@@ -113,6 +113,31 @@ class ModelController:
     # ------------------------------------------------------------------
     # Startup
     # ------------------------------------------------------------------
+    def engine_missing_notice(self, base_name: str) -> str:
+        """D33: the engine the model/imgsz about to load needs is missing -- say it
+        LOUDLY in the log (the default x@1280 on PyTorch is 3-7x slower).
+        Returns the expected engine path."""
+        path = self.model_manager.get_engine_path(base_name)
+        bar = "!" * 72
+        print(f"[Model] {bar}")
+        print(f"[Model] TensorRT engine MISSING: {path}")
+        print(f"[Model] Without it {base_name} @ {self.model_manager.imgsz} runs on PyTorch, "
+              "3-7x slower than the show path.")
+        print("[Model] Build it now (the prompt, 2-5 min) or offline: "
+              "extra\\build_engines.bat (Windows) / extra/build_engines.sh")
+        print(f"[Model] {bar}")
+        return path
+
+    def keep_trt_intent_after_decline(self, base_name: str) -> None:
+        """The operator declined the engine build: run PyTorch for now but keep
+        TensorRT as the intent, so the red banner, the readiness row (FAIL) and
+        the next start flag it, and a save does not persist PyTorch."""
+        name = os.path.basename(self.model_manager.get_engine_path(base_name))
+        self._trt_requested = True
+        self.model_manager.note_tensorrt_fallback(f"engine {name} not built")
+        print(f"[Model] TensorRT build declined: PyTorch until {name} is built "
+              "(banner + readiness FAIL)")
+
     def _load_default_model_startup(self) -> bool:
         """Load the default model at startup (no project). Returns success."""
         print("No project, loading default model...")
@@ -121,13 +146,14 @@ class ModelController:
             from core.model_manager import is_tensorrt_available
             base_default = YOLO_MODEL.replace('.pt', '').replace('.engine', '')
             if is_tensorrt_available() and not self.model_manager.engine_exists(base_default):
+                self.engine_missing_notice(base_default)
                 if self._prompt_trt_build_sync(base_default):
                     print("User accepted TRT build at startup")
                     force_pt_default = False
                 else:
                     print("User declined TRT build at startup, using PyTorch")
                     force_pt_default = True
-                    self._trt_requested = False
+                    self.keep_trt_intent_after_decline(base_default)
             elif not is_tensorrt_available():
                 force_pt_default = True
         if not self._load_model_with_progress(YOLO_MODEL, force_pt=force_pt_default):

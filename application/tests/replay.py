@@ -117,6 +117,16 @@ def _find_recording(project: str, slot: int) -> Optional[Path]:
     return recs[-1] if recs else None
 
 
+def fill_detection_defaults(config: dict):
+    """D33: (config, filled keys) -- a detection key the config lacks gets the code
+    default (``core.config.DETECTION_DEFAULTS``, the validated D27 settings), exactly
+    as the app loads a project file (``config_schema.fill_detection_defaults``); a
+    key the config stores is kept.  Done before the detect-cache key, so a cache
+    built under an older default is never reused."""
+    import core.config_schema as config_schema
+    return config_schema.fill_detection_defaults(config)
+
+
 def scenario_config(manifest: dict) -> dict:
     """Resolve a scenario's base config.
 
@@ -203,7 +213,7 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
     from core.config import (
         YOLO_CONFIDENCE, PERSON_HEIGHT_PX, PERSON_HEIGHT_MIN_RATIO,
         PERSON_HEIGHT_MAX_RATIO, BRIGHTNESS_THRESHOLD, ENHANCE_ENABLED,
-        MOTION_BRIDGE_SENSITIVITY, TrackingMode, AUTOCAL_EXCL_GRID,
+        MOTION_BRIDGE_SENSITIVITY, TrackingMode, TRACKING_MODE, AUTOCAL_EXCL_GRID,
         MOTION_CROSSVAL_CONFIDENT_MIN_KPTS, MOTION_CROSSVAL_CONFIDENT_MIN_CONF,
         MOTION_CROSSVAL_FRAMEDIFF_MIN_RATIO,
     )
@@ -310,7 +320,7 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
 
     # Tracking mode first (its defaults must not clobber the tuned values).
     try:
-        mode = TrackingMode(config.get("tracking_mode", "yolo_first"))
+        mode = TrackingMode(config.get("tracking_mode", TRACKING_MODE.value))
     except ValueError:
         mode = TrackingMode.YOLO_FIRST
     tracker.set_tracking_mode(mode)
@@ -757,8 +767,14 @@ def main():
     if scenario is not None:
         check_fingerprint(scenario, Path(video))
 
-    model_name = args.model or config.get("model", "yolo11x-pose")
-    imgsz = args.imgsz or int(config.get("yolo_imgsz", 1280))
+    config, filled = fill_detection_defaults(config)
+    model_name = args.model or config["model"]
+    imgsz = args.imgsz or int(config["yolo_imgsz"])
+    print(f"[replay] detection: model={model_name} imgsz={imgsz} "
+          f"confidence={config['confidence']} tracking_mode={config['tracking_mode']} "
+          f"intermittent={config['tracker_intermittent_confirm']}"
+          + (f" (absent from the config -> code defaults, D33: {', '.join(filled)})"
+             if filled else ""), file=sys.stderr)
     fps = _stream_fps(scenario, Path(video))
     want_ref = args.score or args.quality
 

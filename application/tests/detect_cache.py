@@ -73,6 +73,11 @@ def cache_key(config: dict, video_name: str, start: int, frames: int,
     Stage 1) — they produce different detections.  Default "cpu" omits the key
     so existing CPU cache hashes are unchanged."""
     sub = {k: config.get(k) for k in REBUILD_KEYS}
+    if sub["confidence"] is None:
+        # D33: an absent confidence runs at the code default (0.15 since
+        # 2026-10-08, 0.25 before) -- key the value, so a cache built under the
+        # old default is never reused.  An explicit confidence hashes as before.
+        sub["confidence"] = _default_confidence()
     sub["model"] = model_name
     sub["yolo_imgsz"] = imgsz
     sub["_video"] = video_name
@@ -86,6 +91,14 @@ def cache_key(config: dict, video_name: str, start: int, frames: int,
     if mirror or rotation:
         sub["_input_transform"] = [mirror, rotation]
     return sub
+
+
+def _default_confidence() -> float:
+    src = str(Path(__file__).resolve().parent.parent / "src")
+    if src not in sys.path:
+        sys.path.insert(0, src)
+    from core.config import YOLO_CONFIDENCE
+    return YOLO_CONFIDENCE
 
 
 def _transform_key(config: dict):

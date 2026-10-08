@@ -17,7 +17,7 @@ import numpy as np
 from core.config import (RECORDING_SLOTS, IDENTITY_SLOTS_ENABLED, IDENTITY_SLOTS_MAX_DANCERS,
                          IDENTITY_SLOTS_STABILITY, IDENTITY_SLOTS_COAST_S,
                          IDENTITY_SLOTS_STATIC_GUARD, IDENTITY_SLOTS_SMART_HOLD, FOREGROUND_ENABLED,
-                         IDENTITY_SLOTS_USE_IR_BELT, OSC_SEND_STATE)
+                         IDENTITY_SLOTS_USE_IR_BELT, OSC_SEND_STATE, DETECTION_DEFAULTS)
 from gui_icons import Icons
 from gui_constants import (
     TEXT_NORMAL, TEXT_MUTED, TEXT_DIM, TEXT_HINT, TEXT_FAINT,
@@ -1343,7 +1343,7 @@ def build_detection_section(gui: Any):
             with dpg.group(horizontal=True):
                 conf_slider = dpg.add_slider_float(
                     tag="show_conf_slider",
-                    default_value=gui.config.get("confidence", 0.25),
+                    default_value=gui.config.get("confidence", DETECTION_DEFAULTS["confidence"]),
                     min_value=0.1,
                     max_value=0.9,
                     format="%.2f",
@@ -1520,7 +1520,7 @@ def build_model_section(gui: Any):
                     "yolo11l-pose", "yolo11x-pose",
                 ],
                 tag="adv_model_combo",
-                default_value=gui.config.get("model", "yolo11m-pose"),
+                default_value=gui.config.get("model", DETECTION_DEFAULTS["model"]),
                 width=scaled(140),
                 callback=gui._on_model_change,
             )
@@ -1531,14 +1531,14 @@ def build_model_section(gui: Any):
             dpg.add_combo(
                 items=["640", "800", "960", "1280", "1536", "1920"],
                 tag="adv_imgsz_combo",
-                default_value=str(gui.config.get("yolo_imgsz", 640)),
+                default_value=str(gui.config.get("yolo_imgsz", DETECTION_DEFAULTS["yolo_imgsz"])),
                 width=scaled(80),
                 callback=gui._on_imgsz_change,
             )
             dpg.add_text("TensorRT:")
             dpg.add_checkbox(
                 tag="adv_trt_checkbox",
-                default_value=gui.config.get("use_tensorrt", False),
+                default_value=gui.config.get("use_tensorrt", DETECTION_DEFAULTS["use_tensorrt"]),
                 callback=gui._on_trt_toggle,
             )
 

@@ -92,6 +92,11 @@ class ModelManager:
         """Get reason why TensorRT wasn't used (None if TensorRT is being used)."""
         return self._tensorrt_fallback_reason
 
+    def note_tensorrt_fallback(self, reason: str) -> None:
+        """Record why the next load runs PyTorch although TensorRT is wanted (the
+        operator declined an engine build): the banner / readiness row say it."""
+        self._tensorrt_fallback_reason = reason
+
     def _update_progress(self, status: ModelStatus, message: str, progress: float = 0.0, error: Optional[str] = None):
         """Update progress and notify callback."""
         self.progress = ModelProgress(status=status, message=message, progress=progress, error=error)

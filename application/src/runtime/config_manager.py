@@ -198,13 +198,15 @@ class ConfigManager:
         self._active_profile = structured.get("active_profile", config_schema.DEFAULT_PROFILE)
         flat, cfg_warnings = config_schema.validate_flat(config_schema.flatten(structured))
         self._report_config_warnings(cfg_warnings)
-        config = flat
+        # D33: a detection key the file lacks gets the code default (the D27
+        # settings), not the previous project's in-memory value.
+        config = self._fill_defaults(flat, os.path.basename(config_filepath))
 
         # 5. Extract model info before applying config
-        model_name = config.get("model", self.models.current_model_name)
-        use_trt = config.get("use_tensorrt", False)
+        model_name = config["model"]
+        use_trt = bool(config["use_tensorrt"])
         self.models._trt_requested = bool(use_trt)
-        new_imgsz = config.get("yolo_imgsz", self.settings.imgsz)
+        new_imgsz = int(config["yolo_imgsz"])
         base_name = model_name.replace('.pt', '').replace('.engine', '')
 
         print(f"[Project Switch] Target: model={model_name}, TRT={use_trt}, imgsz={new_imgsz}")
@@ -234,6 +236,7 @@ class ConfigManager:
             if use_trt and not self.models.model_manager.engine_exists(base_name):
                 from core.model_manager import is_tensorrt_available
                 if is_tensorrt_available():
+                    self.models.engine_missing_notice(base_name)
                     # Prompt user before starting long TRT build
                     if self.models._prompt_trt_build_sync(base_name):
                         print(f"[Project Switch] User accepted TRT build for {base_name}@{new_imgsz}")
@@ -242,7 +245,9 @@ class ConfigManager:
                         print(f"[Project Switch] User declined TRT build, using PyTorch")
                         force_pt = True
                         use_trt = False
-                        self.models._trt_requested = False
+                        # D33: not a silent PyTorch -- banner + readiness FAIL,
+                        # and the project keeps asking for TensorRT.
+                        self.models.keep_trt_intent_after_decline(base_name)
                 else:
                     # Keep _trt_requested True: the banner must flag the fallback
                     print(f"[Project Switch] TRT not available, using PyTorch")
@@ -481,6 +486,17 @@ class ConfigManager:
                     duration=4.0, color=(255, 200, 100),
                 )
 
+    @staticmethod
+    def _fill_defaults(flat: Dict, source: str) -> Dict:
+        """D33: fill the detection keys a full config lacks with the code
+        defaults (the D27 settings) and say which; stored keys are kept."""
+        config, filled = config_schema.fill_detection_defaults(flat)
+        if filled:
+            print(f"[Config] {source} has no " + ", ".join(filled)
+                  + " -> code defaults (D33): "
+                  + ", ".join(f"{k}={config[k]}" for k in filled))
+        return config
+
     def _cb_load_safe_defaults(self):
         """Load safe defaults for this project."""
         raw = self.config_store.load_safe_defaults(self._current_project)
@@ -488,6 +504,7 @@ class ConfigManager:
             structured = config_schema.migrate(raw)
             config, cfg_warnings = config_schema.validate_flat(config_schema.flatten(structured))
             self._report_config_warnings(cfg_warnings)
+            config = self._fill_defaults(config, "_safe_defaults.json")
             # Check if model or imgsz would change
             model_changes = config.get("model", self.models.current_model_name) != self.models.current_model_name
             imgsz_changes = config.get("yolo_imgsz", self.settings.imgsz) != self.settings.imgsz

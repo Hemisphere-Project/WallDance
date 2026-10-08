@@ -913,10 +913,11 @@ class DancerTracker:
         self.max_age = TRACKER_MAX_AGE
         self.min_hits = TRACKER_MIN_HITS
         self.velocity_weight = TRACKER_VELOCITY_WEIGHT
-        # Per-scene switch for the intermittent confirmation path (bug #14):
-        # default off = bit-identical shipped warmup behavior.  Calibration /
-        # config key `tracker_intermittent_confirm` enables it on scenes
-        # where intermittent detection dominates (aerial, very dark).
+        # Per-scene switch for the intermittent confirmation path (bug #14),
+        # config key `tracker_intermittent_confirm`: it wins where intermittent
+        # detection dominates (aerial, very dark).  Default ON since D33
+        # (2026-10-08, the dark IR wall); a scene that loses with it (texture /
+        # facade duplicates) stores False.
         self.intermittent_confirm = TRACK_WARMUP_INTERMITTENT_ENABLED
         # Frozen-ghost report gate: frames without a real skeleton before the
         # "frozen" speed test applies.  Per-scene config key

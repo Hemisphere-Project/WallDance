@@ -209,6 +209,38 @@ def structure(flat: Dict, profiles: Dict[str, Dict], active: str) -> Dict:
     return out
 
 
+# The dial keys follow `confidence`: a file that stores a confidence but no seed
+# anchors the dial on its own confidence (app._apply_config_without_model).
+_DIAL_KEYS = ("sensitivity_conf_seed", "sensitivity")
+
+
+def fill_detection_defaults(flat: Dict) -> Tuple[Dict, List[str]]:
+    """D33: the code defaults (``config.DETECTION_DEFAULTS``, the validated D27
+    detection settings) for the detection keys a FULL flat config lacks.
+
+    Returns (config, filled keys).  A key the file stores is never touched, so a
+    saved project keeps its values; only an older file (or a value
+    ``validate_flat`` dropped) gets the default instead of whatever the previous
+    project left in memory.  Never apply it to a lighting-profile bundle (a
+    partial apply must leave absent keys alone).
+    """
+    from core.config import DETECTION_DEFAULTS
+
+    out = dict(flat)
+    filled: List[str] = []
+    for key, value in DETECTION_DEFAULTS.items():
+        if key in _DIAL_KEYS or key in out:
+            continue
+        out[key] = value
+        filled.append(key)
+    if "confidence" in filled:
+        for key in _DIAL_KEYS:
+            if key not in out:
+                out[key] = DETECTION_DEFAULTS[key]
+                filled.append(key)
+    return out, filled
+
+
 def validate_flat(flat: Dict) -> Tuple[Dict, List[str]]:
     """Clamp out-of-range numerics; return (clamped, warnings).
 

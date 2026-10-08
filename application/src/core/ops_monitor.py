@@ -116,9 +116,14 @@ def check_camera(*, is_open: bool, reconnecting: bool, source: str, fps: float,
 def check_tensorrt(*, trt_requested: bool, trt_active: bool,
                    fallback_reason: Optional[str] = None,
                    gpu_fallback_reason: str = "",
-                   engine_present: Optional[bool] = None) -> CheckResult:
+                   engine_present: Optional[bool] = None,
+                   engine_name: str = "") -> CheckResult:
+    """``engine_name``: the engine file the current model/imgsz needs (e.g.
+    ``yolo11x-pose_1280.engine``), named in the detail so the operator knows
+    which one to build."""
+    engine = f" {engine_name}" if engine_name else ""
     if trt_active:
-        detail = "engine active"
+        detail = f"engine{engine} active"
         if gpu_fallback_reason:
             return CheckResult("tensorrt", "warn",
                                detail + f" (GPU path degraded: {gpu_fallback_reason})")
@@ -129,13 +134,24 @@ def check_tensorrt(*, trt_requested: bool, trt_active: bool,
         # on).  Still non-blocking: the operator may knowingly proceed on PyTorch.
         if engine_present is False:
             return CheckResult("tensorrt", "fail",
-                               "requested but the engine is MISSING — running "
-                               "PyTorch (slower, not the show path). Build the "
-                               "engine (Model panel) before the show.")
+                               f"requested but the engine{engine} is MISSING — running "
+                               "PyTorch (3-7x slower, not the show path). Build the "
+                               "engine (Model panel, or extra/build_engines) before the show.")
         reason = fallback_reason or "unknown reason"
         return CheckResult("tensorrt", "fail",
                            f"requested but running PyTorch ({reason}) — not the "
                            "show path; rebuild/repair the engine.")
+    # PyTorch by choice.  D33: the default x@1280 on PyTorch is 3-7x slower than
+    # the show path -- say so (a warning: the operator unticked TensorRT).
+    if engine_present is False:
+        return CheckResult("tensorrt", "warn",
+                           f"not requested (PyTorch, 3-7x slower) and the engine{engine} "
+                           "is MISSING: build it (extra/build_engines) and tick TensorRT "
+                           "for the show.")
+    if engine_present:
+        return CheckResult("tensorrt", "warn",
+                           f"not requested (PyTorch, 3-7x slower); the engine{engine} "
+                           "exists: tick TensorRT for the show.")
     return CheckResult("tensorrt", "ok", "not requested (PyTorch)")
 
 

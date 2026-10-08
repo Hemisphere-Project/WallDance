@@ -46,6 +46,7 @@
   "show_trails": false,
   "show_ids": true,
   "tracker_max_age": 7,
+  "tracker_intermittent_confirm": false,
   "tracker_smoothing": 1,
   "osc_enabled": true,
   "osc_ip": "127.0.0.1",

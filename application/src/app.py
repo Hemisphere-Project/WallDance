@@ -2248,14 +2248,16 @@ class WallDanceApp:
         try:
             engine_present = self.models.model_manager.engine_exists(
                 self.models.current_model_name)
+            engine_name = os.path.basename(self.models.model_manager.get_engine_path(
+                self.models.current_model_name))
         except Exception:
-            engine_present = None
+            engine_present, engine_name = None, ""
         results.append(check_tensorrt(
             trt_requested=bool(self.models._trt_requested),
             trt_active=self.models.model_manager.is_using_tensorrt(),
             fallback_reason=self.models.model_manager.get_tensorrt_fallback_reason(),
             gpu_fallback_reason=self.processor.gpu_fallback_reason or "",
-            engine_present=engine_present))
+            engine_present=engine_present, engine_name=engine_name))
         results.append(check_osc(
             enabled=self.osc_enabled, ip=self.osc_ip, port=self.osc_port,
             timeout_s=OPS_OSC_PROBE_TIMEOUT_S))

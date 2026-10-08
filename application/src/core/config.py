@@ -51,9 +51,18 @@ YOLO_MODEL = "yolo11x-pose.pt"      # Options: yolo11n/s/m/l/x-pose.pt
                                     # 9/12 scenes (+0.45/+0.51 on small-far/dark,
                                     # 11m's wins are noise); the FPS budget +
                                     # per-rig fps table keep imgsz honest
-YOLO_CONFIDENCE = 0.25              # Detection confidence threshold (0.1-0.9)
+YOLO_CONFIDENCE = 0.15              # Detection confidence threshold (0.1-0.9).
+                                    # D33 (2026-10-08): the validated D27 value is the
+                                    # default of a new project (was 0.25); the
+                                    # sensitivity dial anchors on it (dial 50 = 0.15).
+                                    # See DETECTION_DEFAULTS below.
 YOLO_IOU_THRESHOLD = 0.45           # NMS IoU threshold
-YOLO_IMGSZ = 800                    # YOLO input size (640, 800, 960, 1280, 1536, 1920, 2560)
+YOLO_IMGSZ = 1280                   # YOLO input size (640, 800, 960, 1280, 1536, 1920, 2560)
+                                    # D33: x@1280 is the default (was 800).  The
+                                    # 2026-10-07 far-wall replays: YOLO recall at the
+                                    # wall 0-14 % at 800 vs 31-67 % at 1280 (the dancer
+                                    # is ~123 px in YOLO's input at 1280, ~77 px at 800).
+                                    # The engine extra/build_engines builds FIRST.
                                     # IMPORTANT: Should be ≤ camera resolution for best results
                                     # - 640-960: Fast, good for close-up / webcam
                                     # - 1280: Balanced, good for 1080p cameras at medium distance
@@ -982,18 +991,40 @@ TRACK_WARMUP_SLOW_MIN_SEPARATION_RATIO = 0.7  # A slow-path-only track is NOT
                                   # tracks riding a dancer — moving, 30%+
                                   # duty — not fixed spots).  A real second
                                   # dancer farther than this confirms fine.
-TRACK_WARMUP_INTERMITTENT_ENABLED = False  # The intermittent path is a
-                                  # PER-SCENE calibrated switch (config key
-                                  # `tracker_intermittent_confirm`), default
-                                  # OFF = bit-identical shipped behavior.
+TRACK_WARMUP_INTERMITTENT_ENABLED = True   # The intermittent path is a
+                                  # PER-SCENE switch (config key
+                                  # `tracker_intermittent_confirm`).
                                   # Replay-measured across the 12-scenario
                                   # corpus: it wins on aerial/dark scenes
                                   # (hangar-aerial drop 0.126->0.074,
                                   # dark-crowd longest drop 9.6->5.8 s) and
                                   # loses on texture/facade scenes (duplicate
-                                  # +flicker ghosts) -- no global default can
-                                  # arbitrate a scene-dependent trade
-                                  # (ROADMAP 3b, same lesson as confidence).
+                                  # +flicker ghosts) (ROADMAP 3b).  D33
+                                  # (2026-10-08): ON by default (was OFF) --
+                                  # the show is the dark IR wall, and every
+                                  # 2026-10-07 validation ran with it (D27).
+                                  # A project that stores the key keeps its
+                                  # value; the corpus manifests pin OFF.
+
+# --- D33 (2026-10-08): detection defaults of a new project ---------------------
+# The validated D27 settings (docs/PLAN_25M_2026-10.md C.13): yolo_first,
+# confidence 0.15 with the sensitivity dial anchored on it (dial 50 = 0.15),
+# intermittent confirm ON, yolo11x-pose at 1280 on TensorRT.  The one source for
+# the app at startup ("Start blank", then a save = a new project), a project /
+# safe-defaults load whose file LACKS a key (config_schema.fill_detection_defaults),
+# tests/replay.py and the GUI fallbacks.  A key the project file stores keeps its
+# value: tmp_analysis/plan25m/apply_d33.py moves an existing project.
+# gamma / CLAHE / MOG2 / exposure are per venue (Calibrate), never defaults here.
+DETECTION_DEFAULTS = {
+    "model": YOLO_MODEL.replace(".pt", ""),
+    "yolo_imgsz": YOLO_IMGSZ,
+    "use_tensorrt": USE_TENSORRT,       # the show path; a missing engine is loud
+    "confidence": YOLO_CONFIDENCE,
+    "sensitivity_conf_seed": YOLO_CONFIDENCE,   # filled only with `confidence`
+    "sensitivity": 50.0,                        # (a stored confidence anchors the dial)
+    "tracking_mode": TRACKING_MODE.value,
+    "tracker_intermittent_confirm": TRACK_WARMUP_INTERMITTENT_ENABLED,
+}
 
 # Report-gate against "frozen-on-the-wall" ghost tracks (TUNING Phase F).
 # A track abandoned by its dancer can linger if recurring cold-blob detections

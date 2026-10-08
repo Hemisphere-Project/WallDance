@@ -52,6 +52,7 @@
   "show_ids": true,
   "tracking_mode": "yolo_first",
   "tracker_max_age": 45,
+  "tracker_intermittent_confirm": false,
   "tracker_smoothing": 1,
   "motion_sensitivity": 0.55,
   "osc_enabled": true,
