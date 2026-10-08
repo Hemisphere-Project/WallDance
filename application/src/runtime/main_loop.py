@@ -772,10 +772,14 @@ class MainLoop:
             if (src_w, src_h) != app.roi.state.source_size:
                 app.roi._clamp_roi_to_source(src_w, src_h, sync_ui=True)
 
-        # Stash raw frame for BG capture (before any processing)
-        # Works for both camera and playback sources
-        if frame is not None:
-            app._last_raw_frame = frame
+        # Stash raw frame for BG capture and Calibrate's exposure servo (before any
+        # processing). Works for both camera and playback sources; on the GPU path
+        # (IDS read_gpu) `frame` is None and the raw frame is the camera's CPU copy --
+        # without it the servo measured a stale frame (2026-10-08: the startup picker's
+        # 1920x1080 webcam frame drove the IDS exposure to its 0.2 ms minimum).
+        raw_frame = frame if frame is not None else preview_source_frame
+        if raw_frame is not None:
+            app._last_raw_frame = raw_frame
 
         return _Tick(frame=frame, gpu_tensor=gpu_tensor,
                      camera_read_ms=camera_read_ms,
