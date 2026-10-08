@@ -621,9 +621,21 @@ AUTOCAL_SWEEP_STRIDE = 2            # Score the var×scale models every Nth fram
 # then analog gain (Starvis2 = low read noise).  All provisional until the
 # annotated-footage loop re-fits them (UX_PLAN §6).
 AUTOCAL_BLUR_BUDGET_MS = 25.0       # Max exposure: motion-blur cap (NOT the FPS cap)
-AUTOCAL_SERVO_TARGET_BRIGHTNESS = 70.0  # Raw-scene mean luma target
+# The servo exposes for the part of the image that matters: the operator's ROI (the wall
+# band) when one is drawn, else the frame, and drives that region's MEDIAN raw luma -- not
+# the frame mean, which windows / lamps / retroreflective belts (saturated by design) drag
+# up: 2026-10-08 daylight hangar, 6 % of the frame clipped even at 0.2 ms and the old
+# "back off on > 0.5 % clipped" rule drove the wall black.  The median ignores up to half
+# of the region being bright.
+AUTOCAL_SERVO_TARGET_BRIGHTNESS = 70.0  # Region (ROI, else frame) median raw luma target
 AUTOCAL_SERVO_TOLERANCE = 12.0      # Acceptable band around the target
-AUTOCAL_SERVO_CLIP_MAX_PCT = 0.5    # Back off when > this % of pixels >= 250
+# Clipping (pixels >= 250) only backs the servo off when it covers this share of the REGION
+# AND the region's median is at/above target -- never while the median is below target.
+# 15 %: far above what a lamp, a window patch or the dancers' belts cover inside the band
+# (the field's 6 % was the whole frame, windows included), far below the 50 % where the
+# median itself saturates (the "too bright" branch takes over there).  The back-off is one
+# gentle step that keeps the median in band, so it cannot oscillate with the dark branch.
+AUTOCAL_SERVO_CLIP_MAX_PCT = 15.0   # % of the region >= 250 (with median >= target) -> back off
 AUTOCAL_SERVO_GAIN_MAX_DB = 36.0    # Gain ceiling for the servo (dB), further cut to the
                                     # camera's real range (IMX664: 30 dB = x31.6, ids_camera)
 AUTOCAL_SERVO_SETTLE_FRAMES = 6     # Frames to let the sensor apply each command

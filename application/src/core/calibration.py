@@ -165,32 +165,87 @@ def scene_report_stats(gray: np.ndarray, grid: Tuple[int, int] = (8, 5),
     }
 
 
+def servo_region_stats(frame: np.ndarray,
+                       roi: Optional[Tuple[int, int, int, int]] = None,
+                       clip_level: int = 250) -> Tuple[float, float, str]:
+    """What the exposure servo measures: ``(median, clip %, region label)`` of ``roi``.
+
+    ``roi`` is ``(x, y, w, h)`` in frame pixels (the operator's wall band), None for the
+    whole frame; an ROI that misses the frame falls back to the frame.  The median and the
+    share of pixels >= ``clip_level`` are both of the region, so bright sources outside it
+    (windows, lamps) do not count, and inside it they move the median only once they cover
+    half of it.  uint8 frames go through a 256-bin histogram (fast on full-res frames).
+    """
+    gray = frame
+    if gray.ndim == 3:
+        gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
+    fh, fw = gray.shape[:2]
+    label = f"frame {fw}x{fh}"
+    region = gray
+    if roi is not None:
+        x, y, w, h = (int(v) for v in roi)
+        x0, y0 = max(0, x), max(0, y)
+        x1, y1 = min(fw, x + w), min(fh, y + h)
+        if x1 > x0 and y1 > y0 and (x0, y0, x1, y1) != (0, 0, fw, fh):
+            region = gray[y0:y1, x0:x1]
+            label = f"ROI {x1 - x0}x{y1 - y0}"
+    total = region.size
+    if total == 0:
+        return 0.0, 0.0, label
+    if region.dtype == np.uint8:
+        hist = cv2.calcHist([np.ascontiguousarray(region)], [0], None, [256], [0, 256]).ravel()
+        median = float(np.searchsorted(np.cumsum(hist), total / 2.0))
+        clip = float(hist[clip_level:].sum())
+    else:
+        median = float(np.median(region))
+        clip = float(np.count_nonzero(region >= clip_level))
+    return median, clip / total * 100.0, label
+
+
 @dataclass
 class ServoResult:
     """Outcome of the exposure/gain servo phase (Calib1 phase A)."""
     ran: bool = False
     converged: bool = False
     steps: int = 0
-    brightness: float = 0.0
+    brightness: float = 0.0          # the driven statistic: the region's median raw luma
     exposure_us: float = 0.0
     gain_db: float = 0.0
     note: str = ""
+    region: str = "frame"            # what was measured ("ROI 1322x412" / "frame 1776x1300")
+    clip_pct: float = 0.0            # % of that region >= 250 at the last measurement
 
     def summary_line(self) -> str:
         if not self.ran:
             return "Exposure: not driven (playback or non-IDS camera) - kept current"
         state = "converged" if self.converged else f"stopped ({self.note})"
+        if self.converged and self.note:
+            state += f", {self.note}"
         return (f"Exposure: {self.exposure_us/1000.0:.1f} ms  gain {self.gain_db:.1f} dB  "
-                f"-> brightness {self.brightness:.0f}  ({state}, {self.steps} steps)")
+                f"-> {self.region} median {self.brightness:.0f}, clip {self.clip_pct:.1f}%  "
+                f"({state}, {self.steps} steps)")
 
 
 class ExposureServo:
     """Drives IDS exposure/gain toward a brightness target under a blur budget.
 
+    It exposes for the region that matters: ``brightness`` is the MEDIAN raw luma of the
+    operator's ROI (the wall band), else of the frame, and ``clip_pct`` the share of that
+    region at >= 250 (``servo_region_stats``).  Bright sources -- windows, lamps, the
+    retroreflective belts that saturate by design -- may clip.
+
     Order of authority (UX_PLAN U3): exposure rises first, but only up to
     ``min(blur budget, FPS floor)`` — motion blur is the binding constraint,
     not frame rate — then analog gain takes over (Starvis2 = low read noise).
-    Clipping always backs gain off before exposure.
+    Backing off always cuts gain before exposure.
+
+    Rule, per measurement (after settling):
+      * median below the band -> raise (exposure to the cap, then gain), however much
+        clips: exposure/gain are never cut while the median is below target;
+      * median above the band -> back off (gain, then exposure), as before;
+      * median in band -> done, unless ``clip_max_pct`` of the region clips with the
+        median at/above target: then one gentle step down that lands the median in the
+        band's lower half (so the dark branch never undoes it), and done.
 
     Pure logic: ``feed(brightness, clip_pct)`` returns ``("exposure", us)`` /
     ``("gain", db)`` commands for the caller to apply to the camera, or None
@@ -225,16 +280,25 @@ class ExposureServo:
         self._converged = False
         self._note = ""
         self._brightness = 0.0
+        self._clip_pct = 0.0
+        self._region = "frame"
 
     @property
     def done(self) -> bool:
         return self._done
 
-    def feed(self, brightness: float, clip_high_pct: float):
-        """One frame's measurement in, at most one camera command out."""
+    def feed(self, brightness: float, clip_high_pct: float, region: Optional[str] = None):
+        """One frame's measurement in, at most one camera command out.
+
+        ``brightness`` = the region's median raw luma, ``clip_high_pct`` = % of the region
+        >= 250, ``region`` = a label of what was measured, for the summary line.
+        """
         if self._done:
             return None
         self._brightness = float(brightness)
+        self._clip_pct = float(clip_high_pct)
+        if region is not None:
+            self._region = str(region)
         if self._settle > 0:
             self._settle -= 1
             return None
@@ -243,16 +307,8 @@ class ExposureServo:
             return None
 
         b = float(brightness)
-        if clip_high_pct > self.clip_max_pct:
-            if self.gain_db > 0.5:
-                self.gain_db = max(0.0, self.gain_db - 3.0)
-                return self._command("gain", self.gain_db)
-            if self.exposure_us > self._EXPOSURE_MIN_US * 1.01:
-                self.exposure_us = max(self._EXPOSURE_MIN_US, self.exposure_us * 0.7)
-                return self._command("exposure", self.exposure_us)
-            self._finish(False, "clipping at minimum settings")
-            return None
         if b < self.target - self.tolerance:
+            # Dark region: raise whatever clips elsewhere in it (lamps, belts, windows).
             if self.exposure_us < self.exposure_cap_us * 0.99:
                 factor = _clamp(self.target / max(b, 1.0), 1.3, 2.5)
                 self.exposure_us = min(self.exposure_cap_us, self.exposure_us * factor)
@@ -272,6 +328,19 @@ class ExposureServo:
                 return self._command("exposure", self.exposure_us)
             self._finish(False, "too bright at minimum settings")
             return None
+        if b >= self.target and clip_high_pct >= self.clip_max_pct:
+            # In band, but a large share of the region saturates: one step down aimed at the
+            # band's lower half (median ~ linear in exposure x gain), so the median stays in
+            # band and the dark branch above never undoes it.
+            factor = _clamp((self.target - self.tolerance / 2.0) / max(b, 1.0), 0.7, 0.95)
+            if self.gain_db > 0.5:
+                self.gain_db = max(0.0, self.gain_db + 20.0 * math.log10(factor))
+                return self._command("gain", self.gain_db)
+            if self.exposure_us > self._EXPOSURE_MIN_US * 1.01:
+                self.exposure_us = max(self._EXPOSURE_MIN_US, self.exposure_us * factor)
+                return self._command("exposure", self.exposure_us)
+            self._finish(True, "clipping at minimum settings")
+            return None
         self._finish(True, "")
         return None
 
@@ -289,7 +358,7 @@ class ExposureServo:
         return ServoResult(ran=True, converged=self._converged,
                            steps=self._steps, brightness=self._brightness,
                            exposure_us=self.exposure_us, gain_db=self.gain_db,
-                           note=self._note)
+                           note=self._note, region=self._region, clip_pct=self._clip_pct)
 
 
 class CalState(Enum):

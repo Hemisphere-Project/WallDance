@@ -30,7 +30,7 @@ from core.calib2 import (SubjectCollector, SubjectPool, load_fps_table,
                          probe_detection_counts)
 from core.calib2 import aggregate as calib2_aggregate
 from core.calibration import (ExposureServo, SceneCalibrator,
-                              cap_gamma_for_noise, seed_gamma)
+                              cap_gamma_for_noise, seed_gamma, servo_region_stats)
 from core.config import (AUTOCAL_BLUR_BUDGET_MS, AUTOCAL2_FRAME_SAMPLES,
                          AUTOCAL2_NOISE_REUSE_S, AUTOCAL2_WINDOW_FRAMES,
                          AUTOCAL_SERVO_GAIN_MAX_DB, EMPTY_WALL_CHECK, MODELS_DIR)
@@ -307,6 +307,18 @@ class CalibrationFlows:
             return min(cap, float(rng[1]))
         return cap
 
+    def _servo_roi(self, raw):
+        """The region the exposure servo exposes for: the operator's ROI (x, y, w, h) on this
+        frame when one is enabled, else None (= the whole frame)."""
+        enabled = getattr(self.settings, "roi_enabled", False)
+        if not (isinstance(enabled, (bool, np.bool_)) and enabled):
+            return None
+        h, w = raw.shape[:2]
+        try:
+            return tuple(int(v) for v in self.get_effective_roi(w, h))
+        except Exception:
+            return None
+
     def _seed_gamma_for_calibration(self, brightness: float):
         """Apply the gamma seed before the collection window (Calib1 phase B)."""
         g = seed_gamma(brightness)
@@ -327,11 +339,15 @@ class CalibrationFlows:
         if self._servo is not None:
             raw = self.last_raw_frame()
             if raw is not None:
-                b = float(raw.mean())
-                clip_pct = float(np.count_nonzero(raw >= 250)) / raw.size * 100.0
-                cmd = self._servo.feed(b, clip_pct)
+                # Expose for the wall: the ROI's median (else the frame's), not the frame mean
+                # that windows / lamps / belts drag up (servo_region_stats, ExposureServo).
+                b, clip_pct, region = servo_region_stats(raw, self._servo_roi(raw))
+                cmd = self._servo.feed(b, clip_pct, region)
                 if cmd is not None:
                     kind, value = cmd
+                    print(f"[Calibrate] servo: {region} median {b:.0f}, clip {clip_pct:.1f}% "
+                          f"-> {kind} {value / 1000.0 if kind == 'exposure' else value:.2f}"
+                          f" {'ms' if kind == 'exposure' else 'dB'}")
                     if kind == "exposure":
                         self.cameras._cb_ids_exposure_change(value)
                         if self.ui.available:

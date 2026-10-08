@@ -243,6 +243,39 @@ def test_calibrate_keeps_the_projects_calibrated_enhancement_when_it_passes():
     assert flows.enhancer.clahe_clip == 2.5 and settings.confidence == 0.25
 
 
+def _servo_flows(roi_enabled):
+    """A flows with the live exposure servo running on a hangar-like frame: a dark wall band
+    (ROI rows 80-160, luma 10) under daylight windows (rows 0-60 clipped = 30 % of the frame)."""
+    import numpy as np
+    from core.calibration import ExposureServo
+    flows, settings = _flows()
+    settings.roi_enabled = roi_enabled
+    frame = np.full((200, 320), 10, np.uint8)
+    frame[:60, :] = 255
+    flows.last_raw_frame = lambda: frame
+    flows.get_effective_roi = lambda w, h: (0, 80, 320, 80)
+    flows._servo = ExposureServo(exposure_us=200.0, gain_db=0.5)
+    flows._calibrating = True
+    for _ in range(7):                                  # settle, then one command
+        flows._step_calibration([], 30.0)
+    return flows
+
+
+def test_live_servo_exposes_for_the_roi_not_the_clipped_windows():
+    flows = _servo_flows(roi_enabled=True)
+    flows.cameras._cb_ids_exposure_change.assert_called_once()
+    assert flows.cameras._cb_ids_exposure_change.call_args[0][0] > 200.0   # raised, wall is dark
+    flows.cameras._cb_ids_gain_change.assert_not_called()
+    assert flows._servo._region == "ROI 320x80" and flows._servo._brightness == 10.0
+
+
+def test_live_servo_without_roi_drives_the_frame_median():
+    flows = _servo_flows(roi_enabled=False)
+    assert flows._servo._region == "frame 320x200" and flows._servo._brightness == 10.0
+    assert flows._servo._clip_pct == 30.0
+    assert flows.cameras._cb_ids_exposure_change.call_args[0][0] > 200.0   # 30 % clipped, still up
+
+
 def test_calibrate_records_the_enhancement_to_keep_only_for_a_calibrated_project():
     flows, _ = _wall_flows(gamma=0.73, clahe=2.5)
     flows.models._model_loaded = True

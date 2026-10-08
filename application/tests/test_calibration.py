@@ -408,10 +408,141 @@ def test_servo_dark_scene_exposure_first_then_gain():
 
 
 def test_servo_clipping_backs_gain_off_first():
+    # A bright, clipping region backs gain off before exposure (now via the median-above-band
+    # branch: 5 % clipped alone no longer triggers a back-off, see the region tests below).
     s = ExposureServo(exposure_us=20000.0, gain_db=12.0)
     cmds = _drive(s, brightness=200.0, clip=5.0, max_frames=20)
     assert cmds[0][0] == "gain"
     assert cmds[0][1] == pytest.approx(9.0)
+
+
+def test_servo_never_cuts_while_the_median_is_below_target():
+    # 2026-10-08 hangar: windows clipped 6 % of the frame even at 0.2 ms; the old rule
+    # (> 0.5 % clipped -> back off first) drove the wall black.  Dark median + any clipping
+    # -> raise.
+    s = ExposureServo(exposure_us=200.0, gain_db=0.5)
+    cmds = _drive(s, brightness=8.0, clip=40.0, max_frames=20)
+    assert cmds and cmds[0][0] == "exposure" and cmds[0][1] > 200.0
+
+
+def test_servo_in_band_heavy_clipping_takes_a_gentle_step():
+    # Median in band and at/above target, >= 15 % of the region clipped: a step down sized to
+    # keep the median in band (no oscillation with the dark branch), gain before exposure.
+    s = ExposureServo(exposure_us=10000.0, gain_db=6.0)
+    cmds = _drive(s, brightness=78.0, clip=20.0, max_frames=10)
+    assert len(cmds) == 1 and cmds[0][0] == "gain"
+    assert 6.0 - 3.0 < cmds[0][1] < 6.0            # a fraction of the 3 dB too-bright step
+    # in band, below target: heavy clipping alone does not move it
+    s2 = ExposureServo(exposure_us=10000.0, gain_db=6.0)
+    assert _drive(s2, brightness=62.0, clip=30.0) == [] and s2.result().converged
+    # in band, at target, clipping under the limit: converged untouched
+    s3 = ExposureServo(exposure_us=10000.0, gain_db=6.0)
+    assert _drive(s3, brightness=75.0, clip=10.0) == [] and s3.result().converged
+
+
+# --- closed loop on a simulated sensor: pixel = radiance x exposure(ms) x gain, clipped --------
+from core.calibration import servo_region_stats                    # noqa: E402
+
+_H, _W = 200, 320
+_BAND = (0, 80, 320, 80)                 # the operator's wall band ROI (x, y, w, h)
+
+
+def _scene(wall_rad, windows=None, rad_bright=5000.0):
+    """Per-pixel radiance (luma per ms at 0 dB): a textured wall + saturating windows."""
+    rng = np.random.default_rng(0)
+    rad = wall_rad * rng.uniform(0.8, 1.2, (_H, _W))
+    if windows is not None:
+        x, y, w, h = windows
+        rad[y:y + h, x:x + w] = rad_bright
+    return rad
+
+
+def _expose(rad, exposure_us, gain_db):
+    img = rad * (exposure_us / 1000.0) * 10.0 ** (gain_db / 20.0)
+    return np.clip(img, 0, 255).astype(np.uint8)
+
+
+def _close_loop(servo, rad, roi, frames=600):
+    for _ in range(frames):
+        frame = _expose(rad, servo.exposure_us, servo.gain_db)
+        b, clip, region = servo_region_stats(frame, roi)
+        servo.feed(b, clip, region)
+        if servo.done:
+            break
+    return servo.result()
+
+
+@pytest.mark.parametrize("windows,roi,clip_min", [
+    ((0, 0, 320, 12), _BAND, 0.0),       # 6 % of the frame clipped, above the band
+    ((0, 80, 320, 5), _BAND, 6.0),       # 6.25 % of the ROI clipped, inside the band
+    ((0, 0, 320, 12), None, 5.9),        # no ROI: 6 % of the frame clipped
+])
+def test_servo_dark_wall_with_clipped_windows_raises_until_the_wall_median_is_on_target(
+        windows, roi, clip_min):
+    # The field end state: 0.2 ms / 0.5 dB, windows saturating even there, the wall black.
+    rad = _scene(wall_rad=20.0, windows=windows)
+    s = ExposureServo(exposure_us=200.0, gain_db=0.5)
+    res = _close_loop(s, rad, roi)
+    assert res.converged, res.summary_line()
+    assert s.exposure_us > 2000.0                       # raised, not driven to the 0.2 ms floor
+    assert abs(res.brightness - 70.0) <= 12.0           # the wall median is on target
+    assert res.clip_pct >= clip_min                     # ...with the windows still clipping
+    assert ("ROI 320x80" if roi else "frame 320x200") in res.summary_line()
+
+
+def test_servo_uniformly_too_bright_backs_off_into_the_band():
+    rad = _scene(wall_rad=300.0)                         # all clipped at 20 ms / 12 dB
+    s = ExposureServo(exposure_us=20000.0, gain_db=12.0)
+    res = _close_loop(s, rad, _BAND)
+    assert res.converged, res.summary_line()
+    assert s.gain_db == 0.0 and s.exposure_us < 20000.0  # gain off first, then exposure
+    assert abs(res.brightness - 70.0) <= 12.0
+
+
+def test_servo_bright_lamp_over_a_lit_wall_steps_down_once_and_stays_in_band():
+    # Wall median just above target, 20 % of the band a saturated lamp: one gentle step,
+    # converged in band -- not the old ratchet down to the minimum.
+    rad = _scene(wall_rad=7.4, windows=(0, 80, 320, 16))  # band median ~77, 20 % of it a lamp
+    s = ExposureServo(exposure_us=10000.0, gain_db=0.0)
+    res = _close_loop(s, rad, _BAND)
+    assert res.converged and res.steps == 1, res.summary_line()
+    assert 70.0 - 12.0 <= res.brightness < 70.0
+    assert s.exposure_us > 8000.0
+
+
+def test_servo_night_dark_scene_goes_to_the_exposure_cap_then_the_camera_gain_max():
+    rad = _scene(wall_rad=0.05, windows=(0, 80, 20, 4))  # a few belts / lamps saturate
+    s = ExposureServo(exposure_us=5000.0, gain_db=0.0, gain_max_db=30.0)
+    res = _close_loop(s, rad, _BAND)
+    assert s.exposure_us == pytest.approx(s.exposure_cap_us)      # 25 ms blur budget
+    assert s.gain_db == pytest.approx(30.0)                       # the camera's real max
+    assert not res.converged and "IR" in res.note
+
+
+def test_servo_region_stats_roi_vs_frame():
+    frame = np.full((100, 200), 200, np.uint8)           # bright surround
+    frame[40:60, :] = 30                                 # the dark wall band
+    frame[40:42, :100] = 255                             # 5 % of the band clipped
+    b, clip, label = servo_region_stats(frame, (0, 40, 200, 20))
+    assert b == pytest.approx(30.0) and clip == pytest.approx(5.0) and label == "ROI 200x20"
+    b, clip, label = servo_region_stats(frame, None)     # no ROI -> the frame's median
+    assert b == pytest.approx(200.0) and clip == pytest.approx(1.0) and label == "frame 200x100"
+    # an ROI covering the whole frame / off the frame is the frame
+    assert servo_region_stats(frame, (0, 0, 200, 100))[2] == "frame 200x100"
+    assert servo_region_stats(frame, (500, 500, 10, 10))[2] == "frame 200x100"
+    # BGR and non-uint8 input
+    bgr = np.dstack([frame] * 3)
+    assert servo_region_stats(bgr, (0, 40, 200, 20))[0] == pytest.approx(30.0)
+    assert servo_region_stats(frame.astype(np.float32), (0, 40, 200, 20))[:2] == \
+        pytest.approx((30.0, 5.0))
+
+
+def test_servo_summary_says_what_it_measured():
+    s = ExposureServo(exposure_us=10000.0, gain_db=6.0)
+    for _ in range(40):
+        s.feed(70.0, 3.2, "ROI 1322x412")
+    line = s.result().summary_line()
+    assert "ROI 1322x412 median 70" in line and "clip 3.2%" in line and "converged" in line
 
 
 def test_servo_converges_in_band():
