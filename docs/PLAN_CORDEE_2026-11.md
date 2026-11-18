@@ -1,6 +1,7 @@
 # Plan Cordée — N dancers on the wall, each accounted for until seen leaving
 
-**Date:** 2026-11-18 · **Status:** proposed to Thomas, to be ratified through the hub · **Branch:** `remote-ops`
+**Date:** 2026-11-18 (Phase R added the same day) · **Status:** proposed to Thomas, to be ratified through the
+hub · **Branch:** `remote-ops`
 · **Evidence:** [AUDIT_2026-11.md](AUDIT_2026-11.md) and [audit-2026-11/](audit-2026-11/README.md).
 
 *Cordée*: a roped party. A known number of people on a wall, and nobody is lost track of. That is the
@@ -28,6 +29,11 @@ labels. This plan orders the work; [ROADMAP.md](ROADMAP.md) §3–§5 keeps the 
   | field | `@who(thomas) @tag(field)` | Dancers and the rig at the hangar. |
   | decide | `[w] @who(thomas)` + an ask | A decision, through the question system. |
 
+- **The rig (Phase R, added 2026-11-18).** mgr-ran becomes a rig host the loop can use: a runner there pulls a
+  pushed commit, runs the gates the project declares, and files the verdict to the hub. Once it exists and
+  WallDance is armed (R3), the ⚙ rows mint to the machine and the GPU gates run without a sitting. What stays
+  on the bench: label spot-checks, the one-time golden re-baseline of A7, the laptop windows. Landings stay
+  Thomas's tap: `remote-ops` has two committers, so the hub treats it as a shared base.
 - **Branches.** Work lands on `remote-ops`, one commit per sub-step, subject ending with the step id
   (`… [CRD-A2]`) and a `Refs-37: walldance#t-NNN` trailer. `release` moves only by Thomas's push at a release
   decision (A8, G2, G3). `main` is not used.
@@ -98,6 +104,43 @@ Written in the hub's plan grammar. `after:` names the steps that must be done fi
 - **A8 · Release D34 and the Anchor fixes.** After: A7, L1. Ask: push `remote-ops` to `release`? With the
   command card. — @who(thomas) @est(0.5h) repo: none — why-not-machine: moving `release` is Thomas's push (D1)
   → task
+
+### Phase R — Rig: mgr-ran's hardware, usable by the loop (wave 1)
+
+- **R1 · mgr-ran as a rig host.** Generic, for any project that needs this box: the RTX 3090, the Blackbox on
+  its switched USB hub and SD mux, the Fireface. It lands in 37Dev, not here, and is proposed there as its own
+  plan (hub inbox, 2026-11-18). In short:
+  - a runner on mgr-ran that **pulls**: no inbound access, and since the box is off by default nothing queues
+    against it;
+  - **resources** declared once on the host (`gpu:rtx3090`, `usb-power:blackbox`, `sdmux:blackbox`,
+    `audio:fireface`, a project's data folder), each with a lock and take/release hooks that are the host's
+    own, trusted code;
+  - **gates** declared by each project in its own repo, run as untrusted code: a container, no network, data
+    read-only, only the devices the gate names;
+  - a **hold** Thomas can put on a resource or on the whole box, because it is his workstation and his
+    instruments;
+  - verdicts filed to the hub through the `37` bridge, where the loop stamps them
+    (`brain-code-turn rig … --host mgr-ran`).
+
+  — a 37dev row; here it is a dependency only
+- **R2 · WallDance's gates on the rig.** After: A1, R1. ① `rig.toml` at the repo root, with the gates below ②
+  the container recipe: the pinned stack, the engines and the takes mounted read-only ③ each gate writes a
+  verdict file. Gate: every gate green through the runner, from a clean checkout of `remote-ops`. — @who(bench)
+  @est(1d) repo: walldance — why-not-machine: proving the gates needs mgr-ran's GPU and takes, and it is the
+  rig's first use → task
+- **R3 · Arm the loop.** After: R2. Ask: arm `walldance:branch`, with `remote-ops` as its base and A1's command
+  as `verify:`? — @who(thomas) @est(0.25h) repo: none — why-not-machine: arming a repo is Thomas's → task
+
+  | Gate | Needs | Takes about | Proves | Used by |
+  |---|---|---|---|---|
+  | `unit` | – | 2 min | the unit suite, torch included | every step |
+  | `scenarios` | – | 2 min | the five regimes' synthetic scenarios (B3) | C1–C6, D2 |
+  | `emitted` | – | 1 min | the emitted-stream fixtures | C1–C6, D0 |
+  | `goldens` | `gpu:rtx3090`, `takes:walldance` | 10 min | the footage goldens at the shipped recipe (A7) | D0, D6, any tracker change |
+  | `stalls` | `gpu:rtx3090`, `takes:walldance` | 10 min | D34 on the takes with real stalls | A7 ③, C6 |
+  | `score` | `gpu:rtx3090`, `takes:walldance` | 30–60 min | the §2 KPI on the labelled takes, with the ratchet | B4, B7, C7, D3 |
+
+  Durations are estimates.
 
 ### Phase B — Baseline: evidence on what the show needs (wave 1)
 
@@ -244,6 +287,9 @@ Updated in the commit that changes a step's state. `todo` · `doing` · `done` �
 | A6 | Calibration correctness | bench ⚙ | – | 5h | todo | |
 | A7 | Gates that cover what ships | bench GPU | – | 1d | todo | |
 | A8 | Release D34 and the Anchor fixes | decide | A7, L1 | – | todo | |
+| R1 | mgr-ran as a rig host (lands in 37Dev) | external | – | – | proposed to 37dev | |
+| R2 | WallDance's gates on the rig | bench GPU | A1, R1 | 1d | todo | |
+| R3 | Arm the loop | decide | R2 | – | todo | |
 | B1 | Time-faithful takes | bench ⚙ | – | 1d | todo | |
 | B2 | Scorer for the emitted stream | bench ⚙ | – | 1.5d | todo | |
 | B3 | Regime scenarios in the suite | bench ⚙ | – | 1d | todo | |
@@ -314,12 +360,20 @@ Filled by the step named. Until then the cell says so.
 - The shadow period runs two estimators on a laptop with 6–10 ms of slack per frame. → 2 ms p95 budget in D4.
 - About 300 hours of session work on mgr-ran. → Ordered by gates; each sitting ends on a status-board commit.
 - This audit added about 880 KB under `docs/`. → E5 archives it.
+- The rig runs code a loop turn wrote, on Thomas's home workstation. → Gates run in a container with no
+  network and the takes read-only; only the host's own hooks touch devices; stopping the runner revokes it.
+- mgr-ran is off by default and is also his desk. → The runner pulls, so nothing waits on it; a hold takes a
+  resource or the whole box back at once; a gate that needs the GPU checks free memory first.
+- The rig depends on a plan in another project (R1). → Nothing else in this plan waits on it: until R3, every
+  step runs as a bench sitting, as written.
 
 ## 8. Spend
 
-- Rows: 40 new and 1 existing extended. 24 bench ⚙ · 7 bench GPU · 3 laptop · 1 field · 5 decide.
-- Wave 1 (at ratification): 22 rows. Wave 2 (at G1): 14. Wave 3 (at G2): 4.
-- Session work on mgr-ran: about 236 h loop-able, 60 h with the GPU, 8 h with the laptop (plus L1's 4 h).
+- Rows: 42 new and 1 existing extended, plus one row in 37dev (R1). 24 bench ⚙ · 8 bench GPU · 3 laptop ·
+  1 field · 6 decide.
+- Wave 1 (at ratification): 24 rows. Wave 2 (at G1): 14. Wave 3 (at G2): 4.
+- Session work on mgr-ran: about 236 h loop-able, 68 h with the GPU, 8 h with the laptop (plus L1's 4 h).
+  After R3 the loop-able share runs on the loop, and the GPU gates run on the rig without a sitting.
 - Thomas: about 24 h (five decisions, one shoot, laptop windows, label spot-checks, reading the manual).
 
 ## 9. Checking where we are
@@ -336,7 +390,7 @@ the hub's rows and §4 is the first thing to say.
 
 ## 10. Open at ratification
 
-- **Arm the loop?** Recommended: not now. The 24 ⚙ steps would mint to the machine, but each behaviour change
-  still needs its replay on mgr-ran. Reconsider at G1, when A1 has made the suite runnable without a GPU.
+- **Arm the loop?** Now step R3, asked once the rig runs WallDance's gates (R2). Until then the plan runs as
+  bench sittings on mgr-ran.
 - **The hub's record** names `main` as the repo's branch; the work is on `remote-ops`.
 - **A bench session** on mgr-ran for these rows, in the order of §4.
