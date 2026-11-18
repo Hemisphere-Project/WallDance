@@ -8,6 +8,9 @@
 [PLAN_25M_2026-10.md](PLAN_25M_2026-10.md) (§C.12-C.13 for 2026-10-07).
 **History:** [archives/ENGINEERING_RECORD.md](archives/ENGINEERING_RECORD.md).
 **Code-comment anchors** (`ROADMAP §4.2`, `ROADMAP bug #N`, `P3`, `§7B`…) refer to the June file: see Appendix A.
+**2026-11-18:** an audit ([AUDIT_2026-11.md](AUDIT_2026-11.md)) and the plan built from it,
+[PLAN_CORDEE_2026-11.md](PLAN_CORDEE_2026-11.md), proposed to Thomas. Once ratified it orders the work; this
+file keeps the items it does not mention.
 
 ID prefixes for new work: `OPS` field ops/deployment · `TEST` oracles/gates · `CONT` continuity · `SEAM` tracker
 seams · `MRK` IR markers/belt · `REQ` operator requests (TODO-me) · `PERF` · `ARCH` · `DOC` · `CAL` calibration ·

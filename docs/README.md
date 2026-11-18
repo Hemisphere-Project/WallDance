@@ -9,6 +9,10 @@ IR for live shows and emits their positions over OSC. Project root code lives in
 shipped history lives in **[archives/ENGINEERING_RECORD.md](archives/ENGINEERING_RECORD.md)**.
 Everything else is reference, operator procedure, or archived design.
 
+> **2026-11-18 — audit and Plan Cordée:** **[AUDIT_2026-11.md](AUDIT_2026-11.md)** (evidence in
+> [audit-2026-11/](audit-2026-11/README.md)) and the plan built from it, **[PLAN_CORDEE_2026-11.md](PLAN_CORDEE_2026-11.md)**,
+> proposed to Thomas: it orders the next work, and its §4 is the status board.
+>
 > **2026-10-06 — ROADMAP v2 is live:** **[ROADMAP.md](ROADMAP.md)** (priority: a continuous two-point stream at the
 > 25 m hangar setup with the current IR, then scaling, then id consistency / skeleton). The measured critical review is
 > **[ROADMAP_v2_REVIEW.md](ROADMAP_v2_REVIEW.md)**, this week's plan **[PLAN_25M_2026-10.md](PLAN_25M_2026-10.md)**, the
@@ -21,7 +25,8 @@ Everything else is reference, operator procedure, or archived design.
 
 | If you want to… | Read |
 |------------------|------|
-| Know what's next / the plan | **[ROADMAP.md](ROADMAP.md)** (v2) and this week's **[PLAN_25M_2026-10.md](PLAN_25M_2026-10.md)** |
+| Know what's next / the plan | **[PLAN_CORDEE_2026-11.md](PLAN_CORDEE_2026-11.md)** (proposed 2026-11-18; status board in §4), then **[ROADMAP.md](ROADMAP.md)** (v2) for the items it does not mention |
+| Know what the code does today | **[audit-2026-11/maps/](audit-2026-11/maps/)** — one page per subsystem, written from the code |
 | Run a real show | **[NEW_SHOW.md](NEW_SHOW.md)** — operator field playbook (the ①→⑥ phase rail) |
 | Understand the OSC output | **[OSC_CONTRACT.md](OSC_CONTRACT.md)** — wire-level `/walldance/*` contract |
 | Work on the prod laptop remotely | **[REMOTE_OPS.md](REMOTE_OPS.md)** — `wdremote`, DEV slot, release delivery |
