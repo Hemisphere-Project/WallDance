@@ -136,6 +136,9 @@ class GpuPipelineSettings:
     
     # Processing
     yolo_imgsz: int = 960
+    # P1: a rectangular network input (height, width), or None for the square
+    # yolo_imgsz.  Set only when the matching engine is loaded (core.input_shape).
+    yolo_shape: Optional[Tuple[int, int]] = None
 
 
 class GpuFrame:
@@ -648,7 +651,8 @@ class GpuPipeline:
         
         # 3. Resize for YOLO with letterboxing (preserve aspect ratio)
         t0 = time.time()
-        yolo_tensor, letterbox_info = self._prepare_yolo_input(enhanced_frame, self.settings.yolo_imgsz)
+        yolo_tensor, letterbox_info = self._prepare_yolo_input(
+            enhanced_frame, self.settings.yolo_imgsz, self.settings.yolo_shape)
         timing['yolo_resize'] = (time.time() - t0) * 1000
         timing['letterbox'] = letterbox_info  # For coordinate unscaling
         
@@ -747,7 +751,8 @@ class GpuPipeline:
         
         # 3. Resize for YOLO with letterboxing
         t0 = time.time()
-        yolo_tensor, letterbox_info = self._prepare_yolo_input(enhanced_frame, self.settings.yolo_imgsz)
+        yolo_tensor, letterbox_info = self._prepare_yolo_input(
+            enhanced_frame, self.settings.yolo_imgsz, self.settings.yolo_shape)
         timing['yolo_resize'] = (time.time() - t0) * 1000
         timing['letterbox'] = letterbox_info
         
@@ -804,34 +809,39 @@ class GpuPipeline:
         
         return GpuFrame(gpu_tensor, is_bgr=False)  # Now RGB
     
-    def _prepare_yolo_input(self, gpu_frame: GpuFrame, imgsz: int) -> Tuple[torch.Tensor, Dict]:
+    def _prepare_yolo_input(self, gpu_frame: GpuFrame, imgsz: int,
+                            shape: Optional[Tuple[int, int]] = None) -> Tuple[torch.Tensor, Dict]:
         """
         Prepare GPU tensor for YOLO input with letterboxing.
         
-        Uses letterbox (pad to square, preserve aspect ratio) to match
+        Uses letterbox (pad to the target, preserve aspect ratio) to match
         how YOLO was trained. Returns letterbox info for coordinate unscaling.
         
         Args:
             gpu_frame: Input frame on GPU
             imgsz: Target square size for YOLO
+            shape: P1 -- a rectangular target (height, width) instead of the
+                square; None keeps the square (byte-identical to before)
             
         Returns:
             (tensor, letterbox_info) where letterbox_info contains:
             - scale: scale factor applied
             - pad_x: horizontal padding (left)
             - pad_y: vertical padding (top)
+            - target_w / target_h: the tensor's width and height
         """
         tensor = gpu_frame.tensor  # (1, 3, H, W) RGB
         _, _, h, w = tensor.shape
+        target_h, target_w = (int(shape[0]), int(shape[1])) if shape else (imgsz, imgsz)
         
         # Calculate letterbox parameters (same as YOLO's letterbox)
-        scale = min(imgsz / w, imgsz / h)
+        scale = min(target_w / w, target_h / h)
         new_w = int(w * scale)
         new_h = int(h * scale)
         
         # Padding to center the image
-        pad_x = (imgsz - new_w) // 2
-        pad_y = (imgsz - new_h) // 2
+        pad_x = (target_w - new_w) // 2
+        pad_y = (target_h - new_h) // 2
         
         letterbox_info = {
             'scale': scale,
@@ -839,6 +849,8 @@ class GpuPipeline:
             'pad_y': pad_y,
             'new_w': new_w,
             'new_h': new_h,
+            'target_w': target_w,
+            'target_h': target_h,
         }
         
         # Resize preserving aspect ratio
@@ -850,11 +862,11 @@ class GpuPipeline:
                 align_corners=False
             )
         
-        # Pad to square (imgsz x imgsz)
-        if pad_x > 0 or pad_y > 0 or new_w != imgsz or new_h != imgsz:
+        # Pad to the target (imgsz x imgsz, or the P1 rectangle)
+        if pad_x > 0 or pad_y > 0 or new_w != target_w or new_h != target_h:
             # Pad: (left, right, top, bottom)
-            pad_right = imgsz - new_w - pad_x
-            pad_bottom = imgsz - new_h - pad_y
+            pad_right = target_w - new_w - pad_x
+            pad_bottom = target_h - new_h - pad_y
             tensor = F.pad(tensor, (pad_x, pad_right, pad_y, pad_bottom), value=0.5)  # Gray padding
         
         return tensor, letterbox_info

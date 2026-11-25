@@ -126,6 +126,10 @@ class ProcessingSettings:
     denoise_strength: float = 0.0   # Temporal denoising (0.0-1.0)
     greyscale: bool = False         # Convert to greyscale (mono camera simulation)
     osc_enabled: bool = True
+    # P1 (Plan Cordée rev 2): a rectangular network input (height, width) for
+    # the GPU path, or None for the square ``imgsz``.  Set by whoever loads the
+    # model, and only when the matching engine is loaded (core.input_shape).
+    yolo_shape: Optional[Tuple[int, int]] = None
     # Output box-clamp (Track X, OSC_CONTRACT §B.1): while a track is sustained
     # without a fresh YOLO skeleton, report a box of the last-known YOLO size at
     # the smoothed centroid.  OUTPUT-ONLY — applied at the ScaledTrack/OSC/preview
@@ -539,6 +543,7 @@ class FrameProcessor:
                 preview_width=960,  # Will be updated by app
                 preview_height=540,  # Will be updated by app
                 yolo_imgsz=settings.imgsz,
+                yolo_shape=settings.yolo_shape,
             )
             self._gpu_pipeline = GpuPipeline(gpu_settings)
             self._gpu_pipeline._bg_subtractor = self.bg_subtractor  # Share instance
@@ -763,8 +768,9 @@ class FrameProcessor:
             timing["mog2_feed"] = (t_done - motion[0]) * 1000
             timing["mog2_wait"] = (t_done - t_wait) * 1000
 
-        # GPU tracker space: ROI-local letterboxed imgsz coords — content sits
-        # between pad_x and imgsz - pad_x for edge-exit detection.
+        # GPU tracker space: ROI-local letterboxed coords — content sits
+        # between pad_x and tensor width - pad_x for edge-exit detection (P1:
+        # the tensor's own width, which a rectangle makes differ from imgsz).
         space = _TrackerSpace(
             person_height=scaled_person_height,
             scale=lb_scale,
@@ -773,7 +779,7 @@ class FrameProcessor:
             roi_x=roi_x,
             roi_y=roi_y,
             roi_local=True,
-            frame_width=self.settings.imgsz,
+            frame_width=int(letterbox.get('target_w', self.settings.imgsz)),
         )
 
         if self.bridge_motion_detector is not None and raw_frame is not None:
@@ -818,9 +824,10 @@ class FrameProcessor:
             if os.environ.get("WD_POSE_RUNNER", "1") == "0":
                 runner.enabled = False
                 runner.disabled_reason = "WD_POSE_RUNNER=0"
+        shape = self.settings.yolo_shape
         return runner(
             yolo_tensor,
-            imgsz=self.settings.imgsz,
+            imgsz=(int(shape[0]), int(shape[1])) if shape else self.settings.imgsz,
             conf=self.settings.confidence,
             iou=YOLO_IOU_THRESHOLD,
             half=self.settings.use_fp16,
@@ -885,6 +892,7 @@ class FrameProcessor:
             gs.denoise_enabled = False
             
         gs.yolo_imgsz = self.settings.imgsz
+        gs.yolo_shape = self.settings.yolo_shape
         
         # Background subtraction
         gs.bg_subtract_enabled = self.settings.bg_subtract_enabled

@@ -155,6 +155,31 @@ def check_tensorrt(*, trt_requested: bool, trt_active: bool,
     return CheckResult("tensorrt", "ok", "not requested (PyTorch)")
 
 
+def check_input_shape(*, requested: Optional[Tuple[int, int]], running: Optional[Tuple[int, int]],
+                      imgsz: int, fallback_reason: Optional[str] = None,
+                      roi_w: int = 0, roi_h: int = 0) -> CheckResult:
+    """P1: the network's input -- the square ``imgsz`` or the project's rectangle (height x width).
+
+    A rectangle the project asks for but cannot run (no engine) is a warning: the square runs instead, with
+    the dancer smaller at the network.  The detail gives the letterbox padding share for the ROI."""
+    from core.input_shape import padding_share, pick_shape, shape_str
+    pad = ""
+    if roi_w > 0 and roi_h > 0:
+        pad = f", {100 * padding_share(roi_w, roi_h, imgsz, running):.0f} % padding for the {roi_w}x{roi_h} ROI"
+    if requested and running != requested:
+        return CheckResult("net input", "warn",
+                           f"the project asks for {shape_str(requested)} but the square {imgsz} runs"
+                           + (f" ({fallback_reason})" if fallback_reason else "") + pad)
+    if running:
+        return CheckResult("net input", "ok", f"{shape_str(running)} (rectangle){pad}")
+    hint = ""
+    if roi_w > 0 and roi_h > 0:
+        better = pick_shape(roi_w, roi_h)
+        if better:
+            hint = f"; this ROI's shape suits yolo_shape {shape_str(better)}"
+    return CheckResult("net input", "ok", f"square {imgsz}{pad}{hint}")
+
+
 def probe_osc_udp(ip: str, port: int, timeout_s: float) -> Tuple[str, str]:
     """Best-effort UDP reachability probe on a private socket.
 

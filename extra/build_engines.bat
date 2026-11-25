@@ -6,8 +6,12 @@ rem YOLO_MODEL @ YOLO_IMGSZ -- yolo11x-pose @ 1280 since D33), then the m/l/x gr
 rem
 rem   extra\build_engines.bat                  default engine, then the whole grid
 rem   extra\build_engines.bat --default-only   only the default engine (a few minutes)
+rem   extra\build_engines.bat --rect           default engine, then the P1 rectangles (Plan Cordee rev 2):
+rem                                            yolo11l and yolo11x at 1760x960 and 1920x1056 (height x width)
 set "DEFAULT_ONLY=0"
+set "RECT_ONLY=0"
 if /i "%~1"=="--default-only" set "DEFAULT_ONLY=1"
+if /i "%~1"=="--rect" set "RECT_ONLY=1"
 
 for %%I in ("%~dp0..") do set "ROOT_DIR=%%~fI"
 cd /d "%ROOT_DIR%\application" || (
@@ -110,6 +114,16 @@ if "%DEFAULT_ONLY%"=="1" (
     echo === Default engine ready: %MODELS_DIR%\!DEF_BASE!_!DEF_IMGSZ!.engine ===
     exit /b 0
 )
+if "%RECT_ONLY%"=="1" (
+    set "RECT_RC=0"
+    for %%N in (yolo11l-pose yolo11x-pose) do (
+        for %%S in (1760x960 1920x1056) do (
+            call :build_one %%N %%S
+            if !errorlevel! NEQ 0 set "RECT_RC=1"
+        )
+    )
+    exit /b !RECT_RC!
+)
 
 set "FOUND_PT=0"
 
@@ -173,7 +187,8 @@ if not exist "!B1_PT!" (
     exit /b 1
 )
 echo === Building !B1_ENGINE! ===
-uv run --no-sync python -c "from ultralytics import YOLO; m=YOLO(r'!B1_PT!'); m.export(format='engine', imgsz=%~2, half=True, device=0)"
+rem a rectangle HEIGHTxWIDTH (P1) goes to the export as [height, width]
+uv run --no-sync python -c "from ultralytics import YOLO; s='%~2'; z=[int(v) for v in s.split('x')] if 'x' in s else int(s); m=YOLO(r'!B1_PT!'); m.export(format='engine', imgsz=z, half=True, device=0)"
 if errorlevel 1 (
     echo === Error: export failed for %~1.pt at size %~2 ===
     exit /b 1

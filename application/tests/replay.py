@@ -218,11 +218,15 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
         MOTION_CROSSVAL_FRAMEDIFF_MIN_RATIO,
     )
 
+    from core.input_shape import engine_suffix, parse_shape
+    # P1: a rectangular input ``yolo_shape`` = "<height>x<width>" (absent = the square imgsz)
+    shape = parse_shape(config.get("yolo_shape"))
     if load_model:
         from ultralytics import YOLO
         if use_trt:
             # Production-faithful: the FP16 TensorRT engine on the GPU show path.
-            engine_path = engine_dir() / f"{model_name}_{imgsz}.engine"
+            # A replay that asks for a rectangle must not quietly run the square.
+            engine_path = engine_dir() / f"{model_name}_{engine_suffix(imgsz, shape)}.engine"
             if not engine_path.exists():
                 raise FileNotFoundError(
                     f"TRT engine not found: {engine_path} "
@@ -260,6 +264,7 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
         # overridable via --set box_clamp_enabled=false for the A/B bbox check.
         box_clamp_enabled=bool(config.get("box_clamp_enabled", True)),
         use_gpu_path=use_gpu_path or use_trt,  # TRT implies the GPU show path
+        yolo_shape=shape,
     )
     # Output stage (identity slots, CONT-6) as app._apply_config_without_model:
     # output-only, so the tracker summary / lean timeline do not depend on it.

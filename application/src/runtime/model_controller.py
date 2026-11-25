@@ -429,6 +429,14 @@ class ModelController:
     # ------------------------------------------------------------------
     # Blocking load with GUI progress
     # ------------------------------------------------------------------
+    def _attach_model(self) -> None:
+        """Hand the loaded model to the processor, with the input it runs (P1:
+        the project's rectangle when its engine loaded or on PyTorch, else the
+        square)."""
+        proc = self.processor()
+        proc.model = self.model
+        proc.settings.yolo_shape = self.model_manager.effective_shape()
+
     def _load_model_with_progress(self, model_name: str, force_pt: bool = False) -> bool:
         """Model loads/TRT builds block the loop for minutes - suppress the
         loop watchdog for the duration."""
@@ -455,7 +463,7 @@ class ModelController:
             print("Warning: Loading model without GUI")
             try:
                 self.model = self.model_manager.load_model(model_name, force_pt=force_pt)
-                self.processor().model = self.model
+                self._attach_model()
                 self._model_loaded = True
                 # Warmup inference to force TRT engine initialization
                 import numpy as np
@@ -588,7 +596,7 @@ class ModelController:
 
                 if fallback_result["model"] is not None:
                     self.model = fallback_result["model"]
-                    self.processor().model = self.model
+                    self._attach_model()
                     self.current_model = f"{model_name.replace('.pt', '').replace('.engine', '')}.pt"
                     self.current_model_name = model_name.replace('.pt', '').replace('.engine', '')
                     self._model_loaded = True
@@ -626,7 +634,7 @@ class ModelController:
 
         # Success path
         self.model = load_result["model"]
-        self.processor().model = self.model
+        self._attach_model()
 
         # Update current model tracking
         base_name = model_name.replace('.pt', '').replace('.engine', '')
@@ -665,7 +673,7 @@ class ModelController:
                 self.ui.render_frame()
                 try:
                     self.model = self.model_manager.load_model(model_name, force_pt=True)
-                    self.processor().model = self.model
+                    self._attach_model()
                     self.current_model = f"{base_name}.pt"
                     self.ui.update_engine_type_badge(False)
                     self.ui.show_toast("TRT engine incompatible — using PyTorch", duration=5.0, color=(255, 180, 80))

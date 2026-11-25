@@ -8,12 +8,21 @@ import shutil
 import time
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable, Optional
+from typing import Callable, Optional, Tuple
 
 import cv2
 from ultralytics import YOLO
 
 from core.config import CV2_NUM_THREADS
+from core.input_shape import engine_suffix, parse_shape
+
+
+def _is_shape_suffix(text: str) -> bool:
+    try:
+        return parse_shape(text) is not None
+    except ValueError:
+        return False
+
 
 # PERF-1: `import ultralytics` runs cv2.setNumThreads(0) process-wide; undo it
 # here too in case this module is the first importer (see core/pipeline.py).
@@ -61,6 +70,11 @@ class ModelManager:
     - Load the appropriate model
     """
 
+    # P1 defaults (also for instances built without __init__)
+    shape: Optional[Tuple[int, int]] = None
+    _loaded_shape: Optional[Tuple[int, int]] = None
+    rect_fallback_reason: Optional[str] = None
+
     def __init__(self, models_dir: str, use_tensorrt: bool = True, imgsz: int = 640):
         """
         Args:
@@ -75,10 +89,24 @@ class ModelManager:
         self._progress_callback: Optional[Callable[[ModelProgress], None]] = None
         self._using_tensorrt = False  # Track if we're using TensorRT engine
         self._tensorrt_fallback_reason: Optional[str] = None  # Why TensorRT wasn't used
+        # P1: a rectangular input (height, width) the project asks for, the one
+        # the loaded model runs (None = the square), and why they differ.
+        self.shape: Optional[Tuple[int, int]] = None
+        self._loaded_shape: Optional[Tuple[int, int]] = None
+        self.rect_fallback_reason: Optional[str] = None
 
     def set_imgsz(self, imgsz: int):
         """Set the image size for TensorRT engines."""
         self.imgsz = imgsz
+
+    def set_shape(self, shape: Optional[Tuple[int, int]]):
+        """P1: ask for a rectangular input (height, width), or None for the square.
+        Takes effect at the next load_model."""
+        self.shape = (int(shape[0]), int(shape[1])) if shape else None
+
+    def effective_shape(self) -> Optional[Tuple[int, int]]:
+        """The rectangle the loaded model runs, or None (the square imgsz)."""
+        return self._loaded_shape
 
     def set_progress_callback(self, callback: Callable[[ModelProgress], None]):
         """Set callback to receive progress updates."""
@@ -110,19 +138,31 @@ class ModelManager:
             model_name = f"{model_name}.pt"
         return os.path.join(self.models_dir, model_name)
 
-    def get_engine_path(self, model_name: str, imgsz: Optional[int] = None) -> str:
+    def get_engine_path(self, model_name: str, imgsz: Optional[int] = None,
+                        shape="auto") -> str:
         """Get path to .engine TensorRT file.
         
         Args:
             model_name: Model name
             imgsz: Image size (uses self.imgsz if not specified)
+            shape: P1 -- "auto" (default): the rectangle ``self.shape`` when its
+                engine exists, else the square; an explicit (height, width)
+                names that rectangle's engine; None names the square's.
+                Rectangles are named ``<model>_<height>x<width>.engine``.
         """
         base_name = model_name.replace('.pt', '').replace('.engine', '')
-        # Remove any existing size suffix (e.g., _640)
-        if '_' in base_name and base_name.split('_')[-1].isdigit():
+        # Remove any existing size suffix (e.g., _640, _1760x960)
+        if '_' in base_name and (base_name.split('_')[-1].isdigit()
+                                 or _is_shape_suffix(base_name.split('_')[-1])):
             base_name = '_'.join(base_name.split('_')[:-1])
+        if shape == "auto":
+            shape = None
+            if self.shape:
+                rect = self.get_engine_path(base_name, imgsz, self.shape)
+                if os.path.exists(rect):
+                    return rect
         sz = imgsz or self.imgsz
-        name = f"{base_name}_{sz}.engine"
+        name = f"{base_name}_{engine_suffix(sz, shape)}.engine"
         # Per-box engines (TRT engines only load on the TRT version that built
         # them): WD_ENGINE_DIR, relative to the repo root (e.g. models/dev37),
         # wins when it holds this engine; same override as tests/replay.py.
@@ -162,6 +202,18 @@ class ModelManager:
         base_name = model_name.replace('.pt', '').replace('.engine', '')
         pt_path = self.get_pt_path(base_name)
         engine_path = self.get_engine_path(base_name)
+        # P1: a rectangle runs only on its own engine; without one, the square
+        # runs and readiness says why (no automatic export of a rectangle).
+        self._loaded_shape = None
+        self.rect_fallback_reason = None
+        rect_engine = None
+        if self.shape:
+            rect_engine = self.get_engine_path(base_name, shape=self.shape)
+            if not os.path.exists(rect_engine):
+                self.rect_fallback_reason = (
+                    f"no engine {os.path.basename(rect_engine)}: running the square "
+                    f"{self.imgsz} (build it with extra/build_engines --rect)")
+                rect_engine = None
 
         # Step 1: Check/download .pt model
         self._update_progress(ModelStatus.CHECKING, f"Checking {base_name}.pt...", 0.1)
@@ -259,6 +311,8 @@ class ModelManager:
                 _ = model(dummy, verbose=False)
                 self._using_tensorrt = True  # Track that we're using TensorRT
                 self._tensorrt_fallback_reason = None  # Clear - TensorRT worked
+                if rect_engine is not None and os.path.abspath(engine_path) == os.path.abspath(rect_engine):
+                    self._loaded_shape = self.shape
                 self._update_progress(ModelStatus.READY, f"TensorRT model ready: {base_name}", 1.0)
                 return model
             except Exception as e:
@@ -271,6 +325,9 @@ class ModelManager:
         try:
             model = YOLO(pt_path)
             self._using_tensorrt = False  # Track that we're using PyTorch
+            # PyTorch takes any input shape (multiples of 32): the rectangle runs
+            self._loaded_shape = self.shape
+            self.rect_fallback_reason = None
             self._update_progress(ModelStatus.READY, f"PyTorch model ready: {base_name}", 1.0)
             return model
         except Exception as e:

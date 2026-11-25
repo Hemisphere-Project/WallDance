@@ -4,8 +4,13 @@
 #
 #   ./extra/build_engines.sh                 # default engine, then the whole grid
 #   ./extra/build_engines.sh --default-only  # only the default engine (a few minutes)
+#   ./extra/build_engines.sh --rect          # default engine, then the P1 rectangles (Plan Cordée rev 2):
+#                                            # yolo11l and yolo11x at 1760x960 and 1920x1056 (height x width),
+#                                            # named <model>_<height>x<width>.engine
 DEFAULT_ONLY=0
+RECT_ONLY=0
 [ "$1" = "--default-only" ] && DEFAULT_ONLY=1
+[ "$1" = "--rect" ] && RECT_ONLY=1 && DEFAULT_ONLY=2
 
 # Get workspace root
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -118,11 +123,16 @@ if [ ${#MISSING[@]} -gt 0 ]; then
     echo ""
 fi
 
-# build_engine BASE SIZE -> 0 when models/BASE_SIZE.engine exists afterwards
+# build_engine BASE SIZE -> 0 when models/BASE_SIZE.engine exists afterwards.
+# SIZE is a square (1280) or a rectangle HEIGHTxWIDTH (1760x960, P1).
 build_engine() {
     local base="$1" size="$2"
     local model="$MODELS_DIR/${base}.pt"
     local engine="$MODELS_DIR/${base}_${size}.engine"
+    local py_imgsz="$size"
+    if [[ "$size" == *x* ]]; then
+        py_imgsz="[${size%x*}, ${size#*x}]"
+    fi
     if [ -f "$engine" ]; then
         echo "=== Skipping $engine (already exists) ==="
         return 0
@@ -136,7 +146,7 @@ build_engine() {
     uv run --no-sync python -c "
 from ultralytics import YOLO
 model = YOLO('$model')
-model.export(format='engine', imgsz=$size, half=True, device=0)
+model.export(format='engine', imgsz=$py_imgsz, half=True, device=0)
 "
     # Rename to include size in filename
     local default_engine="$MODELS_DIR/${base}.engine"
@@ -163,6 +173,16 @@ fi
 if [ "$DEFAULT_ONLY" = 1 ]; then
     echo "=== Default engine ready: $MODELS_DIR/${DEFAULT_BASE}_${DEFAULT_IMGSZ}.engine ==="
     exit 0
+fi
+if [ "$RECT_ONLY" = 1 ]; then
+    # P1: the façade's portrait ROI letterboxed into a rectangle of its own shape (config key yolo_shape)
+    rc=0
+    for base in yolo11l-pose yolo11x-pose; do
+        for size in 1760x960 1920x1056; do
+            build_engine "$base" "$size" || rc=1
+        done
+    done
+    exit $rc
 fi
 
 SIZES=(640 800 960 1280 1536 1920)

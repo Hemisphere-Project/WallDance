@@ -327,6 +327,15 @@ def validate_flat(flat: Dict) -> Tuple[Dict, List[str]]:
             warnings.append(f"yolo_imgsz: invalid value {out['yolo_imgsz']!r} dropped")
             out.pop("yolo_imgsz")
 
+    if "yolo_shape" in out:
+        # P1: "<height>x<width>" in multiples of 32, or empty for the square
+        from core.input_shape import parse_shape, shape_str
+        try:
+            out["yolo_shape"] = shape_str(parse_shape(out["yolo_shape"]))
+        except ValueError as exc:
+            warnings.append(f"{exc}: dropped (the square yolo_imgsz runs)")
+            out.pop("yolo_shape")
+
     if "rig" in out:
         out["rig"], rig_warnings = sanitize_rig(out["rig"])
         warnings.extend(rig_warnings)

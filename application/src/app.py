@@ -101,10 +101,12 @@ from core.ops_monitor import (
     check_disk,
     check_empty_wall,
     check_gpu_temp,
+    check_input_shape,
     check_osc,
     check_tensorrt,
 )
 from core.enhancer import ImageEnhancer
+from core.input_shape import shape_str
 from core.tracker import DancerTracker
 from core.tracking_logger import _json_default
 from core.video_recorder import VideoRecorder
@@ -1233,6 +1235,8 @@ class WallDanceApp:
             "use_tensorrt": self.models._trt_requested,
             "confidence": self.settings.confidence,
             "yolo_imgsz": self.settings.imgsz,
+            # P1: the rectangle the project asks for (the intent, as use_tensorrt)
+            "yolo_shape": shape_str(self.models.model_manager.shape),
             "fp16": self.settings.use_fp16,
             "person_height_px": self.settings.person_height_px,
             "person_height_min_ratio": self.settings.person_height_min_ratio,
@@ -2279,6 +2283,15 @@ class WallDanceApp:
             fallback_reason=self.models.model_manager.get_tensorrt_fallback_reason(),
             gpu_fallback_reason=self.processor.gpu_fallback_reason or "",
             engine_present=engine_present, engine_name=engine_name))
+        try:
+            roi_w, roi_h = self.roi.state.stored_roi()[2:4]
+        except Exception:
+            roi_w = roi_h = 0
+        results.append(check_input_shape(
+            requested=self.models.model_manager.shape,
+            running=self.settings.yolo_shape, imgsz=self.settings.imgsz,
+            fallback_reason=self.models.model_manager.rect_fallback_reason,
+            roi_w=roi_w, roi_h=roi_h))
         results.append(check_osc(
             enabled=self.osc_enabled, ip=self.osc_ip, port=self.osc_port,
             timeout_s=OPS_OSC_PROBE_TIMEOUT_S))

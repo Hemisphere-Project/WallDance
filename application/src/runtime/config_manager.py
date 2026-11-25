@@ -214,6 +214,10 @@ class ConfigManager:
         # 6. Update imgsz in model manager BEFORE loading model
         self.settings.imgsz = new_imgsz
         self.models.model_manager.set_imgsz(new_imgsz)
+        # P1: the rectangle the project asks for (validate_flat already
+        # normalised it); the engine decides at load whether it runs.
+        from core.input_shape import parse_shape
+        self.models.model_manager.set_shape(parse_shape(config.get("yolo_shape")))
 
         # 7. Determine if we need to reload the model.
         # (#12a) imgsz is NOT a reload trigger here: PT applies imgsz at call
@@ -261,6 +265,18 @@ class ConfigManager:
                 if camera_was_open:
                     self.cameras._open_camera(self.camera.state.source)
                 return False
+
+        # P1: the input the loaded model runs -- the rectangle when its engine
+        # loaded (or on PyTorch), else the square, which readiness flags.  A
+        # PyTorch model kept without a reload takes any shape.
+        mm = self.models.model_manager
+        self.settings.yolo_shape = (mm.effective_shape() if need_model_reload or mm.is_using_tensorrt()
+                                    else mm.shape)
+        if mm.rect_fallback_reason:
+            print(f"[Project Switch] {mm.rect_fallback_reason}")
+        elif self.settings.yolo_shape:
+            print(f"[Project Switch] network input {self.settings.yolo_shape[0]}x"
+                  f"{self.settings.yolo_shape[1]} (rectangle)")
 
         # 9. Apply the rest of the config (skip model since we just loaded it)
         # Also skip imgsz since we already set it

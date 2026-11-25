@@ -123,8 +123,10 @@ class _Models:
         self.loads = []
         self.notices = []
         self.model_manager = SimpleNamespace(
-            imgsz=None, using=True,
+            imgsz=None, using=True, shape=None, rect_fallback_reason=None,
             set_imgsz=lambda sz: setattr(self.model_manager, "imgsz", sz),
+            set_shape=lambda shape: setattr(self.model_manager, "shape", shape),   # P1
+            effective_shape=lambda: self.model_manager.shape,
             is_using_tensorrt=lambda: self.model_manager.using,
             engine_exists=lambda name: True)
 
