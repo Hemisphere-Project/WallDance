@@ -365,7 +365,8 @@ def take_summary(T: Truth, Z: dict | None, L: dict | None = None) -> dict:
         r["roof_share"] = _share(roof)
         r["oval_share"] = _share(oval, ~roof) if (~roof).any() else None
         r["contact_share_of_2"] = _share(contact, two) if two.any() else None
-        r["contact_episodes"] = len([1 for a, b in runs((nt == 2) & np.isin(np.arange(n), fr[contact])) if b - a >= 10])
+        # over the replayed frames (the whole take for a full replay)
+        r["contact_episodes"] = len([1 for a, b in runs((nt == 2) & np.isin(Z["f_frame"], fr[contact])) if b - a >= 10])
         r["crossings"] = cross
         r["still_10s"] = still_runs
         r["truth_uncertain_share"] = _share(st >= 2)
@@ -403,7 +404,7 @@ def take_summary(T: Truth, Z: dict | None, L: dict | None = None) -> dict:
                        "det&emit": _share(det & em), "det&!emit": _share(det & ~em), "!det&emit": _share(~det & em),
                        "!det&!emit": _share(~det & ~em), "points": int(Z["f_n_emit"].sum()),
                        "points_off": int(Z["f_n_emit_off"].sum())}
-        r["fp_boxes_per_frame"] = round(len(Z["fp"]) / n, 4)
+        r["fp_boxes_per_frame"] = round(len(Z["fp"]) / max(1, len(Z["f_frame"])), 4)
     if L is not None:
         r["live"] = live_summary(L, n)
     return r
