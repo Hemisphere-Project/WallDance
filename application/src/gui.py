@@ -321,7 +321,9 @@ class WallDanceGUI:
         # Expert mode: reveals developer-grade knob panels (Ctrl+Shift+E or WD_EXPERT=1).
         self.expert_mode = os.environ.get("WD_EXPERT", "0") == "1"
         self._expert_only_tags = ["section_background", "enhance_expert_group",
-                                  "detection_expert_group"]
+                                  "detection_expert_group",
+                                  # X5: what Calibrate sets (enhancement box, IDS crop / gain / exposure)
+                                  "enhance_enable_group", "ids_expert_group"]
 
         # Initialize DearPyGui
         dpg.create_context()
@@ -376,6 +378,17 @@ class WallDanceGUI:
         if 'on_enhance_toggle' in self.callbacks:
             self.callbacks['on_enhance_toggle'](value)
         self._update_enhance_row_state(value, bypass=False)
+        self.update_enhance_state(bool(value))
+
+    def update_enhance_state(self, enabled: bool) -> None:
+        """X5: the enhancement's state in words -- muted when on, red when off (Advanced drawer and Live
+        panel)."""
+        from gui_builder import enhance_state_label
+        if dpg.does_item_exist("enhance_state_text"):
+            dpg.set_value("enhance_state_text", enhance_state_label(enabled))
+            dpg.configure_item("enhance_state_text", color=TEXT_MUTED if enabled else ERROR_SOFT)
+        if dpg.does_item_exist("live_enhance_state"):
+            dpg.configure_item("live_enhance_state", show=not enabled)
     
     def _on_enhance_lite_toggle(self, sender, value):
         if 'on_enhance_lite_toggle' in self.callbacks:
@@ -500,6 +513,11 @@ class WallDanceGUI:
         for tag in self._expert_only_tags:
             if dpg.does_item_exist(tag):
                 dpg.configure_item(tag, show=self.expert_mode)
+        # X5: the IDS gear (gain / exposure) only for an IDS camera, and only in expert mode
+        if dpg.does_item_exist("ids_settings_toggle_btn"):
+            is_ids = (dpg.does_item_exist("ids_sliders_group")
+                      and bool(dpg.get_item_configuration("ids_sliders_group")["show"]))
+            dpg.configure_item("ids_settings_toggle_btn", show=self.expert_mode and is_ids)
         self.show_toast(
             "Expert mode ON" if self.expert_mode else "Expert mode OFF",
             duration=2.0,
@@ -774,7 +792,9 @@ class WallDanceGUI:
             self.callbacks['on_camera_refresh']()
 
     def _on_ids_settings_toggle(self, sender=None, value=None):
-        """Toggle visibility of IDS hardware settings (gain/exposure)."""
+        """Toggle visibility of IDS hardware settings (gain/exposure).  X5: expert mode only."""
+        if not self.expert_mode:
+            return
         tag = "ids_hw_settings_group"
         if dpg.does_item_exist(tag):
             visible = dpg.get_item_configuration(tag)["show"]
@@ -1764,7 +1784,7 @@ class WallDanceGUI:
         if dpg.does_item_exist("ids_sliders_group"):
             dpg.configure_item("ids_sliders_group", show=is_ids)
         if dpg.does_item_exist("ids_settings_toggle_btn"):
-            dpg.configure_item("ids_settings_toggle_btn", show=is_ids)
+            dpg.configure_item("ids_settings_toggle_btn", show=is_ids and self.expert_mode)   # X5
         if not is_ids and dpg.does_item_exist("ids_hw_settings_group"):
             dpg.configure_item("ids_hw_settings_group", show=False)
 
@@ -1885,6 +1905,7 @@ class WallDanceGUI:
             self._update_preview_row_state(value)
         elif name == 'enhance':
             self._update_enhance_row_state(value, bypass=False)
+            self.update_enhance_state(bool(value))      # X5
     
     def sync_slider(self, name: str, value: float):
         """Sync slider state (when changed via keyboard or config load)."""

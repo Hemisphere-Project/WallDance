@@ -116,9 +116,9 @@ WallDance is built around a **rig → calibrate → monitor** flow so a new venu
 - **Video panel**: live preview with skeleton/keypoint/bbox/trail/ID overlays; a red banner appears if TensorRT was requested but fell back to PyTorch (with a **Rebuild** button).
 - **Control panel (simple)**: Input (camera), ROI, Enhancement (Enable + Greyscale), Model, Detection (**Person Height** + **Sensitivity**), Preview, OSC, and the S/K/B/T/I view toolbar.
 - **Bottom bar**: source/playback controls, **CALIBRATE** + **DANCERS**, **STANDBY/RUN**, performance stats.
-- **Expert mode** (`Ctrl+Shift+E`, or set `WD_EXPERT=1`): reveals the developer knobs hidden from the operator surface — the Background section, raw enhancement (Force + brightness gate), and raw detection knobs (confidence, tracker max age, MOG2 scale, motion sensitivity).
+- **Expert mode** (`Ctrl+Shift+E`, or set `WD_EXPERT=1`): reveals the developer knobs hidden from the operator surface — the Background section, raw enhancement (Force + brightness gate), and raw detection knobs (confidence, tracker max age, MOG2 scale, motion sensitivity). Since Plan Cordée rev 2 (X5) it also holds what Calibrate sets: the enhancement box and the IDS crop, gain and exposure. Outside expert mode the enhancement's state is shown (red when off), and a change of exposure, gain or crop by hand invalidates the empty-wall plate until it is taken again.
 
-Keyboard shortcuts: `Q` quit, `E` enhance, `S` skeleton, `K` keypoints, `B` bbox, `T` trails, `I` IDs, `P` preview, `R` reset tracker, `Ctrl+Shift+E` expert mode, `+/-` adjust preview scale. **Double-click the preview** to toggle ROI edit mode, then drag the corners.
+Keyboard shortcuts: `Q` quit, `S` skeleton, `K` keypoints, `B` bbox, `T` trails, `I` IDs, `P` preview, `R` reset tracker, `Ctrl+Shift+E` expert mode, `+/-` adjust preview scale. **Double-click the preview** to toggle ROI edit mode, then drag the corners.
 
 ## Projects and Configs
 

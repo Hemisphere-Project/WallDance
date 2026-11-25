@@ -275,8 +275,8 @@ class DpgUiAdapter:
             if gui:
                 gui.set_expert_mode(not gui.expert_mode)
                 print(f"Expert mode: {'ON' if gui.expert_mode else 'OFF'}")
-        elif key == dpg.mvKey_E and not ctrl_down:
-            submit(api.ToggleEnhance(enabled=None, quiet=True))
+        # X5 (Plan Cordée rev 2): no single key toggles the enhancement any more (08/10: switched off
+        # by hand, nothing warned); it is Calibrate's, and an expert-mode box.
         elif key == dpg.mvKey_T:
             submit(api.ToggleOverlay("trails"))
         elif key == dpg.mvKey_S and not ctrl_down:

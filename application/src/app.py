@@ -1075,6 +1075,10 @@ class WallDanceApp:
             "gain_db": self.cameras._cb_ids_gain_change,
             "exposure_us": self.cameras._cb_ids_exposure_change,
         }[c.name](c.value)
+        # X5: by hand (GUI or remote) -- a project load and Calibrate call the camera directly and bring
+        # or take their own plate.  The plate was taken at another exposure / gain / crop: off at once.
+        what = {"ratio": "sensor crop", "gain_db": "gain", "exposure_us": "exposure"}[c.name]
+        self.processor.invalidate_plate(f"{what} changed by hand - take the empty wall again")
 
     # --- input transform (REQ-5: mirror horizontal / rotate) ---
 

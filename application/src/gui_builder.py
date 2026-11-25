@@ -1046,6 +1046,9 @@ def build_phase_live(gui: Any):
                          "On: it may also record / switch state / nudge dials in RUN.\n"
                          "Heavy jobs (tunes, model loads) are never allowed in RUN.")
         dpg.add_text("remote: idle", tag="remote_status_text", color=TEXT_DIM)
+        # X5: the enhancement is worth ~18 points of recall on 08/10; off is shown, in red, where the show runs.
+        dpg.add_text(enhance_state_label(False), tag="live_enhance_state", color=ERROR_SOFT,
+                     show=not bool(gui.config.get("enhance_enabled", False)))
         dpg.add_spacer(height=scaled(12))
         build_visualization_toolbar(gui)    # promoted: View S/K/B/T/I
 
@@ -1546,10 +1549,21 @@ def build_model_section(gui: Any):
             )
 
 
+def enhance_state_label(enabled: bool) -> str:
+    """X5: the enhancement's state in words (the box itself is expert-only)."""
+    if enabled:
+        return "Enhancement ON (set by Calibrate)"
+    return "ENHANCEMENT OFF - run Calibrate (or tick it in expert mode)"
+
+
 def build_enhancement_section(gui: Any):
     """Enhancement settings - open by default."""
     with dpg.collapsing_header(label="Enhancement", default_open=False, tag="section_enhancement", closable=False):
-        with dpg.group(horizontal=True):
+        # X5 (Plan Cordée rev 2): Calibrate sets the enhancement; the box is expert-only, and OFF is red.
+        _on = bool(gui.config.get("enhance_enabled", False))
+        dpg.add_text(enhance_state_label(_on), tag="enhance_state_text",
+                     color=TEXT_MUTED if _on else ERROR_SOFT)
+        with dpg.group(horizontal=True, tag="enhance_enable_group", show=gui.expert_mode):
             enable_chk = dpg.add_checkbox(
                 label="Enable",
                 tag="adv_enhance_checkbox",
@@ -1680,7 +1694,7 @@ def build_input_section(gui: Any):
                 tag="ids_settings_toggle_btn",
                 width=scaled(25),
                 callback=gui._on_ids_settings_toggle,
-                show=(gui.config.get("camera_type", "") == "IDS_PEAK"),
+                show=(gui.config.get("camera_type", "") == "IDS_PEAK") and bool(getattr(gui, "expert_mode", False)),   # X5
             )
             if gui._icon_font:
                 dpg.bind_item_font(settings_btn, gui._icon_font)
@@ -1719,55 +1733,58 @@ def build_input_section(gui: Any):
             callback=gui._on_input_fps_cap_toggle,
         )
 
-        # --- IDS-specific controls (hidden when using standard webcam) ---
-        is_ids = gui.config.get("camera_type", "") == "IDS_PEAK"
-        with dpg.group(tag="ids_sliders_group", show=is_ids):
-            dpg.add_spacer(height=scaled(4))
-            dpg.add_text("IDS Crop Ratio (W/H)", color=TEXT_NORMAL)
-            with dpg.group(horizontal=True):
-                dpg.add_slider_float(
-                    tag="adv_ids_ratio_slider",
-                    default_value=gui.config.get("ids_ratio", 1.0),
-                    min_value=0.5,
-                    max_value=2.0,
-                    format="%.2f",
-                    width=scaled(-90),
-                    callback=gui._on_ids_ratio_change,
-                )
-                _add_slider_row("adv_ids_ratio_slider", 0.05, 0.5, 2.0, gui._on_ids_ratio_change)
+        # X5 (Plan Cordée rev 2): the camera's crop, gain and exposure are Calibrate's: expert mode only
+        # (08/10: exposure changed by hand several times, the crop twice, nothing warned).
+        with dpg.group(tag="ids_expert_group", show=bool(getattr(gui, "expert_mode", False))):
+            # --- IDS-specific controls (hidden when using standard webcam) ---
+            is_ids = gui.config.get("camera_type", "") == "IDS_PEAK"
+            with dpg.group(tag="ids_sliders_group", show=is_ids):
+                dpg.add_spacer(height=scaled(4))
+                dpg.add_text("IDS Crop Ratio (W/H)", color=TEXT_NORMAL)
+                with dpg.group(horizontal=True):
+                    dpg.add_slider_float(
+                        tag="adv_ids_ratio_slider",
+                        default_value=gui.config.get("ids_ratio", 1.0),
+                        min_value=0.5,
+                        max_value=2.0,
+                        format="%.2f",
+                        width=scaled(-90),
+                        callback=gui._on_ids_ratio_change,
+                    )
+                    _add_slider_row("adv_ids_ratio_slider", 0.05, 0.5, 2.0, gui._on_ids_ratio_change)
 
-        # --- IDS hardware settings (gain/exposure) — toggled by gear button ---
-        with dpg.group(tag="ids_hw_settings_group", show=False):
-            dpg.add_spacer(height=scaled(4))
-            # dB, converted to the camera's linear Gain factor in ids_camera (IMX664:
-            # x1..x31.6 = 0..30 dB; higher values are clamped to 30 dB by the camera layer).
-            dpg.add_text("IDS Gain (dB; max 30 dB = x31.6)", color=TEXT_NORMAL)
-            with dpg.group(horizontal=True):
-                dpg.add_slider_float(
-                    tag="adv_ids_gain_slider",
-                    default_value=gui.config.get("ids_gain_db", 0.0),
-                    min_value=0.0,
-                    max_value=30.0,
-                    format="%.1f dB",
-                    width=scaled(-90),
-                    callback=gui._on_ids_gain_change,
-                )
-                _add_slider_row("adv_ids_gain_slider", 0.5, 0.0, 30.0, gui._on_ids_gain_change)
+            # --- IDS hardware settings (gain/exposure) — toggled by gear button ---
+            with dpg.group(tag="ids_hw_settings_group", show=False):
+                dpg.add_spacer(height=scaled(4))
+                # dB, converted to the camera's linear Gain factor in ids_camera (IMX664:
+                # x1..x31.6 = 0..30 dB; higher values are clamped to 30 dB by the camera layer).
+                dpg.add_text("IDS Gain (dB; max 30 dB = x31.6)", color=TEXT_NORMAL)
+                with dpg.group(horizontal=True):
+                    dpg.add_slider_float(
+                        tag="adv_ids_gain_slider",
+                        default_value=gui.config.get("ids_gain_db", 0.0),
+                        min_value=0.0,
+                        max_value=30.0,
+                        format="%.1f dB",
+                        width=scaled(-90),
+                        callback=gui._on_ids_gain_change,
+                    )
+                    _add_slider_row("adv_ids_gain_slider", 0.5, 0.0, 30.0, gui._on_ids_gain_change)
 
-            dpg.add_spacer(height=scaled(4))
-            dpg.add_text("IDS Exposure (\u00b5s)", color=TEXT_NORMAL)
-            ids_exposure_max = float(gui.config.get("ids_exposure_max_us", 100000.0))
-            with dpg.group(horizontal=True):
-                dpg.add_slider_float(
-                    tag="adv_ids_exposure_slider",
-                    default_value=gui.config.get("ids_exposure_us", 10000.0),
-                    min_value=100.0,
-                    max_value=ids_exposure_max,
-                    format="%.0f",
-                    width=scaled(-90),
-                    callback=gui._on_ids_exposure_change,
-                )
-                _add_slider_row("adv_ids_exposure_slider", 500.0, 100.0, ids_exposure_max, gui._on_ids_exposure_change)
+                dpg.add_spacer(height=scaled(4))
+                dpg.add_text("IDS Exposure (\u00b5s)", color=TEXT_NORMAL)
+                ids_exposure_max = float(gui.config.get("ids_exposure_max_us", 100000.0))
+                with dpg.group(horizontal=True):
+                    dpg.add_slider_float(
+                        tag="adv_ids_exposure_slider",
+                        default_value=gui.config.get("ids_exposure_us", 10000.0),
+                        min_value=100.0,
+                        max_value=ids_exposure_max,
+                        format="%.0f",
+                        width=scaled(-90),
+                        callback=gui._on_ids_exposure_change,
+                    )
+                    _add_slider_row("adv_ids_exposure_slider", 500.0, 100.0, ids_exposure_max, gui._on_ids_exposure_change)
 
         # Exposure warning — always visible (outside collapsible group)
         dpg.add_text(

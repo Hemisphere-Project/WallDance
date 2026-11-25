@@ -504,6 +504,7 @@ class FrameProcessor:
         self._plate_capture_done = None     # callback(CleanPlate | None, error str)
         self.last_fg = None
         self._last_fg_ms = 0.0
+        self._plate_invalid: Optional[str] = None   # X5: why the loaded plate no longer holds
         self._auto_height = None            # core.auto_height.AutoHeight when settings.auto_height
         self._height_guard = None           # core.auto_height.AutoHeight on raw detections (height guard)
         self.height_guard_event: Optional[Tuple[int, int]] = None   # (old, new) px, popped by the main loop
@@ -1287,8 +1288,17 @@ class FrameProcessor:
     # ------------------------------------------------------------------
     # Clean-plate foreground ("background snapshot", core/foreground.py)
     # ------------------------------------------------------------------
+    def invalidate_plate(self, reason: str) -> None:
+        """X5 (Plan Cordée rev 2): the camera's exposure, gain or crop was changed by hand, so the
+        empty-wall plate no longer describes the scene: the foreground is off (no veto, no hold) until a
+        new plate is captured or loaded.  No plate loaded: nothing to invalidate."""
+        if self._fg_detector is not None:
+            self._plate_invalid = str(reason)
+            print(f"[Foreground] plate invalid: {reason}")
+
     def set_clean_plate(self, plate) -> None:
         """Install a ``CleanPlate`` (or None to drop it) for the foreground."""
+        self._plate_invalid = None
         if plate is None:
             self._fg_detector = None
             return
@@ -1308,7 +1318,7 @@ class FrameProcessor:
             return "none"
         last = self.last_fg
         if last is not None and not last.valid:
-            return {"plate size": "size", "plate stale": "stale"}.get(last.reason, "ready")
+            return {"plate size": "size", "plate stale": "stale", "plate invalid": "stale"}.get(last.reason, "ready")
         return "ready"
 
     def start_plate_capture(self, n_frames: int, done) -> None:
@@ -1387,6 +1397,10 @@ class FrameProcessor:
         det = self._ensure_plate()
         gray = self._belt_gray
         if det is None or gray is None:
+            return None
+        if self._plate_invalid:
+            from core.foreground import FgFrame
+            self.last_fg = FgFrame(None, 0.0, 0.0, det.plate.ds, valid=False, reason="plate invalid")
             return None
         t0 = time.perf_counter()
         det.p.clip_aware = bool(self.settings.fg_clip_aware)
