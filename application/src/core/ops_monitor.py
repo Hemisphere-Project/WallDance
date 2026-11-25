@@ -276,27 +276,44 @@ def check_empty_wall(*, status: str, detail: str = "", light_ratio: Optional[flo
 
 def check_dancer_size(*, measured: Optional[Tuple[float, int, float]], lb_scale: float, imgsz: int,
                       target_px: float = 100.0, sizes: Tuple[int, ...] = (960, 1280, 1536),
-                      now: Optional[float] = None, max_age_s: float = 1800.0) -> CheckResult:
+                      now: Optional[float] = None, max_age_s: float = 1800.0,
+                      shape: Optional[Tuple[int, int]] = None, roi_w: int = 0, roi_h: int = 0) -> CheckResult:
     """The dancers' height in YOLO's input (D29; Calib2's image-size rule without the dancers pass).
 
     ``measured`` = FrameProcessor.dancer_height (median px of the confident full skeletons, samples, wall
     time), ``lb_scale`` = original px -> YOLO-input px.  YOLO wants the dancer at ~100 px in its input
     (Phase 2b: quality knee 83-110 px).  Below that: the ROI long side that would reach it at the current
-    size, and the smallest image size that would (1920 is too slow on the show laptop)."""
+    size, and the smallest image size that would (1920 is too slow on the show laptop).
+
+    P4 (Plan Cordée rev 2): ``shape`` is the rectangle the network runs (P1), None for the square; with the
+    ROI's size, a square that leaves the dancer small names the rectangle that would bring her up first."""
     import time as _time
+    from core.input_shape import letterbox_scale, pick_shape, shape_str
     now = _time.time() if now is None else now
     if not measured or not lb_scale or now - measured[2] > max_age_s:
         return CheckResult("dancer size", "skip",
                            "not measured - have a dancer stand at the far wall for 10 s, then check again")
     h = float(measured[0])
     net = h * float(lb_scale)
-    detail = f"dancers ~{h:.0f} px -> ~{net:.0f} px in YOLO's input at {imgsz}"
+    where = shape_str(shape) if shape else str(imgsz)
+    detail = f"dancers ~{h:.0f} px -> ~{net:.0f} px in YOLO's input at {where}"
     if net >= target_px:
         return CheckResult("dancer size", "ok", detail)
+    tips = []
+    if not shape and roi_w > 0 and roi_h > 0:
+        rect = pick_shape(roi_w, roi_h)
+        if rect:
+            rect_net = h * letterbox_scale(roi_w, roi_h, imgsz, rect)
+            tips.append(f"the ROI's own shape: yolo_shape {shape_str(rect)} gives ~{rect_net:.0f} px")
+    if shape:
+        if roi_w > 0 and roi_h > 0:
+            tips.append(f"narrow the ROI to the dancers' area ({roi_w}x{roi_h} now)")
+        return CheckResult("dancer size", "warn", f"{detail}, below the ~{target_px:.0f} px YOLO needs: "
+                           + "; ".join(tips or ["narrow the ROI to the dancers' area"]))
     roi_long = float(imgsz) / float(lb_scale)            # the letterbox fits the ROI's long side
     roi_ok = h * float(imgsz) / target_px
     bigger = [s for s in sizes if s > imgsz and net * s / float(imgsz) >= target_px]
-    tips = [f"narrow the ROI to the dancers' area (long side {roi_long:.0f} -> <= {roi_ok:.0f} px)"]
+    tips.append(f"{'or ' if tips else ''}narrow the ROI to the dancers' area (long side {roi_long:.0f} -> <= {roi_ok:.0f} px)")
     if bigger:
         tips.append(f"or Image Size {bigger[0]} (Advanced > Model)")
     elif imgsz < max(sizes):

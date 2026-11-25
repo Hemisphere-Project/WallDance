@@ -2313,9 +2313,14 @@ class WallDanceApp:
         results.append(check_empty_wall(status=str(self.processor.plate_status),
                                         detail=self._plate_status_text(),
                                         light_ratio=getattr(self, "_light_ratio", None)))
+        try:
+            _roi_w, _roi_h = self.roi.state.stored_roi()[2:4]
+        except Exception:
+            _roi_w = _roi_h = 0
         results.append(check_dancer_size(measured=getattr(self.processor, "dancer_height", None),
                                          lb_scale=float(getattr(self.processor, "last_lb_scale", 0.0)),
-                                         imgsz=int(self.settings.imgsz)))
+                                         imgsz=int(self.settings.imgsz),
+                                         shape=self.settings.yolo_shape, roi_w=_roi_w, roi_h=_roi_h))
         results.append(check_disk(
             recordings_dir=self.recorder.recordings_dir,
             warn_free_gb=OPS_DISK_WARN_FREE_GB,

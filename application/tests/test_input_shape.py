@@ -91,3 +91,20 @@ def test_readiness_row():
     assert r.status == "ok" and "suits yolo_shape 1760x960" in r.detail
     r = check_input_shape(requested=None, running=None, imgsz=1280, roi_w=1322, roi_h=1275)
     assert r.status == "ok" and "suits" not in r.detail
+
+
+def test_dancer_size_row_warns_as_shipped_and_not_after_p1():
+    """P4: the 08/10 façade (110 px dancers, ROI 965 x 1771) warns at the 1280 square and names the rectangle;
+    at 1760 x 960 (P1) the same dancers are ~109 px: no warning."""
+    from core.input_shape import letterbox_scale
+    from core.ops_monitor import check_dancer_size
+    now = 1000.0
+    sq = check_dancer_size(measured=(110.0, 200, now), lb_scale=letterbox_scale(*FACADE_ROI, 1280), imgsz=1280,
+                           now=now, roi_w=FACADE_ROI[0], roi_h=FACADE_ROI[1])
+    assert sq.status == "warn" and "~80 px" in sq.detail and "yolo_shape 1760x960 gives ~109 px" in sq.detail
+    rect = check_dancer_size(measured=(110.0, 200, now), lb_scale=letterbox_scale(*FACADE_ROI, 1280, (1760, 960)),
+                             imgsz=1280, now=now, shape=(1760, 960), roi_w=FACADE_ROI[0], roi_h=FACADE_ROI[1])
+    assert rect.status == "ok" and "at 1760x960" in rect.detail
+    # a nearly square ROI keeps the old advice (no rectangle to offer)
+    r = check_dancer_size(measured=(105.0, 200, now), lb_scale=1280 / 1800, imgsz=1280, now=now, roi_w=1700, roi_h=1800)
+    assert r.status == "warn" and "yolo_shape" not in r.detail and "<= 1344 px" in r.detail
