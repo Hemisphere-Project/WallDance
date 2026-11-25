@@ -42,7 +42,7 @@ from core.config import (
     IDENTITY_SLOTS_COAST_S, IDENTITY_SLOTS_STATIC_GUARD,
     IDENTITY_SLOTS_STATIC_RELEASE_S, IDENTITY_SLOTS_FILTER_INPUT, IDENTITY_SLOTS_SMART_HOLD,
     BELT_STATIC_EVERY_N, BELT_STATIC_ALPHA, BELT_STATIC_ON,
-    FOREGROUND_ENABLED, HEIGHT_GUARD, HEIGHT_GUARD_MAX_SPREAD, HEIGHT_GUARD_MIN_SAMPLES,
+    FOREGROUND_CLIP_AWARE, FOREGROUND_ENABLED, HEIGHT_GUARD, HEIGHT_GUARD_MAX_SPREAD, HEIGHT_GUARD_MIN_SAMPLES,
     HEIGHT_GUARD_OUTSIDE, HEIGHT_GUARD_FOLLOW_S, HEIGHT_GUARD_FOLLOW_MIN_SECONDS, HEIGHT_GUARD_FOLLOW_RATIO,
     HEIGHT_GUARD_FOLLOW_KPT_CONF,
     IDENTITY_SLOTS_USE_IR_BELT,
@@ -157,6 +157,7 @@ class ProcessingSettings:
     auto_height: bool = False                   # learn person_height_px from confident full skeletons
     height_guard: bool = HEIGHT_GUARD           # re-measure a person_height_px whose gate drops the dancers
     fg_enabled: bool = FOREGROUND_ENABLED       # use the clean plate when one is loaded
+    fg_clip_aware: bool = FOREGROUND_CLIP_AWARE  # F1: the clip-aware comparison (False = the old rule)
     fg_plate_path: str = ""                     # absolute path of the plate (.npz), "" = none
     osc_send_state: bool = OSC_SEND_STATE
     camera_stall_hold: bool = CAMERA_STALL_HOLD  # D34: camera stalls stop the hold clocks + OSC keep-alive
@@ -1360,6 +1361,7 @@ class FrameProcessor:
         if det is None or gray is None:
             return None
         t0 = time.perf_counter()
+        det.p.clip_aware = bool(self.settings.fg_clip_aware)
         try:
             fg = det.process(gray, int(self._belt_gray_offset[0]), int(self._belt_gray_offset[1]),
                              (int(original_w), int(original_h)))

@@ -127,6 +127,17 @@ class FgParams:
                                   # (two dancers at 25 m cover < 10 % of a wall ROI)
     open_k: int = 3
     close_k: int = 7
+    # F1 (Plan Cordée rev 2): a clip-aware comparison.  The brightness ratio comes from pixels clipped
+    # neither in the plate nor in the frame; where the plate is clipped (the lit oval) a pixel is foreground
+    # when it is at least ``below_white`` under white; elsewhere the threshold is ``k_frame`` x this frame's
+    # own residual noise (robust sigma of frame - ratio x plate), so it follows the camera gain.  At 30 dB on
+    # 08/10 that is about 22 levels at quarter size.  False: the rule shipped before (one ratio for every
+    # pixel, ``k`` x the plate's capture noise), whose clipped oval and 2-level threshold flood the frame.
+    clip_aware: bool = True
+    clip_dn: float = 250.0
+    below_white: float = 22.0
+    k_frame: float = 10.0
+    thr_frame_floor: float = 6.0
     # selective plate update: every update_every frames the plate moves toward the current frame by
     # update_alpha, except under protected boxes (YOLO-confirmed dancers, backed belts).  A lighting
     # change that left a lasting difference fades in ~update_every / fps / update_alpha s (~25 s).
@@ -187,6 +198,7 @@ class ForegroundDetector:
         self._cur: Optional[np.ndarray] = None
         self._cur_at: Tuple[int, int] = (0, 0)
         self._frames = 0
+        self.last_thr = 0.0       # the threshold of the last processed frame (DN, downscaled)
 
     def matches(self, frame_w: int, frame_h: int) -> bool:
         return (int(frame_w), int(frame_h)) == tuple(self.plate.frame_size)
@@ -243,14 +255,18 @@ class ForegroundDetector:
             self.last = FgFrame(None, ox, oy, ds, valid=False, reason="empty roi")
             return self.last
         cur, B, gx0, gy0 = al
-        gain = 1.0
-        if p.gain_norm:
-            ok = B >= p.gain_plate_dn
-            if ok.mean() >= p.gain_min_px:
-                gain = float(np.median(cur[ok] / B[ok]))
-                gain = min(p.gain_range[1], max(p.gain_range[0], gain))
-        thr = max(p.thr_floor, p.k * self.plate.sigma * math.sqrt(max(1.0, gain)))
-        m = (np.abs(cur - gain * B) > thr).astype(np.uint8)
+        if p.clip_aware:
+            gain, thr, m = self._compare_clip_aware(cur, B)
+        else:
+            gain = 1.0
+            if p.gain_norm:
+                ok = B >= p.gain_plate_dn
+                if ok.mean() >= p.gain_min_px:
+                    gain = float(np.median(cur[ok] / B[ok]))
+                    gain = min(p.gain_range[1], max(p.gain_range[0], gain))
+            thr = max(p.thr_floor, p.k * self.plate.sigma * math.sqrt(max(1.0, gain)))
+            m = (np.abs(cur - gain * B) > thr).astype(np.uint8)
+        self.last_thr = thr
         m = cv2.morphologyEx(cv2.morphologyEx(m, cv2.MORPH_OPEN, self._ko), cv2.MORPH_CLOSE, self._kc)
         ratio = float(m.mean())
         x0, y0 = float(gx0 * ds), float(gy0 * ds)
@@ -288,6 +304,24 @@ class ForegroundDetector:
                                       x0 + (bx + bw) * ds, y0 + (by + bh) * ds)))
         self.last = FgFrame(m, x0, y0, ds, blobs=blobs, gain=gain, fg_ratio=ratio)
         return self.last
+
+    def _compare_clip_aware(self, cur: np.ndarray, B: np.ndarray):
+        """F1: (gain, threshold, uint8 mask) for one downscaled crop against its plate window."""
+        p = self.p
+        clipped = B >= p.clip_dn
+        ok = (B >= p.gain_plate_dn) & ~clipped & (cur < p.clip_dn)
+        gain = 1.0
+        if p.gain_norm and ok.mean() >= p.gain_min_px:
+            gain = float(np.median(cur[ok] / B[ok]))
+            gain = min(p.gain_range[1], max(p.gain_range[0], gain))
+        d = cur - gain * B
+        thr = p.thr_frame_floor
+        if ok.any():
+            r = d[ok][::3]                       # every third pixel is plenty for a robust sigma
+            sigma = 1.4826 * float(np.median(np.abs(r - np.median(r))))
+            thr = max(p.thr_frame_floor, p.k_frame * sigma)
+        m = np.where(clipped, cur <= 255.0 - p.below_white, np.abs(d) > thr).astype(np.uint8)
+        return gain, thr, m
 
     def update_plate(self, protect: Sequence[Tuple[float, float, float, float]] = ()) -> bool:
         """Selective plate update after ``process``: every ``update_every`` calls, blend the

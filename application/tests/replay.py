@@ -267,7 +267,8 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
                              IDENTITY_SLOTS_STABILITY, IDENTITY_SLOTS_COAST_S,
                              IDENTITY_SLOTS_USE_IR_BELT, IDENTITY_SLOTS_STATIC_GUARD,
                              IDENTITY_SLOTS_STATIC_RELEASE_S, IDENTITY_SLOTS_FILTER_INPUT,
-                             IDENTITY_SLOTS_SMART_HOLD, FOREGROUND_ENABLED, CAMERA_STALL_HOLD)
+                             IDENTITY_SLOTS_SMART_HOLD, FOREGROUND_ENABLED, CAMERA_STALL_HOLD,
+                             FOREGROUND_CLIP_AWARE)
     settings.identity_slots_enabled = bool(config.get("identity_slots_enabled",
                                                       IDENTITY_SLOTS_ENABLED))
     settings.max_dancers = int(config.get("max_dancers", IDENTITY_SLOTS_MAX_DANCERS))
@@ -281,6 +282,7 @@ def _build_processor(config: dict, model_name: str, imgsz: int,
     # clean-plate foreground: "fg_plate" (project-relative .npz, resolved by main() into
     # "fg_plate_path"); absent = no plate = the base behaviour (goldens unchanged)
     settings.fg_enabled = bool(config.get("fg_enabled", FOREGROUND_ENABLED))
+    settings.fg_clip_aware = bool(config.get("fg_clip_aware", FOREGROUND_CLIP_AWARE))   # F1
     settings.belt_backing = bool(config.get("belt_backing", True))
     settings.entry_min_travel_h = float(config.get("entry_min_travel_h", 0.0))
     settings.auto_height = bool(config.get("auto_height", False))

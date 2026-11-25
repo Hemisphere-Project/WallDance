@@ -61,7 +61,7 @@ from core.config import (
     SHOW_ID,
     SHOW_KEYPOINTS,
     SHOW_SKELETON,
-    FOREGROUND_ENABLED,
+    FOREGROUND_CLIP_AWARE, FOREGROUND_ENABLED,
     PLATE_CAPTURE_FRAMES,
     SHOW_BALL,
     SHOW_TRAILS,
@@ -1268,6 +1268,7 @@ class WallDanceApp:
             "slot_filter_input": self.settings.slot_filter_input,
             "smart_hold": self.settings.smart_hold,
             "fg_enabled": self.settings.fg_enabled,
+            "fg_clip_aware": self.settings.fg_clip_aware,
             "use_ir_belt": self.settings.use_ir_belt,
             "osc_send_state": self.settings.osc_send_state,
             "camera_stall_hold": self.settings.camera_stall_hold,
@@ -1494,6 +1495,8 @@ class WallDanceApp:
             self.settings.camera_stall_hold = bool(config.get("camera_stall_hold", CAMERA_STALL_HOLD))
         if "fg_enabled" in config or full_config:
             self._cb_foreground(bool(config.get("fg_enabled", FOREGROUND_ENABLED)))
+        if "fg_clip_aware" in config or full_config:         # F1 (no GUI: a project key)
+            self.settings.fg_clip_aware = bool(config.get("fg_clip_aware", FOREGROUND_CLIP_AWARE))
         if full_config:
             self._load_project_plate()
         # Conditional Dial-B visibility (OPERATOR_V2 P3 / build #3): calibration

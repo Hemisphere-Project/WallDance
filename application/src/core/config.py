@@ -347,6 +347,11 @@ BELT_STATIC_ON = 0.6
 # with it (4x downscaled, brightness-normalised): ghost veto at slot binding, a foreground hold
 # for slots YOLO lost, and the belt backing.  No plate = no foreground (the base behaviour).
 FOREGROUND_ENABLED = True
+# F1 (Plan Cordée rev 2): the clip-aware comparison (core/foreground.FgParams.clip_aware): the brightness
+# ratio from unclipped pixels, « below white » where the plate is clipped, a threshold from the frame's own
+# noise.  Project key fg_clip_aware; False = the rule shipped until 2026-11 (its clipped oval and 2-level
+# threshold gave 3-5 false blobs a frame and « plate stale » on 08/10).
+FOREGROUND_CLIP_AWARE = True
 PLATE_CAPTURE_FRAMES = 40               # 2 s at 20 fps
 # Light changed since the empty-wall snapshot (Thomas 2026-10-07: "luminosity change is a killer"): the
 # raw ROI brightness over the snapshot's (core/foreground.ForegroundDetector.light_ratio), sampled at 1 Hz
