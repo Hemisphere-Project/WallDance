@@ -1,4 +1,5 @@
-"""Persistent app log: tee stdout/stderr to ``logs/walldance_<stamp>.log``.
+"""Persistent app log: tee stdout/stderr to ``logs/walldance_<stamp>.log``, each line of the file stamped
+with the time (``HH:MM:SS.mmm``, plan A2 ③ / Plan Cordée rev 2 M2).
 
 Two problems this solves (audit 2026-10 ARCH-3 / ARCH-6):
 
@@ -26,19 +27,37 @@ from typing import Optional
 _current: Optional[Path] = None
 
 
+def _stamp() -> str:
+    t = time.time()
+    return time.strftime("%H:%M:%S", time.localtime(t)) + f".{int((t % 1) * 1000):03d} "
+
+
 class _Tee(io.TextIOBase):
-    def __init__(self, console, logfile, lock: threading.Lock):
+    """``state`` is shared by the stdout and stderr tees of one file: whether the file is at the start of a
+    line, so each line gets one time stamp however the two streams interleave (A2 ③ / M2)."""
+
+    def __init__(self, console, logfile, lock: threading.Lock, state: Optional[dict] = None):
         self._console = console
         self._file = logfile
         self._lock = lock
         self._console_ok = console is not None
+        self._state = state if state is not None else {"bol": True}
+
+    def _stamped(self, s: str) -> str:
+        out = []
+        for part in s.splitlines(keepends=True):
+            if self._state["bol"]:
+                out.append(_stamp())
+            out.append(part)
+            self._state["bol"] = part.endswith("\n")
+        return "".join(out)
 
     def write(self, s: str) -> int:
         if not s:
             return 0
         with self._lock:
             try:
-                self._file.write(s)
+                self._file.write(self._stamped(s))      # the file carries the time; the console does not
             except Exception:
                 pass
         if self._console_ok:
@@ -78,8 +97,9 @@ def install(log_dir: Path, keep: int = 40, header: str = "") -> Path:
     path = log_dir / f"walldance_{time.strftime('%Y%m%d_%H%M%S')}.log"
     fh = open(path, "a", encoding="utf-8", errors="replace", buffering=1)
     lock = threading.Lock()
-    sys.stdout = _Tee(sys.stdout, fh, lock)
-    sys.stderr = _Tee(sys.stderr, fh, lock)
+    state = {"bol": True}
+    sys.stdout = _Tee(sys.stdout, fh, lock, state)
+    sys.stderr = _Tee(sys.stderr, fh, lock, state)
     try:
         faulthandler.enable(file=fh, all_threads=True)
     except Exception:

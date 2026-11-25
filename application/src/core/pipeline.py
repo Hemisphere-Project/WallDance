@@ -1080,6 +1080,34 @@ class FrameProcessor:
             # what a camera stall's keep-alive re-sends (D34), stamped with the live frame
             self._osc_last = (sent, original_w, original_h, states, self.stall.frames)
         self.last_emitted = out_tracks
+        # M2: the coordinates of the stream, in the event log -- what OSC sent, or with OSC off
+        # (a replay) what it would send at L == 1 -- so a session scores with no proxy.
+        self._log_sent(sent if sent is not None else (out_tracks if L == 1 else None), sent is not None)
+
+    @staticmethod
+    def sent_xy(track) -> Tuple[float, float]:
+        """The position OSC sends for a track (osc_output.send_dancer: the smoothed centroid, else the box
+        centre), original px."""
+        sc = getattr(track, "smoothed_centroid", None)
+        if sc is not None:
+            return float(sc[0]), float(sc[1])
+        b = track.bbox
+        return float(b[0] + b[2] / 2), float(b[1] + b[3] / 2)
+
+    def _log_sent(self, tracks, on_osc: bool) -> None:
+        """M2 (Plan Cordée rev 2): this frame's FRAME_SUMMARY gets ``sent`` = [[id, x, y], ...] (original
+        px) and ``osc`` (True when it went out on OSC)."""
+        logger = getattr(self.tracker, "logger", None)
+        if tracks is None or logger is None or not getattr(logger, "enabled", False):
+            return
+        annotate = getattr(logger, "annotate_frame_summary", None)
+        if not callable(annotate):
+            return
+        pts = []
+        for t in tracks:
+            x, y = self.sent_xy(t)
+            pts.append([int(t.track_id), round(x, 1), round(y, 1)])
+        annotate(sent=pts, osc=bool(on_osc))
 
     # ------------------------------------------------------------------
     # Identity-slot output layer (CONT-6)

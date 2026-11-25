@@ -21,6 +21,7 @@ Outputs: per dancer-frame arrays (``score_replay``, ``score_live``), the per-tak
 the counter-analysis tables (``tables``) and a check against a reference summary (``compare``).
 
   truth_score.py replay <truth.npz> <stem.tag.jsonl> [--conf 0.15] [--out z.npz]
+  truth_score.py events <truth.npz> <tracking_events.jsonl> [--frame-offset N]   (M2: a session's own log)
   truth_score.py summary --truth DIR --replays DIR [--tag ship] [--live DIR] [--json out.json] [--check ref.json]
 """
 from __future__ import annotations
@@ -242,6 +243,26 @@ def read_jsonl(path):
                     yield json.loads(line)
                 except ValueError:
                     break
+
+
+def events_rows(events_path, frame_offset: int = 0):
+    """M2: replay-like rows from a session's ``tracking_events.jsonl``: per FRAME_SUMMARY that carries ``sent``
+    (the coordinates the output stage sent), ``{"frame": f + frame_offset, "emitted": {"tracks": [...]}}``.
+    The detector columns stay empty: this scores the stream, from the log alone, with no proxy."""
+    with open(events_path) as fh:
+        for line in fh:
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if e.get("event") != "FRAME_SUMMARY":
+                continue
+            d = e.get("data") or {}
+            if "sent" not in d:
+                continue
+            yield {"frame": int(e["frame"]) + frame_offset,
+                   "emitted": {"tracks": [{"id": int(i), "centroid": [float(x), float(y)]} for i, x, y in d["sent"]],
+                               "osc": bool(d.get("osc"))}}
 
 
 # ── live ─────────────────────────────────────────────────────────────────────
@@ -599,6 +620,10 @@ def main(argv=None):
     a1.add_argument("jsonl")
     a1.add_argument("--conf", type=float, default=None)
     a1.add_argument("--out", default=None)
+    a3 = sub.add_parser("events", help="M2: score the stream a session's event log says was sent")
+    a3.add_argument("truth")
+    a3.add_argument("events")
+    a3.add_argument("--frame-offset", type=int, default=0, help="take frame = log frame + offset")
     a2 = sub.add_parser("summary")
     a2.add_argument("--truth", default=str(TRUTH_DIR))
     a2.add_argument("--replays", default=None)
@@ -619,6 +644,16 @@ def main(argv=None):
         print(json.dumps({"stem": T.stem, "conf": conf, "H": r.get("H"), "dancer_frames": r.get("dancer_frames"),
                           "det_wall": (r.get("det") or {}).get("wall"), "emit_on": (r.get("replay") or {}).get("emit_on"),
                           "fp_boxes_per_frame": r.get("fp_boxes_per_frame")}))
+        return 0
+    if a.cmd == "events":
+        T = load_truth(a.truth)
+        rows = [r for r in events_rows(a.events, a.frame_offset) if 0 <= r["frame"] < T.frames]
+        Z = score_replay(T, rows, 0.15)
+        r = take_summary(T, Z)
+        q = r.get("replay") or {}
+        print(json.dumps({"stem": T.stem, "frames_logged": len(rows), "dancer_frames": r.get("dancer_frames"),
+                          "point_on_her": q.get("emit_on"), "points": q.get("points"), "points_on_nobody": q.get("points_off"),
+                          "two_dancers_points_on_0_1_2": (r.get("two") or {}).get("emit_on_0_1_2")}))
         return 0
     S = summarise(a.truth, a.replays, a.tag, a.live, a.stems)
     if a.json:
