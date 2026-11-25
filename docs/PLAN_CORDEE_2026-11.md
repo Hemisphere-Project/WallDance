@@ -1,8 +1,17 @@
 # Plan Cordée — N dancers on the wall, each accounted for until seen leaving
 
-**Date:** 2026-11-18 (Phase R added the same day) · **Status:** proposed to Thomas, to be ratified through the
-hub · **Branch:** `remote-ops`
-· **Evidence:** [AUDIT_2026-11.md](AUDIT_2026-11.md) and [audit-2026-11/](audit-2026-11/README.md).
+**Date:** 2026-11-18 (Phase R added the same day) · **Revision 2:** 2026-11-25 · **Status:** rev 1 ratified
+by Thomas through the hub on 2026-11-18; rev 2's order decided by him on 2026-11-25 · **Branch:** `remote-ops`
+· **Evidence:** [AUDIT_2026-11.md](AUDIT_2026-11.md) and [audit-2026-11/](audit-2026-11/README.md); for rev 2,
+the 08/10 façade rehearsal re-read frame by frame (`tmp_analysis/counter-0810/`, 13 takes, per-frame truth).
+
+**What rev 2 changes.** The 08/10 rehearsal showed that the detector and the foreground lose the duo before
+the tracker does: the dancer reaches the network at 80 px, the shipped foreground gives three to five false
+blobs a frame, and the operator could undo Calibrate without a warning. Rev 2 adds six step families — **M**
+measure, **P** pixels, **X** exposure and Calibrate, **F** foreground, **H** guidance, **U** camera link — and
+three releases (§1, « Order since rev 2 »). Pixels and foreground go **before** phases C and D (Thomas,
+2026-11-25: « yes if useful »), so the regime fixes and the estimator are measured against a detector and a
+foreground that will not move under them again.
 
 *Cordée*: a roped party. A known number of people on a wall, and nobody is lost track of. That is the
 requirement: the technician says how many dancers are on the wall, and each keeps a point from the moment she
@@ -44,6 +53,34 @@ labels. This plan orders the work; [ROADMAP.md](ROADMAP.md) §3–§5 keeps the 
   in the same commit.
 - **Waves.** The hub mints wave 1 at ratification, wave 2 at G1, wave 3 at G2, so the board never holds rows
   that a later decision could void.
+- **Rev 2 steps** are minted with wave 1 (hub, 2026-11-25): most amend a wave-1 row as a new sub-step, the rest
+  are new rows (map in §6). Their commits end with their own id (`… [P1]`). A night session may work on a
+  branch cut from `remote-ops` (`cordee-r1`, 2026-11-25) that Thomas fast-forwards onto it.
+
+### Order since rev 2
+
+| Release | Steps | Bench | Laptop | Expected on the 08/10 takes |
+|---|---|---|---|---|
+| 1. Pixels and a foreground that works | M1, M2, P1–P4, F1, F3, X5, X6, U1 | about 7 days | one window, no camera needed | detector from 61 % to 81 % (yolo11x) or 94 % (yolo11l), false boxes ≤ 0.02 per frame |
+| 2. Calibrate and holds | X1–X4, F2, F4, H3 | about 6 days | one window with the camera, IR and a person | points on nobody ≤ 2 %; no hold without foreground |
+| 3. Guided | H1, H2, U2, U3 | about 4 days | one window at a rehearsal | four setup steps, one health line |
+
+- F1 and F3 are in release 1 because P3 chooses the model on false boxes **after** the foreground veto: the
+  08/10 projects had no exclusion zone, and without F3 yolo11l's boxes on the tree (0.094 a frame) would
+  reach the tracker. X6 comes with them, since F1 needs the plate to say at which exposure it was taken.
+- Phases C and D start after release 2, measured with M1. Phase A's Anchor fixes and phase B's scorer and
+  baselines keep their place; A8 (the release of D34) carries U1.
+- Each release goes to the DEV slot first, then to `release` by Thomas's push.
+
+### What the operator will do (the target of X and H)
+
+Four steps, then nothing: **1. Frame** — draws the wall on the picture and sets how many dancers; the app keeps
+the crop with the ROI and picks the network shape that fits it. **2. Empty wall** — presses « le mur est
+vide »; the app checks it is empty and says where it is not, exposes for the brightest part of the zone,
+judges the light and says what to move, and takes the plate. **3. A dancer** — one dancer hangs for 10 s; the
+app measures her size, chooses the enhancement on her, checks the belt glare and that she is seen. **4. Card**
+— four lines at most, green, orange or red, each a fact and an instruction. During the show: one line. Number
+of dancers and Hold stay on the panel; exposure, gain, crop, enhancement and the dials move behind « expert ».
 
 ## 2. The Cordée KPI
 
@@ -58,8 +95,19 @@ labels, per take:
 | Coasting (held) points | ≤ 10 % |
 | Jitter at rest | ≤ 1.5 % of body height |
 | "More dancers than N" alerts with N set right | 0 |
-| Laptop, with TouchDesigner, N = 6 | 20 fps sustained, GPU < 83 °C |
+| Laptop, with TouchDesigner, N = 6 | at least 15 fps sustained — `process_wall` ≤ 55 ms at p95 — GPU < 83 °C (Thomas, 2026-11-25: a floor of about 15 fps with room left for TouchDesigner; rev 1 said 20 fps) |
 | Ratchet | no labelled take worse than the last release |
+
+Rev 2 adds two measures, because they are what the operator's setup controls:
+
+| Measure | 08/10, night | Target |
+|---|---|---|
+| Detector: a box on a dancer, share of her frames | 55 % (61 % on the one-frame-per-second sample) | ≥ 85 % |
+| Foreground: a group on a dancer, share of her frames | not usable as shipped | ≥ 98 %, at most 0.5 false groups per frame |
+| Operator actions to be ready | exposure, gain, crop, enhancement and two dials within reach; six Calibrate runs that evening | 4 steps, one result card |
+
+On the 08/10 night takes the shipped app scores 68–92 % on-body, 5 to 63 s longest gap and 2–13 % points on
+nobody.
 
 ## 3. Steps
 
@@ -177,7 +225,126 @@ Written in the hub's plan grammar. `after:` names the steps that must be done fi
   shipped with the fixes, or the new estimator in live shadow? — @who(thomas) @est(0.5h) repo: none —
   why-not-machine: a release and the tracker's authority are Thomas's to decide → task
 
-### Phase C — Regimes: fixes inside the current design (wave 2, after G1 and B3)
+### Rev 2 — a setup the operator can trust (wave 1, 2026-11-25)
+
+Estimates are bench days on mgr-ran. `hub` names the row that carries the step; a `④` is a sub-step added to
+an existing row.
+
+#### M — Measure first
+
+- **M1 · The 08/10 truth and its scorer in the repo.** Per-frame presence and positions for the 13 takes,
+  with the hand-declared entries and exits, and a scorer that reads a replay timeline or a live log and prints
+  the §2 measures and the KPI. It is B2 ①② with a different pre-label: background subtraction and declared
+  entries, not YOLO ≥ 0.5. Gate: reproduces the counter-analysis tables to ±1 point. — @est(1d) — hub #t-031 ④
+- **M2 · A live session can be scored.** The event log records the coordinates sent for each slot; app log
+  lines carry a time (A2 ③). Gate: a live session scored with no proxy. — @est(0.5d) — hub #t-023 ④
+- **M3 · Playback on a frame clock** (B1 ②, extended to the app's playback). Gate: two playbacks of one file
+  give the same output. — in B1 — hub #t-030 ④
+
+#### P — Pixels
+
+- **P1 · Rectangular input.** The ROI is letterboxed to a rectangle of its own shape (the façade ROI is
+  965 × 1771: in a 1280 square, 45 % of the input is padding and a 110 px dancer arrives at 80 px), engines
+  are named by height × width, the tracker space follows the tensor; falls back to the square with a readiness
+  warning. Where: `core/gpu_pipeline.py` `_prepare_yolo_input`, `core/model_manager.py` engine naming,
+  `core/pipeline.py` tracker space. Gate: square goldens unchanged; on the 08/10 truth through the real
+  pipeline, ≥ 80 % per dancer-frame with yolo11x. — @est(1.5d) bench GPU — hub #t-047
+- **P2 · Engines and timing.** yolo11x and yolo11l at 1760 × 960 and 1920 × 1056 (height × width, FP16),
+  built on mgr-ran and on the laptop; timed on the laptop with TouchDesigner running, as the whole loop.
+  Where: `extra/build_engines.sh`. Gate: `process_wall` ≤ 55 ms at p95 with TouchDesigner, GPU under 83 °C.
+  — laptop window 1 — hub #t-048
+- **P3 · Model by the ratchet.** After: P1, F3. yolo11x against yolo11l on the 08/10 truth **and** on the
+  hangar corpus (the docs report yolo11l weak on the textured duo). Gate: highest recall with ≤ 0.02 false
+  boxes per frame after F3, no guard take worse. — @est(0.5d) bench GPU — hub #t-049
+- **P4 · Readiness shows the dancer's height at the network** and warns under 100 px. After: P1. Where:
+  `core/ops_monitor.py`. Gate: the 08/10 projects show the warning as shipped, not after P1. — @est(0.5d) —
+  hub #t-050
+
+Engine-only estimates on the laptop (pixel count against its measured 21.3 ms for x@1280 and 13.5 ms for
+l@1280): x at 1760 × 960 about 22 ms, l at 1760 × 960 about 14 ms, l at 1920 × 1056 about 17 ms, x at
+1920 × 1056 about 26 ms. Live on 08/10 at x@1280: `process_wall` p50 23.7 / p95 45.7 ms, `yolo` 15.0 / 32.5,
+`mog2_feed` 16.9 / 35.9 — the motion model costs as much as YOLO, and is the first place to look if P2's gate
+fails. The rule at the 15 fps floor: the highest recall whose loop stays under 55 ms at p95. First choice
+yolo11l at 1920 × 1056 (94 % on the twelve night takes); fallback yolo11x at 1920 × 1056 (86 %); two tiles
+kept in reserve.
+
+#### X — Exposure and Calibrate
+
+- **X1 · The servo exposes for the highlights of the zone:** the 99.5th percentile of the ROI, belt-sized
+  blobs removed, stays under 235 with at most 0.5 % clipped; the median becomes a floor. Where:
+  `core/calibration.py`, `core/config.py`. Gate: a synthetic oval does not clip; on `mur2` take 2 frames it
+  commands down; the final check needs the camera. — @est(1d) — hub #t-027 ④
+- **X2 · A light verdict with one instruction:** the ratio of the brightest to the darkest part of the zone,
+  from the plate (08/10: 15–20 times); red above 4, saying what to move — the app may ask for the IR flood to
+  be moved (Thomas, 2026-11-25). Gate: the 08/10 plates give red; a flat synthetic wall gives green. —
+  @est(0.5d) — hub #t-054
+- **X3 · Emptiness first.** With someone in view Calibrate stops and says where; it does not lower the
+  enhancement. The ladder records the strongest setting that stays clean and never goes under neutral because
+  of a person. Gate: Calibrate replayed on a `mur` 3 segment with a dancer stops, enhancement unchanged. —
+  @est(1d) — hub #t-027 ⑤
+- **X4 · The dancer step, 10 s.** Size from box heights and the foreground height, no keypoint gate;
+  enhancement chosen by her confidence, up to X3's ceiling; belt glare measured against her body box. After:
+  A6. Gate: on 10 s of each 08/10 take, height within 100–116 px; the chosen enhancement no worse than none. —
+  @est(1.5d) bench GPU — hub #t-055
+- **X5 · What Calibrate set is locked.** Exposure, gain, crop and the enhancement box leave the Live panel;
+  the `E` key goes (A4 ①); a change of exposure, gain or crop marks the plate invalid at once; enhancement off
+  shows red. Gate: headless GUI tests. — @est(1d) — hub #t-025 ④
+- **X6 · Crop and plate bookkeeping.** ① a ROI follows a sensor-crop change instead of being clamped ② the
+  plate file stores exposure, gain, crop and ROI ③ a plate from another exposure, gain or crop is refused with
+  its reason, not scaled (F2's refusal). Gate: unit tests; `mur` 2–4 with the 20:06 plate refused. —
+  @est(1d) — hub #t-053
+
+X1 alone is not the win: the unclipped 08/10 takes detect no better than the clipped ones (57 % against 53 %).
+It buys about 10 points in the oval and a valid plate; P gives the edges their recall; X2 says when the light
+itself is the limit.
+
+#### F — Foreground
+
+- **F1 · A foreground that works.** Brightness ratio from unclipped pixels only; « below white » where the
+  plate is clipped; elsewhere a difference threshold set by one frame's noise (about 22 levels at 30 dB).
+  Where: `core/foreground.py`. Gate: 08/10 `mur2` with the 21:36 plate — foreground under ≥ 99 % of the boxes a
+  network gives at confidence ≥ 0.5, and on a hand-labelled sample; ≤ 0.5 false groups per frame, none on
+  take 2. — @est(1d) bench GPU — hub #t-051
+- **F2 · The plate is honest.** A plate from another exposure, gain or crop is refused (X6 ③); « plate
+  stale » stays on screen (C5 ②); the slow plate update can be slow enough not to absorb a still dancer
+  (C2 ④). Gate: `mur` 2–4 with the 20:06 plate refused with the reason. — @est(0.5d) — in X6, C2, C5
+- **F3 · The veto.** After: F1. A box with no foreground under it, on a valid plate, is dropped before the
+  tracker. Where: `core/pipeline.py`, `core/identity_slots.py`. Gate: ≤ 0.02 false boxes per frame on 08/10
+  with yolo11l or at confidence 0.10, recall unchanged. — @est(0.5d) bench GPU — hub #t-052
+- **F4 · A held slot sits on a foreground group:** it follows the group and lets go after 1 s without one.
+  After: F1. Gate: in `mur2` 7 no 21 s hold on the roof edge and no 43 s point above the pair; points on
+  nobody ≤ 2 %. It is the bridge to D1–D2 (foreground is the estimator's first measurement). — @est(2d) bench
+  GPU — hub #t-056
+
+F1's evidence so far is scored against a truth that is itself a background subtraction: it shows the plate is
+usable, not an independent hit rate. A check that does not use the truth: on the 6,263 boxes the shipped path
+or yolo26x gives at confidence ≥ 0.5 in `mur2` takes 3 to 8, the rule finds foreground inside the box every
+time. The dancer no network sees needs hand labels, which is why F1's gate has them.
+
+#### H — Guidance
+
+- **H1 · The four setup steps as a wizard** on the existing, tested `WizardState`. After: X4. Gate: headless
+  GUI tests; a new project reaches Save in four steps. — @est(2d) — hub #t-057
+- **H2 · One health line** (E2), worst state wins, with the new signal « a foreground group has no point ». —
+  @est(1.5d) — hub #t-040 ①
+- **H3 · Readiness runs at start and after Calibrate**, gains rows for enhancement, ROI crop and plate
+  exposure, and never shows « skip » as green. — @est(0.5d) — hub #t-026 ④
+
+#### U — Camera link
+
+- **U1 · Release D34 (A8), and the slot hold on the frame clock** so a stall does not use it up (17 of 97 slot
+  losses on 08/10 fall on the first frame after a stall). — in A8 — hub #t-029 ①
+- **U2 · Stall rate against the sensor crop shape, cable and port**, with the camera temperature logged (no
+  stall in 4.4 minutes of portrait crop on 08/10). This is L2's A/B. — laptop window 2 — hub #t-043 ①
+- **U3 · Stall rate on the health line.** With H2. — hub #t-040 ①
+
+#### What rev 2 would not do
+
+Switch to yolo26 (42 % against 59 % for yolo11x on the four long takes); run the full frame without the ROI
+(54 %); flat-field with a clipped plate (39 % in the oval); tune tracker parameters on these takes before P
+and F land; use the laptop's playbacks as evidence before M3.
+
+### Phase C — Regimes: fixes inside the current design (wave 2, after G1 and B3; since rev 2, after release 2)
 
 - **C1 · Contact.** ① `_merge_duplicate_tracks` gets the co-fed veto and skips occluded tracks ② a contact
   hold: a slot with reputation that loses its measurement beside a live slot keeps its id at the shared
@@ -320,9 +487,37 @@ Updated in the commit that changes a step's state. `todo` · `doing` · `done` �
 | E4 | Mode d'emploi | bench ⚙ | E3 | 1d | todo | |
 | E5 | Front doors and registers | bench ⚙ | – | 1d | todo | |
 | E6 | Doc facts under test | bench ⚙ | E5 | 0.5d | todo | |
-| L1 | First laptop window (#t-020) | laptop | – | 4h | waiting on the technician | |
+| L1 | First laptop window (#t-020) | laptop | – | 4h | doing: reached, inventory, footage, recipe audit and suite done 25/11; launcher build and timing open | |
 | L2 | Second laptop window | laptop | B1, A7 | 3h | todo | |
 | L3 | Third laptop window | laptop | C3, C5 | 3h | todo | |
+
+Rev 2 (release in the last column):
+
+| Id | Step | Lane | After | Est | Hub | Status | Rel. |
+|---|---|---|---|---|---|---|---|
+| M1 | 08/10 truth and scorer in the repo | bench ⚙ | – | 1d | #t-031 ④ | todo | 1 |
+| M2 | A live session can be scored | bench ⚙ | – | 0.5d | #t-023 ④ | todo | 1 |
+| M3 | Playback on a frame clock | bench ⚙ | – | in B1 | #t-030 ④ | todo | – |
+| P1 | Rectangular input | bench GPU | – | 1.5d | #t-047 | todo | 1 |
+| P2 | Engines and timing | laptop | P1 | window | #t-048 | todo | 1 |
+| P3 | Model by the ratchet | bench GPU | P1, F3 | 0.5d | #t-049 | todo | 1 |
+| P4 | Dancer height at the network | bench ⚙ | P1 | 0.5d | #t-050 | todo | 1 |
+| X1 | Servo on the highlights | bench ⚙ | – | 1d | #t-027 ④ | todo | 2 |
+| X2 | Light verdict | bench ⚙ | – | 0.5d | #t-054 | todo | 2 |
+| X3 | Emptiness first | bench ⚙ | – | 1d | #t-027 ⑤ | todo | 2 |
+| X4 | The dancer step | bench GPU | A6 | 1.5d | #t-055 | todo | 2 |
+| X5 | What Calibrate set is locked | bench ⚙ | – | 1d | #t-025 ④ | todo | 1 |
+| X6 | Crop and plate bookkeeping | bench ⚙ | – | 1d | #t-053 | todo | 1 |
+| F1 | A foreground that works | bench GPU | – | 1d | #t-051 | todo | 1 |
+| F2 | The plate is honest | bench ⚙ | X6 | 0.5d | X6 ③, C2 ④, C5 ② | todo | 2 |
+| F3 | The veto | bench GPU | F1 | 0.5d | #t-052 | todo | 1 |
+| F4 | A held slot sits on a foreground group | bench GPU | F1 | 2d | #t-056 | todo | 2 |
+| H1 | The four steps as a wizard | bench ⚙ | X4 | 2d | #t-057 | todo | 3 |
+| H2 | One health line | bench ⚙ | E1 | 1.5d | #t-040 ① | todo | 3 |
+| H3 | Readiness rows | bench ⚙ | – | 0.5d | #t-026 ④ | todo | 2 |
+| U1 | D34 released, hold on the frame clock | decide | A7, L1 | – | #t-029 ① | todo | 1 |
+| U2 | Stall A/B with crop shape | laptop | – | window 2 | #t-043 ① | todo | 3 |
+| U3 | Stall rate on the health line | bench ⚙ | H2 | – | #t-040 ① | todo | 3 |
 
 ## 5. Gate tables
 
@@ -333,6 +528,13 @@ Filled by the step named. Until then the cell says so.
 - **T1 — shipped stream, rehearsal duo and Cordée takes (B7):** not measured yet.
 - **T2 — shipped stream with the regime fixes (C7):** not measured yet.
 - **D3 — estimator against shipped:** not measured yet.
+- **M1 — the repo's scorer against the counter-analysis tables:** not measured yet.
+- **P1 — the 08/10 truth through the real pipeline at the rectangle (yolo11x):** not measured yet. Reference,
+  one frame a second, PyTorch: 61 % as shipped (x@1280 square), 81 % at 1760, 86 % at 1920.
+- **P2 — the loop on the laptop with TouchDesigner (p50 / p95 of `process_wall`, `yolo`, `mog2_feed`; GPU
+  temperature):** not measured yet.
+- **P3 — yolo11x against yolo11l, 08/10 truth and hangar corpus, after F3:** not measured yet.
+- **F1, F3 — foreground under the boxes, false groups and false boxes per frame:** not measured yet.
 
 ## 6. Existing hub rows
 
@@ -344,6 +546,13 @@ Filled by the step named. Until then the cell says so.
 | #t-018 readiness verdict | Folded into G2. |
 | #t-010 clean-plate foreground evidence | Folded into B4 and D3. |
 | #t-016 order the front BP850 and floodlights, #t-017 rig upgrade | Unchanged. B6 can ride on #t-017's visit. |
+
+Rev 2 (hub, 2026-11-25): new rows #t-046 (this revision), P1–P4 #t-047–#t-050, F1 #t-051, F3 #t-052, X6
+#t-053, X2 #t-054, X4 #t-055, F4 #t-056, H1 #t-057. Sub-steps added to wave-1 rows: M1 on B2 (#t-031), M2 on
+A2 (#t-023), M3 on B1 (#t-030), X5 on A4 (#t-025), H3 on A5 (#t-026), X1 and X3 on A6 (#t-027), U1 on A8
+(#t-029), H2 and U3 on E2 (#t-040), U2 on L2 (#t-043), window 1's timing on L1 (#t-020); T1 already exists
+as the counter-analysis (B7, #t-036), the order is partly answered (G1, #t-037), and foreground becomes the
+estimator's first measurement (D1, #t-038).
 
 ## 7. Risks
 
@@ -360,6 +569,14 @@ Filled by the step named. Until then the cell says so.
 - The shadow period runs two estimators on a laptop with 6–10 ms of slack per frame. → 2 ms p95 budget in D4.
 - About 300 hours of session work on mgr-ran. → Ordered by gates; each sitting ends on a status-board commit.
 - This audit added about 880 KB under `docs/`. → E5 archives it.
+- Rev 2's evidence is one evening, one façade, two dancers in light costumes, scored at one frame a second on
+  JPEG frames with PyTorch for the sizes that had no engine; yolo11l is untested on the hangar corpus. → P1 and
+  P3 re-measure through the real pipeline; P3 includes the corpus.
+- The audit judged a rectangular engine useless on the 25 m wall (ROI 1322 × 1275, nearly square), and
+  `MULTIPASS_REVIEW_2026-10.md` rejected tiling on scenes with larger dancers. → Rev 2 contradicts neither:
+  the façade ROI is 965 × 1771, and P1 keeps one pass.
+- The laptop's 15 fps floor leaves TouchDesigner's share unknown. → P2 measures the whole loop with it
+  running, before a model is chosen.
 - The rig runs code a loop turn wrote, on Thomas's home workstation. → Gates run in a container with no
   network and the takes read-only; only the host's own hooks touch devices; stopping the runner revokes it.
 - mgr-ran is off by default and is also his desk. → The runner pulls, so nothing waits on it; a hold takes a
