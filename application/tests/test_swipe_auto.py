@@ -1,10 +1,16 @@
 """The autonomous swipe's policy (Plan Cordee P6): when it looks, when it only says, when it switches."""
-from core.swipe import Candidate, SwipeResult, SwipeRow
-from core.swipe_auto import MODE_AUTO, MODE_SUGGEST, AutoParams, SwipeAuto, parse_mode, seamless
+from types import SimpleNamespace
+
+import pytest
+
+from core.swipe import Candidate, FrameScore, SwipeParams, SwipeResult, SwipeRow
+from core.swipe_auto import (MODE_AUTO, MODE_SUGGEST, AutoParams, SwipeAuto, bar_for, headroom, parse_mode,
+                             referee_params, seamless)
 
 X = Candidate("yolo11x-pose", 1280, (1920, 1056))
 L = Candidate("yolo11l-pose", 1280, (1920, 1056))
 X1280 = Candidate("yolo11x-pose", 1280)
+L1280 = Candidate("yolo11l-pose", 1280)
 
 
 def _result(winner, live, gain, noise=0.01, switch=True):
@@ -13,67 +19,110 @@ def _result(winner, live, gain, noise=0.01, switch=True):
     return SwipeResult(live, winner, switch, rows, "said")
 
 
-def test_modes_and_seamless():
+def _frames(*ts):
+    return [SimpleNamespace(t=float(t)) for t in ts]
+
+
+def test_modes_seamless_and_the_referees_confidence():
     assert parse_mode("AUTO") == "auto" and parse_mode(None) == "off" and parse_mode("yes") == "off"
     assert seamless(X, L) and not seamless(X1280, L)
+    assert referee_params(0.30).conf == 0.30 and referee_params(0.10).conf == SwipeParams().conf
 
 
-def test_it_never_looks_at_an_empty_wall_or_while_busy():
+def test_an_empty_wall_costs_nothing_and_a_run_waits_for_its_frames():
     a = SwipeAuto(MODE_AUTO)
-    assert a.due(0.0, lost_fresh=0, covered_fresh=0) == "idle"          # hours of empty wall
-    assert a.due(0.0, lost_fresh=30, covered_fresh=10, busy=True) == "idle"
-    assert a.due(0.0, lost_fresh=30, covered_fresh=10) == "run"
-    a.ran(10.0)
-    assert a.due(60.0, 30, 10) == "idle" and a.due(131.0, 30, 10) == "run"
-    assert SwipeAuto("off").due(0.0, 30, 10) == "idle"
+    assert a.due(0.0, lost_fresh=0, covered_fresh=0) == "idle"          # hours of empty wall: nothing kept
+    assert a.due(0.0, lost_fresh=60, covered_fresh=89) == "idle"        # 149 frames with dancers: not yet
+    assert a.due(0.0, lost_fresh=60, covered_fresh=90) == "run"         # 150
+    assert a.due(0.0, lost_fresh=60, covered_fresh=90, busy=True) == "idle"
+    assert SwipeAuto("off").due(0.0, 60, 90) == "idle"
 
 
-def test_groups_without_any_live_box_get_a_rare_probe():
+def test_two_runs_never_share_a_frame():
+    a = SwipeAuto(MODE_AUTO)
+    kept = _frames(*range(10))
+    assert len(a.fresh(kept)) == 10
+    a.advise(20.0, _result(L, X, 0.02), newest_frame_t=6.0)
+    assert [f.t for f in a.fresh(kept)] == [7.0, 8.0, 9.0]
+    a.switched(30.0, X, L)                                              # a new setting: a new pool
+    assert len(a.fresh(kept)) == 10
+
+
+def test_the_free_prefilter_skips_a_run_that_cannot_clear_the_bar():
+    p = SwipeParams()
+    # the live setting covers 95 of 100 dancer groups and puts one box on nobody: at most 6 points to gain
+    scores = [FrameScore(groups=2, covered=2)] * 45 + [FrameScore(groups=2, covered=1)] * 5 + [FrameScore(0, 0, 1, 1)]
+    room = headroom(scores, p)
+    assert abs(room - 6 / 100) < 1e-9
+    assert abs(bar_for(L, X, p) - (0.03 + 0.05 * 0.6215)) < 1e-3                 # x from l: costlier, 6.1 points
+    assert bar_for(X, L, p) == p.min_gain                                       # l from x: cheaper, 3 points
+    a = SwipeAuto(MODE_AUTO)
+    assert a.due(0.0, 60, 90, room=room - bar_for(L, X, p), newest_frame_t=150.0) == "idle"
+    assert a.skipped == 1 and a.fresh(_frames(149, 151)) == _frames(151)        # those frames count as looked at
+    assert a.due(0.0, 60, 90, room=room - bar_for(X, L, p)) == "run"
+    assert headroom([FrameScore(groups=2, covered=0)] * 10, p) is None          # covers nobody: no bound
+
+
+def test_a_blind_or_empty_live_setting_gets_a_rare_probe():
     a = SwipeAuto(MODE_SUGGEST)
-    assert a.due(0.0, lost_fresh=30, covered_fresh=0) == "probe"
+    assert a.due(0.0, lost_fresh=150, covered_fresh=0) == "probe"
     a.ran(5.0, probe=True)
-    assert a.due(200.0, 30, 0) == "idle" and a.due(306.0, 30, 0) == "probe"
+    assert a.due(200.0, 150, 0) == "idle" and a.due(306.0, 150, 0) == "probe"
 
 
 def test_a_background_run_tries_only_the_live_input():
     assert SwipeAuto(MODE_AUTO).candidates([X1280, X, L], X) == [X, L]
 
 
-def test_marginal_is_a_suggestion_definite_twice_is_a_switch():
-    a = SwipeAuto(MODE_AUTO)
-    adv = a.advise(0.0, _result(L, X, 0.05), newest_frame_t=100.0)
-    assert (adv.kind, adv.level) == ("suggest", "marginal") and "Apply now" in adv.text
-    adv = a.advise(130.0, _result(L, X, 0.20), newest_frame_t=230.0)
-    assert (adv.kind, adv.level, adv.streak) == ("suggest", "definite", 1)      # a marginal run does not count
-    a = SwipeAuto(MODE_AUTO)
-    assert a.advise(0.0, _result(L, X, 0.20), 100.0).kind == "suggest"          # once is not enough
-    assert a.advise(60.0, _result(L, X, 0.20), 100.0).kind == "suggest"         # the same frames again: no
-    adv = a.advise(130.0, _result(L, X, 0.20), 230.0)
+def test_any_verdict_naming_another_setting_is_a_suggestion():
+    a = SwipeAuto(MODE_SUGGEST)
+    adv = a.advise(0.0, _result(L, X, 0.04), newest_frame_t=100.0)
+    assert (adv.kind, adv.level) == ("suggest", "marginal") and adv.text.endswith("Apply now?") and adv.text.isascii()
+    adv = a.advise(160.0, _result(L, X, 0.20), newest_frame_t=260.0)
+    assert (adv.kind, adv.level, adv.why_not_auto) == ("suggest", "definite", "automatic switching is off")
+    assert a.advise(320.0, _result(X, X, 0.0, switch=False), 420.0).kind == "none"
+
+
+def test_two_definite_verdicts_on_disjoint_frames_switch_the_seamless_pair():
+    a = SwipeAuto(MODE_AUTO, AutoParams(definite_gain=0.05))
+    adv = a.advise(0.0, _result(L, X, 0.04), 100.0)
+    assert adv.kind == "suggest" and "under 5 points" in adv.why_not_auto            # too small to switch alone
+    assert a.advise(160.0, _result(L, X, 0.20), 260.0).kind == "suggest"           # once is not enough
+    assert a.advise(200.0, _result(L, X, 0.20), 260.0).kind == "suggest"           # the same frames again: no
+    adv = a.advise(320.0, _result(L, X, 0.20), 420.0)
     assert adv.kind == "apply" and adv.seamless and adv.text.startswith("switching to l @ 1920 x 1056")
 
 
-def test_what_keeps_a_definite_win_a_suggestion():
-    a = SwipeAuto(MODE_SUGGEST)
-    a.advise(0.0, _result(L, X, 0.20), 100.0)
-    assert a.advise(130.0, _result(L, X, 0.20), 230.0).why_not_auto == "automatic switching is off"
-    a = SwipeAuto(MODE_AUTO)                                                    # another input size
+def test_another_input_size_is_never_automatic():
+    a = SwipeAuto(MODE_AUTO)
     a.advise(0.0, _result(L, X1280, 0.30), 100.0)
-    adv = a.advise(130.0, _result(L, X1280, 0.30), 230.0)
-    assert adv.kind == "suggest" and not adv.seamless and "input size" in adv.why_not_auto
+    adv = a.advise(160.0, _result(L, X1280, 0.30), 260.0)
+    assert adv.kind == "suggest" and not adv.seamless and "another input size" in adv.why_not_auto
+
+
+def test_what_keeps_a_definite_win_a_suggestion():
     a = SwipeAuto(MODE_AUTO)                                                    # slower than the live setting
     a.advise(0.0, _result(X, L, 0.20), 100.0)
-    adv = a.advise(130.0, _result(X, L, 0.20), 230.0, ms={X: 26.0, L: 15.0})
+    adv = a.advise(160.0, _result(X, L, 0.20), 260.0, ms={X: 26.0, L: 15.0})
     assert adv.kind == "suggest" and "slower" in adv.why_not_auto
     a = SwipeAuto(MODE_AUTO, AutoParams(dwell_s=300, back_s=900))               # dwell, then no way back
-    a.switched(1000.0, X, L)
-    a.advise(1010.0, _result(X, L, 0.20), 1100.0)
-    assert "moment ago" in a.advise(1140.0, _result(X, L, 0.20), 1230.0).why_not_auto
-    a.advise(1400.0, _result(X, L, 0.20), 1390.0)
-    assert "just left" in a.advise(1530.0, _result(X, L, 0.20), 1520.0).why_not_auto
+    a.switched(1000.0, X1280, L1280)
+    a.advise(1010.0, _result(X1280, L1280, 0.20), 1100.0)
+    assert "moment ago" in a.advise(1170.0, _result(X1280, L1280, 0.20), 1260.0).why_not_auto
+    a.advise(1400.0, _result(X1280, L1280, 0.20), 1390.0)
+    assert "just left" in a.advise(1560.0, _result(X1280, L1280, 0.20), 1550.0).why_not_auto
 
 
-def test_no_verdict_ends_the_streak():
-    a = SwipeAuto(MODE_AUTO)
-    a.advise(0.0, _result(L, X, 0.20), 100.0)
-    assert a.advise(130.0, _result(X, X, 0.0, switch=False), 230.0).kind == "none"
-    assert a.advise(260.0, _result(L, X, 0.20), 360.0).kind == "suggest"
+def test_after_a_run_the_referee_could_not_judge_it_waits():
+    a = SwipeAuto(MODE_AUTO, AutoParams(none_wait_s=900))
+    a.advise(100.0, SwipeResult(X, None, False, [], "no verdict: every setting puts boxes ..."), 90.0)
+    assert a.due(500.0, 60, 90) == "idle" and a.due(1001.0, 60, 90) == "run"
+    a.reset()
+    assert a.due(0.0, 60, 90) == "run"                                          # a new plate: look again
+
+
+@pytest.mark.parametrize("field", ["window_s", "min_lost", "definite_z", "every_s", "probe_every_s", "probe_frames",
+                                   "definite_gain", "wins", "dwell_s", "back_s", "slower", "min_covered",
+                                   "none_wait_s", "run_frames"])
+def test_the_parameters_the_live_code_may_pass_still_exist(field):
+    assert hasattr(AutoParams(), field)
