@@ -292,10 +292,20 @@ LIGHT_REMEDY = ("between two pieces, in STANDBY, Calibrate on the empty wall (li
 
 
 def check_empty_wall(*, status: str, detail: str = "", light_ratio: Optional[float] = None,
-                     band: float = LIGHT_CHANGE_RATIO) -> CheckResult:
+                     band: float = LIGHT_CHANGE_RATIO, reference=None) -> CheckResult:
     """The empty-wall snapshot (clean plate, D29): present, from this camera crop, and the scene
     still looks like it.  ``status`` is FrameProcessor.plate_status; ``detail`` its readable line;
-    ``light_ratio`` the live / snapshot brightness (the ops tick's 10 s median), None if unknown."""
+    ``light_ratio`` the live / snapshot brightness (the ops tick's 10 s median), None if unknown.
+    ``reference`` (H4, #t-063): what the reference watch read of this plate against the camera -- a
+    ``core.reference_watch.ReferenceVerdict``, « pending » (not read yet: not checked), None (not watched)."""
+    if reference is not None and status in ("ready", "stale"):
+        rst, rtext = reference_state(reference)
+        if rst == "fail":
+            return CheckResult("empty wall", "fail", rtext)
+        if status == "ready":
+            if rst != "ok":
+                return CheckResult("empty wall", rst, f"{detail or 'empty wall: ready'}; {rtext}")
+            detail = f"{detail or 'empty wall: ready'}, {rtext}"
     ok = status in ("ready", "capturing")
     if ok and light_out_of_band(light_ratio, band):
         return CheckResult("empty wall", "warn",
@@ -1247,10 +1257,24 @@ def health_output_row(*, enabled: bool, target: str = "", errors: int = 0) -> Ch
     return CheckResult("output", "ok", f"OSC to {target}" if target else "OSC on")
 
 
-def health_plate_row(*, status: str, reason: str = "", stale_since: str = "") -> CheckResult:
+def health_plate_row(*, status: str, reason: str = "", stale_since: str = "", reference=None,
+                     prompt: Optional[str] = None) -> CheckResult:
     """The empty-wall snapshot in use (FrameProcessor.plate_status): a stale or refused one is red (the
     foreground then sees nothing right).  ``stale_since``: F2's latched « plate stale » (when it latched),
-    "" when none or not in this build."""
+    "" when none or not in this build.  H4 (#t-063): ``reference``, the reference watch's verdict on this plate
+    (as ``check_empty_wall``): moved, another wall or refused is red and a cause (``CauseResult``: it names the
+    line over « a body on the wall has had no point », whose groups are then the wall's edges); not read yet or
+    unknown is not checked.  ``prompt``: the wall is provably empty now and the plate must be retaken -- the
+    row says what to do now instead of its own instruction."""
+    if prompt:
+        return with_instruction(health_plate_row(status=status, reason=reason, stale_since=stale_since,
+                                                 reference=reference), prompt)
+    if reference is not None and status in ("ready", "stale"):
+        rst, rtext = reference_state(reference)
+        if rst == "fail":
+            return CauseResult("empty wall", "fail", rtext)
+        if status == "ready" and not stale_since:
+            return CheckResult("empty wall", rst, f"ready, {rtext}" if rst == "ok" else f"ready; {rtext}")
     why = f" ({reason})" if reason else ""
     if stale_since:
         return CheckResult("empty wall", "fail", f"stale since {stale_since}{why} - {EMPTY_WALL_HOW}")
@@ -1364,7 +1388,7 @@ def health_line(rows) -> HealthLineState:
         shown = ", ".join(names[:6]) + (", ..." if len(names) > 6 else "")
         return HealthLineState("ok", f"OK - all {len(rows)} checks fine ({shown})", rows=rows)
     worst = [r for r in rows if r.status == state] or [r for r in rows if r.status not in _STATUS_ORDER]
-    top = min(worst, key=lambda r: _rank(r.name))
+    top = min(worst, key=lambda r: (not isinstance(r, CauseResult), _rank(r.name)))   # H4: a cause first
     others = [r.name for r in sorted(rows, key=lambda r: (-_STATUS_ORDER.get(r.status, 3), _rank(r.name)))
               if r is not top and r.status != "ok"]
     more = f"   (+{len(others)}: {', '.join(others[:3])}{', ...' if len(others) > 3 else ''})" if others else ""
@@ -1400,3 +1424,106 @@ class HealthLine:
         d["points"] = self.bare.snapshot(now)
         d["stall_rate"] = self.stalls.snapshot()
         return d
+
+
+# --------------------------------------------------------------------------
+# H4 (#t-063): the references watched (core/reference_watch.py)
+# --------------------------------------------------------------------------
+# The empty-wall row and the health line's « empty wall » source say the CAUSE when the empty-wall picture no
+# longer lines up with the camera (moved) or is not this wall, with one instruction, and that row names the line
+# over « a body on the wall has had no point » (the groups are then edges, not bodies) -- the other signal stays
+# listed.  One readiness row says where the references come from (``check_references``).
+
+REFERENCES_HOW = "STANDBY, then CALIBRATE on the empty wall (2 Calibrate), then Save to project"
+
+
+@dataclass
+class CauseResult(CheckResult):
+    """A row that is the cause of other rows of its state (H4: the empty-wall picture moved, or is another
+    wall): between rows of the same state it names the line (``health_line``); the others stay listed."""
+
+
+def reference_state(reference) -> Tuple[str, str]:
+    """(row status, text) for the reference watch's verdict: « pending » (no verdict yet) and ``unknown`` are
+    not checked, never green; ``matches`` ok; ``moved``, ``other_wall`` and the referee's ``refused`` red."""
+    if isinstance(reference, str):
+        return "skip", "not checked against the camera yet (it is, as soon as frames arrive)"
+    st = str(getattr(reference, "status", "") or "")
+    text = str(getattr(reference, "instruction", "") or "")
+    if st == "matches":
+        shift = getattr(reference, "shift_px", None)
+        return "ok", "lines up with the camera" + (f" ({float(shift):.1f} px)" if shift is not None else "")
+    if st in ("moved", "other_wall", "refused", "dark_plate", "blind"):
+        return "fail", text
+    return "skip", text or "not checked against the camera"
+
+
+def with_instruction(row: CheckResult, instruction: str) -> CheckResult:
+    """``row`` (same class, name and status) with ``instruction`` in place of its own (the text after its last
+    « - »)."""
+    import copy
+    fact = row.detail.rsplit(" - ", 1)[0] if " - " in row.detail else row.detail
+    out = copy.copy(row)
+    out.detail = f"{fact} - {instruction}"
+    return out
+
+
+def _ago_text(seconds: float) -> str:
+    seconds = max(0.0, float(seconds))
+    if seconds < 90:
+        return "just now"
+    if seconds < 90 * 60:
+        return f"{seconds / 60:.0f} min ago"
+    if seconds < 36 * 3600:
+        return f"{seconds / 3600:.0f} h ago"
+    return f"{seconds / 86400:.0f} days ago"
+
+
+def check_references(*, plate=None, calibrated_at: str = "", calibrated_with: Optional[dict] = None,
+                     model: str = "", net_input: str = "", session_day: str = "",
+                     session_start: Optional[datetime] = None, now: Optional[datetime] = None) -> CheckResult:
+    """H4 (#t-063): where the references come from, at load.  ``plate``: the CleanPlate in memory (a plate
+    Calibrate retook and holds until Save is the one shown, not the file); ``calibrated_at``: the last
+    Calibrate (« YYYY-MM-DD HH:MM », "" when none is recorded); ``calibrated_with``: the model and network input
+    that Calibrate ran with ({"model", "input"}, None when not recorded: a project calibrated before H4);
+    ``model`` / ``net_input``: what runs now; ``session_day``: the day this session began (« YYYY-MM-DD »),
+    ``session_start`` when (a plate taken since, past midnight, is this session's).  Orange when the model or
+    the input differ from Calibrate's, when the empty-wall picture is from another day than the session, or
+    missing; never green on a guess."""
+    now = now or datetime.now()
+    facts, problems = [], []
+    created = str(getattr(plate, "created", "") or "") if plate is not None else ""
+    if plate is None:
+        facts.append("no empty-wall picture")
+        problems.append("there is no empty-wall picture")
+    elif not created:
+        facts.append("empty wall taken at an unknown time")
+        problems.append("the empty-wall picture has no capture time")
+    else:
+        try:
+            taken = datetime.fromisoformat(created)
+            facts.append(f"empty wall taken {taken:%Y-%m-%d %H:%M} ({_ago_text((now - taken).total_seconds())})")
+            if (session_day and taken.strftime("%Y-%m-%d") != session_day
+                    and not (session_start is not None and taken >= session_start)):
+                problems.append(f"the empty-wall picture is from another day ({taken:%Y-%m-%d})")
+        except ValueError:
+            facts.append(f"empty wall taken {created}")
+            problems.append("the empty-wall picture's capture time is unreadable")
+    with_model = str((calibrated_with or {}).get("model") or "")
+    with_input = str((calibrated_with or {}).get("input") or "")
+    if calibrated_at:
+        made = f"Calibrate {calibrated_at}"
+        made += f" with {with_model} @ {with_input}" if with_model and with_input else " (its model not recorded)"
+        facts.append(made)
+    else:
+        facts.append("no Calibrate recorded")
+        problems.append("this project has no Calibrate recorded")
+    facts.append(f"runs {model or '?'} @ {net_input or '?'}")
+    if with_model and model and with_model != model:
+        problems.append(f"Calibrate was made with {with_model}, {model} runs now")
+    if with_input and net_input and with_input != net_input:
+        problems.append(f"Calibrate was made at {with_input}, the network runs at {net_input}")
+    detail = "; ".join(facts)
+    if problems:
+        return CheckResult("references", "warn", f"{detail}: {'; '.join(problems)} - {REFERENCES_HOW}")
+    return CheckResult("references", "ok", detail)

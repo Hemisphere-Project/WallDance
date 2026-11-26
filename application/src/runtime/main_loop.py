@@ -1322,6 +1322,7 @@ class MainLoop:
             height_median = float(np.median([h for _t, h in self._height_samples]))
         light_median, light_ref = self._light_median(now)
         self._plate_tick()
+        self._reference_tick(in_run)          # H4 (#t-063): the references watched, off the frame path
         try:
             alerts = app._health.tick(
                 now,
@@ -1558,6 +1559,7 @@ class MainLoop:
                               if app.models._model_loaded else None)
             except Exception:  # noqa: BLE001
                 trt_active = None
+            ref, prompt = self._reference_line(det, status, in_run, mono)    # H4: the plate named as the cause
             rows = [
                 health_camera_row(is_open=bool(cam.is_open), reconnecting=reconnecting, playing=playing,
                                   source=str(cam.source or ""), fps=float(app.fps or 0.0),
@@ -1565,7 +1567,8 @@ class MainLoop:
                 health_output_row(enabled=bool(app.osc_enabled), target=f"{app.osc_ip}:{app.osc_port}",
                                   errors=errs - hist[0][1]),
                 health_plate_row(status=status, reason=reason,
-                                 stale_since=str(getattr(det, "stale_since", "") or "")),   # F2's latch, if any
+                                 stale_since=str(getattr(det, "stale_since", "") or ""),   # F2's latch, if any
+                                 reference=ref, prompt=prompt),
                 health_frames_row(fail_streak=int(self._proc_fail_streak)),
                 health_engine_row(trt_requested=bool(app.models._trt_requested), trt_active=trt_active),
             ]
@@ -1580,6 +1583,75 @@ class MainLoop:
             app.bus.publish(api.HealthLine(line.state, line.text, dict(hl.to_dict(mono), t=round(wall, 3))))
         except Exception as e:  # noqa: BLE001 - the line must never disturb the show
             self._h2_once("the health line", e)
+
+    # ------------------------------------------------------------------
+    # H4 (#t-063): the references watched (core/reference_watch.py)
+    # ------------------------------------------------------------------
+    def _reference_tick(self, in_run: bool) -> None:
+        """Once a second: a reference check when one is due -- at load on the STANDBY preview as soon as frames
+        arrive, after each Calibrate (a new plate, or Calibrate's end), every few seconds -- handed to the watch's
+        worker thread (off the frame path); in RUN it leaves out the detector's boxes and the foreground's
+        groups.  Then whether the wall is provably empty (the prompt).  Never raises."""
+        app = self.app
+        try:
+            from core import reference_watch as rw
+            watch = rw.watch_of(app)
+            proc = app.processor
+            det = getattr(proc, "_fg_detector", None)
+            plate = det.plate if det is not None else None
+            if plate is None:
+                watch.forget()
+            dark = watch.note_plate(plate, rw.zone_of(app.settings)) if plate is not None else None
+            if dark is not None:                  # a plate captured or loaded too dark: said once, at once
+                print(f"[Reference] {dark.text}")
+                app.bus.publish(api.Toast(f"{dark.text[:1].upper()}{dark.text[1:]}", 10.0, (255, 200, 100)))
+            busy = (bool(getattr(app.calibration, "_calibrating", False))
+                    or getattr(proc, "_plate_capture", None) is not None)
+            flowing = bool(app.camera.state.is_open or app.recorder.is_playing)
+            frame = self._latest_raw_frame() if flowing else None
+            s = app.settings
+            roi = rw.zone_of(s)
+            now = time.monotonic()
+            why = watch.due(now, plate, in_run=in_run, busy=busy) if frame is not None else None
+            if why:
+                exclude = None
+                if in_run:
+                    measured = getattr(proc, "dancer_height", None)
+                    body_h = float(measured[0]) if measured else float(s.person_height_px)
+                    h, w = frame.shape[:2]
+                    exclude = rw.exclude_boxes(proc, body_h=body_h,
+                                               zone_area=float(roi[2] * roi[3]) if roi else float(w * h))
+                watch.submit(now, plate, frame, roi, exclude, why)
+            dets = (len(getattr(proc, "last_raw_dets", None) or ())
+                    if in_run and not busy and getattr(app.models, "_model_loaded", False) else None)
+            watch.note_scene(now, frame, roi, dets)
+            if in_run and not busy and dets is not None:     # the foreground that sees nothing (item 7)
+                watch.note_foreground(plate, rw.confident_dancers(proc), rw.foreground_groups(proc))
+        except Exception as e:  # noqa: BLE001 - the watch goes, the show stays
+            self._h2_once("the reference watch", e)
+
+    def _reference_line(self, det, status: str, in_run: bool, now: float):
+        """(the watch's verdict on the plate in use, None before the first one is shown -- a second or two; the
+        prompt) for the health line's « empty wall » source, and the prompt's one toast.  (None, None) when the
+        foreground is off or on error."""
+        app = self.app
+        try:
+            from core import reference_watch as rw
+            if status in ("off", "capturing") or (det is None and status != "none"):
+                return None, None
+            watch = rw.watch_of(app)
+            ref = watch.current(det.plate) if det is not None else None
+            problem = rw.plate_problem(status=status, stale_since=str(getattr(det, "stale_since", "") or ""),
+                                       verdict=ref)
+            prompt = watch.prompt(now, problem, ref, in_run=in_run)
+            toast = watch.take_toast(prompt)
+            if toast:
+                print(f"[Reference] {problem}: {toast}")
+                app.bus.publish(api.Toast(f"{problem[:1].upper()}{problem[1:]} - {toast}", 10.0, (255, 200, 100)))
+            return ref, prompt              # no verdict yet (a new plate, an alert being confirmed): as before
+        except Exception as e:  # noqa: BLE001 - the line goes on without it
+            self._h2_once("the reference watch", e)
+            return None, None
 
     def _log_timing_spikes_if_any(self, timing: Optional[Dict[str, float]]):
         """Diagnosis-only: print timing spikes with per-stage breakdown (throttled)."""

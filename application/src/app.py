@@ -2460,6 +2460,7 @@ class WallDanceApp:
             warn_free_gb=OPS_DISK_WARN_FREE_GB,
             fail_free_gb=OPS_DISK_FAIL_FREE_GB))
         results.extend(self._readiness_setup_rows())   # H3 (#t-026 ④): enhancement, ROI, plate exposure
+        self._reference_readiness(results)             # H4 (#t-063): the plate against the camera; provenance
         from core.ops_monitor import CheckResult, check_wall_light   # X2 (#t-054): the empty wall's light
         try:
             _det, _s = getattr(self.processor, "_fg_detector", None), self.settings
@@ -2609,6 +2610,59 @@ class WallDanceApp:
             except Exception as e:  # noqa: BLE001 - one row never breaks the report
                 rows.append(CheckResult(name, "skip", f"not checked ({type(e).__name__}: {e})"))
         return rows
+
+    # --- H4 (#t-063): the references watched (core/reference_watch.py) -------------------------------
+    def _reference_readiness(self, results) -> None:
+        """The report's « empty wall » row says what the reference watch read of the plate in use against the
+        camera (moved, another wall: red, with the cause; not read: not checked), and a « references » row
+        after it says where the references come from: the plate's capture time and age, the last Calibrate,
+        the model and network input it was made with against what runs now.  A plate the watch has not read
+        yet (a new one, the first frames) is read now in STANDBY, waiting up to 1.5 s a check, two for an alert
+        (in RUN it says « not checked yet »: the loop is never held).  In place; never raises."""
+        from core import reference_watch as rw
+        from core.input_shape import shape_str
+        from core.ops_monitor import CheckResult, check_empty_wall, check_references
+        try:
+            proc, s = self.processor, self.settings
+            det = getattr(proc, "_fg_detector", None)
+            plate = det.plate if det is not None else None
+            watch = rw.watch_of(self)
+            if plate is not None:
+                watch.note_plate(plate, rw.zone_of(s))     # its own signal (a plate too dark for the foreground)
+            ref = watch.current(plate) if plate is not None else None
+            if (plate is not None and ref is None and getattr(proc, "_plate_capture", None) is None
+                    and not getattr(self.calibration, "_calibrating", False)
+                    and getattr(self, "system_state", None) != SystemState.RUN):   # never a wait in RUN
+                for _ in range(2):                         # an alert is shown on its second check
+                    cam = getattr(self, "unified_camera", None)
+                    frame = (cam.get_last_cpu_frame() if cam is not None and getattr(cam, "is_open", False)
+                             and not self.recorder.is_playing else None)
+                    frame = frame if frame is not None else getattr(self, "_last_raw_frame", None)
+                    if ref is not None or frame is None or not watch.submit(time.monotonic(), plate, frame,
+                                                                            rw.zone_of(s), None, "readiness"):
+                        break
+                    watch.wait(1.5)
+                    ref = watch.current(plate)
+            at = len(results)
+            for i, r in enumerate(results):
+                if r.name == "empty wall":
+                    results[i] = check_empty_wall(status=str(proc.plate_status), detail=self._plate_status_text(),
+                                                  light_ratio=getattr(self, "_light_ratio", None),
+                                                  reference=(ref if ref is not None
+                                                             else ("pending" if plate is not None else None)))
+                    at = i + 1
+                    break
+            st = getattr(self.calibration, "calibration_state", None) or {}
+            stamps = [v for k, v in st.items() if isinstance(v, dict) and (v.get("source") == "aim" or k == "network")]
+            when = str(max(stamps, key=lambda v: v.get("epoch") or 0).get("ts", "")) if stamps else ""
+            net = st.get("network") if isinstance(st.get("network"), dict) else None
+            results.insert(at, check_references(
+                plate=plate, calibrated_at=when, calibrated_with=net,
+                model=str(getattr(self.models, "current_model_name", "") or ""),
+                net_input=shape_str(s.yolo_shape) or str(int(s.imgsz)), session_day=rw.session_day(),
+                session_start=rw.session_started()))
+        except Exception as e:  # noqa: BLE001 - one row never breaks the report
+            results.append(CheckResult("references", "skip", f"not checked ({type(e).__name__}: {e})"))
 
     def _cb_run_dry_run(self):
         """Phase-⑤ dry-run: replay the last recording with the current config.

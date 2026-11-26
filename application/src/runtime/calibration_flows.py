@@ -488,6 +488,12 @@ class CalibrationFlows:
         if result.clahe_value is not None:
             touched.append("clahe")
         self._stamp_calib_state("aim", *touched)
+        # H4 (#t-063): the model and the network input this Calibrate ran with (the « references » readiness row)
+        shape, imgsz = getattr(self.settings, "yolo_shape", None), getattr(self.settings, "imgsz", 0)
+        self.calibration_state["network"] = {
+            "source": "calibrate", "ts": time.strftime("%Y-%m-%d %H:%M"), "epoch": time.time(),
+            "model": str(getattr(self.models, "current_model_name", "") or ""),
+            "input": f"{int(shape[0])}x{int(shape[1])}" if shape else str(int(imgsz or 0))}
         print(result.log_line())
         self.request_reprocess()
         # Calibrate runs on the EMPTY wall: record it as the clean plate (the foreground
