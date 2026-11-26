@@ -689,27 +689,32 @@ Filled by the step named. Until then the cell says so.
     So this gate says the swipe knows a plate it cannot trust, not that it chooses well in a hangar: that needs
     a real empty-wall plate there (B5).
   - *Gate 3, the laptop* — the real code from a scratch copy, the take played in real time beside the worker,
-    pacing 50 ms, x @ 1280 live, three settings:
+    pacing 50 ms. Since `5d615d3` the live setting's row comes from the boxes the live pass stored with each
+    kept frame (identical to a re-run of its engine on 150 of 150 frames of mur2 7, from x @ 1280 and from
+    l @ 1920 × 1056), so a swipe loads two engines and makes 300 inferences instead of 450:
 
-    | Run | Frames | Swipe: loads / inference / total | Live frame p50 / p95 / max, collecting → during the swipe |
+    | Run (150 frames, `5d615d3`, 26/11) | Swipe: loads / inference / total | Live frame p50 / p95 / max, collecting → during the swipe | Over 50 ms during the swipe |
     |---|---|---|---|
-    | mur2 6 (`0e7fbe5`) | 150 | 0.88 / 19.2 / **28.9 s** | 33.6 / 38.7 / 52 → 53.7 / 61.8 / 123 ms |
-    | mur2 7 | 150 | 0.91 / 17.9 / **29.2 s** | 32.5 / 35.4 / 40 → 50.9 / 58.1 / 182 ms |
-    | mur2 8 | 150 | 0.96 / 20.1 / **28.9 s** | 32.3 / 36.4 / 44 → 50.1 / 64.9 / 125 ms |
-    | mur2 6 / 7 / 8 at 60 frames (`93e92eb`) | 60 | 0.9 / 7.0–8.2 / 12.0–12.2 s | 31–32 / 35–38 / 40–47 → 49–52 / 59–62 / 79–146 ms |
-    | mur2 7 at 60 frames, with TouchDesigner | 60 | 0.97 / 7.65 / 12.4 s | 29.4 / 34.1 / 40 → 49.1 / 67.3 / 107 ms |
+    | mur2 6 from x @ 1280 | 0.6 / 12.2 / **18.9 s** | 33.7 / 38.4 / 49 → 49.4 / 56.9 / 186 ms | 44 % |
+    | mur2 7 from x @ 1280 | 0.6 / 12.2 / **18.9 s** | 32.4 / 36.3 / 44 → 48.5 / 54.7 / 68 ms | 36 % |
+    | mur2 8 from x @ 1280 | 0.6 / 12.2 / **18.8 s** | 32.7 / 36.3 / 46 → 48.4 / 55.1 / 172 ms | 34 % |
+    | mur2 7 from x @ 1280, with TouchDesigner | 0.6 / 12.5 / **19.3 s** | 31.2 / 36.2 / 42 → 49.9 / 60.4 / 133 ms | 49 % |
+    | mur2 7 from l @ 1920 × 1056 (one other setting) | 0.3 / 5.5 / **9.9 s** | 29.3 / 32.3 / 38 → 54.3 / 57.4 / 163 ms | 71 % |
+    | mur2 7 from l @ 1280 | 0.5 / 8.4 / **19.5 s** | 25.9 / 29.5 / 36 → 31.9 / 53.1 / 69 ms | 15 % |
+    | mur2 7 from x @ 1280, the old path (`--rerun-live`, three engines) | 0.9 / 17.1 / 28.5 s | 32.5 / 35.6 / 40 → 48.1 / 56.1 / 66 ms | 41 % |
 
-    Under the 30 s gate by one second, and not measured beside TouchDesigner at 150 frames (the laptop was taken
-    by another job; at 60 frames TouchDesigner added 0.2–0.5 s). The run is set by the pacing, not by the GPU:
-    450 inferences at one per live frame, the loop at about 17.8 fps meanwhile. For those 29 s, 51–64 % of the
-    live frames pass 50 ms; collecting costs nothing measurable (148 s of dancers on the wall, passively, before
-    the button answers). The verdict on the three runs: l @ 1920 × 1056, 97–99 % of the dancers against 54–66 %
-    for x @ 1280. The full pool weighs about 347 MB from the IDS camera and about 1 GB from a take played in the
-    app (3 channels). Engine alone on the laptop: a load 0.14–0.20 s, a release 0.06 s with all its GPU memory
-    back; TouchDesigner on the show patch holds 2.4 GB (the « 4 GB » of P2 was the device total). ultralytics
-    8.4.63 there has no CUDA-graph path, so the capture guard is inert; on mgr-ran (8.4.173) a load beside
-    another thread's CUDA work broke the capture, hence one engine load at a time in the process
-    (`ENGINE_LOAD_LOCK`).
+    Under the 30 s gate by ten seconds, also beside TouchDesigner. The run is set by the pacing, not by the
+    GPU: one candidate inference per live frame. For those 19 s a third to a half of the live frames pass 50 ms
+    (the loop near 20 fps, one frame over 100 ms in some runs); collecting costs nothing measurable (148 s of
+    dancers on the wall, passively, before the button answers). Verdicts: from x @ 1280, l @ 1920 × 1056 (97–99 %
+    of the dancers against 54–66 %) on all four runs; from l @ 1920 × 1056 and from l @ 1280, « keep ». The
+    process peaks at 2.2–2.3 GB of RAM (the kept frames of a played take weigh about 350 MB, as from the
+    camera) and the GPU at 2.6 GB, 5.0 GB with TouchDesigner. Before the stored boxes (`0e7fbe5`, three engines):
+    28.9 / 29.2 / 28.9 s on mur2 6 / 7 / 8; at 60 frames (`93e92eb`): 12.0–12.4 s. Engine alone on the laptop:
+    a load 0.14–0.20 s, a release 0.06 s with all its GPU memory back; TouchDesigner on the show patch holds
+    2.4 GB. ultralytics 8.4.63 there has no CUDA-graph path, so the capture guard is inert; on mgr-ran
+    (8.4.173) a load beside another thread's CUDA work broke the capture, hence one engine load at a time in
+    the process (`ENGINE_LOAD_LOCK`).
   - *Open.* The real GUI and Apply's full switch (camera reopen, engine load) are not exercised by a test or a
     run. The referee still counts a box on a shadow or a rope as a dancer covered, and the 25 % share may make
     that a little more frequent: unmeasured without a real plate in a hangar. The plate refusal rests on one
