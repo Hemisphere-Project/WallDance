@@ -168,8 +168,8 @@ class ModelManager:
         # wins when it holds this engine; same override as tests/replay.py.
         override = os.environ.get("WD_ENGINE_DIR")
         if override:
-            d = override if os.path.isabs(override) else os.path.join(
-                os.path.dirname(os.path.abspath(self.models_dir)), override)
+            d = os.path.normpath(override if os.path.isabs(override) else os.path.join(
+                os.path.dirname(os.path.abspath(self.models_dir)), override))
             if os.path.exists(os.path.join(d, name)):
                 return os.path.join(d, name)
         return os.path.join(self.models_dir, name)
