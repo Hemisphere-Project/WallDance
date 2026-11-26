@@ -56,6 +56,7 @@ SAFE, CONTROL, HEAVY, NEVER = "safe", "control", "heavy", "never"
 POLICY: Dict[str, str] = {
     # safe: observation / metadata only
     "CheckReadiness": SAFE, "SetRigSheet": SAFE, "ToggleOverlay": SAFE,
+    "CancelSettingsSwipe": SAFE,       # P5: stopping a swipe only gives the GPU back
     "SetPreviewScale": SAFE, "TogglePreviewCap": SAFE,
     # control: changes what the show does -- free in STANDBY, gated in RUN
     "SetState": CONTROL, "StartRecordingSlot": CONTROL, "StopRecording": CONTROL,
@@ -81,6 +82,9 @@ POLICY: Dict[str, str] = {
     "ApplyKnownNTune": CONTROL, "SaveConfig": CONTROL, "SwitchProfile": CONTROL,
     "LoadSafeDefaults": CONTROL, "SelectConfigVersion": CONTROL,
     "SetInputTransform": CONTROL,
+    # P5 settings swipe: runs beside the show (paced, one engine at a time) during the warmup, in RUN by
+    # design (frames are kept while YOLO runs) -- so control, not heavy; Apply switches the model.
+    "RunSettingsSwipe": CONTROL, "ApplySettingsSwipe": CONTROL,
     # heavy: STANDBY only
     "RunDryRunReplay": HEAVY, "RunCalibSweep": HEAVY, "RunKnownNTune": HEAVY,
     "RebuildTrt": HEAVY, "LoadModel": HEAVY, "SetImgsz": HEAVY, "ToggleTrt": HEAVY,

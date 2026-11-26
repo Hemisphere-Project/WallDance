@@ -27,6 +27,8 @@ def test_phase_wall_builds_and_renders_readiness_rows():
             _on_calibrate=noop,
             _on_capture_plate=noop,
             _on_dryrun=noop,
+            _on_swipe=noop,
+            _on_swipe_apply=noop,
             _btn_standby_theme=th,
         )
         with dpg.window(label="smoke"):
@@ -58,6 +60,27 @@ def test_phase_wall_builds_and_renders_readiness_rows():
         WallDanceGUI.show_readiness_rows(None, rows[:2])
         children = dpg.get_item_children("readiness_rows_container", 1)
         assert children is not None and len(children) == 2
+
+        # P5 settings swipe: the button, its progress line and Apply (shown on a switch verdict)
+        for tag in ("swipe_btn", "swipe_status_text", "swipe_apply_btn"):
+            assert dpg.does_item_exist(tag), tag
+        g = SimpleNamespace()
+        WallDanceGUI.show_swipe_progress(g, "running", "trying l @ 1920 x 1056 (3/6)", 0.6)
+        assert g._swipe_busy and dpg.get_item_configuration("swipe_btn")["label"] == "Cancel swipe"
+        WallDanceGUI.show_swipe_result(g, {
+            "reason": "l @ 1920 x 1056 covers 91 % of the dancers, x @ 1280 51 %", "switch": True,
+            "winner": "l @ 1920 x 1056", "frames": 30, "timing": {"total_s": 21.0},
+            "rows": [{"label": "l @ 1920 x 1056", "coverage": 0.91, "loose_per_frame": 0.02, "ms_p50": 18.0,
+                      "ok": True},
+                     {"label": "x @ 1280", "coverage": 0.51, "loose_per_frame": 0.01, "ms_p50": 22.0,
+                      "ok": True}],
+            "skipped": [{"text": "x @ 1920 x 1056 not tried: its engine is not built on this machine"}]})
+        assert not g._swipe_busy
+        assert dpg.get_item_configuration("swipe_apply_btn")["show"]
+        assert "91 %" in dpg.get_value("swipe_status_text")
+        assert "not built on this machine" in dpg.get_value("swipe_status_text")
+        WallDanceGUI.show_swipe_result(g, {}, "swipe cancelled: cancelled")
+        assert not dpg.get_item_configuration("swipe_apply_btn")["show"]
 
         # Empty result renders a single placeholder, not a crash.
         WallDanceGUI.show_readiness_rows(None, [])

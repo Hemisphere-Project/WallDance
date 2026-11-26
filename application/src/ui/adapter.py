@@ -174,6 +174,9 @@ class DpgUiAdapter:
             "on_calib_sweep_apply": lambda: submit(api.ApplyCalibSweep()),
             "on_known_n": lambda: submit(api.RunKnownNTune()),
             "on_known_n_apply": lambda: submit(api.ApplyKnownNTune()),
+            "on_swipe": lambda busy=False: submit(
+                api.CancelSettingsSwipe() if busy else api.RunSettingsSwipe()),
+            "on_swipe_apply": lambda: submit(api.ApplySettingsSwipe()),
             "on_model_change": lambda name: submit(api.LoadModel(name)),
             "on_trt_toggle": lambda v: submit(api.ToggleTrt(bool(v))),
             "on_trt_rebuild": lambda: submit(api.RebuildTrt()),
@@ -342,6 +345,9 @@ class DpgUiAdapter:
             api.KnownNResult: lambda e: self.gui.show_known_n_result(
                 e.result, e.error),
             api.DialBVisible: lambda e: self.gui.set_dial_b_visible(e.visible),
+            api.SettingsSwipeProgress: lambda e: self.gui.show_swipe_progress(
+                e.state, e.text, e.progress),
+            api.SettingsSwipeResult: lambda e: self.gui.show_swipe_result(e.result, e.error),
             api.Alert: lambda e: (
                 self.gui.show_toast(f"/!\\ {e.message}", duration=8.0, color=(255, 80, 80)),
                 # a condition that lasts until the operator acts stays in the alerts strip

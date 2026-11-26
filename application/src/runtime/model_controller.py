@@ -225,6 +225,33 @@ class ModelController:
             self._pending_model_switch = model_name
             self._model_loading = True  # Block processing until model is reloaded
 
+    def request_setting(self, model_name: str, imgsz: int, shape) -> Optional[str]:
+        """P5: queue a switch to ``model_name`` at ``imgsz`` / ``shape`` (a (height, width) rectangle or None
+        for the square) -- the path a model-combo or Image-Size change takes with TensorRT on: the model
+        manager's input set, the pending switch drained by the main loop (``_load_model_with_progress``,
+        processing blocked until loaded, ``_attach_model`` sets the input the engine runs).  Only onto an
+        existing engine: never builds one.  Not saved, as a manual change.  Returns why not, or None."""
+        from core.model_manager import is_tensorrt_available
+        if self._model_loading or self._pending_model_switch is not None:
+            return "a model load is already in progress"
+        if not is_tensorrt_available():
+            return "TensorRT is not available on this system"
+        mm = self.model_manager
+        if not mm.use_tensorrt:
+            return "TensorRT is off (tick it first): the swipe measured TensorRT engines"
+        base = model_name.replace('.pt', '').replace('.engine', '')
+        path = mm.get_engine_path(base, int(imgsz), tuple(shape) if shape else None)
+        if not os.path.exists(path):
+            return f"no engine {os.path.basename(path)}"
+        mm.set_imgsz(int(imgsz))
+        mm.set_shape(tuple(shape) if shape else None)
+        self.processor().settings.imgsz = int(imgsz)
+        self._pending_trt_switch = True
+        self._pending_model_switch = base
+        self._model_loading = True   # block processing until the model is reloaded
+        self._model_loaded = False
+        return None
+
     def _prompt_trt_build_sync(self, model_name: str) -> bool:
         """Show TRT build prompt and block until user responds.
 

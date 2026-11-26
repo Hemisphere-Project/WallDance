@@ -87,6 +87,7 @@ from core.config import (
     OPS_DISK_WARN_FREE_GB,
     OPS_DISK_FAIL_FREE_GB,
     RIG_DEFAULTS,
+    SWIPE_COLLECT,
 )
 from core.osc_output import OSCSender
 from core.pipeline import FrameProcessor, ProcessingSettings, ScaledTrack
@@ -107,6 +108,7 @@ from core.ops_monitor import (
 )
 from core.enhancer import ImageEnhancer
 from core.input_shape import shape_str
+from core.swipe import Candidate
 from core.tracker import DancerTracker
 from core.tracking_logger import _json_default
 from core.video_recorder import VideoRecorder
@@ -122,6 +124,7 @@ from runtime.camera_controller import CameraController
 from runtime.config_manager import ConfigManager
 from runtime.calibration_flows import CalibrationFlows
 from runtime.roi_state import RoiState
+from runtime.swipe_controller import LiveSetting, SwipeController
 from ui.adapter import DpgUiAdapter
 from ui.roi_mask_editor import RoiMaskEditor
 from services.web_monitor import WebMonitor
@@ -555,6 +558,8 @@ class WallDanceApp:
             denoise_strength=0.0,
             osc_enabled=OSC_ENABLED,
         )
+        # P5: keep the frames a settings swipe runs on (project key swipe_collect)
+        self.settings.swipe_collect = SWIPE_COLLECT
 
         # Camera: Use UnifiedCamera (IDS + OpenCV fallback) if available
         self._use_unified_camera = UNIFIED_CAMERA_AVAILABLE
@@ -732,6 +737,18 @@ class WallDanceApp:
             capture_plate=lambda source: self._cb_capture_plate(PLATE_CAPTURE_FRAMES, source),
         )
         
+        # P5 settings swipe (runtime/swipe_controller.py): a worker thread beside the live loop tries the
+        # other model / input settings on the kept frames; readiness reads its verdict, Apply acts on it.
+        self.swipe = SwipeController(
+            processor=lambda: self.processor,
+            live=self._swipe_live_setting,
+            engine_path=lambda c: self.models.model_manager.get_engine_path(c.model, c.imgsz, c.shape),
+            plate_ready=lambda: self.processor.plate_status == "ready",
+            on_progress=lambda state, text, progress: self.bus.publish(
+                api.SettingsSwipeProgress(state, text, float(progress))),
+            on_result=lambda result, error: self.bus.publish(api.SettingsSwipeResult(result, error)),
+        )
+
         # Pending operations (deferred to main loop)
 
         # Ops cluster (TODO Phase 7): health alerts + main-loop watchdog
@@ -866,6 +883,9 @@ class WallDanceApp:
         reg(api.ApplyCalibSweep, lambda c: self._cb_apply_calib_sweep())
         reg(api.RunKnownNTune, lambda c: self._cb_run_known_n())
         reg(api.ApplyKnownNTune, lambda c: self._cb_apply_known_n())
+        reg(api.RunSettingsSwipe, lambda c: self._cb_run_settings_swipe())
+        reg(api.CancelSettingsSwipe, lambda c: self.swipe.cancel())
+        reg(api.ApplySettingsSwipe, lambda c: self._cb_apply_settings_swipe())
         # detection / sensitivity
         reg(api.SetSensitivity, lambda c: self._cb_sensitivity_change(c.value))
         reg(api.SetConfidence, lambda c: self._cb_confidence_change(c.value))
@@ -1049,6 +1069,7 @@ class WallDanceApp:
             "rig": dict(self.rig_sheet),
             "input_transform": self.input_transform.to_config(),
             "import_running": self.recording.import_running,
+            "swipe": self.swipe.status_dict(),
         }
 
     def _sync_rig_sheet(self):
@@ -1282,6 +1303,7 @@ class WallDanceApp:
             "use_ir_belt": self.settings.use_ir_belt,
             "osc_send_state": self.settings.osc_send_state,
             "camera_stall_hold": self.settings.camera_stall_hold,
+            "swipe_collect": self.settings.swipe_collect,
             "motion_sensitivity": self.processor.get_motion_sensitivity(),
             "osc_enabled": self.osc_enabled,
             "osc_ip": self.osc_ip,
@@ -1507,6 +1529,8 @@ class WallDanceApp:
             self._cb_foreground(bool(config.get("fg_enabled", FOREGROUND_ENABLED)))
         if "fg_clip_aware" in config or full_config:         # F1 (no GUI: a project key)
             self.settings.fg_clip_aware = bool(config.get("fg_clip_aware", FOREGROUND_CLIP_AWARE))
+        if "swipe_collect" in config or full_config:         # P5 (no GUI: a project key)
+            self.settings.swipe_collect = bool(config.get("swipe_collect", SWIPE_COLLECT))
         if full_config:
             self._load_project_plate()
         # Conditional Dial-B visibility (OPERATOR_V2 P3 / build #3): calibration
@@ -2150,6 +2174,7 @@ class WallDanceApp:
         self.recording._update_recording_ui()
 
     def _cb_quit(self):
+        self.swipe.cancel()          # P5: stop a running settings swipe (its worker is a daemon)
         self.tracker.logger.close()  # Phase 0: flush and close tracking log
         self.running = False
         self.recorder.close()
@@ -2321,6 +2346,11 @@ class WallDanceApp:
                                          lb_scale=float(getattr(self.processor, "last_lb_scale", 0.0)),
                                          imgsz=int(self.settings.imgsz),
                                          shape=self.settings.yolo_shape, roi_w=_roi_w, roi_h=_roi_h))
+        try:
+            results.append(self.swipe.readiness(plate_ready=self.processor.plate_status == "ready",
+                                                live_now=self._swipe_live_setting()))
+        except Exception as e:  # noqa: BLE001 - one row must not sink the report
+            print(f"[Readiness] swipe row failed: {e}")
         results.append(check_disk(
             recordings_dir=self.recorder.recordings_dir,
             warn_free_gb=OPS_DISK_WARN_FREE_GB,
@@ -2592,6 +2622,55 @@ class WallDanceApp:
         self.bus.publish(api.Toast(
             f"Auto-tune applied: CLAHE {cfg.get('clahe_clip')} conf "
             f"{cfg.get('confidence')} + saved.{imgsz_note}", 7.0, (120, 220, 140)))
+
+    # ------------------------------------------------------------------
+    # Settings swipe (Plan Cordée P5)
+    # ------------------------------------------------------------------
+    def _swipe_live_setting(self) -> Optional[LiveSetting]:
+        """What the live loop runs now (model, the input it really runs, the loaded model object); None while
+        a model loads (a running swipe stops: no CUDA work beside the load's graph capture)."""
+        if self.models.model is None or not self.models._model_loaded or self.models._model_loading:
+            return None
+        try:
+            trt = bool(self.models.model_manager.is_using_tensorrt())
+        except Exception:  # noqa: BLE001
+            trt = False
+        shape = self.settings.yolo_shape
+        return LiveSetting(project=self.configs._current_project,
+                           candidate=Candidate(self.models.current_model_name, int(self.settings.imgsz),
+                                               tuple(shape) if shape else None),
+                           model_id=id(self.models.model), trt=trt)
+
+    def _cb_run_settings_swipe(self):
+        """Start the swipe (worker thread; the show runs on at the live setting)."""
+        why = self.swipe.start()
+        if why:
+            self.bus.publish(api.Toast(f"Swipe: {why}", 5.0, (255, 200, 100)))
+            return
+        note = ("" if self.system_state == SystemState.RUN
+                else " - frames are kept only while YOLO runs: press RUN")
+        self.bus.publish(api.Toast("Swipe: keeping frames where a dancer has no box, then trying the "
+                                   "other settings; the show runs on" + note, 5.0, (120, 170, 220)))
+
+    def _cb_apply_settings_swipe(self):
+        """Switch to the swipe's winner through the model-switch path (as the model combo / Image Size do with
+        TensorRT): engine check, processing paused until the engine is loaded, the input it runs set by
+        ``_attach_model``.  The confidence too when the verdict recommends one.  Like a manual change it is
+        not saved: the operator's Save keeps it (model, yolo_imgsz, yolo_shape, confidence)."""
+        why, winner, conf = self.swipe.applicable(self._swipe_live_setting())
+        if why is None:
+            why = self.models.request_setting(winner.model, winner.imgsz, winner.shape)
+        if why:
+            self.bus.publish(api.Toast(f"Swipe Apply: {why}", 5.0, (255, 200, 100)))
+            return
+        self.models.ui.sync_model_combo(winner.model)
+        self._sync("combo", "imgsz", str(int(winner.imgsz)))
+        if conf is not None:
+            self._cb_confidence_change(float(conf))
+        self.swipe.mark_applied(winner)
+        print(f"[Swipe] applying {winner.label}" + (f", confidence {conf:.2f}" if conf is not None else ""))
+        self.bus.publish(api.Toast(f"Switching to {winner.label} (the swipe's pick) - Save the project "
+                                   "to keep it", 6.0, (120, 220, 140)))
 
     # ------------------------------------------------------------------
     # Known-N auto-tune (K1) — phase ④ advanced

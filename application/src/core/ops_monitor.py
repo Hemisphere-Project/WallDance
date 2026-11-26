@@ -322,6 +322,44 @@ def check_dancer_size(*, measured: Optional[Tuple[float, int, float]], lb_scale:
                        + "; ".join(tips))
 
 
+def check_swipe(*, plate_ready: bool, state: str = "idle", text: str = "", result=None,
+                live_label: str = "", stale: bool = False, applied: bool = False) -> CheckResult:
+    """P5 (Plan Cordée): the settings swipe's verdict, in plain words.
+
+    ``result`` is a ``core.swipe.SwipeResult`` (duck-typed: ``current``, ``winner``, ``switch``,
+    ``reason``) or None; ``state``/``text`` the swipe controller's (collecting, running, done, cancelled,
+    dropped, error); ``stale``: the live setting changed since the swipe ran (not by its Apply);
+    ``applied``: the live setting is the swipe's winner, applied from it.  Never a FAIL: the swipe only
+    recommends, nothing switches by itself."""
+    name = "swipe"
+    if state in ("collecting", "running"):
+        return CheckResult(name, "skip", f"running - {text}" if text else "running")
+    if result is None:
+        if not plate_ready:
+            return CheckResult(name, "skip", "no empty-wall plate - the swipe judges the settings on it: "
+                                             "Calibrate on the empty wall first")
+        why = f" (last one {state}: {text})" if text and state in ("cancelled", "dropped", "error") else ""
+        return CheckResult(name, "skip", f"no swipe yet{why} - press 'Try other settings' while the "
+                                         "dancers warm up")
+    reason = str(getattr(result, "reason", "") or "")
+    winner = getattr(result, "winner", None)
+    current = getattr(result, "current", None)
+    if applied and winner is not None:
+        return CheckResult(name, "ok", f"running {winner.label}, the swipe's pick ({reason}); "
+                                       "Save the project to keep it")
+    if stale:
+        then = current.label if current is not None else "another setting"
+        return CheckResult(name, "skip", f"the setting changed since the last swipe (it ran on {then}"
+                                         + (f", {live_label} now" if live_label else "")
+                                         + "): run it again")
+    if winner is None:
+        return CheckResult(name, "skip", f"{reason} - run it again with the dancers on the wall")
+    if getattr(result, "switch", False):
+        return CheckResult(name, "warn", f"{reason}: press Apply under 'Try other settings' to switch to "
+                                         f"{winner.label}, then Save the project")
+    return CheckResult(name, "ok", reason)
+
+
 def recording_gb_per_hour(codec: str = RECORDING_CODEC) -> Tuple[str, float]:
     """(codec actually used, estimated GB/h at the show resolution and fps).
 
