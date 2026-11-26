@@ -68,6 +68,11 @@ from core.config import (
     AUTOCAL_GAMMA_NOISY_MAX,
 )
 from camera.ids_camera import IDS_EXPOSURE_MIN_FPS, max_exposure_for_fps
+from core.belt_detector import BeltParams
+from core.light_verdict import (LIGHT_CELLS_LONG, LIGHT_CELLS_MIN, LIGHT_CLIP_DN,  # X1: one « at white »
+                                light_verdict, zone_parts)
+
+_BELT = BeltParams()    # X1: what a belt is, by the belt detector's own rule
 
 # Hard bounds for PERSON_HEIGHT_PX (mirrors the GUI slider range, config.py).
 _HEIGHT_MIN_PX = 20
@@ -202,6 +207,143 @@ def servo_region_stats(frame: np.ndarray,
     return median, clip / total * 100.0, label
 
 
+# --- X1 (#t-027 ④): the servo exposes for the highlights of the zone --------------------------------------
+# Release 1's servo aimed the zone's median at 70 and tolerated 15 % of it clipped: on the façade of 08/10 the
+# IR flood's oval sat at white while it was satisfied.  X1 keeps the median's aim where the highlights allow it
+# and puts the highlights above it: the zone's 99.5th percentile, belt-sized blobs left out, stays under 235 and
+# at most 0.5 % of it is at white; the median is never cut below a floor for them.  « At white » is the light
+# verdict's (core/light_verdict.LIGHT_CLIP_DN, 250), so the servo and the « wall light » row mean one thing.
+SERVO_HIGHLIGHT_DN = 235.0     # the zone's 99.5th percentile stays under this ...
+SERVO_HIGHLIGHT_PCTL = 99.5
+SERVO_CLIP_MAX_PCT = 0.5       # ... and at most this % of the zone is at white
+SERVO_HIGHLIGHT_AIM = 0.9      # a step for the highlights aims that percentile at 0.9 x 235 (~212), inside the limit
+SERVO_HIGHLIGHT_NEAR = 0.95    # ... and it steps down from 0.95 x 235 (~223): the end state keeps a margin to 235
+# The floor: half the median's aim.  For the highlights the servo may halve the wall's level (-6 dB), never more;
+# release 1's band bottom (58) would leave it 1 dB on a wall like 08/10's (median 64 at 25 ms / 30 dB).
+SERVO_MEDIAN_FLOOR = 0.5 * AUTOCAL_SERVO_TARGET_BRIGHTNESS
+# Belt-sized: a connected group of pixels at or above 235 covering at most a quarter of one part of the light
+# verdict's grid (core/light_verdict.zone_parts: 1/8 of the zone's long side), and standing out of what is behind
+# it as the belt detector asks of a belt (BeltParams k_bg, min_delta_dn) -- a dancer's belt, a small lamp.  Alone
+# it can never make a part « at white » (half its pixels).  ~13k px on 08/10's 965 x 1771 zone, the size of the
+# belt detector's largest belt (BeltParams.max_area 12000).  The IR oval there is one blob of ~264k px.
+SERVO_BLOB_PART_SHARE = 0.25
+SERVO_CLIPPED_STEP = 0.7       # highlights at white: how far above is unknown, so a fixed -3 dB step
+SERVO_MIN_STEP = 0.05          # a move under 5 % is no move: the servo is done
+SERVO_BRACKET_MARGIN = 0.03    # never back to within 3 % of a level seen too hot, or seen under the floor
+SERVO_STEP_UP_MAX = 2.5        # one step moves the level at most x2.5 up ...
+SERVO_STEP_DOWN_MIN = 0.25     # ... or /4 down
+SERVO_ZONE_BLOCK_PX = 120_000  # the blob search runs on the zone cut into blocks: about this many
+
+
+@dataclass
+class ZoneLight:
+    """What the X1 servo measures on one frame (``zone_highlights``): the zone is the operator's ROI, else
+    the frame, cut as ``servo_region_stats`` cuts it."""
+    median: float = 0.0          # the zone's median, all its pixels: the floor and the median's aim read it
+    p995: float = 0.0            # the 99.5th percentile, belt-sized blobs left out
+    clip_pct: float = 0.0        # % of the zone at white (>= LIGHT_CLIP_DN), belt-sized blobs left out
+    region: str = "frame"        # what was measured ("ROI 965x1771" / "frame 1260x1824")
+    blobs: int = 0               # belt-sized blobs left out ...
+    blob_pct: float = 0.0        # ... and the % of the zone they cover with their rim
+    clip_pct_all: float = 0.0    # % of the zone at white, blobs included (for the log)
+    small: Optional[np.ndarray] = None   # the zone in blocks (uint8), when something is hot: the light's words
+
+
+def _zone_of(gray: np.ndarray, roi) -> Tuple[np.ndarray, str]:
+    """The zone of ``gray`` and its label, cut exactly as ``servo_region_stats`` cuts it."""
+    fh, fw = gray.shape[:2]
+    if roi is not None:
+        x, y, w, h = (int(v) for v in roi)
+        x0, y0 = max(0, x), max(0, y)
+        x1, y1 = min(fw, x + w), min(fh, y + h)
+        if x1 > x0 and y1 > y0 and (x0, y0, x1, y1) != (0, 0, fw, fh):
+            return gray[y0:y1, x0:x1], f"ROI {x1 - x0}x{y1 - y0}"
+    return gray, f"frame {fw}x{fh}"
+
+
+def _hist_levels(hist: np.ndarray) -> Tuple[float, float, float, float]:
+    """(median, 99.5th percentile, % at white, pixel count) of a 256-bin histogram."""
+    total = float(hist.sum())
+    if total <= 0:
+        return 0.0, 0.0, 0.0, 0.0
+    cum = np.cumsum(hist)
+    median = float(np.searchsorted(cum, total / 2.0))
+    p = float(np.searchsorted(cum, total * SERVO_HIGHLIGHT_PCTL / 100.0))
+    clip = float(hist[int(LIGHT_CLIP_DN):].sum()) / total * 100.0
+    return median, p, clip, total
+
+
+def zone_highlights(frame: np.ndarray, roi: Optional[Tuple[int, int, int, int]] = None) -> ZoneLight:
+    """X1: the zone's median, its 99.5th percentile and its share at white, belt-sized blobs left out.
+
+    ``roi`` is ``(x, y, w, h)`` in frame pixels, None for the whole frame (``servo_region_stats``' cut).  The
+    blobs are connected groups of pixels >= ``SERVO_HIGHLIGHT_DN`` found on the zone cut into blocks (about
+    ``SERVO_ZONE_BLOCK_PX`` of them), each block holding any such pixel; a group covering at most
+    ``SERVO_BLOB_PART_SHARE`` of a light-verdict part, on a background (a grey opening wider than it) at most
+    half the limit, is left out with a one-block rim (its glow).  No detector: it runs on the empty wall.  Only
+    a histogram when nothing reaches 235.
+    """
+    gray = frame
+    if gray.ndim == 3:
+        gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
+    if gray.dtype != np.uint8:
+        gray = np.clip(np.rint(gray), 0, 255).astype(np.uint8)
+    zone, label = _zone_of(gray, roi)
+    if zone.size == 0:
+        return ZoneLight(region=label)
+    zone = np.ascontiguousarray(zone)
+    hist = cv2.calcHist([zone], [0], None, [256], [0, 256]).ravel()
+    median, p995, clip_all, _n = _hist_levels(hist)
+    out = ZoneLight(median=median, p995=p995, clip_pct=clip_all, region=label, clip_pct_all=clip_all)
+    if not hist[int(SERVO_HIGHLIGHT_DN):].any():
+        return out
+    zh, zw = zone.shape
+    k = max(1, int(math.ceil(math.sqrt(zone.size / float(SERVO_ZONE_BLOCK_PX)))))
+    k = min(k, zw, zh)
+    sw, sh = zw // k, zh // k                      # whole k x k blocks (an exact, fast INTER_AREA); the last
+    bz = zone[:sh * k, :sw * k]                    # < k rows and columns stay in the measure as they are
+    hot = (bz >= SERVO_HIGHLIGHT_DN).view(np.uint8) * np.uint8(255)
+    if k > 1:
+        small = cv2.resize(bz, (sw, sh), interpolation=cv2.INTER_AREA)
+        frac = cv2.resize(hot, (sw, sh), interpolation=cv2.INTER_AREA)     # 255 x the block's hot share
+    else:
+        small, frac = bz.copy(), hot
+    out.small = small
+    n, lab = cv2.connectedComponents((frac > 0).view(np.uint8), connectivity=8)
+    if n <= 1:
+        return out
+    # hot full-resolution pixels per blob, and the largest belt-sized one: a quarter of the verdict's part
+    block = float(k * k)
+    area = np.bincount(lab.ravel(), weights=frac.ravel(), minlength=n) * (block / 255.0)
+    cut = zone_parts(small)
+    cols, rows = cut[4] if cut is not None else (LIGHT_CELLS_LONG, LIGHT_CELLS_MIN)
+    blob_max = SERVO_BLOB_PART_SHARE * zone.size / float(cols * rows)
+    belt = area <= blob_max
+    belt[0] = False
+    if belt.any():
+        # ... that stands out of what is behind it as the belt detector asks of a belt (core/belt_detector.py:
+        # I >= max(k_bg x bg, bg + min_delta_dn), bg = a grey opening wider than the blob): a belt or a lamp on
+        # the wall, not the top of a broad highlight shrinking under the limit as the exposure comes down
+        s = int(math.ceil(math.sqrt(blob_max / block))) + 1
+        bg = cv2.morphologyEx(small, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (s, s)))
+        px = np.bincount(lab.ravel(), minlength=n)
+        bg_mean = np.bincount(lab.ravel(), weights=bg.ravel(), minlength=n) / np.maximum(px, 1)
+        belt &= bg_mean <= min(SERVO_HIGHLIGHT_DN / _BELT.k_bg, SERVO_HIGHLIGHT_DN - _BELT.min_delta_dn)
+    if not belt.any():
+        return out
+    big = (lab > 0) & ~belt[lab]                   # the rim never eats into a blob that stays (the oval)
+    rm = cv2.dilate(belt[lab].view(np.uint8), np.ones((3, 3), np.uint8)) & ~big
+    keep = np.ones((zh, zw), np.uint8)
+    up = cv2.resize(rm.view(np.uint8), (sw * k, sh * k), interpolation=cv2.INTER_NEAREST)
+    keep[:sh * k, :sw * k] = up == 0
+    hist_c = cv2.calcHist([zone], [0], keep, [256], [0, 256]).ravel()
+    _m, p995, clip, kept = _hist_levels(hist_c)
+    out.p995, out.clip_pct = p995, clip
+    out.blobs = int(belt.sum())
+    out.blob_pct = (zone.size - kept) / float(zone.size) * 100.0
+    return out
+
+
 @dataclass
 class ServoResult:
     """Outcome of the exposure/gain servo phase (Calib1 phase A)."""
@@ -214,16 +356,42 @@ class ServoResult:
     note: str = ""
     region: str = "frame"            # what was measured ("ROI 1322x412" / "frame 1776x1300")
     clip_pct: float = 0.0            # % of that region >= 250 at the last measurement
+    # X1: the highlights rule (None: release 1's median rule ran)
+    p995: Optional[float] = None     # the zone's 99.5th percentile, belt-sized blobs left out
+    blobs: int = 0                   # belt-sized blobs left out at the last measurement ...
+    blob_pct: float = 0.0            # ... and the % of the zone they cover
+    floor: Optional[float] = None    # the median's floor
+    conflict: bool = False           # the highlights still clip with the median at its floor
+    instruction: str = ""            # then: the one thing to do, about the light
 
     def summary_line(self) -> str:
         if not self.ran:
             return "Exposure: not driven (playback or non-IDS camera) - kept current"
+        if self.p995 is not None:
+            return self._highlights_line()
         state = "converged" if self.converged else f"stopped ({self.note})"
         if self.converged and self.note:
             state += f", {self.note}"
         return (f"Exposure: {self.exposure_us/1000.0:.1f} ms  gain {self.gain_db:.1f} dB  "
                 f"-> {self.region} median {self.brightness:.0f}, clip {self.clip_pct:.1f}%  "
                 f"({state}, {self.steps} steps)")
+
+    def _highlights_line(self) -> str:
+        """X1's line: what the highlights and the median ended at, and the light's instruction on a conflict."""
+        state = "converged" if self.converged else f"stopped: {self.note}"
+        if self.converged and self.note:
+            state += f", {self.note}"
+        blobs = f", small bright spots left out ({self.blob_pct:.1f}%)" if self.blob_pct >= 0.05 else ""
+        line = (f"Exposure: {self.exposure_us/1000.0:.1f} ms  gain {self.gain_db:.1f} dB  "
+                f"-> {self.region} median {self.brightness:.0f}, clip {self.clip_pct:.1f}%, "
+                f"highlights p99.5 {self.p995:.0f} (limit {SERVO_HIGHLIGHT_DN:.0f}){blobs}  "
+                f"({state}, {self.steps} steps)")
+        return line + (f"\n{self.conflict_line()}" if self.conflict else "")
+
+    def conflict_line(self) -> str:
+        """The technician's one instruction when the highlights and the floor cannot both hold: the light."""
+        return (f"Exposure: the light is the limit - the brightest part of the wall stays at white with the wall "
+                f"already at its floor ({self.floor or 0.0:.0f}): {self.instruction}")
 
 
 class ExposureServo:
@@ -250,6 +418,9 @@ class ExposureServo:
     Pure logic: ``feed(brightness, clip_pct)`` returns ``("exposure", us)`` /
     ``("gain", db)`` commands for the caller to apply to the camera, or None
     while settling/done.  Unit-testable without hardware.
+
+    X1 (#t-027 ④): ``feed(..., zone=zone_highlights(frame, roi))`` runs the highlights rule instead, the one
+    Calibrate uses (``_feed_highlights``); a caller with only a median and a clip share keeps the rule above.
     """
 
     _EXPOSURE_MIN_US = 200.0
@@ -262,7 +433,10 @@ class ExposureServo:
                  clip_max_pct: float = AUTOCAL_SERVO_CLIP_MAX_PCT,
                  gain_max_db: float = AUTOCAL_SERVO_GAIN_MAX_DB,
                  settle_frames: int = AUTOCAL_SERVO_SETTLE_FRAMES,
-                 max_steps: int = AUTOCAL_SERVO_MAX_STEPS):
+                 max_steps: int = AUTOCAL_SERVO_MAX_STEPS,
+                 highlight_dn: float = SERVO_HIGHLIGHT_DN,
+                 highlight_clip_pct: float = SERVO_CLIP_MAX_PCT,
+                 median_floor: float = SERVO_MEDIAN_FLOOR):
         self.exposure_cap_us = min(float(blur_budget_ms) * 1000.0,
                                    max_exposure_for_fps(min_fps))
         self.exposure_us = _clamp(float(exposure_us),
@@ -287,16 +461,28 @@ class ExposureServo:
         self._brightness = 0.0
         self._clip_pct = 0.0
         self._region = "frame"
+        # X1: the highlights rule (feed(..., zone=...)); levels are exposure_us x gain as a linear factor
+        self.highlight_dn = float(highlight_dn)
+        self.highlight_clip_pct = float(highlight_clip_pct)
+        self.median_floor = float(median_floor)
+        self._zone: Optional[ZoneLight] = None
+        self._hot_at: Optional[float] = None       # the lowest level seen with the highlights near or over 235
+        self._low_at: Optional[float] = None       # the highest level seen with the median under the floor
+        self._dir = 0                              # the last step's direction: +1 up, -1 down
+        self._reversals = 0
+        self._conflict = False
 
     @property
     def done(self) -> bool:
         return self._done
 
-    def feed(self, brightness: float, clip_high_pct: float, region: Optional[str] = None):
+    def feed(self, brightness: float, clip_high_pct: float, region: Optional[str] = None,
+             zone: Optional[ZoneLight] = None):
         """One frame's measurement in, at most one camera command out.
 
         ``brightness`` = the region's median raw luma, ``clip_high_pct`` = % of the region
-        >= 250, ``region`` = a label of what was measured, for the summary line.
+        >= 250, ``region`` = a label of what was measured, for the summary line.  ``zone`` (X1) =
+        ``zone_highlights`` of the same frame: the highlights rule decides instead of the median rule.
         """
         if self._done:
             return None
@@ -304,6 +490,8 @@ class ExposureServo:
         self._clip_pct = float(clip_high_pct)
         if region is not None:
             self._region = str(region)
+        if zone is not None:
+            self._zone = zone
         if self._clamp_cmds:                       # A6 ①: the clamped start values reach the camera first
             return self._command(*self._clamp_cmds.pop(0))
         if self._settle > 0:
@@ -312,6 +500,8 @@ class ExposureServo:
         if self._steps >= self.max_steps:
             self._finish(False, "step limit")
             return None
+        if zone is not None:                       # X1: expose for the highlights, the median a floor
+            return self._feed_highlights(zone)
 
         b = float(brightness)
         if b < self.target - self.tolerance:
@@ -361,11 +551,119 @@ class ExposureServo:
         self._converged = converged
         self._note = note
 
+    # --- X1: the highlights rule ------------------------------------------------------------------------------
+    def level(self) -> float:
+        """Exposure x gain as one linear factor (us x 10^(dB/20)): what the scene's pixels scale with."""
+        return self.exposure_us * 10.0 ** (self.gain_db / 20.0)
+
+    def _feed_highlights(self, z: ZoneLight):
+        """One decision of the highlights rule, the scene taken as linear in ``level()`` until white.
+
+        In order of authority: the median never under ``median_floor``; then the highlights -- the 99.5th
+        percentile under ``highlight_dn`` and at most ``highlight_clip_pct`` % at white, belt-sized blobs left
+        out (``zone_highlights``); then the median's aim, ``target`` +/- ``tolerance``, as release 1.  Each step
+        aims inside its limit (the percentile at 0.9 x 235; a fixed -3 dB while it is at white, since how far
+        above is unknown), and never goes back to within 3 % of a level seen too hot or seen under the floor:
+        the levels left shrink at each step, so it cannot hunt.  When the floor stops it with the highlights
+        still over: done, ``conflict``, and the one instruction is about the light.  Exposure rises first, then
+        gain; backing off cuts gain first, then exposure (release 1's order).
+        """
+        M, P, C = float(z.median), float(z.p995), float(z.clip_pct)
+        L = self.level()
+        breach = P >= self.highlight_dn or C > self.highlight_clip_pct      # over the limit
+        hot = breach or P > SERVO_HIGHLIGHT_NEAR * self.highlight_dn        # near enough to step down
+        low = M < self.median_floor
+        if hot:
+            self._hot_at = L if self._hot_at is None else min(self._hot_at, L)
+        if low:
+            self._low_at = L if self._low_at is None else max(self._low_at, L)
+        # the factors on the level each rule allows
+        if hot and P >= LIGHT_CLIP_DN:
+            hi = SERVO_CLIPPED_STEP
+        else:
+            hi = SERVO_HIGHLIGHT_AIM * self.highlight_dn / max(P, 1.0)
+        if self._hot_at is not None:
+            hi = min(hi, self._hot_at * (1.0 - SERVO_BRACKET_MARGIN) / L)
+        lo = self.median_floor * (1.0 + SERVO_BRACKET_MARGIN) / max(M, 1.0)
+        if self._low_at is not None:
+            lo = max(lo, self._low_at * (1.0 + SERVO_BRACKET_MARGIN) / L)
+        in_band = abs(M - self.target) <= self.tolerance
+        if not hot and not low and (in_band or (M < self.target and hi < 1.0 + SERVO_MIN_STEP)):
+            self._finish(True, "" if in_band else "median held under its aim by the highlights")
+            return None
+        f = lo if lo > hi else min(max(self.target / max(M, 1.0), lo), hi)   # the floor wins over the highlights
+        f = _clamp(f, SERVO_STEP_DOWN_MIN, SERVO_STEP_UP_MAX)
+        if abs(f - 1.0) < SERVO_MIN_STEP:
+            self._settle_highlights(breach, low)
+            return None
+        d = 1 if f > 1.0 else -1
+        if self._dir and d != self._dir:
+            self._reversals += 1
+            if self._reversals >= 2:               # a backstop: the brackets should never let it get here
+                self._settle_highlights(breach, low, "settled")
+                return None
+        cmd = self._step_level(f)
+        if cmd is None:
+            if d > 0:
+                self._finish(False, "at exposure+gain limits - scene still dark, add IR")
+            else:
+                self._finish(False, "highlights at white at minimum settings" if breach
+                             else "too bright at minimum settings")
+            return None
+        self._dir = d
+        return cmd
+
+    def _settle_highlights(self, breach: bool, low: bool, why: str = "") -> None:
+        if breach:                                 # the floor holds the level up: the light is the limit
+            self._conflict = True
+            self._finish(False, "the highlights still clip at the median floor")
+        else:
+            self._finish(True, why or ("median held at the floor by the highlights" if low else ""))
+
+    def _step_level(self, f: float):
+        """One command moving the level by ``f``: up = exposure to its cap, then gain; down = gain to 0, then
+        exposure.  None at the limit of that direction."""
+        if f > 1.0:
+            if self.exposure_us < self.exposure_cap_us * 0.99:
+                self.exposure_us = min(self.exposure_cap_us, self.exposure_us * f)
+                return self._command("exposure", self.exposure_us)
+            if self.gain_db < self.gain_max_db - 0.05:
+                self.gain_db = min(self.gain_max_db, self.gain_db + 20.0 * math.log10(f))
+                return self._command("gain", self.gain_db)
+            return None
+        if self.gain_db > 0.05:
+            self.gain_db = max(0.0, self.gain_db + 20.0 * math.log10(f))
+            return self._command("gain", self.gain_db)
+        if self.exposure_us > self._EXPOSURE_MIN_US * 1.01:
+            self.exposure_us = max(self._EXPOSURE_MIN_US, self.exposure_us * f)
+            return self._command("exposure", self.exposure_us)
+        return None
+
+    def _light_instruction(self) -> str:
+        """The « wall light » row's own words for the zone the servo saw last (core/light_verdict), else its
+        words for a spot."""
+        z = self._zone
+        if z is not None and z.small is not None:
+            try:
+                v = light_verdict(z.small)
+                if v.status == "fail" and v.instruction:
+                    return v.instruction
+            except Exception:  # noqa: BLE001 - the result must come out whatever the image
+                pass
+        return ("move the IR flood back from the wall (or widen its beam) so it covers the whole zone, "
+                "then Calibrate on the empty wall again")
+
     def result(self) -> ServoResult:
-        return ServoResult(ran=True, converged=self._converged,
-                           steps=self._steps, brightness=self._brightness,
-                           exposure_us=self.exposure_us, gain_db=self.gain_db,
-                           note=self._note, region=self._region, clip_pct=self._clip_pct)
+        res = ServoResult(ran=True, converged=self._converged,
+                          steps=self._steps, brightness=self._brightness,
+                          exposure_us=self.exposure_us, gain_db=self.gain_db,
+                          note=self._note, region=self._region, clip_pct=self._clip_pct)
+        if self._zone is not None:                 # X1
+            res.p995, res.blobs, res.floor = float(self._zone.p995), int(self._zone.blobs), self.median_floor
+            res.blob_pct = float(self._zone.blob_pct)
+            res.conflict = self._conflict
+            res.instruction = self._light_instruction() if self._conflict else ""
+        return res
 
 
 class CalState(Enum):

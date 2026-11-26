@@ -32,7 +32,7 @@ from core.calib2 import (SubjectCollector, SubjectPool, load_fps_table,
                          probe_detection_counts)
 from core.calib2 import aggregate as calib2_aggregate
 from core.calibration import (ExposureServo, SceneCalibrator,
-                              cap_gamma_for_noise, seed_gamma, servo_region_stats)
+                              cap_gamma_for_noise, seed_gamma, zone_highlights)
 from core.config import (AUTOCAL_BLUR_BUDGET_MS, AUTOCAL2_FRAME_SAMPLES,
                          AUTOCAL2_NOISE_REUSE_S, AUTOCAL2_WINDOW_FRAMES,
                          AUTOCAL_SERVO_GAIN_MAX_DB, EMPTY_WALL_CHECK, MODELS_DIR)
@@ -364,13 +364,14 @@ class CalibrationFlows:
         if self._servo is not None:
             raw = self.last_raw_frame()
             if raw is not None:
-                # Expose for the wall: the ROI's median (else the frame's), not the frame mean
-                # that windows / lamps / belts drag up (servo_region_stats, ExposureServo).
-                b, clip_pct, region = servo_region_stats(raw, self._servo_roi(raw))
-                cmd = self._servo.feed(b, clip_pct, region)
+                # X1: expose for the highlights of the zone (the ROI, else the frame): its 99.5th percentile
+                # under 235 with belt-sized blobs left out, the median a floor (zone_highlights, ExposureServo).
+                z = zone_highlights(raw, self._servo_roi(raw))
+                b, clip_pct, region = z.median, z.clip_pct, z.region
+                cmd = self._servo.feed(b, clip_pct, region, zone=z)
                 if cmd is not None:
                     kind, value = cmd
-                    print(f"[Calibrate] servo: {region} median {b:.0f}, clip {clip_pct:.1f}% "
+                    print(f"[Calibrate] servo: {region} median {b:.0f}, clip {clip_pct:.1f}%, p99.5 {z.p995:.0f} "
                           f"-> {kind} {value / 1000.0 if kind == 'exposure' else value:.2f}"
                           f" {'ms' if kind == 'exposure' else 'dB'}")
                     if kind == "exposure":
@@ -393,6 +394,8 @@ class CalibrationFlows:
                     if isinstance(v, numbers.Real) and not isinstance(v, bool):
                         setattr(self._servo_result, attr, float(v))
                 print("[Calibrate] " + self._servo_result.summary_line())
+                if self._servo_result.conflict and self.ui.available:   # X1: the light is the limit, not a setting
+                    self.ui.show_toast(self._servo_result.conflict_line(), duration=10.0, color=(255, 140, 70))
                 self._seed_gamma_for_calibration(self._servo_result.brightness)
                 self._servo = None
                 self._calibrator.start()
