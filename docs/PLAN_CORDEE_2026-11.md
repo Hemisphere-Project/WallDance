@@ -667,14 +667,20 @@ Filled by the step named. Until then the cell says so.
 
     The three clauses hold in all 18 cells, and in the 18 of the background pair (the live setting and the
     other model at the live input: from x, l is named on 98.0–100 % at 1280 and 1760 × 960; from l, kept on
-    100 %). Against the gate as written: from the setting of 08/10 the pick is the best on every swipe, and no
-    swipe names a setting worse than the live one; but from l at a smaller input the swipe keeps a setting 2–4.5
-    points under the best on 75–97 % of swipes, and from x @ 1920 × 1056 it misses the 6–9 points on 3–14 % —
-    150 frames do not separate such gaps, and the « dancer size » row (P4) is what speaks for the input size.
-    The window: at 60 or 90 frames the first two clauses fail on mur2 8, at 120 the third falls to 88 % from
-    x @ 1760 × 960, at 150 all hold. Everything is fitted on these three takes of one evening: a window fitted
-    for the two safety clauses on mur2 6 and 7 alone picks 60 frames and fails on mur2 8. At confidence 0.10,
-    0.25 and 0.30 the two safety clauses hold everywhere; the third slips to 82–96 % in five cells.
+    100 %). **Against the gate as this plan words it** (« the pick within 1.5 points of the best »): NOT met in
+    8 of the 18 cells — from l at a smaller input the swipe keeps a setting 2–4.5 points under the best on 75–97 %
+    of swipes (6 cells), and from x @ 1920 × 1056 it misses the 6–9 points on 10–14 % of swipes on mur2 7 and 8.
+    The behaviour there is the safe one (« keep »): 150 frames do not separate such gaps, and the « dancer
+    size » row (P4) is what speaks for the input size. The three clauses above were worded with the results in
+    hand, on the same three takes; the blind re-review confirmed them with its own measure (a worse setting
+    named on 0.00 % of swipes in every cell) and Thomas accepted them in place of the first wording (26/11).
+    From an l setting the swipe is close to a no-op: its value is catching a show left on x @ 1280 or
+    x @ 1760 × 960. The window: at 60 frames a worse setting is named on mur2 8 (0.05–0.4 % of swipes in the
+    review's measure; none in 2,000 at 90), at 120 the third clause falls to 88 % from x @ 1760 × 960, at 150
+    all hold; under 120 frames the swipe gives no verdict. Everything is fitted on these three takes of one
+    evening: a window fitted for the two safety clauses on mur2 6 and 7 alone picks 60 frames and fails on
+    mur2 8. At confidence 0.10, 0.25 and 0.30 the two safety clauses hold everywhere; the third slips to
+    82–96 % in five cells.
   - *Gate 2, corpus* — green by refusal only. The 4 corpus plates (8 scenarios) are medians of takes with dancers
     in them; there even the cleanest setting puts 0.38 boxes a frame and more on nobody (0.004–0.011 on 08/10's
     real plate), and above 0.10 the swipe answers « no verdict: every setting puts boxes where the empty-wall
