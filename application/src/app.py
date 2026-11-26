@@ -1361,6 +1361,7 @@ class WallDanceApp:
             "ids_ratio": self.cameras.ids_ratio,
             "ids_gain_db": self.cameras.ids_gain_db,
             "ids_exposure_us": self.cameras.ids_exposure_us,
+            "ids_throughput_limit_mbps": self.cameras.ids_throughput_limit_mbps,   # no GUI: a project key
             "bg_subtract_enabled": self.settings.bg_subtract_enabled,
             "bg_subtract_sensitivity": self.settings.bg_subtract_sensitivity,
             "mog2_scale": self.processor.get_motion_scale(),
@@ -1406,6 +1407,8 @@ class WallDanceApp:
             self._set_input_transform(InputTransform.from_config(config), remap=False)
         if "support_line" in config or full_config:         # S1b (no GUI: a project key; absent = off)
             self.support_line.configure(config)
+        if "ids_throughput_limit_mbps" in config or full_config:   # stall verdict §8.1 (absent = the camera's own)
+            self.cameras.set_ids_throughput_limit(config.get("ids_throughput_limit_mbps"))
         # YOLO settings (except imgsz which is handled separately)
         if "confidence" in config:
             self.settings.confidence = config["confidence"]
@@ -2391,12 +2394,18 @@ class WallDanceApp:
                 ids_frames, ids_dropped = self.unified_camera.get_ids_counters()
         except Exception:
             pass
+        link = None                     # the link throughput limit in force (stall verdict §8.1)
+        try:
+            if self._use_unified_camera and self.unified_camera is not None:
+                link = self.unified_camera.get_throughput_limit()
+        except Exception:
+            pass
         results.append(check_camera(
             is_open=self.camera.state.is_open,
             reconnecting=self.cameras._camera_reconnecting,
             source=str(self.camera.state.source),
             fps=self.fps, min_fps=OPS_MIN_SHOW_FPS,
-            ids_frames=ids_frames, ids_dropped=ids_dropped))
+            ids_frames=ids_frames, ids_dropped=ids_dropped, link=link))
         try:
             engine_present = self.models.model_manager.engine_exists(
                 self.models.current_model_name)

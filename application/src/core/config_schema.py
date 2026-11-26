@@ -58,6 +58,7 @@ _RANGES = {
     "ids_gain_db": (0.0, 48.0),
     "ids_exposure_us": (50.0, 1_000_000.0),
     "ids_ratio": (0.5, 2.0),                 # the apply path float()s it: junk is dropped here
+    "ids_throughput_limit_mbps": (0.0, 1000.0),   # shared key, 0 = the camera's own (config.py)
     "person_height_px": (10, 1500),
     "person_height_min_ratio": (0.05, 1.0),
     "person_height_max_ratio": (1.0, 10.0),

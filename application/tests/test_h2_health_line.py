@@ -87,7 +87,8 @@ def _bad_rows():
     s = StallRate()
     for i in range(61):
         s.update(float(i), i // 8, True)        # 7 stalls in a minute
-    out.append((s.state(60.0), "check the camera's USB3 cable and power, on another USB3 port at the next break"))
+    out.append((s.state(60.0), "at the next break: reseat the camera's USB cable at both ends, then try the "
+                               "other cable"))           # stall verdict 26/11 §8.3: the cable first
     return out
 
 
@@ -379,14 +380,21 @@ def test_stall_rate_thresholds():
     assert one.status == "ok" and one.detail.startswith("1.0 a minute")       # never over less than a minute
     two = _rate([10.0, 20.0], 30)
     assert two.state(30.0).status == "warn" and two.rate()[0] == pytest.approx(2.0)
-    assert two.state(30.0).detail.endswith("at the next break: check the camera's USB3 cable and power, try "
-                                           "another USB3 port")
+    assert two.state(30.0).detail.endswith(" - at the next break: reseat the camera's USB cable at both ends, "
+                                           "then try the other cable")
     under = _rate([20.0, 70.0, 130.0, 190.0], 240)                  # 4 in 4 minutes: 1 a minute
     assert under.state(240.0).status == "ok"
     five = _rate([10.0 * k for k in range(1, 6)], 60)
     assert five.state(60.0).status == "warn"
     six = _rate([10.0 * k for k in range(1, 7)], 60)
     assert six.state(60.0).status == "fail" and six.rate()[0] == pytest.approx(6.0)
+    # the one instruction, orange and red alike: physical, whole on the line, ASCII (stall verdict 26/11 §8.3)
+    how = "at the next break: reseat the camera's USB cable at both ends, then try the other cable"
+    assert OM.STALL_HOW == how and " - " not in how and how.isascii()
+    assert six.state(60.0).detail.endswith(": the picture freezes often - " + how)
+    for row in (two.state(30.0), six.state(60.0)):
+        line = health_line([row])
+        assert line.instruction == how and line.text.endswith(how) and line.text.isascii()
     # the window: 5 minutes later, without a new stall, it is green again
     later = _rate([10.0 * k for k in range(1, 7)], 60 + OM.STALL_WINDOW_S + 2)
     assert later.state(60 + OM.STALL_WINDOW_S + 2).status == "ok"

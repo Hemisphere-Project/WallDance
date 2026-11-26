@@ -11,6 +11,7 @@ refresh flag drained by the main loop.
 """
 from __future__ import annotations
 
+import math
 import time
 import traceback
 from typing import Callable, List, Optional, Protocol
@@ -24,6 +25,7 @@ from camera.ids_camera import (
     clamp_exposure_for_min_fps,
 )
 from core.config import CAMERA_INDEX, IDS_RATIO
+from core.config import IDS_THROUGHPUT_LIMIT_MBPS
 
 
 class CameraUiPort(Protocol):
@@ -69,6 +71,8 @@ class CameraController:
         self.ids_ratio: float = IDS_RATIO  # Current IDS crop ratio (W/H)
         self.ids_gain_db: float = 0.0        # Current IDS gain (dB), 0 = default
         self.ids_exposure_us: float = 10000.0  # Current IDS exposure (µs)
+        # The project's link throughput limit (MB/s, project key, no GUI); 0 = the camera's own
+        self.ids_throughput_limit_mbps: float = IDS_THROUGHPUT_LIMIT_MBPS
 
         self._camera_retry_backoff_s = 1.0
         self._camera_retry_max_s = 5.0
@@ -275,6 +279,9 @@ class CameraController:
             camera_source = source
 
         self.unified_camera.crop_ratio = self.ids_ratio     # open in the project's crop, not the default
+        # ... and at the project's link throughput limit (every open: first, reconnect, source switch)
+        self.unified_camera.throughput_limit_mbps = getattr(self, "ids_throughput_limit_mbps",
+                                                            IDS_THROUGHPUT_LIMIT_MBPS)
         opened = self.unified_camera.open(camera_source)
 
         if opened:
@@ -361,6 +368,22 @@ class CameraController:
     # ------------------------------------------------------------------
     # IDS parameter callbacks (cached so they survive reopen round-trips)
     # ------------------------------------------------------------------
+    def set_ids_throughput_limit(self, value) -> float:
+        """The project key ids_throughput_limit_mbps (no GUI).  Takes effect at the next camera open (a
+        project load reopens the camera); None = the config default; 0, junk or a negative value = the
+        camera's own."""
+        try:
+            mbps = float(IDS_THROUGHPUT_LIMIT_MBPS if value is None else value)
+        except (TypeError, ValueError):
+            mbps = 0.0
+        if isinstance(value, bool) or not math.isfinite(mbps) or mbps <= 0:
+            mbps = 0.0
+        if mbps != self.ids_throughput_limit_mbps:
+            what = "the camera's own" if mbps == 0 else f"{mbps:g} MB/s"
+            print(f"[IDS] Link throughput limit: {what} from the next camera open")
+        self.ids_throughput_limit_mbps = mbps
+        return mbps
+
     def _cb_ids_ratio_change(self, value: float):
         """Handle IDS crop-ratio slider change."""
         ratio = max(0.5, min(2.0, float(value)))

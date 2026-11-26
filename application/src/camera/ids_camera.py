@@ -297,6 +297,11 @@ class IDSCameraSettings:
     # Empty string = don't load any UserSet.
     user_set: str = ""
 
+    # The camera's link throughput limit (MB/s), written at every open after the UserSet and
+    # the frame rate (stall verdict 26/11 §8.1; project key ids_throughput_limit_mbps).
+    # 0 = keep the camera's own (release 1's behaviour).
+    throughput_limit_mbps: float = 0.0
+
 
 class IDSCamera:
     """
@@ -764,16 +769,11 @@ class IDSCamera:
             print(f"[IDSCamera] Could not set frame rate: {e}")
         
         # --- Device-Link Throughput Limit ---
-        # Log the camera's default value for diagnostics but do NOT change it.
-        # Empirically, both raising (300 → stall/2 s) and lowering (125 →
-        # stall/5 s) made stalls worse than the camera default (162 → 17 s).
+        # The project's limit (0 = the camera's own), after the UserSet and the frame rate.
         try:
-            tl_node = nm.FindNode("DeviceLinkThroughputLimit")
-            print(f"[IDSCamera] DeviceLinkThroughputLimit: "
-                  f"{tl_node.Value()/1e6:.0f} MB/s (keeping default, "
-                  f"max {tl_node.Maximum()/1e6:.0f})")
-        except Exception as e:
-            print(f"[IDSCamera] Could not read DeviceLinkThroughputLimit: {e}")
+            self._apply_throughput_limit()
+        except Exception as e:              # never a failed open
+            print(f"[IDSCamera] Throughput limit not applied: {e}")
         
         # --- Exposure ---
         try:
@@ -869,6 +869,79 @@ class IDSCamera:
                 pass
         except Exception as e:
             print(f"[IDSCamera] Could not configure gain: {e}")
+
+    # ------------------------------------------------------------------
+    # The link throughput limit (stall verdict 26/11 §8.1)
+    # ------------------------------------------------------------------
+    def _apply_throughput_limit(self) -> Optional[dict]:
+        """Write ``settings.throughput_limit_mbps`` into the open camera.  Called at EVERY open, after the
+        UserSet and the frame rate (a reopen restores the camera's own value): snapped to the camera's steps
+        (minimum + k x increment, as extra/ids_stall_ab.py does), then the frame rate asked again (its ceiling
+        falls with the limit); both read back and logged.  0 = nothing written (the camera's own, as before).
+        A refused write is a logged line, never a failed open; nothing is saved into the camera.  Keeps what
+        is in force in ``self.throughput_limit`` (None when the key is 0) and returns it."""
+        nm = self._node_map
+        want = float(getattr(self.settings, "throughput_limit_mbps", 0.0) or 0.0)
+        fps_before = float(self.state.fps or 0.0)
+        self.throughput_limit = None
+        info = {"asked_mbps": want, "mbps": None, "was_mbps": None, "refused": None,
+                "fps_before": fps_before, "fps": fps_before, "fps_kept": True}
+        try:
+            node = nm.FindNode("DeviceLinkThroughputLimit")
+            before = int(node.Value())
+        except Exception as e:
+            print(f"[IDSCamera] Could not read DeviceLinkThroughputLimit: {e}")
+            if want > 0:
+                info["refused"] = str(e)[:120] or type(e).__name__
+                self.throughput_limit = info
+            return self.throughput_limit
+        if want <= 0:
+            print(f"[IDSCamera] DeviceLinkThroughputLimit: {before / 1e6:.0f} MB/s (the camera's own)")
+            return None
+        info["was_mbps"] = info["mbps"] = before / 1e6
+        self.throughput_limit = info
+        try:
+            lo, hi, inc = int(node.Minimum()), int(node.Maximum()), max(1, int(node.Increment()))
+            target = int(round(want * 1e6))
+            node.SetValue(max(lo, min(hi, lo + round((target - lo) / inc) * inc)))
+            info["mbps"] = int(node.Value()) / 1e6
+        except Exception as e:
+            info["refused"] = str(e)[:120] or type(e).__name__
+            try:
+                info["mbps"] = int(node.Value()) / 1e6
+            except Exception:
+                pass
+            kept = "?" if info["mbps"] is None else f"{info['mbps']:.0f}"
+            print(f"[IDSCamera] DeviceLinkThroughputLimit: the camera refused {want:g} MB/s ({e}); "
+                  f"it keeps {kept} MB/s")
+            return info
+        max_fps = None
+        try:    # the frame rate's ceiling falls with the limit: ask the same rate again
+            fps_node = nm.FindNode("AcquisitionFrameRate")
+            max_fps = float(fps_node.Maximum())
+            target_fps = min(self.settings.target_fps, max_fps) if self.settings.target_fps > 0 else max_fps
+            fps_node.SetValue(target_fps)
+            self.state.fps = fps_node.Value()
+        except Exception as e:
+            print(f"[IDSCamera] Could not set the frame rate again after the throughput limit: {e}")
+            try:
+                self.state.fps = nm.FindNode("AcquisitionFrameRate").Value()
+            except Exception:
+                pass
+        info["fps"] = float(self.state.fps or 0.0)
+        info["fps_kept"] = info["fps"] >= fps_before - 0.05
+        print(f"[IDSCamera] DeviceLinkThroughputLimit: {info['mbps']:.0f} MB/s (project {want:g}, "
+              f"was {info['was_mbps']:.0f}); frame rate {info['fps']:.1f} FPS"
+              + (f" (max {max_fps:.1f})" if max_fps is not None else ""))
+        if not info["fps_kept"]:
+            print(f"[IDSCamera] The frame rate fell from {fps_before:.1f} to {info['fps']:.1f} FPS "
+                  f"at {info['mbps']:.0f} MB/s")
+        return info
+
+    def get_throughput_limit(self) -> Optional[dict]:
+        """What ``_apply_throughput_limit`` left in force at the last open (None: the key is 0)."""
+        info = getattr(self, "throughput_limit", None)
+        return dict(info) if info else None
 
     # ------------------------------------------------------------------
     # ROI helpers (shared by _configure_camera and update_crop_ratio)
@@ -1197,6 +1270,13 @@ class IDSCamera:
 
                     # ---- Stall detection (+ frame id / timestamp continuity) ----
                     self._track_frame(timestamp, *meta)
+
+                    # A torn picture (its USB transfer broke: the first frame of every stall, stall
+                    # verdict 26/11 §8.2) is counted above and never published: no latest frame, no
+                    # recording.  The camera did deliver: the disconnect watchdog's clock moves.
+                    if meta[2]:
+                        self.state.last_frame_time = timestamp
+                        continue
 
                     with self._frame_lock:
                         if self.settings.newest_only and self._frame_ready:
@@ -1790,7 +1870,8 @@ class IDSCamera:
         "BinningHorizontal", "BinningVertical", "DecimationHorizontal",
         "BlackLevel", "Gamma", "AutoFeatureExposureTimeUpperLimit",
         "DeviceModelName", "DeviceSerialNumber", "DeviceFirmwareVersion",
-        "SensorName", "GainSelector")
+        "SensorName", "GainSelector",
+        "DeviceLinkThroughputLimit")    # the link limit in force (stall verdict 26/11 §8.1)
 
     def _read_node(self, name: str):
         """Best-effort GenICam read: numeric/string ``Value()`` or the
@@ -1911,6 +1992,9 @@ class UnifiedCamera:
         # IDS crop ratio (W/H) to open with -- the project's, set by the camera controller before
         # every open; None = the config default IDS_RATIO (a reconnect must not reset the crop).
         self.crop_ratio: Optional[float] = None
+        # The camera's link throughput limit (MB/s) to open with -- the project's, set by the camera
+        # controller before every open; 0 = the camera's own (stall verdict 26/11 §8.1).
+        self.throughput_limit_mbps: float = 0.0
         
         # State. width/height are what read()/read_gpu() deliver, i.e. AFTER
         # the input transform; sensor_size is the raw size (recordings).
@@ -1975,6 +2059,7 @@ class UnifiedCamera:
                 prefer_high_bit_depth=False,
                 user_set=APP_IDS_USER_SET,
                 auto_exposure_limit_us=float(APP_IDS_AUTO_EXPOSURE_LIMIT_US),
+                throughput_limit_mbps=max(0.0, float(self.throughput_limit_mbps or 0.0)),
             )
             self._ids_camera = IDSCamera(settings)
             self._ids_camera.input_transform = self._input_transform
@@ -2209,6 +2294,12 @@ class UnifiedCamera:
         if self._source_type == CameraSource.IDS_PEAK and self._ids_camera is not None:
             return (int(self._ids_camera.state.frame_count), int(self._ids_camera.state.dropped_frames))
         return (0, 0)
+
+    def get_throughput_limit(self) -> Optional[dict]:
+        """The link throughput limit in force on the open IDS camera (None: the key is 0, or not IDS)."""
+        if self._source_type == CameraSource.IDS_PEAK and self._ids_camera is not None:
+            return self._ids_camera.get_throughput_limit()
+        return None
 
     def get_capture_settings(self, fast: bool = False) -> dict:
         """Recording provenance: IDS node snapshot, or the OpenCV basics."""

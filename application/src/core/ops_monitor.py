@@ -129,17 +129,42 @@ class ReadinessReport:
 
 def check_camera(*, is_open: bool, reconnecting: bool, source: str, fps: float,
                  min_fps: float, ids_frames: int = 0,
-                 ids_dropped: int = 0) -> CheckResult:
+                 ids_dropped: int = 0, link: Optional[dict] = None) -> CheckResult:
     if not is_open or reconnecting:
         state = "reconnecting" if reconnecting else "not open"
         return CheckResult("camera", "fail", f"{source}: {state}")
     detail = f"{source} @ {fps:.1f} FPS"
     if ids_frames:
         detail += f" (acquired={ids_frames}, dropped={ids_dropped})"
+    link_fact, link_how = camera_link_text(link)
+    if link_fact:
+        detail += f", {link_fact}"
     if fps < min_fps:
         return CheckResult("camera", "warn",
                            detail + f" - below the {min_fps:.0f} FPS show floor")
+    if link_how:
+        return CheckResult("camera", "warn", f"{detail} - {link_how}")
     return CheckResult("camera", "ok", detail)
+
+
+LINK_LIMIT_HOW = "set ids_throughput_limit_mbps to 0 in the project (the camera's own)"
+
+
+def camera_link_text(link: Optional[dict]) -> Tuple[str, str]:
+    """(fact, instruction) of the camera's link throughput limit for the readiness camera row (stall verdict
+    26/11 §8.1).  ``link`` = ``IDSCamera.get_throughput_limit()``: None when the project key is 0 (nothing
+    said, as before).  The instruction is "" unless the camera's frame rate fell at the limit."""
+    if not link or not isinstance(link, dict):
+        return "", ""
+    mbps, asked = link.get("mbps"), float(link.get("asked_mbps") or 0.0)
+    if link.get("refused"):
+        in_force = "the camera's own" if mbps is None else f"{float(mbps):.0f} MB/s (the camera's own)"
+        return f"link limit {in_force}: the camera refused {asked:g} MB/s", ""
+    fact = "link limit unknown" if mbps is None else f"link limit {float(mbps):.0f} MB/s"
+    if link.get("fps_kept", True):
+        return fact, ""
+    return (f"{fact}: the camera runs {float(link.get('fps') or 0.0):.1f} FPS, not "
+            f"{float(link.get('fps_before') or 0.0):.1f}", LINK_LIMIT_HOW)
 
 
 def check_tensorrt(*, trt_requested: bool, trt_active: bool,
@@ -1019,6 +1044,9 @@ STALL_FAIL_PER_MIN = 6.0  # (08/10's field laptop: 0.7-2.9 a minute at the lands
 POINTS_ROW = "points"
 MAX_DANCERS_HOW = "check Max dancers (3 Live)"
 CAMERA_HOW = "check the camera's USB3 cable and power"
+# The stall rate's one instruction (stall verdict 26/11 §8.3: the cable and its connectors are the first suspect).
+# No " - " in it: the health line shows the text after the detail's last " - ".
+STALL_HOW = "at the next break: reseat the camera's USB cable at both ends, then try the other cable"
 EMPTY_WALL_HOW = "when the wall is empty: CALIBRATE (2 Calibrate), then Save to project"
 RESTART_HOW = "restart the app"
 # The order of the rows when two share the worst state: the first one names the line.
@@ -1220,10 +1248,9 @@ class StallRate:
         per_min, n, span = r
         fact = f"{per_min:.1f} a minute ({n} in the last {max(span, 1.0) / 60:.1f} min of camera)"
         if per_min >= self.fail_per_min:
-            return CheckResult(name, "fail", f"{fact}: the picture freezes often - {CAMERA_HOW}, on another "
-                                             "USB3 port at the next break")
+            return CheckResult(name, "fail", f"{fact}: the picture freezes often - {STALL_HOW}")
         if per_min >= self.warn_per_min:
-            return CheckResult(name, "warn", f"{fact} - at the next break: {CAMERA_HOW}, try another USB3 port")
+            return CheckResult(name, "warn", f"{fact} - {STALL_HOW}")
         return CheckResult(name, "ok", fact)
 
     def snapshot(self) -> Optional[Dict[str, object]]:

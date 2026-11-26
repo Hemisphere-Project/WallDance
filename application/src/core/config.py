@@ -124,6 +124,12 @@ IDS_RATIO = 1.0
 # Set in IDS Cockpit: Device → UserSet → Save to UserSet1.
 # "" = don't load (use defaults), "UserSet1", "UserSet2", etc.
 IDS_USER_SET = "UserSet1"
+# The camera's USB link throughput limit, MB/s (stall verdict 26/11 §8.1): the default of the project key
+# ids_throughput_limit_mbps (no GUI).  0 = keep the camera's own (162 on the show camera, release 1).  When a
+# project sets it (e.g. 124: each picture travels in 38 ms instead of 30, 20 fps kept), the app writes it at
+# every camera open, after the UserSet and the frame rate, and never saves it into the camera.  Not proven to
+# lower the stalls (the rig test of 4/12 decides): off unless the project says so.
+IDS_THROUGHPUT_LIMIT_MBPS = 0.0
 # Camera stalls (D34, core/camera_stall.py): the live camera silent for more than
 # CAMERA_STALL_PERIODS frame periods of its target fps (3 x 50 ms at 20 fps), up to
 # CAMERA_STALL_MAX_S, is a stall: the output stage's hold clocks (slot holds, smart hold,
