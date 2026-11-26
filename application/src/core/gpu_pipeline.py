@@ -824,7 +824,7 @@ class GpuPipeline:
                 square; None keeps the square (byte-identical to before)
             
         Returns:
-            (tensor, letterbox_info) where letterbox_info contains:
+            (tensor, letterbox_info) -- tensor always contiguous NCHW -- where letterbox_info contains:
             - scale: scale factor applied
             - pad_x: horizontal padding (left)
             - pad_y: vertical padding (top)
@@ -868,5 +868,13 @@ class GpuPipeline:
             pad_right = target_w - new_w - pad_x
             pad_bottom = target_h - new_h - pad_y
             tensor = F.pad(tensor, (pad_x, pad_right, pad_y, pad_bottom), value=0.5)  # Gray padding
-        
-        return tensor, letterbox_info
+
+        # X5: the detector reads a dense NCHW buffer: the TensorRT backend binds
+        # data_ptr() (ultralytics 8.4.63, the laptop's, on every frame; later
+        # versions when they run without their CUDA graph, which copies first).
+        # What enhancement hands over is not always dense: the lite gamma on the
+        # upload's HWC-strided crop is channels-last (F.interpolate and F.pad keep
+        # that), a crop the size of the input is a view, greyscale is expanded --
+        # and the engine then reads scrambled pixels and finds no box at all.
+        # Free when the tensor is already contiguous; one copy otherwise.
+        return tensor.contiguous(), letterbox_info
