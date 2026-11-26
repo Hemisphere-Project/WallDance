@@ -8,8 +8,11 @@ camera pixels -- without touching the live pipeline's state:
 * its own ``GpuPipeline`` (own enhancer: no temporal denoise carried over, the brightness gate measured on
   each frame instead of every 10th), its own model instance and ``PoseRunner``;
 * boxes kept down to ``LOW_CONF`` (0.02) so the scoring chooses its own threshold;
-* one engine at a time: load, warm up, time each inference, release (``torch.cuda.empty_cache``) before the
-  next -- the show laptop shares its GPU with TouchDesigner.  Never builds an engine.
+* one engine at a time: load, warm up, time each inference, then drop it (a TensorRT model is freed by
+  refcount the moment its last reference goes: ~1 GB back at once on mgr-ran) right after a live frame, before
+  the next.  One ``gc.collect`` and one ``torch.cuda.empty_cache`` at the very end of the swipe, also right
+  after a live frame (a full collection holds the GIL ~90 ms on mgr-ran and frees no GPU memory; per
+  candidate it stalled a live frame each time).  Never builds an engine.
 
 Thread safety (measured on mgr-ran 26/11, ``tmp_analysis/swipe-1126/live/exp`` and ``runs``): ultralytics
 8.4.1xx captures a CUDA graph when it loads a TensorRT engine.  While one thread captures, another thread's
@@ -30,6 +33,7 @@ Coordinates: original camera pixels, ``(x0, y0, x1, y1, conf)``, like ``core.swi
 """
 from __future__ import annotations
 
+import copy
 import gc
 import inspect
 import math
@@ -45,7 +49,10 @@ from core.swipe import Box, Candidate, SwipeParams, SwipeResult, Tally, decide, 
 
 SWIPE_MODELS: Tuple[str, ...] = ("yolo11x-pose", "yolo11l-pose")
 LOW_CONF = 0.02              # boxes kept down to this confidence (the scoring picks its threshold)
-PRUNE_NET_PX = 200.0         # the dancer already this tall at the network: larger inputs are not tried
+# Thomas's band for the dancer's height in the network (the readiness « dancer size » row), not tuned here:
+SMALL_NET_PX = 110.0         # under this she is small at the live input: only the largest inputs are worth trying
+LARGE_NET_PX = 200.0         # over this the input size no longer matters: only the model is in question
+PRUNE_NET_PX = LARGE_NET_PX  # (the first draft's name)
 WARMUP_CALLS = 2
 
 
@@ -74,7 +81,7 @@ def candidate_scale(c: Candidate, roi_w: int, roi_h: int) -> float:
 @dataclass
 class CandidatePlan:
     candidates: List[Candidate]                                   # to run, the live setting first
-    skipped: List[Tuple[Candidate, str]] = field(default_factory=list)   # not run, and why
+    skipped: List[Tuple[Candidate, str]] = field(default_factory=list)   # not run, and why (ASCII)
 
     def skipped_text(self) -> List[str]:
         return [f"{c.label} not tried: {why}" for c, why in self.skipped]
@@ -83,42 +90,146 @@ class CandidatePlan:
 def plan_candidates(current: Candidate, roi_w: int, roi_h: int,
                     engine_exists: Callable[[Candidate], bool], *,
                     models: Sequence[str] = SWIPE_MODELS, rects: Sequence[Shape] = RECT_PRESETS,
-                    dancer_net_px: Optional[float] = None, prune_px: float = PRUNE_NET_PX,
-                    only: Optional[Iterable[Candidate]] = None) -> CandidatePlan:
-    """{models} x {the project's square, the rectangles that suit this ROI}, the live setting always in.
+                    dancer_net_px: Optional[float] = None, only: Optional[Iterable[Candidate]] = None,
+                    all_sizes: bool = False) -> CandidatePlan:
+    """The swipe chooses the MODEL; the dancer's height in the network chooses the input size (26/11: the
+    height picks the size, the scene the model).  ``dancer_net_px`` = her height at the live input (the
+    « dancer size » readiness row's figure); unknown counts as small.
 
-    A rectangle suits the ROI when ``pick_shape`` would take it over the square of its pixel count (a portrait
-    ROI for the portrait presets).  When the dancer already reaches the network at ``prune_px`` or more at the
-    live input (``dancer_net_px``), inputs that show her larger are not tried.  A candidate without its engine
-    is skipped, never built.  ``only`` restricts the set (the live setting stays)."""
+    * >= LARGE_NET_PX (200): sizes no longer matter -- the live setting and the other model at the live input;
+    * otherwise both models at the LARGEST suitable input that has an engine (the one showing her tallest:
+      the project's square or a rectangle ``pick_shape`` accepts for this ROI); intermediate inputs are not
+      tried (a 60-frame window cannot separate neighbouring sizes: on the 08/10 truth one swipe in four then
+      named a size 2-4.5 points under the best);
+    * and when SMALL_NET_PX (110) <= height < 200, also the other model at the live input.
+
+    The live setting is first and always run.  A missing engine is never built: the next smaller input of
+    that model is taken, and the result says so.  ``only`` (the driver's --candidates) and ``all_sizes``
+    (every model x every suitable size, for diagnostics) bypass the rule."""
     sizes: List[Tuple[int, Optional[Shape]]] = [(int(current.imgsz), None)]
     if roi_w > 0 and roi_h > 0:
         for r in rects:
             if pick_shape(roi_w, roi_h, [tuple(r)]) is not None:
                 sizes.append((int(current.imgsz), (int(r[0]), int(r[1]))))
-    wanted: List[Candidate] = [Candidate(m, sz, sh) for m in models for sz, sh in sizes]
-    if only is not None:
-        allowed = set(only)
-        wanted = [c for c in wanted if c in allowed] + [c for c in allowed if c not in wanted]
-    if current in wanted:
-        wanted.remove(current)
-    plan = CandidatePlan([current])
+    every = [Candidate(m, sz, sh) for m in models for sz, sh in sizes]
     cur_scale = candidate_scale(current, roi_w, roi_h)
-    prune = dancer_net_px is not None and dancer_net_px >= prune_px and cur_scale > 0
-    for c in wanted:
-        if prune and candidate_scale(c, roi_w, roi_h) > cur_scale * 1.01:
-            plan.skipped.append((c, f"the dancers already reach the network at ~{dancer_net_px:.0f} px "
-                                    f"at {current.label}"))
-            continue
-        if not engine_exists(c):
-            plan.skipped.append((c, f"its engine is not built on this machine ({c.engine_file})"))
-            continue
-        plan.candidates.append(c)
+    h = float(dancer_net_px) if dancer_net_px else None
+
+    def h_at(c: Candidate) -> Optional[float]:
+        if h is None or cur_scale <= 0:
+            return None
+        return h * candidate_scale(c, roi_w, roi_h) / cur_scale
+
+    def engine_text(c: Candidate) -> str:
+        return f"its engine is not built on this machine ({c.engine_file})"
+
+    plan = CandidatePlan([current])
+    reasons: Dict[Candidate, str] = {}
+    if only is not None or all_sizes:
+        wanted = list(only) if only is not None else list(every)
+        for c in wanted:
+            if c == current or c in plan.candidates:
+                continue
+            if engine_exists(c):
+                plan.candidates.append(c)
+            else:
+                plan.skipped.append((c, engine_text(c)))
+    else:
+        others = [Candidate(m, current.imgsz, current.shape) for m in models if m != current.model]
+        if h is not None and h >= LARGE_NET_PX:
+            wanted = others
+            for c in every:
+                if c != current and c not in wanted:
+                    reasons[c] = (f"the dancer is already ~{h:.0f} px tall at {current.label}: "
+                                  "the input size no longer matters")
+        else:
+            wanted = []
+            for m in models:
+                by_size = sorted((c for c in every if c.model == m),
+                                 key=lambda c: -candidate_scale(c, roi_w, roi_h))
+                for c in by_size:
+                    if c == current or engine_exists(c):
+                        wanted.append(c)
+                        break
+                    reasons[c] = engine_text(c)
+            if h is not None and h >= SMALL_NET_PX:
+                wanted += others
+            for c in every + others:
+                if c != current and c not in wanted and c not in reasons:
+                    hc = h_at(c)
+                    if hc is None:
+                        reasons[c] = "the dancer's height is not measured: only the largest inputs are tried"
+                    elif (c.imgsz, c.shape) == (current.imgsz, current.shape):
+                        reasons[c] = f"the dancer is only {hc:.0f} px tall there"
+                    else:
+                        reasons[c] = f"an intermediate input (the dancer ~{hc:.0f} px there): the largest is tried"
+        for c in wanted:
+            if c == current or c in plan.candidates:
+                continue
+            if engine_exists(c):
+                plan.candidates.append(c)
+            else:
+                reasons[c] = engine_text(c)
+        seen = set(plan.candidates)
+        for c in every + [c for c in reasons if c not in every]:
+            if c not in seen and c in reasons:
+                plan.skipped.append((c, reasons[c]))
+                seen.add(c)
     if not engine_exists(current):
-        plan.skipped.insert(0, (current, f"its engine is not built on this machine ({current.engine_file}); "
-                                         "the live setting must be re-run"))
+        plan.skipped.insert(0, (current, f"{engine_text(current)}; the live setting must be re-run"))
         plan.candidates.remove(current)
     return plan
+
+
+# ----------------------------------------------------------------------------------------------------
+# The operator's excluded cells
+# ----------------------------------------------------------------------------------------------------
+@dataclass(frozen=True)
+class ExclusionCells:
+    """The exclusion mask's cells, as the referee must see them.  The pipeline drops a detection whose centre
+    falls in an excluded cell before tracking (``FrameProcessor._apply_exclusion``): such a box is harmless in
+    the show, so the swipe drops it from every candidate's boxes (the live re-run included) and from the
+    tap's live boxes before scoring -- the plain cell test, without the pipeline's exception for a box near a
+    recently updated track (the runner has no tracks).
+
+    The geometry is the pipeline's: a box centre in original px, ROI-local, normalised over the motion mask's
+    footprint (its size / the MOG2 scale), then ``ExclusionMaskBuilder.excluded``'s cell lookup on the
+    effective cells ``(auto | manual_add) - manual_remove`` of the ``exclusion_grid``."""
+    gx: int
+    gy: int
+    cells: frozenset
+    x0: float                 # original px of the grid's top-left corner (the ROI's)
+    y0: float
+    span_w: float             # original px the grid spans
+    span_h: float
+
+    def excluded(self, cx: float, cy: float) -> bool:
+        if not self.cells or self.span_w <= 0 or self.span_h <= 0:
+            return False
+        nx = (float(cx) - self.x0) / self.span_w
+        ny = (float(cy) - self.y0) / self.span_h
+        if not (0.0 <= nx < 1.0 and 0.0 <= ny < 1.0):
+            return False
+        return (int(nx * self.gx), int(ny * self.gy)) in self.cells
+
+    def filter(self, boxes: Sequence[Box]) -> List[Box]:
+        return [b for b in boxes if not self.excluded((b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5)]
+
+    @classmethod
+    def from_processor(cls, proc, roi: Tuple[int, int, int, int]) -> Optional["ExclusionCells"]:
+        """The processor's mask now, for an ROI ``(x, y, w, h)``; None when the pipeline would exclude
+        nothing (no cell, a calibration collecting, no motion mask yet)."""
+        ex = getattr(proc, "_exclusion", None)
+        if ex is None or getattr(ex, "collecting", False) or not getattr(ex, "active", False):
+            return None
+        det = getattr(proc, "crossval_motion_detector", None)
+        mask = getattr(det, "_clean_mask", None) if det is not None else None
+        if mask is None:
+            return None
+        mh, mw = mask.shape[:2]
+        s = float(getattr(det, "_scale", 1.0)) or 1.0
+        return cls(int(ex.gx), int(ex.gy), frozenset(ex.effective_cells()), float(roi[0]), float(roi[1]),
+                   mw / s, mh / s)
 
 
 # ----------------------------------------------------------------------------------------------------
@@ -299,7 +410,7 @@ class CandidateRun:
     ms: List[float] = field(default_factory=list)          # inference (network + NMS + boxes to CPU) per frame
     prep_ms: List[float] = field(default_factory=list)     # upload + crop + enhance + letterbox per frame
     load_s: float = 0.0                                    # engine load + warm-up
-    release_s: float = 0.0
+    release_s: float = 0.0                                 # dropping the model (its destructor frees the engine)
     error: str = ""                                        # "" = ran; "cancelled"; or why it failed
 
     @property
@@ -331,7 +442,9 @@ class CandidateRunner:
         self._torch = torch
         self.device = torch.device(device) if device is not None else torch.device(
             "cuda" if torch.cuda.is_available() else "cpu")
-        self._bg = bg_subtractor if inp.bg_subtract else None
+        # the live subtractor's own copy: shares the reference tensor, keeps its own ratio / mismatch state
+        # (apply_gpu updates them; the live display must not see the swipe's frames)
+        self._bg = copy.copy(bg_subtractor) if inp.bg_subtract and bg_subtractor is not None else None
         self.pipe = GpuPipeline(GpuPipelineSettings(
             enhance_enabled=inp.enhance_enabled, enhance_lite=inp.enhance_lite,
             enhance_force=inp.enhance_force, brightness_threshold=float(inp.brightness_threshold),
@@ -392,6 +505,11 @@ class CandidateRunner:
             t0 = self.clock()
             try:
                 model = self.loader(engine_path)
+                # the engine deserialises at the warm-up: a live load, project switch or Apply waiting for
+                # ENGINE_LOAD_LOCK waits one engine load at most
+                if cancelled is not None and cancelled():
+                    run.error = "cancelled"
+                    return run
                 runner = PoseRunner(model)
                 z = torch.full((1, 3, th, tw), 0.5, device=self.device)
                 for _ in range(WARMUP_CALLS):
@@ -428,22 +546,40 @@ class CandidateRunner:
                     on_frame(i + 1, len(images))
             return run
         finally:
+            if pace is not None and model is not None and run.error != "cancelled":
+                pace()                                # the destructor's stall right after a live frame
             t5 = self.clock()
-            runner = model = None
-            self.release()
+            results = tensor = runner = model = None  # noqa: F841 - frees the engine (refcount)
             run.release_s = self.clock() - t5
 
     def _sync(self) -> None:
         if self.device.type == "cuda":
             self._torch.cuda.synchronize(self.device)
 
-    def release(self) -> None:
-        gc.collect()
-        if self.device.type == "cuda":
-            try:
-                self._torch.cuda.empty_cache()
-            except Exception:  # noqa: BLE001
-                pass
+    def finalize(self, pace: Optional[Callable[[], None]] = None, empty_cache: bool = True) -> Dict[str, float]:
+        """End of the swipe: one full collection and one ``empty_cache`` (the swipe's cached blocks), right
+        after a live frame, under the engine-load lock.  ``empty_cache=False`` (a cancelled or dropped swipe:
+        the live model may be reloading, and its first RUN frame captures a graph outside any lock): the
+        collection only, no CUDA call -- the candidates' engines are already freed (refcount, under the lock)
+        and the cached blocks stay in torch's cache for the live loop."""
+        try:
+            from core.model_manager import ENGINE_LOAD_LOCK
+        except Exception:  # noqa: BLE001
+            ENGINE_LOAD_LOCK = threading.RLock()
+        t0 = t1 = t2 = self.clock()
+        with ENGINE_LOAD_LOCK:
+            if pace is not None and empty_cache:
+                pace()
+            t0 = self.clock()
+            gc.collect()
+            t1 = t2 = self.clock()
+            if empty_cache and self.device.type == "cuda":
+                try:
+                    self._torch.cuda.empty_cache()
+                except Exception:  # noqa: BLE001
+                    pass
+                t2 = self.clock()
+        return {"gc_s": t1 - t0, "empty_cache_s": t2 - t1}
 
 
 # ----------------------------------------------------------------------------------------------------
@@ -459,6 +595,7 @@ class SwipeOutcome:
     lost_frames: int = 0            # ... of which the live setting left a dancer bare
     timing: Dict[str, float] = field(default_factory=dict)   # collect_s, load_s, infer_s, prep_s, total_s
     cancelled: bool = False
+    live_error: str = ""            # the live setting's own re-run failed: no verdict (nothing to compare with)
 
     def run_for(self, cand: Candidate) -> Optional[CandidateRun]:
         return next((r for r in self.runs if r.candidate == cand), None)
@@ -485,6 +622,7 @@ class SwipeOutcome:
                              "load_s": round(run.load_s, 2), "frames_run": run.frames,
                              "ms_p50": run.ms_p50})
         out = {"current": self.current.label, "frames": self.frames, "lost_frames": self.lost_frames,
+               "live_error": self.live_error,
                "rows": rows,
                "skipped": [{"label": c.label, "why": w, "text": f"{c.label} not tried: {w}"}
                            for c, w in self.skipped],
@@ -528,11 +666,11 @@ def _jsonable_fields(obj, skip: Sequence[str] = ()) -> Dict[str, Any]:
 
 
 def recommended_conf(result) -> Optional[float]:
-    """The confidence threshold the verdict recommends for its winner, if ``core.swipe`` gives one."""
-    for name in ("recommended_conf", "conf", "confidence"):
-        v = getattr(result, name, None)
-        if isinstance(v, (int, float)) and not isinstance(v, bool) and 0.0 < float(v) < 1.0:
-            return float(v)
+    """The confidence the verdict recommends for its winner (``SwipeResult.recommended_conf``), or None.
+    Only that field: ``SwipeParams.conf`` is the referee's own threshold, not the show's."""
+    v = getattr(result, "recommended_conf", None)
+    if isinstance(v, (int, float)) and not isinstance(v, bool) and 0.0 < float(v) < 1.0:
+        return float(v)
     return None
 
 
@@ -549,44 +687,57 @@ def run_swipe(images: Sequence[np.ndarray], observations: Sequence[Any], plan: C
               progress: Optional[Callable[[str, float], None]] = None,
               cancelled: Optional[Callable[[], bool]] = None, pace: Optional[Callable[[], None]] = None,
               lost_frames: int = 0, lost: Optional[Sequence[bool]] = None,
-              lost_share: Optional[float] = None,
+              lost_share: Optional[float] = None, exclusion: Optional[ExclusionCells] = None,
               clock: Callable[[], float] = time.perf_counter) -> SwipeOutcome:
     """Every planned candidate on the same frames, one engine at a time; the tallies; ``decide``.
 
     ``lost`` (per frame: the live setting left a dancer bare) and ``lost_share`` (the collector's estimate of
-    how often it does) go to ``Tally.add`` / ``decide`` when ``core.swipe`` takes them (its frame weighting)."""
+    how often it does) go to ``Tally.add`` / ``decide`` when ``core.swipe`` takes them (its frame weighting).
+    ``exclusion``: boxes in the operator's excluded cells are dropped before scoring (``ExclusionCells``)."""
     p = params or SwipeParams()
     out = SwipeOutcome(current, None, skipped=list(plan.skipped), frames=len(images), lost_frames=lost_frames)
     tallies: Dict[Candidate, Tally] = {}
     t0 = clock()
     n = len(plan.candidates)
-    for k, cand in enumerate(plan.candidates):
-        if cancelled is not None and cancelled():
-            out.cancelled = True
-            break
-        if progress is not None:
-            progress(f"trying {cand.label} ({k + 1}/{n})", k / max(1, n))
-        run = runner.run(images, cand, engine_path(cand), cancelled=cancelled, pace=pace)
-        out.runs.append(run)
-        if run.error == "cancelled":
-            out.cancelled = True
-            break
-        if run.error:
-            continue
-        t = Tally()
-        flags = list(lost) if lost is not None and _accepts(t.add, "lost") else [None] * len(run.boxes)
-        for obs, boxes, ms, fl in zip(observations, run.boxes, run.ms, flags):
-            if fl is None:
-                t.add(score_frame(obs, boxes, p), ms)
-            else:
-                t.add(score_frame(obs, boxes, p), ms, lost=bool(fl))
-        tallies[cand] = t
+    fin: Dict[str, float] = {}
+    try:
+        for k, cand in enumerate(plan.candidates):
+            if cancelled is not None and cancelled():
+                out.cancelled = True
+                break
+            if progress is not None:
+                progress(f"trying {cand.label} ({k + 1}/{n})", k / max(1, n))
+            run = runner.run(images, cand, engine_path(cand), cancelled=cancelled, pace=pace)
+            out.runs.append(run)
+            if run.error == "cancelled":
+                out.cancelled = True
+                break
+            if run.error:
+                if cand == current:          # nothing to compare the others with: stop here
+                    out.live_error = run.error
+                    break
+                continue
+            t = Tally()
+            flags = list(lost) if lost is not None and _accepts(t.add, "lost") else [None] * len(run.boxes)
+            for obs, boxes, ms, fl in zip(observations, run.boxes, run.ms, flags):
+                if exclusion is not None:
+                    boxes = exclusion.filter(boxes)
+                if fl is None:
+                    t.add(score_frame(obs, boxes, p), ms)
+                else:
+                    t.add(score_frame(obs, boxes, p), ms, lost=bool(fl))
+            tallies[cand] = t
+    finally:
+        if hasattr(runner, "finalize"):
+            fin = runner.finalize(pace, empty_cache=not out.cancelled)
     out.timing = {"load_s": sum(r.load_s for r in out.runs),
                   "infer_s": sum(sum(r.ms) for r in out.runs) / 1000.0,
                   "prep_s": sum(sum(r.prep_ms) for r in out.runs) / 1000.0,
-                  "release_s": sum(r.release_s for r in out.runs),
+                  "release_s": sum(r.release_s for r in out.runs) + sum(fin.values()),
                   "run_s": clock() - t0}
-    if not out.cancelled and tallies:
+    if current not in tallies and not out.cancelled and not out.live_error:
+        out.live_error = "not run"
+    if not out.cancelled and not out.live_error and tallies:
         kw = {"lost_share": lost_share} if lost_share is not None and _accepts(decide, "lost_share") else {}
         out.result = decide(tallies, current, p, **kw)
     return out
