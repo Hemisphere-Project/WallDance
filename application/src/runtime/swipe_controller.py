@@ -76,7 +76,8 @@ class LiveSetting:
     trt: bool = True
     roi: Tuple = ()                 # (enabled, x, y, w, h)
     plate: Any = ""                 # the empty-wall plate the foreground holds
-    plate_ok: bool = True           # loaded, not invalidated by hand (X5), not refused for its camera (X6)
+    plate_ok: bool = True           # loaded, not invalidated by hand (X5), not refused for its camera (X6),
+                                    # not found stale (F2's latch, where the build has it)
     frame: Tuple = ()               # the camera frame (width, height)
     enhance: Tuple = ()             # what the network sees: enhancement on / lite / forced, CLAHE, gamma,
                                     # greyscale, background subtraction and its sensitivity
@@ -86,6 +87,12 @@ class LiveSetting:
     def key(self) -> Tuple:
         return (self.project, self.candidate, self.model_id, self.roi, self.plate, self.plate_ok, self.frame,
                 self.enhance, self.exclusion)
+
+
+# what_changed's sentence when the plate in use can no longer be used (found stale, invalidated, refused): the swipe
+# is refused until a new one, so it says what to do, and Apply's « since the swipe: run it again » is not added
+PLATE_UNUSABLE = ("the empty-wall plate is no longer valid - Calibrate on the empty wall, then run "
+                  "'Try other settings' again")
 
 
 def what_changed(old: "LiveSetting", new: Optional["LiveSetting"]) -> Optional[str]:
@@ -99,7 +106,7 @@ def what_changed(old: "LiveSetting", new: Optional["LiveSetting"]) -> Optional[s
     if new.roi != old.roi:
         return "the ROI changed"
     if new.plate != old.plate or new.plate_ok != old.plate_ok:
-        return "the empty-wall plate changed"
+        return "the empty-wall plate changed" if new.plate_ok else PLATE_UNUSABLE
     if new.frame != old.frame:
         return "the camera frame size changed"
     if new.enhance != old.enhance:
@@ -497,6 +504,8 @@ class SwipeController:
             return "dismissed - run 'Try other settings' again", None, None
         if self._stale(live_now):
             why = what_changed(self.outcome_live, live_now) if self.outcome_live is not None else None
+            if why == PLATE_UNUSABLE:               # it already says what to do
+                return why, None, None
             return f"{why or 'the setting changed'} since the swipe: run it again", None, None
         age = self.age_s()
         if age is not None and age > self.verdict_max_age_s:

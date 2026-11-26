@@ -218,6 +218,48 @@ def test_a_plate_taken_again_starts_the_pool_over():
     assert len(frames) == 1 and frames[0].t == 10.0
 
 
+class _LatchingDetector:
+    """The rehearsal build's foreground as the swipe reads it (F2): its plate and ``stale_latched`` -- found
+    stale, it stays so until a new plate.  This branch's ForegroundDetector has no such flag: ``getattr``."""
+
+    def __init__(self, created="2026-11-26T20:00:00"):
+        self.plate = SimpleNamespace(created=created)
+        self.stale_latched = False
+
+
+def test_a_plate_found_stale_is_not_usable_and_starts_the_pool_over():
+    """F2: once the plate is found stale, single frames can be valid again while it does not fit the wall: the
+    swipe reads the latch through ``plate_usable`` (its LiveSetting.plate_ok) and the tap's key -- the frames
+    kept before the latch go, and lifting it (a new plate) starts the pool over again."""
+    from core.foreground import CleanPlate
+    proc, clock = _proc()
+    proc.set_clean_plate(CleanPlate.from_frames([np.full((64, 64), 10, np.uint8)] * 2))
+    assert proc.plate_usable                                       # this branch's detector: the flag is inert
+    det = _LatchingDetector()
+    proc._fg_detector = det
+    assert proc.plate_usable
+    frame = np.dstack([np.full((40, 30), 9, np.uint8)] * 3)
+    for i in range(3):
+        clock["t"] = float(i)
+        _tap(proc, frame, _fg((15, 20, 900)))
+    assert len(proc.swipe_snapshot()[0]) == 3
+    key = proc._swipe_setting_key()
+    det.stale_latched = True                                       # the plate found stale: latched
+    assert not proc.plate_usable and proc._swipe_setting_key() != key
+    assert proc.swipe_snapshot()[0] == []                          # frames refereed against a plate that fit
+    clock["t"] = 3.0
+    _tap(proc, frame, _fg((15, 20, 900)))                          # a valid frame under the latch: a new pool
+    assert [f.t for f in proc.swipe_snapshot()[0]] == [3.0]
+    det.stale_latched = False                                      # without the latch: usable again
+    assert proc.plate_usable and proc._swipe_setting_key() == key
+    det.stale_latched = True                                       # as F2 does: it goes only with a new plate
+    proc._fg_detector = _LatchingDetector("2026-11-26T20:05:00")   # the empty wall taken again: no latch
+    assert proc.plate_usable and proc.swipe_snapshot()[0] == []
+    clock["t"] = 4.0
+    _tap(proc, frame, _fg((15, 20, 900)))
+    assert [f.t for f in proc.swipe_snapshot()[0]] == [4.0]
+
+
 def test_a_gray_three_channel_frame_is_kept_as_one_channel_checked_only_when_kept(monkeypatch):
     """A take of the IDS camera played in the app: R == G == B exactly -- the pool keeps one channel (a third of
     the RAM); a frame whose channels differ stays as it is; the check runs only on a frame the collector keeps."""
@@ -857,13 +899,74 @@ def test_a_scene_change_mid_swipe_drops_it_and_stales_a_verdict():
     c.join(5)
     assert c.state == "done"
     for change, words in ((dict(plate=("another plate", "2026-11-26T21:00")), "the empty-wall plate changed"),
-                          (dict(plate_ok=False), "the empty-wall plate changed"),
+                          (dict(plate_ok=False), "the empty-wall plate is no longer valid - Calibrate"),
                           (dict(frame=(1920, 1080)), "the camera frame size changed"),
                           (dict(enhance=(True, False, True, 3.0, 1.2)), "the enhancement changed"),
                           (dict(exclusion=((16, 10), ((3, 4),))), "the excluded cells changed")):
         now = _live(**change)
         assert c.readiness(plate_ready=True, live_now=now) is None           # stale: no row
         assert c.applicable(now)[0].startswith(words)
+
+
+def _latching_processor():
+    """A real FrameProcessor whose foreground carries F2's latch (``_LatchingDetector``), and the swipe's live
+    setting as the app builds it from it (``plate`` = plate_identity, ``plate_ok`` = plate_usable)."""
+    fp, _clock = _proc()
+    det = _LatchingDetector()
+    fp._fg_detector = det
+    return det, lambda: _live(plate=fp.plate_identity, plate_ok=fp.plate_usable)
+
+
+PLATE_UNUSABLE_TEXT = ("the empty-wall plate is no longer valid - Calibrate on the empty wall, then run "
+                       "'Try other settings' again")
+
+
+def test_an_advice_found_before_the_plate_went_stale_is_withdrawn_with_what_to_do():
+    """F2: a verdict found before the latch measured a plate that no longer fits: no readiness row, and Apply
+    says what to do -- the swipe itself is refused until the empty wall is taken again."""
+    det, live_now = _latching_processor()
+    live = {"v": live_now()}
+    c, ev = _controller(_FakeProc(_frames(), 30), live, _FakeRunner())
+    c.start()
+    c.join(5)
+    assert c.state == "done" and c.readiness(plate_ready=True, live_now=live["v"]).status == "warn"
+    assert c.applicable(live["v"])[0] is None
+    det.stale_latched = True
+    live["v"] = live_now()
+    assert not live["v"].plate_ok
+    assert c.readiness(plate_ready=False, live_now=live["v"]) is None
+    assert c.applicable(live["v"]) == (PLATE_UNUSABLE_TEXT, None, None)
+    assert PLATE_UNUSABLE_TEXT.isascii()
+
+
+def test_a_swipe_running_when_the_plate_goes_stale_ends_without_an_advice():
+    """F2 mid-swipe, while it collects and while it runs: plate_ok changes, the swipe is dropped with the
+    sentence that says what to do, and no advice is left behind."""
+    det, live_now = _latching_processor()
+    live = {"v": live_now()}
+
+    def latch(cand):
+        if cand == L1920:
+            det.stale_latched = True
+            live["v"] = live_now()
+    c, ev = _controller(_FakeProc(_frames(), 30), live, _FakeRunner(on_run=latch))
+    c.start()
+    c.join(5)
+    assert c.state == "dropped" and c.outcome is None and c.text == PLATE_UNUSABLE_TEXT
+    assert ev["result"][-1] == ({}, "swipe dropped: " + PLATE_UNUSABLE_TEXT)
+    assert c.readiness(plate_ready=False, live_now=live["v"]) is None
+    assert c.applicable(live["v"])[0].startswith("no swipe result")
+    det, live_now = _latching_processor()                          # the latch while the pool fills
+    live = {"v": live_now()}
+    c, ev = _controller(_FakeProc([], 0, ready=False), live, _FakeRunner())
+    c.start()
+    time.sleep(0.05)
+    assert c.state == "collecting"
+    det.stale_latched = True
+    live["v"] = live_now()
+    c.join(5)
+    assert c.state == "dropped" and c.outcome is None and c.text == PLATE_UNUSABLE_TEXT
+    assert c.readiness(plate_ready=False, live_now=live["v"]) is None
 
 
 def test_a_failed_live_re_run_ends_the_swipe_in_error():

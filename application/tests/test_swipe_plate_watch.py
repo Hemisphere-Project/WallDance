@@ -198,3 +198,47 @@ def test_the_operators_swipe_runs_without_the_module(monkeypatch):
     c = _controller(_Proc(_pool(0)), monkeypatch, _refusal)
     _press(c)
     assert c.state == "done" and c.outcome.result.winner is None
+
+
+# ------------------------------------------------------------------ the real watch, where the build has it
+def test_the_real_watch_alerts_at_three_refusals_in_a_row_once_per_pool(monkeypatch):
+    """With the rehearsal build's ``core.reference_watch`` (H4) and its own module-level hooks, through
+    ``RefereeReport.note``: three refusals on three disjoint pools raise the watch's plate alert (its verdict,
+    ``current``: status ``refused``); an accept in between starts the count over; the same pool pressed three
+    times counts once.  A fresh watch stands in for the module's ``WATCH`` each time, as the watch's own tests
+    do (monkeypatch puts the module's own back after the test)."""
+    left = sys.modules.get("core.reference_watch", False)
+    if left is None or isinstance(left, _Watch):       # another test's stand-in (their monkeypatch takes it back)
+        monkeypatch.delitem(sys.modules, "core.reference_watch")
+    RW = pytest.importorskip("core.reference_watch",
+                             reason="the reference watch is the rehearsal build's (H4): this test runs after "
+                                    "the merge")
+    assert not isinstance(RW, _Watch) and RW.REFUSALS_ALERT == 3
+
+    def fresh():
+        w = RW.ReferenceWatch(run_async=False)
+        monkeypatch.setattr(RW, "WATCH", w)
+        return w, RefereeReport()
+
+    # 1. three refusals on three disjoint pools: the plate alert
+    w, rep = fresh()
+    assert [rep.note(_refusal(), _pool(t0)) for t0 in (0, 100)] == ["refusal", "refusal"]
+    assert w.current() is None                          # two: counted, no alert (nothing checked: no verdict)
+    assert rep.note(_refusal(), _pool(200)) == "refusal"
+    v = w.current()
+    assert v is not None and v.status == RW.REFUSED and v.alert and w.refusals == 3
+    assert _refusal().reason in v.instruction           # the referee's own sentence, as the alert shows it
+
+    # 2. two refusals, an accept, two refusals: no alert (and a third in a row raises it)
+    w, rep = fresh()
+    told = [rep.note(_refusal(), _pool(0)), rep.note(_refusal(), _pool(100)), rep.note(_keep(), _pool(200)),
+            rep.note(_refusal(), _pool(300)), rep.note(_refusal(), _pool(400))]
+    assert told == ["refusal", "refusal", "accept", "refusal", "refusal"]
+    assert w.current() is None and w.refusals == 2
+    assert rep.note(_refusal(), _pool(500)) == "refusal" and w.current().status == RW.REFUSED
+
+    # 3. the same pool pressed three times: one refusal, no alert
+    w, rep = fresh()
+    pool = _pool(0)
+    assert [rep.note(_refusal(), pool) for _ in range(3)] == ["refusal", None, None]
+    assert w.current() is None and w.refusals == 1
