@@ -161,3 +161,167 @@ def test_an_uploaded_copy_finds_the_app_code_from_the_cwd(tmp_path, monkeypatch)
     assert mod.find_repo_root(str(repo)) == repo         # --repo
     monkeypatch.setenv("WD_REPO_ROOT", str(repo))
     assert mod.find_repo_root() == repo
+
+
+# ---- U2 (2026-11-26): the condition knobs -------------------------------------------
+
+def _args(**kw):
+    base = dict(geom=None, cond=None, minutes=0.0005, reps=1, fps=20.0, exposure_us=12000.0,
+                gain_db=27.5, gpu=False, roi=None, pixel_format=None, throughput_mbps=None,
+                buffers=16, wait_timeout_ms=None)
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+def test_parse_roi_and_cond():
+    assert ab.parse_roi("1776x1296") == (1776, 1296, None, None)
+    assert ab.parse_roi("1776x1296+456+120") == (1776, 1296, 456, 120)
+    with pytest.raises(ValueError):
+        ab.parse_roi("1776x1296+456")
+    assert ab.parse_cond("A:roi=1776x1296+456+120,fps=15") == {
+        "name": "A", "roi": "1776x1296+456+120", "fps": "15"}
+    with pytest.raises(ValueError):
+        ab.parse_cond("A:width=1776")
+
+
+def test_a_condition_changes_one_thing_over_the_globals():
+    args = _args(roi="1776x1296+456+120", cond=["A:", "B:pf=Mono12g24IDS", "C:tl=200,gpu=1", "D:geom=0.974"])
+    a, b, c, d = ab.conditions(args, 2334784)
+    assert a["roi"] == [1776, 1296, 456, 120] and a["pixels"] == 1776 * 1296 and a["pf"] is None
+    assert b["roi"] == a["roi"] and b["pf"] == "Mono12g24IDS" and b["fps"] == a["fps"] == 20.0
+    assert c["tl"] == 200.0 and c["gpu"] is True and c["exp"] == 12000.0
+    assert d["roi"] is None and (d["ratio"], d["pixels"]) == (0.974, 2334784)   # geom wins over --roi
+    with pytest.raises(SystemExit):
+        ab.conditions(_args(cond=["A:", "A:fps=15"]), 2334784)                # names must differ
+
+
+class _Node:
+    def __init__(self, v, lo=0, hi=10 ** 9, inc=1, entries=None):
+        self.v, self.lo, self.hi, self.inc, self.entries = v, lo, hi, inc, entries
+
+    def Value(self):
+        return self.v
+
+    def SetValue(self, v):
+        assert self.lo <= v <= self.hi, (v, self.lo, self.hi)
+        self.v = v
+
+    def Minimum(self):
+        return self.lo
+
+    def Maximum(self):
+        return self.hi
+
+    def Increment(self):
+        return self.inc
+
+    def CurrentEntry(self):
+        if self.entries is None:
+            raise AttributeError("not an enumeration")
+        return SimpleNamespace(SymbolicValue=lambda: self.v)
+
+    def FindEntry(self, name):
+        assert name in self.entries
+        return name
+
+    def SetCurrentEntry(self, e):
+        self.v = e
+
+
+class _NodeMap:
+    def __init__(self):
+        self.n = {"Width": _Node(1824, 256, 2688, 16), "Height": _Node(1260, 128, 1536, 4),
+                  "OffsetX": _Node(432, 0, 880, 2), "OffsetY": _Node(136, 0, 276, 4),
+                  "PixelFormat": _Node("Mono10g40IDS", entries={"Mono10g40IDS", "Mono12g24IDS"}),
+                  "AcquisitionFrameRate": _Node(20.0, 0.5, 24.4),
+                  "DeviceLinkThroughputLimit": _Node(162000000, 10000000, 300000000, 2000000)}
+
+    def FindNode(self, name):
+        return self.n[name]
+
+
+def test_apply_condition_sets_an_exact_crop_and_puts_the_limit_back():
+    import camera.ids_camera as ic
+    nm = _NodeMap()
+    cam = SimpleNamespace(_node_map=nm, state=ic.IDSCameraState(), _sensor_w=2688, _sensor_h=1536,
+                          reallocs=0)
+    cam._allocate_buffers = lambda: setattr(cam, "reallocs", cam.reallocs + 1)
+    c = ab.resolve_cond({"name": "x", "roi": "1488x1536", "pf": "Mono12g24IDS", "fps": "30", "tl": "200"},
+                        _args(), 2334784)
+    done = ab.apply_condition(cam, c)
+    assert (nm.n["Width"].v, nm.n["Height"].v) == (1488, 1536)
+    assert (nm.n["OffsetX"].v, nm.n["OffsetY"].v) == (600, 0)                  # centred
+    assert nm.n["PixelFormat"].v == "Mono12g24IDS" and cam.state.pixel_format == "Mono12g24IDS"
+    assert nm.n["AcquisitionFrameRate"].v == 24.4                              # clamped to the max
+    assert cam.reallocs == 1                                                   # payload changed: once
+    assert nm.n["DeviceLinkThroughputLimit"].v == 200000000
+    assert done["restore"] == {"DeviceLinkThroughputLimit": 162000000}
+    ab.restore_nodes(cam, done["restore"])
+    assert nm.n["DeviceLinkThroughputLimit"].v == 162000000
+    # an explicit offset is kept; no change asked: nothing written, nothing to restore
+    nm2 = _NodeMap()
+    cam2 = SimpleNamespace(_node_map=nm2, state=ic.IDSCameraState(), _allocate_buffers=lambda: None)
+    ab.apply_condition(cam2, ab.resolve_cond({"name": "y", "roi": "1776x1296+456+120"}, _args(), 1))
+    assert (nm2.n["OffsetX"].v, nm2.n["OffsetY"].v, nm2.n["Width"].v) == (456, 120, 1776)
+    assert ab.apply_condition(cam2, ab.resolve_cond({"name": "z", "geom": "1.37"}, _args(), 1)) == \
+        {"set": {}, "restore": {}}
+
+
+def test_wait_timeout_is_presented_only_while_the_loop_starts():
+    import camera.ids_camera as ic
+    seen = {}
+    cam = SimpleNamespace(state=ic.IDSCameraState())
+    cam.state.fps = 20.0
+    cam.start_acquisition = lambda: seen.setdefault("fps", cam.state.fps) is not None
+    assert ab.start_with_timeout(cam, 150) is True
+    assert abs(seen["fps"] - 5000.0 / 150) < 1e-9 and cam.state.fps == 20.0
+    seen.clear()
+    assert ab.start_with_timeout(cam, None) is True and seen["fps"] == 20.0
+
+
+def test_dump_nodes_reads_every_node_and_writes_none():
+    nm = _NodeMap()
+    nm.Nodes = lambda: [SimpleNamespace(Name=lambda k=k: k) for k in nm.n] + [SimpleNamespace(Name=lambda: "Absent")]
+    before = {k: n.v for k, n in nm.n.items()}
+    ds = SimpleNamespace(NodeMaps=lambda: [nm])
+    cam = SimpleNamespace(_node_map=nm, _datastream=ds, _device=None)
+    doc = ab.dump_nodes(cam)
+    assert doc["remote"]["Width"] == 1824 and doc["remote"]["PixelFormat"] == "Mono10g40IDS"
+    assert doc["stream"] == doc["remote"] and "Absent" not in doc["remote"]   # unreadable: left out
+    assert "_error" in doc["tl_device"]                                       # no device: said, no raise
+    assert {k: n.v for k, n in nm.n.items()} == before                        # nothing written
+
+
+def test_extra_stream_registers_are_read_under_the_stream_lock():
+    import threading
+    regs = {"IncompleteFramesTimeoutReg": _Node(3), "IncompleteFramesPacketErrorReg": _Node(1)}
+    nm = SimpleNamespace(FindNode=lambda name: regs[name])
+    lock = threading.Lock()
+    cam = SimpleNamespace(_datastream=SimpleNamespace(NodeMaps=lambda: [nm]), _stream_lock=lock)
+    assert ab.read_extra_stream(cam) == {"IncompleteFramesTimeoutReg": 3, "IncompleteFramesPacketErrorReg": 1}
+    assert not lock.locked()                                    # released
+    assert ab.read_extra_stream(SimpleNamespace()) == {}        # no stream: nothing, no raise
+
+
+def test_a_throughput_limit_between_steps_is_snapped_to_the_node_increment():
+    import camera.ids_camera as ic
+    nm = _NodeMap()
+    cam = SimpleNamespace(_node_map=nm, state=ic.IDSCameraState(), _sensor_w=2688, _sensor_h=1536)
+    c = ab.resolve_cond({"name": "x", "tl": "125"}, _args(), 2334784)   # (125 - 10) / 2 is not whole
+    done = ab.apply_condition(cam, c)
+    assert nm.n["DeviceLinkThroughputLimit"].v in (124000000, 126000000)
+    assert (nm.n["DeviceLinkThroughputLimit"].v - 10000000) % 2000000 == 0
+    assert done["restore"] == {"DeviceLinkThroughputLimit": 162000000}
+
+
+def test_a_raised_limit_lets_the_condition_s_frame_rate_through():
+    """The open sets the rate under the default limit's ceiling (33.8 fps at 1296 lines); a raised limit
+    lifts the ceiling, so the condition's rate is asked again (window 4 ran "40 fps" at 33.8)."""
+    import camera.ids_camera as ic
+    nm = _NodeMap()
+    nm.n["AcquisitionFrameRate"] = _Node(33.8, 0.5, 56.9)            # the ceiling once the limit is 300
+    cam = SimpleNamespace(_node_map=nm, state=ic.IDSCameraState(), _sensor_w=2688, _sensor_h=1536)
+    c = ab.resolve_cond({"name": "x", "tl": "300", "fps": "40"}, _args(), 2334784)
+    done = ab.apply_condition(cam, c)
+    assert nm.n["AcquisitionFrameRate"].v == 40.0 and cam.state.fps == 40.0
+    assert done["set"]["AcquisitionFrameRate"] == 40.0
