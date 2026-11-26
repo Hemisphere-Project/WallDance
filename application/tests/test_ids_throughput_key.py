@@ -147,7 +147,7 @@ def test_the_key_is_saved_and_loaded_with_a_project(tmp_path):
     saved = app_mod.WallDanceApp._get_saveable_config(stub(124))[KEY]
     assert saved == 124.0
     # ... through the schema and the store, as a project save does
-    store = ConfigStore(config_dir=str(tmp_path))
+    store = ConfigStore(config_dir=str(tmp_path), last_project_file=str(tmp_path / "last_project.txt"))
     flat = {"model": "yolo11l-pose", "camera_source": "ids", "confidence": 0.3, KEY: saved}
     path = store.save("rehearsal-cordee", config_schema.structure(flat, {}, "show"))
     assert json.loads(pathlib.Path(path).read_text())[KEY] == 124.0

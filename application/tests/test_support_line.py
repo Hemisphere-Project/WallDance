@@ -329,7 +329,7 @@ def test_the_key_is_a_validated_shared_key_and_round_trips_through_the_app_save_
     assert app_mod.WallDanceApp._get_saveable_config(stub(True))["support_line"] is True
     assert app_mod.WallDanceApp._get_saveable_config(stub(False))["support_line"] is False
     # ... through the schema and the store, as a project save does
-    store = ConfigStore(config_dir=str(tmp_path))
+    store = ConfigStore(config_dir=str(tmp_path), last_project_file=str(tmp_path / "last_project.txt"))
     saved = {"model": "yolo11l-pose", "camera_source": "ids", "confidence": 0.3, "support_line": True}
     path = store.save("rehearsal-cordee", config_schema.structure(saved, {}, "show"))
     assert json.loads(pathlib.Path(path).read_text())["support_line"] is True

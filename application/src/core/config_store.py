@@ -184,8 +184,13 @@ class ProjectInfo:
 class ConfigStore:
     """Persist and retrieve WallDance configuration files."""
 
-    def __init__(self, config_dir: str = PROJECTS_DIR, last_project_file: str = LAST_PROJECT_FILE):
+    def __init__(self, config_dir: str = PROJECTS_DIR, last_project_file: Optional[str] = None):
         self.config_dir = config_dir
+        # t-060: the shared pointer belongs to the default projects folder only; a store on
+        # any other folder keeps its own inside that folder (the default is LAST_PROJECT_FILE).
+        if last_project_file is None:
+            last_project_file = (LAST_PROJECT_FILE if config_dir == PROJECTS_DIR
+                                 else os.path.join(config_dir, os.path.basename(LAST_PROJECT_FILE)))
         self.last_project_file = last_project_file
         os.makedirs(self.config_dir, exist_ok=True)
 
