@@ -81,6 +81,21 @@ def _rebuild(cand: Candidate) -> str:
     return f"rebuild {cand.engine_file} (extra/build_engines) before trying it again"
 
 
+# an engine file TensorRT could not deserialize (truncated, another TensorRT, not an engine): the operator reads
+# this, the log keeps the raw error
+ENGINE_UNREADABLE = "the engine file could not be read"
+
+
+def load_failure(exc: BaseException) -> str:
+    """Why an engine did not load, in the operator's words: ``ENGINE_UNREADABLE`` when TensorRT could not read the
+    file (its runtime returns no engine -- ultralytics then fails on ``None.create_execution_context`` -- or it
+    raises a serialization error); anything else, the error itself."""
+    text = str(exc)
+    if (isinstance(exc, AttributeError) and "create_execution_context" in text) or "serializ" in text.lower():
+        return ENGINE_UNREADABLE
+    return f"{type(exc).__name__}: {text[:100]}"
+
+
 class SeamlessSwitch:
     def __init__(self, *, processor: Callable[[], Any], live: Callable[[], Optional[LiveSetting]],
                  engine_path: Callable[[Candidate], str], port,
@@ -238,7 +253,10 @@ class SeamlessSwitch:
                 self._record("load", model=winner.label, seconds=round(load_s, 2))
                 say(f"[Switch] {winner.label} loaded beside the live model ({load_s:.2f} s)")
             except Exception as exc:  # noqa: BLE001 - the engine never becomes live
-                self._failed_before(want, live, f"{type(exc).__name__}: {str(exc)[:100]}")
+                why = load_failure(exc)
+                if why == ENGINE_UNREADABLE:            # the raw error for the log, plain words for the operator
+                    say(f"[Switch] {winner.engine_file} did not load: {type(exc).__name__}: {exc}")
+                self._failed_before(want, live, why)
                 return
         err = self.warm(prep, winner)
         if err:

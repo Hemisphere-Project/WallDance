@@ -314,7 +314,8 @@ def test_the_operator_apply_loads_beside_and_switches_between_two_frames():
     assert [e for e, _ in events].count("switched") == 1
 
 
-def test_an_engine_that_does_not_load_never_becomes_live():
+def test_an_engine_that_does_not_load_never_becomes_live(capsys):
+    """An engine file TensorRT cannot read: plain words for the operator, the raw error in the log."""
     live = {"v": _live()}
     port = _Port()
     sw, _, events = _sw(live, loader=_Loader(fail="Serialization assertion failed"), port=port)
@@ -322,12 +323,25 @@ def test_an_engine_that_does_not_load_never_becomes_live():
     sw.request(L1920, "Apply", on_done=lambda ok, text: done.append((ok, text)))
     sw.service()
     assert port.calls == [] and sw._request is None
-    text = ("the switch to l @ 1920 x 1056 failed before it began (RuntimeError: Serialization assertion failed): "
+    text = ("the switch to l @ 1920 x 1056 failed before it began (the engine file could not be read): "
             f"x @ 1280 still runs - rebuild {L1920.engine_file} (extra/build_engines) before trying it again")
     assert sw.fault == text and sw.health() == text and done == [(False, text)]
     assert ("fault", {"text": text}) in events
+    assert "RuntimeError: Serialization assertion failed" in capsys.readouterr().out      # the log keeps it
     sw.dismiss()                                         # the operator's acknowledgement
     assert sw.health() is None
+
+
+def test_only_an_unreadable_engine_file_gets_the_plain_words():
+    """mgr-ran's TensorRT on a truncated engine: deserialize returns None and ultralytics fails on it (d_broken,
+    26/11) -- the engine file could not be read; any other load error is said as it is."""
+    from runtime.seamless_switch import ENGINE_UNREADABLE, load_failure
+    none = AttributeError("'NoneType' object has no attribute 'create_execution_context'")
+    assert load_failure(none) == ENGINE_UNREADABLE == "the engine file could not be read"
+    assert load_failure(RuntimeError("IRuntime::deserializeCudaEngine failed")) == ENGINE_UNREADABLE
+    assert load_failure(RuntimeError("CUDA out of memory")) == "RuntimeError: CUDA out of memory"
+    assert load_failure(AttributeError("'X' object has no attribute 'y'")) == \
+        "AttributeError: 'X' object has no attribute 'y'"
 
 
 def test_an_engine_that_would_run_pytorch_never_becomes_live():
