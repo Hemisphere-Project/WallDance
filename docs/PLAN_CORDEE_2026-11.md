@@ -495,22 +495,22 @@ Rev 2 (release in the last column):
 
 | Id | Step | Lane | After | Est | Hub | Status | Rel. |
 |---|---|---|---|---|---|---|---|
-| M1 | 08/10 truth and scorer in the repo | bench ⚙ | – | 1d | #t-031 ④ | todo | 1 |
-| M2 | A live session can be scored | bench ⚙ | – | 0.5d | #t-023 ④ | todo | 1 |
+| M1 | 08/10 truth and scorer in the repo | bench ⚙ | – | 1d | #t-031 ④ | done 26/11 | 1 |
+| M2 | A live session can be scored | bench ⚙ | – | 0.5d | #t-023 ④ | done 26/11 | 1 |
 | M3 | Playback on a frame clock | bench ⚙ | – | in B1 | #t-030 ④ | todo | – |
-| P1 | Rectangular input | bench GPU | – | 1.5d | #t-047 | todo | 1 |
+| P1 | Rectangular input | bench GPU | – | 1.5d | #t-047 | built 26/11, landing held (§5) | 1 |
 | P2 | Engines and timing | laptop | P1 | window | #t-048 | done 26/11 (§5) | 1 |
-| P3 | Model by the ratchet | bench GPU | P1, F3 | 0.5d | #t-049 | todo | 1 |
-| P4 | Dancer height at the network | bench ⚙ | P1 | 0.5d | #t-050 | todo | 1 |
+| P3 | Model by the ratchet | bench GPU | P1, F3 | 0.5d | #t-049 | measured 26/11, choice open (§5) | 1 |
+| P4 | Dancer height at the network | bench ⚙ | P1 | 0.5d | #t-050 | built 26/11, lands with P1 | 1 |
 | X1 | Servo on the highlights | bench ⚙ | – | 1d | #t-027 ④ | todo | 2 |
 | X2 | Light verdict | bench ⚙ | – | 0.5d | #t-054 | todo | 2 |
 | X3 | Emptiness first | bench ⚙ | – | 1d | #t-027 ⑤ | todo | 2 |
 | X4 | The dancer step | bench GPU | A6 | 1.5d | #t-055 | todo | 2 |
-| X5 | What Calibrate set is locked | bench ⚙ | – | 1d | #t-025 ④ | todo | 1 |
-| X6 | Crop and plate bookkeeping | bench ⚙ | – | 1d | #t-053 | todo | 1 |
-| F1 | A foreground that works | bench GPU | – | 1d | #t-051 | todo | 1 |
+| X5 | What Calibrate set is locked | bench ⚙ | – | 1d | #t-025 ④ | done 26/11 | 1 |
+| X6 | Crop and plate bookkeeping | bench ⚙ | – | 1d | #t-053 | ② ③ done 26/11, ① open | 1 |
+| F1 | A foreground that works | bench GPU | – | 1d | #t-051 | done 26/11 but the hand sample | 1 |
 | F2 | The plate is honest | bench ⚙ | X6 | 0.5d | X6 ③, C2 ④, C5 ② | todo | 2 |
-| F3 | The veto | bench GPU | F1 | 0.5d | #t-052 | todo | 1 |
+| F3 | The veto | bench GPU | F1 | 0.5d | #t-052 | built 26/11, gate not met (§5) | 1 |
 | F4 | A held slot sits on a foreground group | bench GPU | F1 | 2d | #t-056 | todo | 2 |
 | H1 | The four steps as a wizard | bench ⚙ | X4 | 2d | #t-057 | todo | 3 |
 | H2 | One health line | bench ⚙ | E1 | 1.5d | #t-040 ① | todo | 3 |
@@ -528,9 +528,23 @@ Filled by the step named. Until then the cell says so.
 - **T1 — shipped stream, rehearsal duo and Cordée takes (B7):** not measured yet.
 - **T2 — shipped stream with the regime fixes (C7):** not measured yet.
 - **D3 — estimator against shipped:** not measured yet.
-- **M1 — the repo's scorer against the counter-analysis tables:** not measured yet.
-- **P1 — the 08/10 truth through the real pipeline at the rectangle (yolo11x):** not measured yet. Reference,
-  one frame a second, PyTorch: 61 % as shipped (x@1280 square), 81 % at 1760, 86 % at 1920.
+- **M1 — the repo's scorer against the counter-analysis tables** (2026-11-26): `application/tests/truth_score.py
+  summary --check` reproduces `tmp_analysis/counter-0810/score/summary.json` exactly — every take, every number,
+  zero tolerance.
+- **P1 / P3 — the 08/10 truth through the real pipeline** (2026-11-26; the four long takes mur 5, mur2 6–8 in
+  full, 49,960 on-wall dancer-frames, conf 0.15, M1's scorer; the rectangle rows with F1 and F3 on). Square
+  goldens: byte-identical to `remote-ops` (three scenarios, same engine).
+
+  | Network input | Detector on her | mur 5 / mur2 6 / 7 / 8 | False boxes per frame (after F3) | Replay: a point on her / points on nobody | Laptop p95 with TD (P2) |
+  |---|---|---|---|---|---|
+  | x @ 1280 square (shipped, `release` code) | 50.9 % | 43.7 / 53.9 / 51.2 / 57.0 | 0.018 (no veto) | 86.3 % / 19.0 % | 35.9 ms |
+  | x @ 1760 × 960 | 73.7 % | 72.5 / 77.0 / 71.6 / 75.6 | 0.0312 | 92.6 % / 8.5 % | 39.6 ms |
+  | x @ 1920 × 1056 | 83.3 % | 82.4 / 87.1 / 81.3 / 83.5 | 0.0202 | 92.3 % / 8.4 % | 51.5 ms |
+  | l @ 1760 × 960 | 87.2 % | 81.1 / 90.6 / 88.5 / 88.6 | 0.0465 | 94.7 % / 6.3 % | 30.9 ms |
+  | l @ 1920 × 1056 | 91.0 % | 89.2 / 93.5 / 90.5 / 91.0 | 0.0222 | 93.9 % / 5.5 % | 35.1 ms |
+
+  P1's gate as the night brief set it (x at 1760 × 960, ≥ 80 %) is not met; the row's (≥ 80 % with yolo11x) is,
+  at 1920 × 1056. The 1 fps experiment had predicted 78 / 85 / 91 / 93.5 % for these rows.
 - **P2 — the loop on the laptop with TouchDesigner** (2026-11-26, night session; `extra/measure_loop.py` from a
   scratch folder, the laptop's own `jeudi0809_mur2` take 7, frames 1500–2730 with both dancers on the wall, its
   plate, F1 on; TouchDesigner 2025.32820 open on a copy of `ByNight_scenes_NOVEMBRE.314.toe`, 25 % GPU alone):
@@ -546,8 +560,42 @@ Filled by the step named. Until then the cell says so.
   Gate (`process_wall` ≤ 55 ms at p95 with TouchDesigner, GPU < 83 °C): **met by all five**. F1's foreground
   costs 4.3–4.7 ms a frame there. `mog2_feed` overlaps enhance + YOLO (it is not added to them). The
   TouchDesigner load is the patch cooking with no OSC input in a locked session: the show's may be higher.
-- **P3 — yolo11x against yolo11l, 08/10 truth and hangar corpus, after F3:** not measured yet.
-- **F1, F3 — foreground under the boxes, false groups and false boxes per frame:** not measured yet.
+- **P3 — yolo11x against yolo11l** (2026-11-26). The 08/10 truth: the table above — no row reaches ≤ 0.02
+  false boxes per frame strictly (x @ 1920 × 1056 misses by 0.0002, l @ 1920 × 1056 by 0.002); about 40 % of the
+  remaining « false » boxes lie beside a dancer the truth only coasts, so the measure is at its noise there. The
+  hangar corpus (each scenario's own square size, `replay.py --score`, known N):
+
+  | Scenario | x: drop / ghost (score) | l: drop / ghost (score) | with the take's median plate, x / l score |
+  |---|---|---|---|
+  | hangar-floor | 5 / 0 % (0.05) | 0 / 0 % (0.00) | – |
+  | hangar-aerial | 4 / 0 % (0.04) | 6 / 0 % (0.06) | – |
+  | texture-aerial | 3 / 4 % (0.14) | 14 / 10 % (0.33) | – |
+  | texture-duo | 36 / 2 % (0.47) | 10 / 30 % (0.52) | 0.49 / 0.56 |
+  | texture-duo-full | 23 / 60 % (0.96) | 5 / 87 % (1.06) | 0.65 / 0.49 |
+  | texture-wallhang | 39 / 0 % (0.42) | 42 / 0 % (0.49) | 0.42 / 0.49 |
+  | white-duo | 25 / 16 % (0.52) | 29 / 24 % (0.64) | 0.57 / 0.46 |
+  | white-duo-full | 20 / 15 % (0.45) | 20 / 16 % (0.47) | 0.37 / 0.48 |
+  | blur-runner | 3 / 1 % (0.05) | 3 / 1 % (0.05) | – |
+  | outdoor-night | 28 / 0 % (0.28) | 73 / 0 % (0.73) | – |
+  | outdoor-sitter | 6 / 0 % (0.07) | 52 / 0 % (0.56) | – |
+  | bdx1005-s5-ghost | 3 / 116 % (1.29) | 6 / 108 % (1.26) | 0.63 / 0.69 |
+  | bdx1005-s8-shadows | 11 / 10 % (0.29) | 13 / 11 % (0.33) | 0.85 / 0.87 |
+
+  (score = drop + ghost + 0.3 fragmentation + 0.1 identity; lower is better.) yolo11l scores worse than yolo11x on 10 of 13
+  scenarios without a plate (`facade-ghosts` did not run: mgr-ran's 1920 engines are the laptop's builds).
+
+  Recommendation, not applied: on the façade (portrait ROI, white wall, a real empty-wall plate) yolo11l @
+  1920 × 1056 — 7.7 points of recall over x at the same size for 0.002 false boxes a frame, and 16 ms more room
+  for TouchDesigner; elsewhere keep the shipped x @ 1280 until the corpus has real empty-wall plates (B5/B6):
+  without a plate yolo11l loses on 10 of 13 corpus scenarios (ghosts on the textured walls, drops outdoors at
+  night), and the corpus plates are medians of takes with dancers in them, which make the veto cut real boxes. The model is a per-project choice; the default is unchanged.
+- **F1 — foreground** (2026-11-26, `tests/fg_eval.py`, mur2 with the 21:36 plate, every 3rd frame):
+  foreground under 6,263 of 6,263 boxes a network gives at conf ≥ 0.5; a group on the dancer 94.7–100 % of
+  dancer-frames; groups on nobody inside the wall 0.000–0.201 per frame; take 2 (empty) 0.0 and no stale frame (the
+  old rule: 5.1, 25 % stale). The hand-labelled sample is open.
+- **F3 — the veto** (2026-11-26): with l @ 1920 × 1056, 0.0225 → 0.0222 false boxes per frame (gate ≤ 0.02: not
+  met), the detector 91.0 → 90.9 % (recall unchanged); with x @ 1920 × 1056, 0.0206 → 0.0202. The boxes it keeps
+  have foreground under them (mur 5's plate is another crop: no veto there).
 
 ## 6. Existing hub rows
 
