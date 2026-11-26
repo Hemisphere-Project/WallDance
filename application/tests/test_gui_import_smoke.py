@@ -40,6 +40,15 @@ def _wait_for(pred, timeout=5.0):
     return pred()
 
 
+def _join_dialog_threads(timeout=5.0):
+    """Wait for the file-dialog worker threads: one still inside DearPyGui while the test destroys
+    the context is a segmentation fault (seen under load on the full suite, 26/11)."""
+    import threading
+    for t in threading.enumerate():
+        if t.name == "ImportFileDialog":
+            t.join(timeout)
+
+
 def test_slot_picker_then_native_dialog_submits(monkeypatch, tmp_path):
     import gui
     from core.config import RECORDING_SLOTS
@@ -70,6 +79,7 @@ def test_slot_picker_then_native_dialog_submits(monkeypatch, tmp_path):
         assert _wait_for(lambda: not mock._import_dialog_open)
         assert submitted == [(4, picked)]
     finally:
+        _join_dialog_threads()
         dpg.destroy_context()
 
 
@@ -102,8 +112,10 @@ def test_native_dialog_failure_falls_back(monkeypatch, tmp_path):
         mock = _import_mock([])
         mock._pick_import_file(3)
         assert _wait_for(lambda: dpg.does_item_exist("import_file_dialog"))
+        _join_dialog_threads()
         assert mock._import_dialog_open is False
     finally:
+        _join_dialog_threads()
         dpg.destroy_context()
 
 
