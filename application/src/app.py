@@ -2473,11 +2473,16 @@ class WallDanceApp:
         from core.ops_monitor import CheckResult, check_wall_light   # X2 (#t-054): the empty wall's light
         try:
             _det, _s = getattr(self.processor, "_fg_detector", None), self.settings
+            _now = None                                       # H2: the live camera's picture now (« no light »)
+            if self.camera.state.is_open and not self.recorder.is_playing:
+                _cam = getattr(self, "unified_camera", None)
+                _now = _cam.get_last_cpu_frame() if _cam is not None and getattr(_cam, "is_open", False) else None
+                _now = _now if _now is not None else getattr(self, "_last_raw_frame", None)
             results.append(check_wall_light(
                 plate=_det.plate if _det is not None else None,
                 roi=((_s.roi_x, _s.roi_y, _s.roi_w, _s.roi_h)
                      if _s.roi_enabled and _s.roi_w > 0 and _s.roi_h > 0 else None),
-                plate_status=str(self.processor.plate_status)))
+                plate_status=str(self.processor.plate_status), frame=_now))
         except Exception as e:  # noqa: BLE001 - one row never breaks the report
             results.append(CheckResult("wall light", "skip", f"not judged ({type(e).__name__}: {e})"))
         results.append(check_gpu_temp(gpu_stats=get_gpu_stats(),

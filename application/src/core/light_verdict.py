@@ -42,6 +42,16 @@ LIGHT_DARK_SKIP = 0.05     # the darkest part skips this share of the darkest pa
 LIGHT_HOT_SHARE = 0.8      # the bright part: the parts at >= this share of the brightest one
 LIGHT_SPOT_SHARE = 1 / 3   # a centred bright part covering at most this share of the zone is a spot
 
+# H2 (#t-040, follow-up): no light at all.  Under this floor the zone's brightest 1 % (its 99th percentile on the
+# plate's grid) holds a few grey levels: there is no shape to judge, and the instruction is not « move the flood »
+# but « no IR light reaches the camera ».  The same floor and statistic as core/reference_watch.DARK_DN (« too
+# dark to compare »): one floor for one cause (tests/test_h2_no_light.py pins the two equal).  On 26/11 the
+# laptop's picture was black (0 DN) while the wall-light row judged the stored 14/10 plate (« a spot ... at least
+# 50x »); the darkest plate the corpus used reads 26 DN (mur25m 06/10 slot 1), every lit 08/10 plate 255.
+LIGHT_NO_LIGHT_DN = 20.0
+LIGHT_GRID_DS = 4             # the grid a camera picture is read on when there is no plate to take it from
+NO_LIGHT_HOW = "switch the IR flood on, check its power, take the lens cap off"
+
 _COLS = ("left", "", "right")
 _ROWS = ("top", "", "bottom")
 _AGAIN = "then Calibrate on the empty wall again"
@@ -153,6 +163,9 @@ def light_verdict(img: Optional[np.ndarray], roi: Optional[Sequence[float]] = No
     if cut is None:
         return LightVerdict("skip", "the zone is too small to judge the light - check the ROI")
     means, white, us, vs, grid = cut
+    level = zone_level(img, roi, ds, ds)
+    if level is not None and level < LIGHT_NO_LIGHT_DN:     # H2: no light, no shape to judge
+        return no_light_verdict(level, live=False)
 
     b = float(means.max())
     order = np.argsort(means.ravel(), kind="stable")
@@ -215,3 +228,65 @@ def plate_light_verdict(plate, roi: Optional[Sequence[float]] = None,
     if plate is None:
         return light_verdict(None)
     return light_verdict(plate.plate, roi, int(getattr(plate, "ds", 1) or 1), red_ratio)
+
+
+# --------------------------------------------------------------------------
+# H2 (#t-040, follow-up): « no light » -- the floor below which no shape can be judged
+# --------------------------------------------------------------------------
+
+def zone_level(img: Optional[np.ndarray], roi: Optional[Sequence[float]] = None, ds: int = 1,
+               grid_ds: Optional[int] = None) -> Optional[float]:
+    """The zone's brightest 1 %: the 99th percentile of the zone ``roi`` (x, y, w, h, full-frame pixels; None =
+    the whole image), read as core/reference_watch.py reads it -- on the plate's grid (an area average), every
+    other pixel both ways, so a few hot pixels do not lift it.  ``img``: a gray picture downscaled ``ds`` times
+    (a plate: its ds; a raw camera frame: 1, or BGR with R == G == B); ``grid_ds``: the plate's grid (None = ds:
+    ``img`` is on it already).  None when the zone is empty."""
+    if img is None:
+        return None
+    g = np.asarray(img)
+    if g.ndim == 3:
+        g = g[:, :, 0]
+    if g.ndim != 2 or g.size == 0:
+        return None
+    ds = max(1, int(ds))
+    H, W = g.shape
+    if roi is None:
+        x0, y0, x1, y1 = 0, 0, W, H
+    else:
+        x, y, w, h = (float(v) for v in roi[:4])
+        x0, y0 = max(0, min(W, int(x // ds))), max(0, min(H, int(y // ds)))
+        x1, y1 = max(0, min(W, int(-(-(x + w) // ds)))), max(0, min(H, int(-(-(y + h) // ds))))
+    z = g[y0:y1, x0:x1]
+    f = max(1, int(grid_ds or ds) // ds)
+    if f > 1:                                       # onto the plate's grid: f x f blocks averaged
+        zh, zw = (z.shape[0] // f) * f, (z.shape[1] // f) * f
+        z = z[:zh, :zw].reshape(zh // f, f, zw // f, f)[::2, :, ::2, :]   # only the grid's every other pixel
+        z = z.sum(axis=(1, 3), dtype=np.uint32 if z.dtype == np.uint8 else np.float64) / float(f * f)
+    else:
+        z = z[::2, ::2]
+    return float(np.percentile(z, 99)) if z.size else None
+
+
+def no_light_verdict(level: float, live: bool = True) -> LightVerdict:
+    """The « no light » verdict (red): the zone's brightest 1 % at ``level`` DN, under ``LIGHT_NO_LIGHT_DN``.
+    ``live``: the camera's picture now (switch the light on: nothing to Calibrate); else an empty-wall snapshot
+    taken without light (light the zone, then Calibrate again)."""
+    if live:
+        fact = (f"no IR light reaches the camera (the picture's brightest 1 % at {level:.0f} of 255, under "
+                f"{LIGHT_NO_LIGHT_DN:g})")
+        todo = NO_LIGHT_HOW
+    else:
+        fact = (f"the whole zone is dark: no IR light reached the camera (the zone's brightest 1 % at {level:.0f} "
+                f"of 255, under {LIGHT_NO_LIGHT_DN:g})")
+        todo = f"light the zone with the IR flood ({NO_LIGHT_HOW}), {_AGAIN}"
+    return LightVerdict("fail", f"{fact}: {todo}", ratio=None, bright_dn=float(level), instruction=todo)
+
+
+def picture_light_verdict(frame, roi: Optional[Sequence[float]] = None,
+                          grid_ds: int = LIGHT_GRID_DS) -> Optional[LightVerdict]:
+    """The camera's picture now (a raw frame, full resolution) over ``roi``: the « no light » verdict when its
+    zone's brightest 1 % is under the floor, else None (there is light: the snapshot's own verdict stands)."""
+    level = zone_level(frame, roi, 1, grid_ds)
+    if level is None or level >= LIGHT_NO_LIGHT_DN:
+        return None
+    return no_light_verdict(level, live=True)

@@ -641,17 +641,33 @@ class ReadinessAuto:
 
 
 def check_wall_light(*, plate=None, roi: Optional[Tuple[int, int, int, int]] = None,
-                     plate_status: str = "") -> CheckResult:
+                     plate_status: str = "", frame=None) -> CheckResult:
     """X2 (#t-054): the light verdict of the empty-wall snapshot (core/light_verdict.py) -- red when the
     brightest part of the zone is more than 4x its darkest, with the one thing to move (the IR flood).
     ``plate`` is the installed CleanPlate (None: none), ``roi`` the zone (x, y, w, h) in the plate's frame
-    pixels (None: the whole frame), ``plate_status`` FrameProcessor.plate_status."""
+    pixels (None: the whole frame), ``plate_status`` FrameProcessor.plate_status.  H2 (#t-040, follow-up):
+    ``frame``, the camera's raw picture now (None: not read) -- under the darkness floor no IR light reaches the
+    camera, and that is the verdict whatever the snapshot says (its shape is another light's)."""
+    if frame is not None:
+        from core.light_verdict import LIGHT_GRID_DS, picture_light_verdict
+        dark = picture_light_verdict(frame, roi, int(getattr(plate, "ds", 0) or LIGHT_GRID_DS))
+        if dark is not None:
+            return CheckResult("wall light", dark.status, dark.detail)
     if plate is not None and plate_status == "size":
         return CheckResult("wall light", "skip", "the empty-wall snapshot is from another camera crop - "
                            "Calibrate on the empty wall")
     from core.light_verdict import plate_light_verdict
     v = plate_light_verdict(plate, roi)
     return CheckResult("wall light", v.status, v.detail)
+
+
+def no_light_line(level: float, alert: bool = False) -> str:
+    """H2 (#t-040, follow-up): the one text the health line (source « light ») and the Alerts line both say when
+    no IR light reaches the camera -- « fact - instruction »; ``alert``: as the strip's entry (a capital)."""
+    from core.light_verdict import LIGHT_NO_LIGHT_DN, NO_LIGHT_HOW
+    text = (f"no IR light reaches the camera (the picture's brightest 1 % at {level:.0f} of 255, under "
+            f"{LIGHT_NO_LIGHT_DN:g}) - {NO_LIGHT_HOW}")
+    return text[0].upper() + text[1:] if alert else text
 
 
 # --------------------------------------------------------------------------
@@ -716,6 +732,7 @@ class HealthMonitor:
         self._last_fired: Dict[str, float] = {}
         self._light_alerted = False          # one "light_changed" alert per episode
         self._light_ref: Optional[str] = None
+        self._no_light_dn: Optional[float] = None   # H2: « no light » holds, at this level (DN) when it began
         self.cleared: List[str] = []         # alert kinds whose condition ended (strip entries to drop)
 
     def pop_cleared(self) -> List[str]:
@@ -740,7 +757,8 @@ class HealthMonitor:
              playback_active: bool, n_over_cap: int = 0,
              height_median: Optional[float] = None,
              height_gate: Optional[Tuple[float, float]] = None,
-             light_ratio: Optional[float] = None, light_ref: str = "") -> List[Alert]:
+             light_ratio: Optional[float] = None, light_ref: str = "",
+             picture_dn: Optional[float] = None) -> List[Alert]:
         out: List[Alert] = []
         live = (in_run and camera_open and not camera_reconnecting
                 and not playback_active and model_ready)
@@ -838,11 +856,25 @@ class HealthMonitor:
         # (the alerts strip keeps it visible); re-armed when the light is back in the band or when
         # the snapshot changes (a Calibrate / re-capture).  None = no measure: the state is kept.
         if light_ref != self._light_ref:
-            if self._light_alerted:
+            if self._light_alerted and self._no_light_dn is None:     # H2: « no light » is the picture's: kept
                 self.cleared.append("light_changed")
-            self._light_ref, self._light_alerted = light_ref, False
-        if light_out_of_band(light_ratio, self.light_band):
-            if not self._light_alerted:
+            self._light_ref, self._light_alerted = light_ref, self._no_light_dn is not None
+        # H2 (#t-040, follow-up): « no light ».  ``picture_dn``: the camera's picture's brightest 1 % over the zone
+        # (core/light_verdict.zone_level; the caller's 10 s median; None = no measure, no live camera).  Under the
+        # darkness floor the same strip entry says that no IR light reaches the camera, with its one instruction,
+        # and the snapshot's ratio (« <= 0.25x ») is not said: one cause.  The light back above the floor: the entry
+        # goes -- or turns into the ratio's, when that is still out of the band.
+        from core.light_verdict import LIGHT_NO_LIGHT_DN
+        was_dark = self._no_light_dn is not None
+        if picture_dn is not None and picture_dn < LIGHT_NO_LIGHT_DN:
+            if not was_dark:
+                self._no_light_dn, self._light_alerted = float(picture_dn), True
+                out.append(Alert("light_changed", no_light_line(picture_dn, alert=True),
+                                 {"no_light": True, "picture_dn": round(float(picture_dn), 1),
+                                  "snapshot": light_ref}))
+        elif light_out_of_band(light_ratio, self.light_band):
+            if not self._light_alerted or was_dark:
+                self._no_light_dn = None
                 self._light_alerted = True
                 when = f" ({light_ref})" if light_ref else ""
                 out.append(Alert(
@@ -850,7 +882,8 @@ class HealthMonitor:
                     f"The light is {light_ratio_text(light_ratio)} the empty-wall snapshot{when}: "
                     f"{LIGHT_REMEDY}",
                     {"ratio": round(float(light_ratio), 3), "snapshot": light_ref}))
-        elif light_ratio is not None and self._light_alerted:
+        elif (light_ratio is not None or was_dark) and self._light_alerted:
+            self._no_light_dn = None
             self._light_alerted = False
             self.cleared.append("light_changed")
 
@@ -1355,7 +1388,10 @@ def health_alert_rows(mon: HealthMonitor, now: float) -> List[CheckResult]:
         temp = (mon._last_gpu_stats or {}).get("temp", "?")
         out.append(CheckResult("gpu", "warn", f"GPU at {temp} C for {s:.0f} s - raise the laptop's back, clear "
                                               "its vents"))
-    if mon._light_alerted:
+    if mon._light_alerted and getattr(mon, "_no_light_dn", None) is not None:
+        # H2 (#t-040, follow-up): no light is THE cause (CauseResult: it names the line), red, its one instruction
+        out.append(CauseResult("light", "fail", no_light_line(mon._no_light_dn)))
+    elif mon._light_alerted:
         out.append(CheckResult("light", "warn", "the light is not the empty-wall snapshot's - " + LIGHT_REMEDY))
     s = held(mon._no_det_since, mon.no_detection_s)
     if s is not None:

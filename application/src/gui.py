@@ -237,6 +237,86 @@ def get_display_scale() -> float:
     return final_scale
 
 
+# --------------------------------------------------------------------------- #
+# H2 follow-up (#t-040): the health line and the Alerts line fitted to the window, the instruction never cut
+# (ui/line_fit.py).  Functions of the GUI object (they read and keep a few attributes on it), so the band's
+# headless tests can paint it with a stand-in.
+# --------------------------------------------------------------------------- #
+def _text_measure(gui):
+    """The GUI's own text metrics: text -> the px it takes when drawn, or None before the first frame.
+    dpg.get_text_size measures at the font's base size, but ImGui (1.92) draws at the scaled size with whole-pixel
+    advances (9 px a glyph at 1.25, not 8.75; 11 at 1.5): the ratio of what the « Alerts: » label drew at the last
+    frame to that measure of it turns one into the other (it errs a pixel wide: on the safe side)."""
+    k = getattr(gui, "_text_k", None)
+    if not k:
+        try:
+            drawn = float(dpg.get_item_rect_size("alerts_label")[0])
+            base = dpg.get_text_size("Alerts:")
+        except Exception:  # noqa: BLE001 - not built, no frame yet
+            return None
+        if not drawn or not base or not base[0]:
+            return None
+        k = gui._text_k = drawn / float(base[0])
+
+    def measure(s: str) -> float:
+        size = dpg.get_text_size(s)
+        return float(size[0]) * k if size else 0.0
+    return measure
+
+
+def _line_widths():
+    """(the px the health line may take, the px the alerts may take, one line's drawn height) from the last
+    frame; Nones before it."""
+    try:
+        band_w = float(dpg.get_item_rect_size("health_line_window")[0])
+        lab = dpg.get_item_state("alerts_label")
+        txt = dpg.get_item_state("alerts_text")
+        line_h = float(lab.get("rect_size", (0, 0))[1])
+        alerts_x = float(txt["rect_min"][0]) - float(lab["rect_min"][0])
+    except Exception:  # noqa: BLE001 - not built, no frame yet
+        return None, None, None
+    if band_w <= 0:
+        return None, None, None
+    margin = scaled(4)
+    return band_w - margin, band_w - alerts_x - margin, line_h or None
+
+
+def _show_fitted_health(gui, text: str):
+    """The health line as drawn: fitted to the band (ui/line_fit.py), on as many lines as its instruction needs
+    -- two fit the band, a third grows it.  The line itself (/status, the logs, the watch) is never changed."""
+    from ui.line_fit import fit_text, split_health_line
+    from gui_builder import health_band_height
+    width, alerts_w, line_h = _line_widths()
+    measure = _text_measure(gui)
+    try:
+        shown = fit_text(split_health_line(text), width, measure)
+    except Exception:  # noqa: BLE001 - shown whole rather than not at all
+        shown = text
+    dpg.set_value("health_line_text", shown)
+    h = health_band_height(max(2, shown.count("\n") + 1), line_h or 0.0)
+    if h != getattr(gui, "_health_band_h", None) and dpg.does_item_exist("health_line_window"):
+        dpg.configure_item("health_line_window", height=h)
+        gui._health_band_h = h
+    alerts = getattr(gui, "_alerts", None)
+    if alerts and measure is not None and alerts_w != getattr(gui, "_alerts_fit_w", None) \
+            and dpg.does_item_exist("alerts_text"):
+        dpg.set_value("alerts_text", _fitted_alerts(gui))   # a resized window: the Alerts line follows (1 s)
+
+
+def _fitted_alerts(gui) -> str:
+    """The Alerts line as drawn: the first alert's instruction whole, the others after it as room allows."""
+    from ui.line_fit import fit_text, split_alerts
+    msgs = list(getattr(gui, "_alerts", {}).values())
+    _w, width, _h = _line_widths()
+    measure = _text_measure(gui)
+    if measure is not None:
+        gui._alerts_fit_w = width
+    try:
+        return fit_text(split_alerts(msgs), width, measure)
+    except Exception:  # noqa: BLE001
+        return "   ".join(msgs)
+
+
 class WallDanceGUI:
     """Modern GUI for WallDance using DearPyGui."""
     
@@ -600,7 +680,7 @@ class WallDanceGUI:
         if not dpg.does_item_exist("alerts_text"):
             return
         if self._alerts:
-            dpg.set_value("alerts_text", "   ".join(self._alerts.values()))
+            dpg.set_value("alerts_text", _fitted_alerts(self))     # H2: fitted, the instruction whole
             dpg.configure_item("alerts_text", color=WARN_ORANGE)
         else:
             dpg.set_value("alerts_text", "(none)")
@@ -611,13 +691,14 @@ class WallDanceGUI:
         state (readiness' colours), its text the worst source and its one instruction."""
         if not dpg.does_item_exist("health_line_text"):
             return
-        dpg.set_value("health_line_text", text)
+        _show_fitted_health(self, text)          # H2 follow-up: fitted to the band, the instruction whole
         if state != getattr(self, "_health_state", None):
             themes = getattr(self, "_health_themes", None) or {}
             theme = themes.get(state, themes.get("fail"))
             if theme is not None and dpg.does_item_exist("health_line_window"):
                 dpg.bind_item_theme("health_line_window", theme)
             self._health_state = state
+
 
     def _update_preview_row_state(self, enabled: bool):
         """Grey out PREVIEW row controls when disabled."""

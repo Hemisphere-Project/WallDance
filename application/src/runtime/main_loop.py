@@ -1321,6 +1321,7 @@ class MainLoop:
                            ph * float(app.settings.person_height_max_ratio))
             height_median = float(np.median([h for _t, h in self._height_samples]))
         light_median, light_ref = self._light_median(now)
+        picture_dn = self._picture_level(now)     # H2: « no light » (HealthMonitor.tick)
         self._plate_tick()
         self._reference_tick(in_run)          # H4 (#t-063): the references watched, off the frame path
         try:
@@ -1338,6 +1339,7 @@ class MainLoop:
                 height_gate=height_gate,
                 light_ratio=light_median,
                 light_ref=light_ref,
+                picture_dn=picture_dn,
             )
         except Exception as e:  # noqa: BLE001 - monitoring must never kill the loop
             print(f"[Alert] health tick failed: {e}")
@@ -1397,6 +1399,40 @@ class MainLoop:
                   if len(self._light_samples) >= LIGHT_CHANGE_MIN_SAMPLES else None)
         app._light_ratio = median            # the pre-show check's empty-wall row reads it
         return median, str(getattr(proc, "plate_stamp", "") or "")
+
+    def _picture_level(self, now: float):
+        """H2 (#t-040, follow-up): the live camera picture's brightest 1 % over the zone (core/light_verdict
+        .zone_level, on the plate's grid), sampled at 1 Hz -> the median of the last LIGHT_CHANGE_S, or None (no
+        live camera -- a recording plays, the camera is down -- Calibrate running, too few samples): the input of
+        « no light » (HealthMonitor.tick).  Never raises."""
+        app = self.app
+        samples = getattr(self, "_picture_samples", None)
+        if samples is None:
+            samples = self._picture_samples = deque()
+        try:
+            proc = app.processor
+            busy = (bool(getattr(app.calibration, "_calibrating", False))
+                    or getattr(proc, "_plate_capture", None) is not None)
+            live = bool(app.camera.state.is_open and not app.cameras._camera_reconnecting
+                        and not app.recorder.is_playing)
+            if busy or not live:
+                samples.clear()
+                return None
+            from core.light_verdict import LIGHT_GRID_DS, zone_level
+            frame = self._latest_raw_frame()
+            s = proc.settings
+            roi = ((s.roi_x, s.roi_y, s.roi_w, s.roi_h)
+                   if s.roi_enabled and s.roi_w > 0 and s.roi_h > 0 else None)
+            plate = getattr(getattr(proc, "_fg_detector", None), "plate", None)
+            level = zone_level(frame, roi, 1, int(getattr(plate, "ds", 0) or LIGHT_GRID_DS))
+        except Exception:  # noqa: BLE001 - monitoring must never kill the loop
+            level = None
+        if level is not None:
+            samples.append((now, level))
+        while samples and samples[0][0] < now - LIGHT_CHANGE_S:
+            samples.popleft()
+        return (float(np.median([v for _t, v in samples]))
+                if len(samples) >= LIGHT_CHANGE_MIN_SAMPLES else None)
 
     def _plate_tick(self) -> None:
         """F2 (Plan Cordée rev 2, C5 ②): the « empty wall » status line updates itself (1 Hz), so a plate

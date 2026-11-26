@@ -1275,13 +1275,22 @@ def build_identity_slot_controls(gui: Any):
 HEALTH_LINE_WAITING = "NOT CHECKED - the health line starts with the app's first second"
 
 
+def health_band_height(lines: int = 2, line_h: float = 0.0) -> int:
+    """H2 follow-up: the band's height for ``lines`` lines of text (two: its normal height; a third only on a
+    window narrower than the line's instruction).  ``line_h``: one line's drawn height (0: the font's 13 px)."""
+    line_h = line_h or int(13 * _dpi_scale + 0.5)
+    return max(scaled(32), int(scaled(5) + lines * line_h + 1))
+
+
 def build_health_line(gui: Any):
     """H2 (#t-040 ①): the one health line, a band the width of the window in its state's colour -- green OK,
     blue-grey NOT CHECKED, orange WARN, red FAIL (readiness' STATUS_COLORS) -- to be read from across the room;
     its text names the worst source and its one instruction (core/ops_monitor.py health_line).  Painted by
-    gui.show_health_line from the runtime's api.HealthLine, once a second."""
+    gui.show_health_line from the runtime's api.HealthLine, once a second.  H2 follow-up: the text is fitted to the
+    band (ui/line_fit.py), wrapping onto a second line when its instruction does not fit one: the band holds two
+    (its text starts scaled(5) down: scaled(30) was 1-2 px short of two lines at every scale)."""
     from core.ops_monitor import STATUS_COLORS
-    with dpg.child_window(tag="health_line_window", autosize_x=True, height=scaled(30), border=False,
+    with dpg.child_window(tag="health_line_window", autosize_x=True, height=health_band_height(), border=False,
                           no_scrollbar=True):
         dpg.add_text(HEALTH_LINE_WAITING, tag="health_line_text", color=(0, 0, 0))
     gui._health_themes = {}
@@ -1302,7 +1311,7 @@ def build_alerts_strip(gui: Any):
     The Track-C feeders that push these are gated (not batch 1); the strip + the
     gui.push_alert/clear_alert API exist now so those fixes have a home."""
     with dpg.group(horizontal=True):
-        dpg.add_text("Alerts:", color=TEXT_DIM)
+        dpg.add_text("Alerts:", tag="alerts_label", color=TEXT_DIM)   # H2: also the GUI's text-metrics ruler
         dpg.add_text("(none)", tag="alerts_text", color=TEXT_HINT)
 
 
