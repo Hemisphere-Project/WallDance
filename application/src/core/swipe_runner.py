@@ -698,7 +698,10 @@ def run_swipe(images: Sequence[np.ndarray], observations: Sequence[Any], plan: C
     how often it does) go to ``Tally.add`` / ``decide`` when ``core.swipe`` takes them (its frame weighting).
     ``exclusion``: boxes in the operator's excluded cells are dropped before scoring (``ExclusionCells``).
     ``max_s``: a ceiling on the whole run (``core.config.SWIPE_RUN_MAX_S`` in the app): past it the run stops at
-    the next frame and gives no verdict (``timed_out``) rather than running on."""
+    the next frame and gives no verdict (``timed_out``) rather than running on.
+
+    A verdict stands only on every setting scored on every frame: a setting whose run stopped part-way without
+    being cancelled is left out like one that failed (the live setting's: no verdict)."""
     p = params or SwipeParams()
     out = SwipeOutcome(current, None, skipped=list(plan.skipped), frames=len(images), lost_frames=lost_frames)
     tallies: Dict[Candidate, Tally] = {}
@@ -724,6 +727,8 @@ def run_swipe(images: Sequence[np.ndarray], observations: Sequence[Any], plan: C
             if run.error == "cancelled":
                 out.cancelled = not out.timed_out
                 break
+            if not run.error and len(run.boxes) < len(images):
+                run.error = f"ran {len(run.boxes)} / {len(images)} frames"
             if run.error:
                 if cand == current:          # nothing to compare the others with: stop here
                     out.live_error = run.error

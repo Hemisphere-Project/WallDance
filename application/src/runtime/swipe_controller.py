@@ -2,8 +2,10 @@
 
 The operator asks for it during the dancers' warmup (« Try other settings »).  The controller
 
-1. waits until the pipeline's tap (``FrameProcessor._swipe_tap``) holds enough frames where the live setting
-   leaves a dancer without a box (« collecting 12 / 40 »);
+1. waits until the pipeline's tap (``FrameProcessor._swipe_tap``) holds enough frames with a dancer on the wall
+   (``SwipeParams.frames``, one per ``min_gap_s``: « collecting 12 / 150 frames with a dancer on the wall »),
+   ``collect_timeout_s`` at most: then it runs on what it holds only with at least ``MIN_SHARE`` of them, and
+   otherwise ends without a verdict (no fault: the dancing was too short);
 2. runs those frames through each candidate setting, one engine at a time (``core.swipe_runner``:
    « trying l @ 1920 x 1056 (2/3) »), its inferences paced one per live frame, in the loop's slack, the run
    phase bounded by ``core.config.SWIPE_RUN_MAX_S``;
@@ -39,8 +41,24 @@ from core.swipe import Candidate, SwipeParams
 from core.swipe_runner import (SWIPE_MODELS, CandidateRunner, ExclusionCells, SwipeInput, SwipeOutcome,
                                install_capture_guards, plan_candidates, recommended_conf, run_swipe)
 
-IDLE, COLLECTING, RUNNING, DONE, CANCELLED, DROPPED, ERROR = (
-    "idle", "collecting", "running", "done", "cancelled", "dropped", "error")
+IDLE, COLLECTING, RUNNING, DONE, CANCELLED, DROPPED, ERROR, NO_VERDICT = (
+    "idle", "collecting", "running", "done", "cancelled", "dropped", "error", "no_verdict")
+# A verdict stands on at least this share of SwipeParams.frames, for every setting: the gate holds at 150 frames,
+# its two safety clauses still at 120, and at 90 a worse setting is named on mur2 8 (core/REPORT_FIX, 26/11).
+MIN_SHARE = 0.8
+_MINUTES = {1.0: "a minute", 1.5: "a minute and a half", 2.0: "two minutes", 2.5: "two and a half minutes",
+            3.0: "three minutes", 3.5: "three and a half minutes", 4.0: "four minutes"}
+
+
+def min_frames(p: SwipeParams) -> int:
+    """The fewest frames a verdict may stand on (``MIN_SHARE`` of ``p.frames``, rounded up)."""
+    return max(1, -(-int(p.frames) * int(round(MIN_SHARE * 100)) // 100))
+
+
+def dancing_needed(p: SwipeParams) -> str:
+    """How much dancing fills the pool, in words: « about two and a half minutes »."""
+    m = round(2.0 * float(p.frames) * float(p.min_gap_s) / 60.0) / 2.0
+    return "about " + _MINUTES.get(m, f"{m:g} minutes")
 
 
 @dataclass(frozen=True)
@@ -128,7 +146,7 @@ class SwipeController:
                  on_result: Callable[[Dict[str, Any], str], None] = lambda r, e: None,
                  runner_factory: Callable[[SwipeInput, Any], Any] = default_runner_factory,
                  params: Optional[SwipeParams] = None, models: Sequence[str] = SWIPE_MODELS,
-                 collect_timeout_s: float = 120.0, pace: bool = True, pace_s: Optional[float] = None,
+                 collect_timeout_s: float = 190.0, pace: bool = True, pace_s: Optional[float] = None,
                  run_max_s: Optional[float] = None, verdict_max_age_s: Optional[float] = None,
                  poll_s: float = 0.25,
                  engine_exists: Callable[[str], bool] = os.path.exists,
@@ -238,6 +256,8 @@ class SwipeController:
         self._say(state, text, 1.0 if state == DONE else self.progress)
         if state == DONE and outcome is not None:
             self.on_result(outcome.to_dict(), "")
+        elif state == NO_VERDICT:                   # not a fault: the sentence says what to do
+            self.on_result({}, text)
         else:
             self.on_result({}, f"swipe {state}: {text}")
         say(f"[Swipe] {state}: {text}")
@@ -262,8 +282,8 @@ class SwipeController:
                 why = self._changed(live0)
                 if why:
                     return self._end(DROPPED, why)
-                frames, lost, prog, ready = proc.swipe_snapshot()
-                text = f"collecting {lost} / {p.frames} frames where a dancer has no box"
+                frames, lost, prog, ready = proc.swipe_snapshot()      # lost: information only
+                text = f"collecting {len(frames)} / {p.frames} frames with a dancer on the wall"
                 if text != last:
                     self._say(COLLECTING, text, 0.3 * prog)
                     last = text
@@ -271,10 +291,13 @@ class SwipeController:
                     break
                 waited = self.clock() - t0
                 if waited >= self.collect_timeout_s:
-                    if frames:
-                        note = (f"after {waited:.0f} s only {lost} frames with a dancer bare: "
-                                f"{len(frames) - lost} covered ones fill in")
+                    if len(frames) >= min_frames(p):
+                        note = f"the verdict stands on {len(frames)} / {p.frames} frames"
                         break
+                    if frames:
+                        return self._end(NO_VERDICT, f"only {len(frames)} / {p.frames} frames with a dancer on "
+                                                     f"the wall in {waited:.0f} s - the swipe needs "
+                                                     f"{dancing_needed(p)} of dancing; press again later")
                     return self._end(ERROR, f"no frame with a dancer on the wall in {waited:.0f} s "
                                             "(RUN on, the empty-wall plate valid?)")
                 self._cancel.wait(self.poll_s)
@@ -317,9 +340,9 @@ class SwipeController:
                 return self._end(DROPPED, why)
             if outcome.live_error:
                 return self._end(ERROR, f"the live setting could not be re-run: {outcome.live_error}")
-            if outcome.timed_out:
-                return self._end(ERROR, f"no verdict: the swipe ran over {self.run_max_s:.0f} s (the live loop "
-                                        "left it little room) - run it again")
+            if outcome.timed_out:                   # no verdict on part of the frames: none at all
+                return self._end(NO_VERDICT, f"no verdict: the swipe ran over {self.run_max_s:.0f} s (the live "
+                                             "loop left it little room) - run it again")
             if outcome.result is None:
                 errs = "; ".join(f"{r.candidate.label}: {r.error}" for r in outcome.runs if r.error)
                 return self._end(ERROR, f"no setting could be scored ({errs or 'nothing ran'})")

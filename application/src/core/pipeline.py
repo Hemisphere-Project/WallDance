@@ -870,7 +870,8 @@ class FrameProcessor:
         return self._swipe_collector
 
     def swipe_snapshot(self) -> Tuple[list, int, float, bool]:
-        """(kept frames, lost frames, progress 0..1, ready) -- consistent, for the swipe's worker thread.
+        """(kept frames, of which the live setting left a dancer bare -- information only, progress 0..1 (kept /
+        ``SwipeParams.frames``), ready) -- consistent, for the swipe's worker thread.
 
         Only frames the CURRENT live setting produced (model object, input, ROI, plate: the tap's key) and
         younger than the collector's ``max_age_s`` on the loop's clock: the collector itself drops old frames
@@ -907,8 +908,9 @@ class FrameProcessor:
         """Offer this frame to the swipe's collector: its foreground, the live boxes, and the raw frame as a
         callable the collector calls only when it keeps the frame (the copy is made then, never for a
         refused frame).  Collects whenever the foreground is valid, so a swipe asked for later starts from
-        frames already there; every frame with a dancer group is offered (the collector counts how often the
-        live setting loses one).  Cost when nothing is kept: microseconds (``timing['swipe_tap']``, ms)."""
+        frames already there; every frame with a dancer group is offered and the newest ones, ``min_gap_s``
+        apart, are kept whatever the live setting did on them (« lost » is only a flag: how often it leaves a
+        dancer bare).  Cost when nothing is kept: microseconds (``timing['swipe_tap']``, ms)."""
         t0 = time.perf_counter()
         try:
             col = self.swipe_collector

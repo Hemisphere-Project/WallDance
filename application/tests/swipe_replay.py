@@ -3,8 +3,8 @@
 Plays a take through the real ``FrameProcessor`` on the GPU/TensorRT show path, at the setting the take was
 recorded with (its ``.meta`` config; ``--config latest`` = the project's newest saved config) and the
 empty-wall plate the app had loaded then, feeding the swipe's collector exactly as the app does (the tap in
-``FrameProcessor``), until enough frames where the live setting leaves a dancer without a box are kept
-(``SwipeParams.frames``).  Then it
+``FrameProcessor``), until the pool holds ``SwipeParams.frames`` frames with a dancer on the wall (150, 1 s
+apart: about two and a half minutes of dancing).  Then it
 runs the same candidate runner and ``core.swipe.decide`` the app runs, prints the table and writes JSON.
 
     python tests/swipe_replay.py --project jeudi0809_mur2 --slot 8 --engine-dir models --out swipe.json
@@ -168,7 +168,8 @@ def print_table(outcome, args):
     d = outcome.to_dict()
     say("")
     say(f"current setting : {d['current']}")
-    say(f"kept frames     : {d['frames']} ({d['lost_frames']} with a dancer bare at the live setting)")
+    say(f"kept frames     : {d['frames']} with a dancer on the wall ({d['lost_frames']} of them with a dancer "
+        f"bare at the live setting: information)")
     say(f"verdict         : {d.get('reason', '-')}")
     if d.get("live_error"):
         say(f"no verdict      : the live setting could not be re-run: {d['live_error']}")
@@ -212,7 +213,7 @@ def run_sequential(args):
     t_wall0 = time.perf_counter()
     played = 0
     fg_valid = 0
-    ready_at = None                       # frames played when the lost pool filled
+    ready_at = None                       # frames played when the pool filled
     play_wall = None
     while max_frames is None or played < max_frames:
         ok, frame = cap.read()
@@ -246,6 +247,10 @@ def run_sequential(args):
         f"foreground valid on {fg_valid}; kept {len(frames)} frames, {lost} lost, ready={ready}")
     if not frames:
         sys.exit("no frame kept: no valid foreground with a dancer")
+    from runtime.swipe_controller import min_frames
+    if len(frames) < min_frames(col.params):
+        say(f"[swipe] only {len(frames)} / {col.params.frames} frames: under the app's floor "
+            f"({min_frames(col.params)}), where the app gives no verdict -- run here for diagnosis only")
     images = [f.image for f in frames]
     observations = [f.obs for f in frames]
     abs_frames = [int(round(f.t * fps)) for f in frames]
@@ -469,7 +474,7 @@ def run_concurrent(args):
         else:
             nxt = time.perf_counter()                       # fell behind: no burst to catch up
     cap.release()
-    if ctl.state == "collecting":                    # the take ended before enough lost frames
+    if ctl.state == "collecting":                    # the take ended before the pool filled
         say("[swipe-live] the take ended while collecting: cancelled")
         ctl.cancel()
     ctl.join(60)

@@ -354,18 +354,20 @@ FOREGROUND_ENABLED = True
 FOREGROUND_CLIP_AWARE = True
 PLATE_CAPTURE_FRAMES = 40               # 2 s at 20 fps
 # Settings swipe (Plan Cordée P5, core/swipe.py + core/swipe_runner.py): while the foreground is valid the
-# pipeline keeps the frames a swipe runs on -- the newest frames where the live setting leaves a dancer without a
-# box, and a smaller set of frames where it covers every dancer, one of each kind per SwipeParams.min_gap_s at most
-# (their counts and spacing are core.swipe.SwipeParams' frames / covered_frames / min_gap_s; the tap copies a frame
-# only when it keeps it: ~2.3 MB for a mono IDS frame) -- so a swipe asked for during the warmup starts from frames
-# already there.  Project key swipe_collect; False = no tap, no frames kept.
+# pipeline keeps the frames a swipe runs on -- the newest frames with a dancer on the wall, whatever the live
+# setting did on them, one per SwipeParams.min_gap_s at most (SwipeParams.frames = 150, 1 s apart: two and a half
+# minutes of dancing fill the pool; the tap copies a frame only when it keeps it: ~2.3 MB for a mono IDS frame,
+# ~360 MB for a full pool) -- so a swipe asked for during the warmup starts from frames already there.  Project
+# key swipe_collect; False = no tap, no frames kept.
 SWIPE_COLLECT = True
 # The swipe's candidate inferences run beside the live loop: back to back they doubled the live inference on the
 # show laptop (15 -> 38 ms p50, 26/11), so each starts right after a live network pass and at least this long
 # after the previous one: about one per live frame at 20 fps (the laptop's run phase: ~12 s for three settings).
 SWIPE_PACE_S = 0.05
 # A ceiling on a swipe's run phase (after the frames are collected): past it the swipe stops with « no verdict »
-# rather than running on beside the show.  The run phase took 12-18 s on the laptop and mgr-ran (26/11).
+# rather than running on beside the show (never a verdict on part of the frames).  150 frames x 3 settings at
+# ~66 ms a candidate-frame all in (the laptop, pace 50 ms, 26/11) is ~30 s, and the pacing holds it to one
+# inference per live frame (450 / 17 fps = 27 s at least): 60 s leaves twice that.
 SWIPE_RUN_MAX_S = 60.0
 # A verdict older than this is no longer offered (no Apply, no readiness row): the light, the wall and the
 # dancers move on.  A warmup's verdict is applied in STANDBY in the minutes after it; an afternoon rehearsal's

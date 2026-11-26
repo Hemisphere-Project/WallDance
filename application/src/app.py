@@ -2677,8 +2677,9 @@ class WallDanceApp:
             return
         note = ("" if self.system_state == SystemState.RUN
                 else " - frames are kept only while YOLO runs: press RUN")
-        self.bus.publish(api.Toast("Swipe: keeping frames where a dancer has no box, then trying the "
-                                   "other settings; the show runs on" + note, 5.0, (120, 170, 220)))
+        self.bus.publish(api.Toast("Swipe: keeping 150 frames with a dancer on the wall (about two and a half "
+                                   "minutes of dancing), then trying the other settings; the show runs on" + note,
+                                   5.0, (120, 170, 220)))
 
     def _cb_apply_settings_swipe(self):
         """Switch to the swipe's winner through the model-switch path (as the model combo / Image Size do with

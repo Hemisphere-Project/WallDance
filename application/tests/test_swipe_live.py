@@ -183,11 +183,11 @@ def test_a_refused_frame_is_never_copied():
     proc._swipe_collector = Spy(SwipeParams(frames=3))
     frame = np.zeros((40, 30, 3), np.uint8).view(_CountingFrame)
     _CountingFrame.copies = 0
-    for i in range(3):                                             # fills the lost pool: 3 copies
+    for i in range(3):                                             # fills the pool: 3 copies
         clock["t"] = float(i)
         _tap(proc, frame, _fg((15, 20, 900)))
     assert proc.swipe_snapshot()[3] and _CountingFrame.copies == 3
-    for i in range(40):                                            # pool full, a bare dancer on every frame
+    for i in range(40):                                            # pool full, 2 s of a dancer at 20 fps
         clock["t"] = 10.0 + 0.05 * i
         _tap(proc, frame, _fg((15, 20, 900)))
     kept = sum(k for _f, k in offers)
@@ -695,13 +695,13 @@ def test_the_controller_collects_runs_and_reports_a_switch():
     assert c.status_dict()["switch"]
 
 
-def test_the_controller_waits_for_lost_frames_and_can_be_cancelled():
+def test_the_controller_waits_for_frames_with_dancers_and_can_be_cancelled():
     proc = _FakeProc([], 0, ready=False)
     live = {"v": _live()}
     c, ev = _controller(proc, live, _FakeRunner())
     c.start()
     time.sleep(0.05)
-    assert c.busy and c.state == "collecting" and f"collecting 0 / {SwipeParams().frames}" in c.text
+    assert c.busy and c.state == "collecting" and c.text == "collecting 0 / 150 frames with a dancer on the wall"
     assert c.start() == "a swipe is already running"
     c.cancel()
     c.join(5)
@@ -798,15 +798,74 @@ def test_the_controller_refuses_without_plate_or_tensorrt():
     assert c.start() == "no model loaded"
 
 
-def test_after_a_timeout_covered_frames_fill_in():
+def _dancing(n, lost=5):
     from core.swipe import SwipeFrame
-    frames = [SwipeFrame(float(i), np.zeros((1824, 1260), np.uint8), Observation(groups=[DANCER]), i < 5)
-              for i in range(30)]
-    proc = _FakeProc(frames, 5, ready=False)
+    return [SwipeFrame(float(i), np.zeros((1824, 1260), np.uint8), Observation(groups=[DANCER]), i < lost)
+            for i in range(n)]
+
+
+def test_the_collection_waits_190_s_and_needs_four_fifths_of_the_frames():
+    from runtime.swipe_controller import SwipeController, dancing_needed, min_frames
+    c = SwipeController(processor=lambda: None, live=lambda: None, engine_path=str, plate_ready=lambda: True)
+    assert c.collect_timeout_s == 190.0
+    assert min_frames(SwipeParams()) == 120 and dancing_needed(SwipeParams()) == "about two and a half minutes"
+
+
+def test_at_the_timeout_four_fifths_of_the_frames_still_give_a_verdict():
+    proc = _FakeProc(_dancing(120), 5, ready=False)
     c, ev = _controller(proc, {"v": _live()}, _FakeRunner(), collect_timeout_s=0.05)
     c.start()
     c.join(5)
-    assert c.state == "done" and "only 5 frames with a dancer bare" in c.text
+    assert c.state == "done" and c.text.endswith("(the verdict stands on 120 / 150 frames)")
+    assert c.outcome.frames == 120
+
+
+def test_at_the_timeout_fewer_frames_end_without_a_verdict_and_without_a_fault():
+    """Under 80 % of the frames the gate does not hold (a worse setting named on mur2 8 at 90): no verdict, one
+    plain sentence -- not a fault (no readiness row), nothing run."""
+    runner = _FakeRunner()
+    proc = _FakeProc(_dancing(119), 5, ready=False)
+    live = {"v": _live()}
+    c, ev = _controller(proc, live, runner, collect_timeout_s=0.05)
+    c.start()
+    c.join(5)
+    text = ("only 119 / 150 frames with a dancer on the wall in 0 s - the swipe needs about two and a half "
+            "minutes of dancing; press again later")
+    assert c.state == "no_verdict" and c.text == text and c.outcome is None and runner.calls == []
+    assert ev["result"][-1] == ({}, text)
+    assert c.fault is None and c.readiness(plate_ready=True, live_now=live["v"]) is None
+
+
+def test_at_the_timeout_no_frame_at_all_says_where_to_look():
+    proc = _FakeProc([], 0, ready=False)
+    c, ev = _controller(proc, {"v": _live()}, _FakeRunner(), collect_timeout_s=0.05)
+    c.start()
+    c.join(5)
+    assert c.state == "error" and c.text == ("no frame with a dancer on the wall in 0 s (RUN on, the empty-wall "
+                                             "plate valid?)")
+
+
+def test_a_setting_cut_short_never_stands_in_a_verdict():
+    """A run that stopped part-way without being cancelled counts as failed: left out (the live one: no verdict)."""
+    class _Short(_FakeRunner):
+        def __init__(self, short):
+            super().__init__()
+            self.short = short
+
+        def run(self, images, cand, engine_path, **kw):
+            out = super().run(images, cand, engine_path, **kw)
+            if cand.model == self.short.model and cand.shape == self.short.shape:
+                out.boxes, out.ms = out.boxes[:-5], out.ms[:-5]
+            return out
+    frames = _frames()
+    plan = CandidatePlan([X1280, L1920, L1760])
+    out = run_swipe([f.image for f in frames], [f.obs for f in frames], plan, X1280, _Short(L1920),
+                    lambda c: c.engine_file, SwipeParams())
+    run = next(r for r in out.runs if r.candidate == L1920)
+    assert run.error == "ran 25 / 30 frames" and out.result is not None and out.result.winner != L1920
+    out = run_swipe([f.image for f in frames], [f.obs for f in frames], plan, X1280, _Short(X1280),
+                    lambda c: c.engine_file, SwipeParams())
+    assert out.result is None and out.live_error == "ran 25 / 30 frames"
 
 
 def test_pacing_waits_for_a_live_pass_and_the_interval():
@@ -914,7 +973,8 @@ def test_the_run_phase_has_a_ceiling():
     c, ev = _controller(proc, {"v": _live()}, _Slow(), run_max_s=0.06)
     c.start()
     c.join(5)
-    assert c.state == "error" and c.text.startswith("no verdict: the swipe ran over 0 s") and c.outcome is None
+    assert c.state == "no_verdict" and c.text.startswith("no verdict: the swipe ran over 0 s") and c.outcome is None
+    assert c.fault is None and c.readiness(plate_ready=True, live_now=_live()) is None        # not a fault
 
 
 def test_the_referee_judges_at_the_shows_confidence():

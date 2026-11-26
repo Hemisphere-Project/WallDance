@@ -292,9 +292,9 @@ class ApplyKnownNTune(Command):
 
 @dataclass(frozen=True)
 class RunSettingsSwipe(Command):
-    """P5 settings swipe: during the warmup, run the kept frames where the live setting leaves a dancer
-    without a box through the other model / input settings (worker thread; the show runs on). Reports
-    SettingsSwipeProgress then a SettingsSwipeResult; switches nothing (ApplySettingsSwipe)."""
+    """P5 settings swipe: during the warmup, run the kept frames with a dancer on the wall (150, 1 s apart)
+    through the other model / input settings (worker thread; the show runs on). Reports SettingsSwipeProgress
+    then a SettingsSwipeResult; switches nothing (ApplySettingsSwipe)."""
     pass
 
 
@@ -836,9 +836,9 @@ class KnownNResult(Event):
 
 @dataclass(frozen=True)
 class SettingsSwipeProgress(Event):
-    """P5 swipe progress: state (idle | collecting | running | done | cancelled | dropped | error), the
-    plain line (« collecting 12 / 30 frames where a dancer has no box », « trying l @ 1920 x 1056 (3/6) »)
-    and 0..1."""
+    """P5 swipe progress: state (idle | collecting | running | done | cancelled | dropped | error |
+    no_verdict), the plain line (« collecting 12 / 150 frames with a dancer on the wall », « trying l @ 1920 x
+    1056 (3/6) ») and 0..1."""
     state: str
     text: str
     progress: float = 0.0
