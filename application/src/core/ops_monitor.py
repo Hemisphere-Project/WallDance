@@ -828,6 +828,25 @@ class HealthMonitor:
 
         return out
 
+    def plate_tick(self, plate_stale: str = "") -> List[Alert]:
+        """F2 (Plan Cordée rev 2, C5 ②): a stale empty-wall snapshot is a persistent alert.  ``plate_stale``:
+        "" while the snapshot holds, else why it does not (the foreground latched « plate stale » at a time,
+        or the camera was changed by hand); both hold until a new snapshot.  One alert per episode, kept in
+        the alerts strip (ui.adapter.STRIP_ALERTS); cleared when a new snapshot ends the episode."""
+        out: List[Alert] = []
+        alerted = getattr(self, "_plate_stale_alerted", False)
+        if plate_stale and not alerted:
+            self._plate_stale_alerted = True
+            out.append(Alert(
+                "plate_stale",
+                f"The empty-wall snapshot no longer matches the wall ({plate_stale}): the foreground is not "
+                f"to be trusted until a new one - {LIGHT_REMEDY}",
+                {"why": str(plate_stale)}))
+        elif not plate_stale and alerted:
+            self._plate_stale_alerted = False
+            self.cleared.append("plate_stale")
+        return out
+
 
 # --------------------------------------------------------------------------
 # Loop watchdog

@@ -32,7 +32,7 @@ from ui.calibrate_all_wizard import CalibrateAllWizard
 from ui.key_guard import typed_into_a_field
 
 # Ops alerts that also stay in the alerts strip until their api.AlertCleared (the others are toasts)
-STRIP_ALERTS = ("light_changed",)
+STRIP_ALERTS = ("light_changed", "plate_stale")    # plate_stale: F2, until a new empty-wall snapshot
 
 
 # REQ-1 import status -> toast (duration, color) per ImportProgress.state.

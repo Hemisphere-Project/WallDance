@@ -1320,6 +1320,7 @@ class MainLoop:
                            ph * float(app.settings.person_height_max_ratio))
             height_median = float(np.median([h for _t, h in self._height_samples]))
         light_median, light_ref = self._light_median(now)
+        self._plate_tick()
         try:
             alerts = app._health.tick(
                 now,
@@ -1394,6 +1395,30 @@ class MainLoop:
                   if len(self._light_samples) >= LIGHT_CHANGE_MIN_SAMPLES else None)
         app._light_ratio = median            # the pre-show check's empty-wall row reads it
         return median, str(getattr(proc, "plate_stamp", "") or "")
+
+    def _plate_tick(self) -> None:
+        """F2 (Plan Cordée rev 2, C5 ②): the « empty wall » status line updates itself (1 Hz), so a plate
+        found stale shows without an operator action and, latched, stays until a new plate; a stale
+        snapshot is also a persistent alert (HealthMonitor.plate_tick).  Foreground off: neither."""
+        app = self.app
+        try:
+            proc = app.processor
+            det = getattr(proc, "_fg_detector", None)
+            why = ""
+            if det is not None and bool(getattr(proc.settings, "fg_enabled", False)):
+                if getattr(proc, "_plate_invalid", None):
+                    why = str(proc._plate_invalid)
+                elif getattr(det, "stale_since", ""):
+                    why = f"stale since {det.stale_since}"
+            for alert in app._health.plate_tick(why):
+                self._emit_ops_alert(alert)
+            text = app._plate_status_text()
+        except Exception as e:  # noqa: BLE001 - monitoring must never kill the loop
+            print(f"[Alert] plate tick failed: {e}")
+            return
+        if app.bus.ui_ready and text != getattr(self, "_plate_text", None):
+            self._plate_text = text
+            app._publish_plate_status()
 
     def _poll_osc_alert(self) -> None:
         """Surface a (rate-limited) OSC send failure as an operator alert.

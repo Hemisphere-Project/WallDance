@@ -1350,6 +1350,8 @@ class FrameProcessor:
         if last is not None and not last.valid:
             return {"plate size": "size", "plate stale": "stale", "plate invalid": "stale",
                     "plate camera": "stale"}.get(last.reason, "ready")
+        if getattr(det, "stale_latched", False):    # F2: found stale, it stays so until a new plate
+            return "stale"
         return "ready"
 
     def start_plate_capture(self, n_frames: int, done) -> None:

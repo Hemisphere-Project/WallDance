@@ -235,6 +235,24 @@ class FgParams:
     # change that left a lasting difference fades in ~update_every / fps / update_alpha s (~25 s).
     update_every: int = 10
     update_alpha: float = 0.02
+    # F2 (Plan Cordée rev 2, C2 ④): the slow update never absorbs a still dancer.  A foreground component
+    # that lies mostly inside the protect boxes (a live slot, a backed belt, a recent skeleton: a person) is
+    # HELD, and stays held while it stays on the wall -- pixel by pixel, and as a component that mostly
+    # overlaps what was held -- even once YOLO and her slot have let her go.  The update skips the held pixels
+    # of the last ``hold_memory`` frames, grown by ``hold_grow`` downscaled px (her sub-threshold rim).  A
+    # difference no person stood in (a lamp, a shadow) is absorbed as before.  False: the rule shipped before.
+    hold_groups: bool = True
+    hold_seed_share: float = 0.5
+    hold_memory: int = 20
+    hold_grow: int = 2
+    # ... and a group carried by memory alone (no protect box on it now) must be body-sized: at least this
+    # share of the protect boxes' area (the pipeline's boxes are 0.6 h x 1.2 h, so 0.07 is about 0.05 h^2, a
+    # sixth of what a dancer's group covers): a speck or a knot that touched her is not kept after she left.
+    hold_min_box_share: float = 0.07
+    # F2 (C5 ②): a plate found stale stays « stale » until a new plate: a leaky count of stale frames (+1 a
+    # stale frame, -0.5 a valid one) latches at ``stale_latch_frames`` (about 1 s at 20 fps of a stale
+    # scene; a frame or two of a passer-by does not).  Nothing but a new detector (a new plate) unlatches it.
+    stale_latch_frames: int = 20
 
 
 @dataclass
@@ -291,6 +309,15 @@ class ForegroundDetector:
         self._cur_at: Tuple[int, int] = (0, 0)
         self._frames = 0
         self.last_thr = 0.0       # the threshold of the last processed frame (DN, downscaled)
+        # F2: the stale latch (wall time it latched, "" = never) and the held groups (the update_plate call at
+        # which each plate pixel was last held)
+        self.stale_since = ""
+        self._stale_score = 0.0
+        self._lab: Optional[np.ndarray] = None
+        self._lab_stats: Optional[np.ndarray] = None
+        self._held_clock = 0
+        self._held_last = np.full(self._live.shape, -(2 ** 30), np.int32)
+        self._held_box_area = 0.0     # the protect boxes' median area (downscaled px), last seen
 
     def matches(self, frame_w: int, frame_h: int) -> bool:
         return (int(frame_w), int(frame_h)) == tuple(self.plate.frame_size)
@@ -364,14 +391,17 @@ class ForegroundDetector:
         x0, y0 = float(gx0 * ds), float(gy0 * ds)
         if ratio > p.max_fg_ratio:
             self.stale_frames += 1
+            self._note_stale(True)
             self.last = FgFrame(None, x0, y0, ds, gain=gain, fg_ratio=ratio, valid=False,
                                 reason="plate stale")
             return self.last
         self.stale_frames = 0
+        self._note_stale(False)
         # only now: a stale frame (someone right in front of the lens, a light change) must not
         # be blended into the plate -- it would leave the gain off for tens of seconds (§C.15)
         self._cur, self._cur_at, self._gain = cur, (gy0, gx0), gain
         n, lab, st, cen = cv2.connectedComponentsWithStats(m, connectivity=8)
+        self._lab, self._lab_stats = lab, st      # F2: this frame's components, for update_plate's held groups
         blobs: List[FgBlob] = []
         ad = np.abs(cur - gain * B)
         order = sorted(range(1, n), key=lambda j: -st[j, cv2.CC_STAT_AREA])
@@ -418,16 +448,21 @@ class ForegroundDetector:
     def update_plate(self, protect: Sequence[Tuple[float, float, float, float]] = ()) -> bool:
         """Selective plate update after ``process``: every ``update_every`` calls, blend the
         analysed area toward the current frame (brightness-normalised) except inside the
-        ``protect`` boxes (x0, y0, x1, y1 original px: the dancers).  Returns True when it ran.
-        A frame ``process`` rejected (stale, other crop, empty ROI) is never blended in; it still
-        counts toward the cadence."""
+        ``protect`` boxes (x0, y0, x1, y1 original px: the dancers) and the held groups (F2: a
+        still dancer YOLO lost, ``_track_held``, kept up to date on every call).  Returns True when
+        it ran.  A frame ``process`` rejected (stale, other crop, empty ROI) is never blended in; it
+        still counts toward the cadence.  F2: each analysed frame is used once -- a call with no
+        ``process`` before it (the pipeline refused the plate: changed by hand, another exposure)
+        blends nothing, instead of the last analysed frame again."""
         self._frames += 1
         p = self.p
-        if self._cur is None or p.update_alpha <= 0 or self._frames % max(1, p.update_every):
+        held = self._track_held(protect) if self._cur is not None and p.hold_groups else None
+        fresh, self._cur = self._cur, None
+        if fresh is None or p.update_alpha <= 0 or self._frames % max(1, p.update_every):
             return False
         ds = self.plate.ds
         gy0, gx0 = self._cur_at
-        cur = self._cur / max(1e-6, self._gain)
+        cur = fresh / max(1e-6, self._gain)
         ph, pw = cur.shape
         B = self._live[gy0:gy0 + ph, gx0:gx0 + pw]
         ph, pw = min(ph, B.shape[0]), min(pw, B.shape[1])
@@ -438,7 +473,79 @@ class ForegroundDetector:
             a0, a1, b0, b1 = max(0, a0), min(pw, a1), max(0, b0), min(ph, b1)
             if a1 > a0 and b1 > b0:
                 keep[b0:b1, a0:a1] = True
+        if held is not None:
+            keep |= held[:ph, :pw]
         upd = B[:ph, :pw]
         blend = upd + p.update_alpha * (cur[:ph, :pw] - upd)
         upd[~keep] = blend[~keep]
         return True
+
+    # ------------------------------------------------------------------ F2 (Plan Cordée rev 2)
+    @property
+    def stale_latched(self) -> bool:
+        """« Plate stale » was seen long enough to latch: it stays until a new plate (a new detector)."""
+        return bool(self.stale_since)
+
+    def _note_stale(self, stale: bool) -> None:
+        """C5 ②: the leaky count of stale frames; latched once, never unlatched by the scene."""
+        self._stale_score = self._stale_score + 1.0 if stale else max(0.0, self._stale_score - 0.5)
+        if stale and not self.stale_since and self._stale_score >= max(1, int(self.p.stale_latch_frames)):
+            self.stale_since = time.strftime("%H:%M:%S")
+
+    def _track_held(self, protect: Sequence[Tuple[float, float, float, float]]) -> np.ndarray:
+        """C2 ④: this frame's held groups (every frame, from ``update_plate``) -> the pixels the slow update
+        must keep (bool, this crop's window): held within the last ``hold_memory`` frames, grown by
+        ``hold_grow``.  Held now: the components of the mask with at least ``hold_seed_share`` of their
+        pixels inside the protect boxes (a person) or, body-sized (``hold_min_box_share``), near the recently
+        held pixels (she stays, or sways); and the recently held pixels still foreground in a body-sized
+        component (she merged with something larger)."""
+        p, ds = self.p, self.plate.ds
+        gy0, gx0 = self._cur_at
+        last = self._held_last[gy0:gy0 + self._lab.shape[0], gx0:gx0 + self._lab.shape[1]]   # a view
+        ph, pw = last.shape
+        lab, st = self._lab[:ph, :pw], self._lab_stats
+        boxes = np.zeros((ph, pw), dtype=bool)
+        for x0, y0, x1, y1 in protect:
+            a0, a1 = int(x0 // ds) - gx0, int(math.ceil(x1 / ds)) - gx0
+            b0, b1 = int(y0 // ds) - gy0, int(math.ceil(y1 / ds)) - gy0
+            a0, a1, b0, b1 = max(0, a0), min(pw, a1), max(0, b0), min(ph, b1)
+            if a1 > a0 and b1 > b0:
+                boxes[b0:b1, a0:a1] = True
+        if len(protect):
+            sizes = sorted((x1 - x0) * (y1 - y0) for x0, y0, x1, y1 in protect)
+            self._held_box_area = float(sizes[len(sizes) // 2]) / (ds * ds)
+        now = self._held_clock = self._held_clock + 1
+        g = max(0, int(p.hold_grow))
+        mem = (now - 1 - last) <= p.hold_memory              # held within the last hold_memory calls
+        area = st[:, cv2.CC_STAT_AREA]
+        n = len(area)
+        big = area >= p.hold_min_box_share * self._held_box_area
+        comp = ((np.bincount(lab[boxes], minlength=n)[:n] >= p.hold_seed_share * area)
+                | (big & (np.bincount(lab[_grown(mem, g)], minlength=n)[:n] >= p.hold_seed_share * area)))
+        comp[0] = False
+        held_now = (lab > 0) & mem
+        if held_now.any():                                  # a held pixel stays held in a body-sized group only
+            ys, xs = np.nonzero(held_now)
+            small = ~big[lab[ys, xs]]
+            held_now[ys[small], xs[small]] = False
+        for k in np.flatnonzero(comp):                      # each held component, inside its own box
+            x, y, w, h = (int(v) for v in st[k, :4])
+            held_now[y:y + h, x:x + w] |= lab[y:y + h, x:x + w] == k
+        last[held_now] = now
+        return _grown((now - last) <= p.hold_memory, g)
+
+
+def _grown(mask: np.ndarray, g: int) -> np.ndarray:
+    """F2: ``mask`` (bool) dilated by a disc of radius ``g`` px, computed only around its set pixels."""
+    if g <= 0:
+        return mask
+    rows = np.flatnonzero(mask.any(1))
+    if not len(rows):
+        return mask
+    cols = np.flatnonzero(mask.any(0))
+    y0, y1 = max(0, int(rows[0]) - g), min(mask.shape[0], int(rows[-1]) + g + 1)
+    x0, x1 = max(0, int(cols[0]) - g), min(mask.shape[1], int(cols[-1]) + g + 1)
+    out = np.zeros_like(mask)
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * g + 1, 2 * g + 1))
+    out[y0:y1, x0:x1] = cv2.dilate(np.ascontiguousarray(mask[y0:y1, x0:x1]).view(np.uint8), k).astype(bool)
+    return out
