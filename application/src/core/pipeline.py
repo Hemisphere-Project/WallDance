@@ -514,6 +514,8 @@ class FrameProcessor:
         # wall time) and the original -> YOLO-input scale: the readiness "dancer size" row (D29)
         self.dancer_height: Optional[Tuple[float, int, float]] = None
         self.last_lb_scale: float = 0.0
+        self._camera_state = None           # X6: () -> (exposure_us | None, gain_db | None) of the camera now
+        self.plate_refusal: Optional[str] = None    # X6: why the plate was refused this frame
         # Raw detection heights (original-space px) BEFORE the size gate — the
         # height-staleness alarm must see what the gate would reject (⑤d)
         self.last_raw_det_heights: List[float] = []
@@ -1288,6 +1290,11 @@ class FrameProcessor:
     # ------------------------------------------------------------------
     # Clean-plate foreground ("background snapshot", core/foreground.py)
     # ------------------------------------------------------------------
+    def set_camera_state(self, provider) -> None:
+        """X6: ``provider() -> (exposure_us | None, gain_db | None)``, the camera now (None = auto or unknown).
+        The app installs one reading its camera; a replay one reading the take's .meta."""
+        self._camera_state = provider
+
     def invalidate_plate(self, reason: str) -> None:
         """X5 (Plan Cordée rev 2): the camera's exposure, gain or crop was changed by hand, so the
         empty-wall plate no longer describes the scene: the foreground is off (no veto, no hold) until a
@@ -1318,7 +1325,8 @@ class FrameProcessor:
             return "none"
         last = self.last_fg
         if last is not None and not last.valid:
-            return {"plate size": "size", "plate stale": "stale", "plate invalid": "stale"}.get(last.reason, "ready")
+            return {"plate size": "size", "plate stale": "stale", "plate invalid": "stale",
+                    "plate camera": "stale"}.get(last.reason, "ready")
         return "ready"
 
     def start_plate_capture(self, n_frames: int, done) -> None:
@@ -1402,6 +1410,19 @@ class FrameProcessor:
             from core.foreground import FgFrame
             self.last_fg = FgFrame(None, 0.0, 0.0, det.plate.ds, valid=False, reason="plate invalid")
             return None
+        # X6 ③: a plate from another exposure or gain is refused, with its reason, not scaled
+        self.plate_refusal = None
+        if self._camera_state is not None:
+            try:
+                exp_now, gain_now = self._camera_state()
+            except Exception:  # noqa: BLE001 - no camera state: no refusal
+                exp_now = gain_now = None
+            why = det.plate.camera_mismatch(exp_now, gain_now)
+            if why:
+                from core.foreground import FgFrame
+                self.plate_refusal = why
+                self.last_fg = FgFrame(None, 0.0, 0.0, det.plate.ds, valid=False, reason="plate camera")
+                return None
         t0 = time.perf_counter()
         det.p.clip_aware = bool(self.settings.fg_clip_aware)
         try:

@@ -597,6 +597,8 @@ class WallDanceApp:
         preview_w = int(CAMERA_WIDTH * PREVIEW_RENDER_SCALE)
         preview_h = int(CAMERA_HEIGHT * PREVIEW_RENDER_SCALE)
         self.processor.set_preview_size(preview_w, preview_h)
+        # X6: the camera's exposure / gain now, for refusing a plate taken at another (read each frame)
+        self.processor.set_camera_state(lambda: self.cameras.exposure_gain_now())
         # The preview never needs the full 20 fps (display only; tracking runs
         # on every frame): cap it by default, the operator toggle goes lower.
         self.processor.set_preview_fps_cap(PREVIEW_MAX_FPS)
@@ -1896,6 +1898,12 @@ class WallDanceApp:
                 return
             stamp = time.strftime("%Y%m%d_%H%M%S")
             plate.source = f"{source}:{self.configs._current_project}"
+            # X6 ②: the camera it was taken at, so a later exposure / gain / crop is refused, not scaled
+            exp, gain = self.cameras.exposure_gain_now()
+            s = self.settings
+            plate.camera = {"exposure_us": exp, "gain_db": gain, "crop": list(plate.frame_size),
+                            "roi": ([int(s.roi_x), int(s.roi_y), int(s.roi_w), int(s.roi_h)]
+                                    if s.roi_enabled else None)}
             try:
                 path = plate.save(os.path.join(plate_dir, f"plate_{stamp}.npz"))
                 latest = plate.save(os.path.join(plate_dir, "latest.npz"))

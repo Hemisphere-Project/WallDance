@@ -22,6 +22,7 @@ Pure numpy + OpenCV; ~1-2 ms per frame on the laptop CPU for a 1300x570 ROI.
 """
 from __future__ import annotations
 
+import json
 import math
 import time
 from dataclasses import dataclass, field
@@ -57,6 +58,23 @@ class CleanPlate:
     frames: int = 0
     created: str = ""
     source: str = ""
+    # X6 (Plan Cordée rev 2): the camera it was taken at -- exposure_us, gain_db (None = auto / unknown), crop
+    # (the frame size above) and the ROI [x, y, w, h].  Empty for a plate saved before 2026-11-26.
+    camera: dict = field(default_factory=dict)
+
+    def camera_mismatch(self, exposure_us: Optional[float], gain_db: Optional[float],
+                        tol_exposure: float = 0.10, tol_gain_db: float = 1.0) -> Optional[str]:
+        """X6 ③: why this plate does not describe a camera at ``exposure_us`` / ``gain_db``, or None.  A plate
+        from another exposure or gain is refused, not scaled (on 08/10 the 20:06 plate, taken at 25 ms, was
+        scaled onto takes at 8.8-12 ms).  Unknown on either side: no refusal."""
+        pe, pg = self.camera.get("exposure_us"), self.camera.get("gain_db")
+        if pe and exposure_us and abs(float(exposure_us) / float(pe) - 1.0) > tol_exposure:
+            return (f"plate taken at {float(pe) / 1000:.1f} ms, the camera is at {float(exposure_us) / 1000:.1f} ms"
+                    " - take the empty wall again")
+        if pg is not None and gain_db is not None and abs(float(gain_db) - float(pg)) > tol_gain_db:
+            return (f"plate taken at {float(pg):.1f} dB, the camera is at {float(gain_db):.1f} dB"
+                    " - take the empty wall again")
+        return None
 
     @classmethod
     def from_frames(cls, frames: Sequence[np.ndarray], source: str = "",
@@ -78,15 +96,23 @@ class CleanPlate:
         path.parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(path, plate=self.plate, sigma=self.sigma,
                             frame_size=np.array(self.frame_size), ds=self.ds,
-                            frames=self.frames, created=self.created, source=self.source)
+                            frames=self.frames, created=self.created, source=self.source,
+                            camera=np.array(json.dumps(self.camera or {})))
         return path
 
     @classmethod
     def load(cls, path) -> "CleanPlate":
         with np.load(Path(path), allow_pickle=False) as z:
+            camera = {}
+            if "camera" in z.files:      # X6: absent in a plate saved before 2026-11-26
+                try:
+                    camera = json.loads(str(z["camera"])) or {}
+                except ValueError:
+                    camera = {}
             return cls(plate=z["plate"].astype(np.float32), sigma=float(z["sigma"]),
                        frame_size=tuple(int(v) for v in z["frame_size"]), ds=int(z["ds"]),
-                       frames=int(z["frames"]), created=str(z["created"]), source=str(z["source"]))
+                       frames=int(z["frames"]), created=str(z["created"]), source=str(z["source"]),
+                       camera=camera)
 
 
 class PlateCapture:

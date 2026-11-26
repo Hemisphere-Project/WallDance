@@ -408,6 +408,18 @@ class CameraController:
                   f"{self.ids_ratio:.2f}: re-applying it")
             self._cb_ids_ratio_change(self.ids_ratio)
 
+    def exposure_gain_now(self):
+        """X6 (Plan Cordée rev 2): (exposure_us, gain_db) the IDS camera runs at; None for an auto value, and
+        (None, None) for another camera -- unknown means no plate refusal."""
+        cam = getattr(self, "unified_camera", None)
+        if not getattr(self, "_use_unified_camera", False) or cam is None:
+            return None, None
+        if getattr(cam, "source_type", None) != CameraSource.IDS_PEAK:
+            return None, None
+        exp = None if getattr(self, "ids_exposure_auto", True) else float(self.ids_exposure_us)
+        gain = None if getattr(self, "ids_gain_auto", True) else float(self.ids_gain_db)
+        return exp, gain
+
     def _cb_ids_gain_change(self, value: float):
         """Handle IDS gain slider change."""
         self.ids_gain_db = float(value)

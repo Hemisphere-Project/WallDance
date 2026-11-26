@@ -503,6 +503,25 @@ def per_frame_record(frame_idx: int, abs_frame: int, tracks, track_details: bool
     return rec
 
 
+def take_camera_state(video_path):
+    """X6: (exposure_us, gain_db) a take was recorded at, from its ``.meta`` sidecar; (None, None) without."""
+    try:
+        meta = json.loads(Path(str(video_path) + ".meta").read_text())
+        cam = meta.get("camera") or {}
+        exp = (cam.get("nodes") or {}).get("ExposureTime")
+        return (float(exp) if exp else None,
+                float(cam["gain_db"]) if cam.get("gain_db") is not None else None)
+    except (OSError, ValueError, TypeError, KeyError):
+        return None, None
+
+
+def install_camera_state(proc, video_path) -> None:
+    """X6: a replay's camera is the take's: a plate stamped with another exposure / gain is refused, as live."""
+    state = take_camera_state(video_path)
+    if hasattr(proc, "set_camera_state"):
+        proc.set_camera_state(lambda: state)
+
+
 def replay_recording(
     video_path: str,
     config: dict,
@@ -543,6 +562,7 @@ def replay_recording(
     """
     proc = _build_processor(config, model_name, imgsz,
                             use_gpu_path=use_gpu_path, use_trt=use_trt)
+    install_camera_state(proc, video_path)
     # REQ-5: slot files hold RAW frames; apply the project's Mirror/Rotate like
     # the app's playback does (identity = the same array, byte-identical).
     xf = input_transform_for(config)
