@@ -11,7 +11,9 @@ The operator asks for it during the dancers' warmup (« Try other settings »). 
    phase bounded by ``core.config.SWIPE_RUN_MAX_S``; the live setting's row is scored from the boxes the live
    pass made on each kept frame (``SwipeFrame.boxes``), its engine not re-run (``rerun_live``: re-run it);
 3. ends with a ``core.swipe.SwipeResult`` (``on_result``): advice -- the swipe's own line beside its button,
-   a readiness row only while it recommends a switch (``readiness``) -- which Apply acts on, in STANDBY.
+   a readiness row only while it recommends a switch (``readiness``) -- which Apply acts on, in STANDBY;
+4. tells the plate watch what the referee made of the empty-wall plate (``RefereeReport``: refused it, or used
+   it) -- ``core.reference_watch`` where the build has it, nothing where it does not.
 
 Nothing switches by itself.  The main loop keeps running at the live setting throughout.
 
@@ -32,6 +34,7 @@ background thread, but with the loop paused; here the loop runs on):
 from __future__ import annotations
 
 import dataclasses
+import importlib
 import os
 import threading
 import time
@@ -114,6 +117,78 @@ def say(text: str) -> None:
         print(str(text).encode("ascii", "replace").decode("ascii"))
 
 
+# ---------------------------------------------------------------------------------------------------------------
+# The referee's word on the empty-wall plate, for the plate watch (``core.reference_watch``: it counts the
+# refusals in a row and raises the plate alert at three; an accept starts the count over).  The module is not in
+# every build: where it is absent, nothing is told and nothing fails.
+
+# core.swipe.decide's sentence when it refuses the plate -- recognised here and nowhere else (a test pins it
+# against decide's real output)
+REFEREE_REFUSAL = "no verdict: every setting puts boxes where the empty-wall picture shows nobody"
+
+
+def referee_refused(result) -> bool:
+    """The referee refused the empty-wall plate: no verdict, every setting puts boxes where it shows nobody."""
+    return (result is not None and getattr(result, "winner", None) is None
+            and str(getattr(result, "reason", "") or "").startswith(REFEREE_REFUSAL))
+
+
+def referee_used(result) -> bool:
+    """The referee judged on the plate: « keep » or a switch (a setting named)."""
+    return result is not None and getattr(result, "winner", None) is not None
+
+
+def _plate_watch():
+    """``core.reference_watch`` when this build has it, else None (looked up at each use)."""
+    try:
+        return importlib.import_module("core.reference_watch")
+    except ModuleNotFoundError:
+        return None
+    except Exception as exc:  # noqa: BLE001 - the plate watch must never sink a swipe
+        say(f"[Swipe] the plate watch did not import: {type(exc).__name__}: {exc}")
+        return None
+
+
+class RefereeReport:
+    """Every finished swipe goes through ``note`` with its verdict and the kept frames it was judged on: the
+    plate refused -> ``reference_watch.note_referee_refusal(reason)``; the plate used (« keep », a switch) ->
+    ``reference_watch.note_referee_accept()``; any other end (too few frames or dancers, cancelled, dropped, an
+    error) tells nothing.  A refusal is told only when its frames share none with the last refusal told (its
+    oldest kept frame after that one's newest, or its newest before that one's oldest): the same pool pressed
+    three times is one refusal.  The watch counts; nothing here does."""
+
+    def __init__(self) -> None:
+        self._last: Optional[Tuple[float, float]] = None    # (oldest, newest) frame time of the last refusal told
+        self._lock = threading.Lock()
+
+    def note(self, result, frames: Sequence[Any] = ()) -> Optional[str]:
+        """Returns what the watch was told: "refusal", "accept", or None (nothing, or no watch in this build)."""
+        if referee_refused(result):
+            ts = [float(f.t) for f in frames or ()]
+            span = (min(ts), max(ts)) if ts else None
+            with self._lock:
+                last = self._last
+                if last is not None and span is not None and not (span[0] > last[1] or span[1] < last[0]):
+                    return None                     # frames a told refusal already stood on: not a new one
+                if span is not None:
+                    self._last = span
+            told, name, args = "refusal", "note_referee_refusal", (str(result.reason),)
+        elif referee_used(result):
+            told, name, args = "accept", "note_referee_accept", ()
+        else:
+            return None
+        watch = _plate_watch()
+        hook = getattr(watch, name, None) if watch is not None else None
+        if hook is None:
+            return None
+        try:
+            hook(*args)
+        except Exception as exc:  # noqa: BLE001
+            say(f"[Swipe] the plate watch's {name} failed: {type(exc).__name__}: {exc}")
+            return None
+        return told
+
+
 def make_pacer(proc, interval_s: float, stop: Optional[threading.Event] = None) -> Callable[[], None]:
     """Called before each candidate inference: at least ``interval_s`` after the previous one started, and,
     while the loop runs YOLO (a live network pass in the last 0.25 s), right after a live pass that came
@@ -149,7 +224,7 @@ class SwipeController:
                  params: Optional[SwipeParams] = None, models: Sequence[str] = SWIPE_MODELS,
                  collect_timeout_s: float = 190.0, pace: bool = True, pace_s: Optional[float] = None,
                  run_max_s: Optional[float] = None, verdict_max_age_s: Optional[float] = None,
-                 rerun_live: bool = False,
+                 rerun_live: bool = False, referee: Optional[RefereeReport] = None,
                  poll_s: float = 0.25,
                  engine_exists: Callable[[str], bool] = os.path.exists,
                  clock: Callable[[], float] = time.monotonic):
@@ -164,6 +239,7 @@ class SwipeController:
         self.models = tuple(models)
         self.collect_timeout_s = float(collect_timeout_s)
         self.rerun_live = bool(rerun_live)       # True: the live setting's engine re-runs the frames (a check)
+        self.referee = referee if referee is not None else RefereeReport()   # the plate watch's word
         self.pace = bool(pace)
         if pace_s is None:
             from core.config import SWIPE_PACE_S
@@ -358,6 +434,7 @@ class SwipeController:
             skipped = "; ".join(f"{c.label}: {w}" for c, w in outcome.skipped)
             if skipped:
                 say(f"[Swipe] not tried: {skipped}")
+            self.referee.note(res, frames)
             self._end(DONE, text, outcome)
         except Exception as exc:  # noqa: BLE001 - a swipe failure must not stop the show
             import traceback
