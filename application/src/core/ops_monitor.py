@@ -323,12 +323,14 @@ def check_dancer_size(*, measured: Optional[Tuple[float, int, float]], lb_scale:
 
 
 def check_swipe(*, plate_ready: bool, state: str = "idle", text: str = "", result=None,
-                live_label: str = "", stale: bool = False, applied: bool = False) -> CheckResult:
+                live_label: str = "", stale: bool = False, applied: bool = False,
+                stale_why: str = "") -> CheckResult:
     """P5 (Plan Cordée): the settings swipe's verdict, in plain words.
 
     ``result`` is a ``core.swipe.SwipeResult`` (duck-typed: ``current``, ``winner``, ``switch``,
     ``reason``) or None; ``state``/``text`` the swipe controller's (collecting, running, done, cancelled,
     dropped, error); ``stale``: the live setting changed since the swipe ran (not by its Apply);
+    ``stale_why``: what changed, in plain words (the ROI, the plate, ...);
     ``applied``: the live setting is the swipe's winner, applied from it.  Never a FAIL: the swipe only
     recommends, nothing switches by itself."""
     name = "swipe"
@@ -349,6 +351,8 @@ def check_swipe(*, plate_ready: bool, state: str = "idle", text: str = "", resul
                                        "Save the project to keep it")
     if stale:
         then = current.label if current is not None else "another setting"
+        if stale_why and not stale_why.startswith("the live setting changed"):
+            return CheckResult(name, "skip", f"{stale_why} since the last swipe (it ran on {then}): run it again")
         return CheckResult(name, "skip", f"the setting changed since the last swipe (it ran on {then}"
                                          + (f", {live_label} now" if live_label else "")
                                          + "): run it again")

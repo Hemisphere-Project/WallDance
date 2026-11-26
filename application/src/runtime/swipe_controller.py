@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 
 from core.swipe import Candidate, SwipeParams
-from core.swipe_runner import (SWIPE_MODELS, CandidateRunner, SwipeInput, SwipeOutcome,
+from core.swipe_runner import (SWIPE_MODELS, CandidateRunner, ExclusionCells, SwipeInput, SwipeOutcome,
                                install_capture_guards, plan_candidates, recommended_conf, run_swipe)
 
 IDLE, COLLECTING, RUNNING, DONE, CANCELLED, DROPPED, ERROR = (
@@ -42,16 +42,46 @@ IDLE, COLLECTING, RUNNING, DONE, CANCELLED, DROPPED, ERROR = (
 
 @dataclass(frozen=True)
 class LiveSetting:
-    """What the live loop runs now.  ``model_id`` is the loaded model object's identity: any reload (project
-    switch, model or size change, TensorRT toggle) changes it."""
+    """What the live loop runs now, and the scene it judges on.  ``model_id`` is the loaded model object's
+    identity: any reload (project switch, model or size change, TensorRT toggle) changes it.  A verdict
+    measured on another ROI, plate or camera frame size no longer describes this scene."""
     project: str
     candidate: Candidate
     model_id: int
     trt: bool = True
+    roi: Tuple = ()                 # (enabled, x, y, w, h)
+    plate: str = ""                 # the empty-wall plate file
+    plate_ok: bool = True           # loaded, not invalidated by hand (X5), not refused for its camera (X6)
+    frame: Tuple = ()               # the camera frame (width, height)
 
     @property
     def key(self) -> Tuple:
-        return (self.project, self.candidate, self.model_id)
+        return (self.project, self.candidate, self.model_id, self.roi, self.plate, self.plate_ok, self.frame)
+
+
+def what_changed(old: "LiveSetting", new: Optional["LiveSetting"]) -> Optional[str]:
+    """Why ``new`` is not the setting and scene ``old`` was measured on, in plain words; None if it is."""
+    if new is None:
+        return "a model load began (or no model is loaded)"
+    if new.project != old.project:
+        return f"project switched to {new.project}"
+    if new.candidate != old.candidate or new.model_id != old.model_id:
+        return f"the live setting changed ({old.candidate.label} -> {new.candidate.label})"
+    if new.roi != old.roi:
+        return "the ROI changed"
+    if new.plate != old.plate or new.plate_ok != old.plate_ok:
+        return "the empty-wall plate changed"
+    if new.frame != old.frame:
+        return "the camera frame size changed"
+    return None
+
+
+def say(text: str) -> None:
+    """Console line that a cp1252 console cannot break (the laptop): non-ASCII is replaced."""
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        print(str(text).encode("ascii", "replace").decode("ascii"))
 
 
 def make_pacer(proc, interval_s: float, stop: Optional[threading.Event] = None) -> Callable[[], None]:
@@ -116,6 +146,8 @@ class SwipeController:
         self.outcome_live: Optional[LiveSetting] = None   # the live setting the outcome was measured on
         self.finished_at: Optional[float] = None          # wall time
         self.applied: Optional[Candidate] = None          # the winner Apply switched to
+        self._ended_at: Optional[float] = None            # clock() at the last end
+        self.rerun_guard_s = 1.0                          # a Run this soon after an end is a late Cancel click
         self._cancel = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
@@ -136,6 +168,8 @@ class SwipeController:
         with self._lock:
             if self.busy:
                 return "a swipe is already running"
+            if self._ended_at is not None and self.clock() - self._ended_at < self.rerun_guard_s:
+                return "a swipe just ended - press again to start a new one"
             live = self.live()
             why = None
             if live is None:
@@ -168,15 +202,8 @@ class SwipeController:
 
     # ------------------------------------------------------------------
     def _changed(self, live0: LiveSetting) -> Optional[str]:
-        """Why the live setting is no longer the one the swipe started on, or None."""
-        now = self.live()
-        if now is None:
-            return "a model load began (or no model is loaded)"
-        if now.project != live0.project:
-            return f"project switched to {now.project}"
-        if now.key != live0.key:
-            return f"the live setting changed ({live0.candidate.label} -> {now.candidate.label})"
-        return None
+        """Why the live setting or its scene is no longer the one the swipe started on, or None."""
+        return what_changed(live0, self.live())
 
     def _say(self, state: str, text: str, progress: float) -> None:
         self.state, self.text, self.progress = state, text, float(progress)
@@ -185,12 +212,13 @@ class SwipeController:
     def _end(self, state: str, text: str, outcome: Optional[SwipeOutcome] = None) -> None:
         self.outcome = outcome if state == DONE else None
         self.finished_at = time.time()
+        self._ended_at = self.clock()
         self._say(state, text, 1.0 if state == DONE else self.progress)
         if state == DONE and outcome is not None:
             self.on_result(outcome.to_dict(), "")
         else:
             self.on_result({}, f"swipe {state}: {text}")
-        print(f"[Swipe] {state}: {text}")
+        say(f"[Swipe] {state}: {text}")
 
     def _pacer(self, proc) -> Optional[Callable[[], None]]:
         if not self.pace:
@@ -234,7 +262,12 @@ class SwipeController:
             observations = [f.obs for f in frames]
             inp = SwipeInput.from_processor(proc)
             fh, fw = images[0].shape[:2]
-            _rx, _ry, roi_w, roi_h = inp.roi(fw, fh)
+            roi = inp.roi(fw, fh)
+            _rx, _ry, roi_w, roi_h = roi
+            try:
+                exclusion = ExclusionCells.from_processor(proc, roi)
+            except Exception:  # noqa: BLE001 - a fake / older processor: no mask
+                exclusion = None
             plan = plan_candidates(live0.candidate, roi_w, roi_h,
                                    lambda c: self.engine_exists(self.engine_path(c)),
                                    models=self.models, dancer_net_px=self._dancer_net_px(proc))
@@ -251,7 +284,8 @@ class SwipeController:
             share = proc.swipe_lost_share() if hasattr(proc, "swipe_lost_share") else None
             outcome = run_swipe(images, observations, plan, live0.candidate, runner, self.engine_path, p,
                                 progress=progress, cancelled=cancelled, pace=self._pacer(proc),
-                                lost_frames=lost, lost=[bool(f.lost) for f in frames], lost_share=share)
+                                lost_frames=lost, lost=[bool(f.lost) for f in frames], lost_share=share,
+                                exclusion=exclusion)
             outcome.timing["collect_s"] = collect_s
             outcome.timing["total_s"] = collect_s + outcome.timing.get("run_s", 0.0)
             if self._cancel.is_set():
@@ -259,6 +293,8 @@ class SwipeController:
             why = self._changed(live0)
             if why:
                 return self._end(DROPPED, why)
+            if outcome.live_error:
+                return self._end(ERROR, f"the live setting could not be re-run: {outcome.live_error}")
             if outcome.result is None:
                 errs = "; ".join(f"{r.candidate.label}: {r.error}" for r in outcome.runs if r.error)
                 return self._end(ERROR, f"no setting could be scored ({errs or 'nothing ran'})")
@@ -266,7 +302,7 @@ class SwipeController:
             text = res.reason + (f" ({note})" if note else "")
             skipped = "; ".join(f"{c.label}: {w}" for c, w in outcome.skipped)
             if skipped:
-                print(f"[Swipe] not tried: {skipped}")
+                say(f"[Swipe] not tried: {skipped}")
             self._end(DONE, text, outcome)
         except Exception as exc:  # noqa: BLE001 - a swipe failure must not stop the show
             import traceback
@@ -294,10 +330,12 @@ class SwipeController:
         res = self.outcome.result if self.outcome is not None else None
         applied = (res is not None and self.applied is not None and live_now is not None
                    and live_now.candidate == self.applied)
+        stale_why = ""
+        if res is not None and not applied and self._stale(live_now) and self.outcome_live is not None:
+            stale_why = what_changed(self.outcome_live, live_now) or "the setting changed"
         return check_swipe(plate_ready=plate_ready, state=self.state, text=self.text, result=res,
                            live_label=live_now.candidate.label if live_now else "",
-                           stale=res is not None and not applied and self._stale(live_now),
-                           applied=applied)
+                           stale=bool(stale_why), stale_why=stale_why, applied=applied)
 
     def applicable(self, live_now: Optional[LiveSetting]) -> Tuple[Optional[str], Optional[Candidate],
                                                                     Optional[float]]:
@@ -312,7 +350,8 @@ class SwipeController:
         if not res.switch:
             return f"the swipe says keep {res.current.label}: nothing to apply", None, None
         if self._stale(live_now):
-            return "the setting changed since the swipe: run it again", None, None
+            why = what_changed(self.outcome_live, live_now) if self.outcome_live is not None else None
+            return f"{why or 'the setting changed'} since the swipe: run it again", None, None
         return None, res.winner, recommended_conf(res)
 
     def mark_applied(self, winner: Candidate) -> None:

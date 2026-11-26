@@ -77,7 +77,8 @@ from core.camera_stall import CameraStallClock, stall_states
 from core.identity_slots import (IdentitySlots, SlotParams, STATE_BELT, STATE_LIVE,
                                  candidate_from_track)
 from core.tracker import DancerTrack, DancerTracker
-from core.swipe import FrameCollector, Observation, SwipeParams, bare_groups
+from core.swipe import FrameCollector, Observation, SwipeParams
+from core.swipe_runner import ExclusionCells
 from core.yolo_runner import PoseRunner
 
 # Import GPU pipeline (optional, for zero-copy GPU path)
@@ -538,8 +539,6 @@ class FrameProcessor:
         self._swipe_lock = threading.Lock()                  # offer (loop thread) vs snapshot (swipe worker)
         self._swipe_key: Optional[tuple] = None              # the live setting the kept frames were judged on
         self._swipe_last_t: Optional[float] = None           # clock of the last kept frame
-        self._swipe_last_kind: Dict[bool, float] = {}        # ... per kind (lost / covered), as the collector
-        self._swipe_copy_always = False                      # the collector kept a frame the mirror ruled out
         self._swipe_tap_failed = False
         # Pacing (P5): set once the live YOLO pass of a frame is done (boxes on the CPU), so the swipe's
         # worker runs its inferences in the loop's slack, one per live frame.
@@ -871,18 +870,25 @@ class FrameProcessor:
         return self._swipe_collector
 
     def swipe_snapshot(self) -> Tuple[list, int, float, bool]:
-        """(kept frames, lost frames, progress 0..1, ready) -- consistent, for the swipe's worker thread."""
+        """(kept frames, lost frames, progress 0..1, ready) -- consistent, for the swipe's worker thread.
+
+        Only frames the CURRENT live setting produced (model object, input, ROI, plate: the tap's key) and
+        younger than the collector's ``max_age_s`` on the loop's clock: the collector itself drops old frames
+        and starts over on another setting only when the next frame is offered (in STANDBY none is)."""
         with self._swipe_lock:
             col = self._swipe_collector
-            if col is None:
+            if col is None or self._swipe_key != self._swipe_setting_key():
                 return [], 0, 0.0, False
+            col.prune(float(self._output_clock()))     # max_age_s on the loop's clock, offered or not
             return list(col.frames), int(col.lost_frames), float(col.progress), bool(col.ready)
 
     def swipe_lost_share(self) -> Optional[float]:
-        """How often the live setting leaves a dancer bare, if ``core.swipe``'s collector counts it."""
+        """How often the live setting leaves a dancer bare (``core.swipe``'s collector, pruned to now)."""
         with self._swipe_lock:
             col = self._swipe_collector
-            v = getattr(col, "lost_share", None) if col is not None else None
+            if col is not None:
+                col.prune(float(self._output_clock()))
+            v = col.lost_share if col is not None else None
         return float(v) if isinstance(v, (int, float)) else None
 
     def reset_swipe_frames(self) -> None:
@@ -890,7 +896,6 @@ class FrameProcessor:
             if self._swipe_collector is not None:
                 self._swipe_collector.reset()
             self._swipe_last_t = None
-            self._swipe_last_kind = {}
 
     def _swipe_setting_key(self) -> tuple:
         s = self.settings
@@ -899,12 +904,11 @@ class FrameProcessor:
                 str(s.fg_plate_path or ""), self._plate_invalid)
 
     def _swipe_tap(self, raw_frame, fg_before, mono_raw: bool, timing: Dict[str, float]) -> None:
-        """Offer this frame to the swipe's collector: its foreground, the live boxes and the raw frame.
-        Collects whenever the foreground is valid, so a swipe asked for later starts from frames already
-        there.  Every frame with a dancer group is offered (the collector may count how often the live
-        setting loses one); the image is copied only when the collector may keep it -- not inside the
-        0.5 s gap since the last kept frame of the same kind (lost / covered), which the collector refuses.
-        Cost when nothing is kept: microseconds (``timing['swipe_tap']``, ms)."""
+        """Offer this frame to the swipe's collector: its foreground, the live boxes, and the raw frame as a
+        callable the collector calls only when it keeps the frame (the copy is made then, never for a
+        refused frame).  Collects whenever the foreground is valid, so a swipe asked for later starts from
+        frames already there; every frame with a dancer group is offered (the collector counts how often the
+        live setting loses one).  Cost when nothing is kept: microseconds (``timing['swipe_tap']``, ms)."""
         t0 = time.perf_counter()
         try:
             col = self.swipe_collector
@@ -912,33 +916,33 @@ class FrameProcessor:
             if key != self._swipe_key:                # another model / input / ROI / plate: start over
                 with self._swipe_lock:
                     col.reset()
-                self._swipe_key, self._swipe_last_t, self._swipe_last_kind = key, None, {}
+                    self._swipe_key = key
+                self._swipe_last_t = None
             fg = self.last_fg
             # this frame's foreground only (the slot layer computes it; off = last_fg is not refreshed)
             if raw_frame is None or fg is None or fg is fg_before or not getattr(fg, "valid", False):
                 return
-            p = col.params
             obs = Observation.from_fg(fg)
-            if obs is None or not obs.dancer_groups(p):
+            if obs is None or not obs.dancer_groups(col.params):
                 return
             t = float(self._output_clock())
             boxes = list(self.last_raw_boxes)
-            lost = bool(bare_groups(obs, boxes, p))
-            last = self._swipe_last_kind.get(lost)
-            may_keep = self._swipe_copy_always or last is None or not (0.0 <= t - last < p.min_gap_s)
-            if may_keep:
+            if self._exclusion.active:               # « lost » after the operator's excluded cells
+                h, w = raw_frame.shape[:2]
+                r = self._resolve_roi(w, h)
+                cells = ExclusionCells.from_processor(
+                    self, (r[0], r[1], r[2] - r[0], r[3] - r[1]) if r is not None else (0, 0, w, h))
+                if cells is not None:
+                    boxes = cells.filter(boxes)
+            if mono_raw and raw_frame.ndim == 3:
                 # the IDS frame is mono expanded to BGR (R == G == B): one channel says it all, a third of the RAM
-                img = (cv2.extractChannel(raw_frame, 0) if mono_raw and raw_frame.ndim == 3
-                       else raw_frame.copy())
+                image = lambda: cv2.extractChannel(raw_frame, 0)       # noqa: E731
             else:
-                img = raw_frame                       # refused by the gap: counted, never stored
+                image = raw_frame.copy
             with self._swipe_lock:
-                kept = col.offer(t, img, obs, boxes)
+                kept = col.offer(t, image, obs, boxes)
             if kept:
-                self._swipe_last_t = self._swipe_last_kind[lost] = t
-                if not may_keep:                      # the collector's gap is not the one mirrored here
-                    self._swipe_copy_always = True
-                    print("[Swipe] the collector kept a frame inside its gap: copying every frame from now on")
+                self._swipe_last_t = t
         except Exception as exc:  # noqa: BLE001 - the tap must never stop the show
             if not self._swipe_tap_failed:
                 self._swipe_tap_failed = True
@@ -1530,6 +1534,12 @@ class FrameProcessor:
         if x1 <= x0 or y1 <= y0:
             return None
         return det.light_ratio(frame[y0:y1, x0:x1], x0, y0, (w, h))
+
+    @property
+    def plate_usable(self) -> bool:
+        """A plate is loaded, not invalidated by hand (X5) and not refused for its camera (X6)."""
+        return (self._fg_detector is not None and not self._plate_invalid
+                and not self.plate_refusal)
 
     @property
     def plate_stamp(self) -> str:
