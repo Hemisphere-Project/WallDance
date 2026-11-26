@@ -434,6 +434,8 @@ class MainLoop:
         # Crash path: Quit never ran, so flush/close the tracker JSONL here
         # (idempotent after Quit).
         step("tracker log flush", lambda: app.tracker.logger.close())
+        # A2 ②: a quit keeps the live plate of its last seconds, not of the last minute-save
+        step("live plate save", lambda: getattr(app, "_save_live_plate", lambda wait: None)(wait=True))
         step("watchdog stop", app._watchdog.stop)
         step("web monitor stop", stop_web_monitor)
         step("remote API stop", stop_remote)
@@ -513,6 +515,7 @@ class MainLoop:
         # the UI queued since the last tick runs here, on this thread.
         app.api.drain()
         self._tick_remote()
+        self._live_plate_minute()
         if self._tick_pumps():
             return
         self._tick_ui_input()
@@ -1403,6 +1406,24 @@ class MainLoop:
             self._emit_ops_alert(Alert(
                 "osc_send", msg,
                 {"target": f"{osc.ip}:{osc.port}", "errors": osc.send_errors}))
+
+    def _live_plate_minute(self) -> None:
+        """A2 ②: every LIVE_PLATE_SAVE_S (a minute, the first one a minute after start) the live plate is
+        saved beside the project's plate, so a relaunch during the show resumes it.  The write runs off
+        the loop (``app._save_live_plate``); a failure is logged and never stops the tick."""
+        from core.foreground import LIVE_PLATE_SAVE_S
+        now = time.monotonic()
+        last = getattr(self, "_live_plate_t", None)
+        if last is not None and now - last < LIVE_PLATE_SAVE_S:
+            return
+        self._live_plate_t = now
+        save = getattr(self.app, "_save_live_plate", None)
+        if last is None or save is None:
+            return
+        try:
+            save()
+        except Exception as exc:  # noqa: BLE001 - never the show's problem
+            print(f"[Foreground] live plate save failed ({type(exc).__name__}: {exc})")
 
     def _note_project_for_crash_marker(self) -> None:
         project = _safe(lambda: self.app.configs._current_project)

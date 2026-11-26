@@ -279,12 +279,14 @@ class ConfigManager:
                   f"{self.settings.yolo_shape[1]} (rectangle)")
 
         # 9. Apply the rest of the config (skip model since we just loaded it)
-        # Also skip imgsz since we already set it
+        # Also skip imgsz since we already set it.  A2 ①: the project being loaded is the
+        # current one before its config applies, so the apply reads ITS empty-wall plate
+        # (plates/ of that project), never the previous project's (audit runtime-core#4).
+        self._current_project = self.config_store.infer_project_from_config(config, config_filepath)
         print("[Project Switch] Applying config settings...")
         self.apply_config(config)
 
         # 10. Update project tracking
-        self._current_project = self.config_store.infer_project_from_config(config, config_filepath)
         self.config_store.remember_last_project(self._current_project)
 
         # 11. Update recorder

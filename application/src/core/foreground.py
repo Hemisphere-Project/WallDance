@@ -61,6 +61,10 @@ class CleanPlate:
     # X6 (Plan Cordée rev 2): the camera it was taken at -- exposure_us, gain_db (None = auto / unknown), crop
     # (the frame size above) and the ROI [x, y, w, h].  Empty for a plate saved before 2026-11-26.
     camera: dict = field(default_factory=dict)
+    # A2 ② (rehearsal build): in a plate the minute-save wrote (plates/live.npz), the slowly updated plate the
+    # detector ran on and when it was saved; ``plate`` above stays the snapshot as captured.  None for a capture.
+    live: Optional[np.ndarray] = None
+    live_saved: str = ""
 
     def camera_mismatch(self, exposure_us: Optional[float], gain_db: Optional[float],
                         tol_exposure: float = 0.10, tol_gain_db: float = 1.0) -> Optional[str]:
@@ -91,13 +95,27 @@ class CleanPlate:
                    frame_size=(int(W), int(H)), ds=ds, frames=len(frames),
                    created=time.strftime("%Y-%m-%dT%H:%M:%S"), source=source)
 
-    def save(self, path) -> Path:
+    def save(self, path, compress: bool = True) -> Path:
+        """Write the plate to ``path`` (``.npz`` appended when missing, as numpy did).  A2: atomically -- a
+        temporary file beside it, flushed to the disk, then renamed over it -- so a power cut leaves the
+        previous file or the new one, never half a plate.  ``compress=False`` (the minute-save): ~2 ms of
+        CPU instead of ~75 for a 444 x 326 plate and its live copy, ~20 % more bytes; ``load`` reads both."""
+        import os
         path = Path(path)
+        if path.suffix != ".npz":
+            path = path.with_name(path.name + ".npz")
         path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(path, plate=self.plate, sigma=self.sigma,
-                            frame_size=np.array(self.frame_size), ds=self.ds,
-                            frames=self.frames, created=self.created, source=self.source,
-                            camera=np.array(json.dumps(self.camera or {})))
+        extra = {} if self.live is None else {"live": np.asarray(self.live, np.float32),
+                                              "live_saved": self.live_saved}
+        tmp = path.with_name(path.name + ".tmp")
+        with open(tmp, "wb") as f:
+            (np.savez_compressed if compress else np.savez)(
+                f, plate=self.plate, sigma=self.sigma, frame_size=np.array(self.frame_size), ds=self.ds,
+                frames=self.frames, created=self.created, source=self.source,
+                camera=np.array(json.dumps(self.camera or {})), **extra)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
         return path
 
     @classmethod
@@ -109,10 +127,58 @@ class CleanPlate:
                     camera = json.loads(str(z["camera"])) or {}
                 except ValueError:
                     camera = {}
-            return cls(plate=z["plate"].astype(np.float32), sigma=float(z["sigma"]),
+            plate = z["plate"].astype(np.float32)
+            live = z["live"].astype(np.float32) if "live" in z.files else None     # A2 ②: a minute-save
+            return cls(plate=plate, sigma=float(z["sigma"]),
                        frame_size=tuple(int(v) for v in z["frame_size"]), ds=int(z["ds"]),
                        frames=int(z["frames"]), created=str(z["created"]), source=str(z["source"]),
-                       camera=camera)
+                       camera=camera, live=live if live is not None and live.shape == plate.shape else None,
+                       live_saved=str(z["live_saved"]) if "live_saved" in z.files else "")
+
+
+# A2 ② (rehearsal build): the live plate -- the snapshot as captured with its slowly updated copy -- is saved
+# every minute beside the project's plates/latest.npz and resumed at start, so a relaunch during the show
+# comes back with the foreground it had instead of a snapshot the dusk has made stale.
+LIVE_PLATE_FILE = "live.npz"
+LIVE_PLATE_SAVE_S = 60.0
+
+
+def live_plate_of(det: "ForegroundDetector") -> CleanPlate:
+    """What ``det`` runs on, as one CleanPlate to save: the snapshot as captured (its camera, noise, size and
+    time) in ``plate`` and the slowly updated plate in ``live``, copied (the update writes it in place), so the
+    file can be written from another thread while ``det`` goes on.  The snapshot is never written after its
+    capture: shared, not copied (a torn one could not pass ``resumable_live_plate``'s pixel check anyway)."""
+    from dataclasses import replace
+    return replace(det.plate, camera=dict(det.plate.camera or {}),
+                   live=np.array(det._live, np.float32, copy=True),
+                   live_saved=time.strftime("%Y-%m-%dT%H:%M:%S"))
+
+
+def resumable_live_plate(live_path, latest_path) -> Optional[CleanPlate]:
+    """The plate the minute-save wrote at ``live_path`` when it is the snapshot ``latest_path`` holds (same
+    capture time, size and pixels) with its live copy; else None -- no file, unreadable, or another capture
+    since (the next minute-save writes that one)."""
+    live_path, latest_path = Path(live_path), Path(latest_path)
+    if not (live_path.is_file() and latest_path.is_file()):
+        return None
+    try:
+        plate, base = CleanPlate.load(live_path), CleanPlate.load(latest_path)
+    except Exception as exc:  # noqa: BLE001 - an unreadable live plate: the captured one loads as before
+        print(f"[Foreground] live plate not resumed ({type(exc).__name__}: {exc})")
+        return None
+    if (plate.live is None or plate.created != base.created or tuple(plate.frame_size) != tuple(base.frame_size)
+            or plate.ds != base.ds or not np.array_equal(plate.plate, base.plate)):
+        return None
+    return plate
+
+
+def resume_live(det: "ForegroundDetector", plate: CleanPlate) -> bool:
+    """A detector just built on ``plate`` goes on from the live plate saved with it.  False when ``plate``
+    carries none (a captured plate) or one of another size."""
+    if plate.live is None or plate.live.shape != det._live.shape:
+        return False
+    det._live = np.array(plate.live, np.float32, copy=True)
+    return True
 
 
 class PlateCapture:

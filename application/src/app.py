@@ -1899,6 +1899,7 @@ class WallDanceApp:
         if os.path.isfile(path):
             self.settings.fg_plate_path = path
             self.processor._fg_loaded_path = None      # (re)load on the next frame
+            self._resume_live_plate(path)              # A2 ②: or now, with the live plate saved with it
         else:
             self.settings.fg_plate_path = ""
             self.processor._fg_loaded_path = None
@@ -1949,6 +1950,67 @@ class WallDanceApp:
         self.bus.publish(api.Toast("Capturing the empty wall (2 s): keep the wall empty",
                                    duration=2.5, color=(255, 200, 100)))
         self._publish_plate_status()
+
+    def _resume_live_plate(self, latest: str) -> bool:
+        """A2 ②: when the minute-save's plates/live.npz holds the snapshot ``latest`` with its live copy,
+        install it now, live plate included, so a relaunch during the show comes back with the foreground it
+        had.  The per-frame refusals still apply: another exposure, gain (X6 ③) or crop."""
+        from core.foreground import LIVE_PLATE_FILE, resumable_live_plate, resume_live
+        live_path = os.path.join(os.path.dirname(latest), LIVE_PLATE_FILE)
+        plate = resumable_live_plate(live_path, latest)
+        if plate is None:
+            return False
+        self.processor.set_clean_plate(plate)
+        resume_live(self.processor._fg_detector, plate)
+        self.settings.fg_plate_path = live_path
+        self.processor._fg_loaded_path = live_path     # installed: no reload on the next frame
+        print(f"[Foreground] live plate resumed ({self.configs._current_project}): {live_path} "
+              f"(empty wall taken {plate.created}, live plate saved {plate.live_saved})")
+        return True
+
+    def _save_live_plate(self, wait: bool = False) -> Optional[str]:
+        """A2 ②: the plate in use, live copy included, written to live.npz beside the file it was loaded
+        from (so a plate never crosses projects), by one writer thread -- the loop only copies the
+        quarter-size live plate and queues the write -- or in this one with ``wait`` (at quit).  Nothing is
+        written without a plate installed from that file, during a capture, on an invalid or refused plate,
+        while a recording plays (the live plate follows the camera), or when the live plate has not moved
+        since the last save.  The path, else None."""
+        from core.foreground import LIVE_PLATE_FILE, live_plate_of
+        proc = self.processor
+        det = getattr(proc, "_fg_detector", None)
+        src = self.settings.fg_plate_path or ""
+        if (det is None or not src or getattr(proc, "_fg_loaded_path", None) != src
+                or getattr(proc, "_plate_capture", None) is not None or getattr(proc, "_plate_invalid", None)
+                or getattr(proc, "plate_refusal", None) or getattr(self.recorder, "is_playing", False)):
+            return None
+        last = getattr(self, "_live_plate_last", None)      # (snapshot object, live array) last written
+        if last is not None and last[0] is det.plate and np.array_equal(last[1], det._live):
+            return None
+        writer = getattr(self, "_live_plate_writer", None)  # the Future of the last write
+        if writer is not None and not writer.done():
+            if not wait:
+                return None                                  # the last write still runs: next minute
+            writer.result()
+        plate = live_plate_of(det)
+        path = os.path.join(os.path.dirname(src), LIVE_PLATE_FILE)
+        self._live_plate_last = (det.plate, plate.live)
+
+        def write():
+            try:
+                plate.save(path, compress=False)             # ~2 ms of CPU, not ~75: no load on the loop
+            except Exception as exc:  # noqa: BLE001 - never the show's problem; retried next minute
+                self._live_plate_last = None
+                print(f"[Foreground] live plate not saved ({type(exc).__name__}: {exc})")
+
+        if wait:
+            write()
+        else:                                                # one thread for the session: no start per save
+            pool = getattr(self, "_live_plate_pool", None)
+            if pool is None:
+                from concurrent.futures import ThreadPoolExecutor
+                pool = self._live_plate_pool = ThreadPoolExecutor(1, thread_name_prefix="LivePlateSave")
+            self._live_plate_writer = pool.submit(write)
+        return path
 
     def _cb_imgsz_change(self, value: int):
         new_imgsz = int(value)
