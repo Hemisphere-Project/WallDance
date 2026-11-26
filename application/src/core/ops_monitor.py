@@ -363,6 +363,20 @@ def check_gpu_temp(*, gpu_stats: Optional[dict], warn_c: int) -> CheckResult:
     return CheckResult("gpu", "ok", detail)
 
 
+def check_wall_light(*, plate=None, roi: Optional[Tuple[int, int, int, int]] = None,
+                     plate_status: str = "") -> CheckResult:
+    """X2 (#t-054): the light verdict of the empty-wall snapshot (core/light_verdict.py) -- red when the
+    brightest part of the zone is more than 4x its darkest, with the one thing to move (the IR flood).
+    ``plate`` is the installed CleanPlate (None: none), ``roi`` the zone (x, y, w, h) in the plate's frame
+    pixels (None: the whole frame), ``plate_status`` FrameProcessor.plate_status."""
+    if plate is not None and plate_status == "size":
+        return CheckResult("wall light", "skip", "the empty-wall snapshot is from another camera crop - "
+                           "Calibrate on the empty wall")
+    from core.light_verdict import plate_light_verdict
+    v = plate_light_verdict(plate, roi)
+    return CheckResult("wall light", v.status, v.detail)
+
+
 # --------------------------------------------------------------------------
 # Health alerts
 # --------------------------------------------------------------------------

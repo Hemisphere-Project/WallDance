@@ -210,7 +210,28 @@ class _CalibrationUiAdapter:
         # on_save is always configs._cb_save_config (both flows); the adapter
         # wires the dialog's "Save to project" to a SaveConfig command, so the
         # event stays pure data (tablet-transportable, §4).
-        self._app.bus.publish(api.CalibReportCard(summary))
+        self._app.bus.publish(api.CalibReportCard(summary + self._wall_light_line()))
+
+    def _wall_light_line(self, fresh_s: float = 600.0) -> str:
+        """X2 (#t-054): the light verdict of the empty wall this Calibrate just took, as the card's last
+        line -- "" while that capture runs, if it failed, or on any error (the readiness row carries it)."""
+        try:
+            proc, s = self._app.processor, self._app.settings
+            det = getattr(proc, "_fg_detector", None)
+            if det is None or proc.plate_status == "capturing":
+                return ""
+            plate = det.plate
+            age = (datetime.now() - datetime.fromisoformat(plate.created)).total_seconds()
+            if not str(plate.source).startswith("calibrate") or not 0 <= age <= fresh_s:
+                return ""
+            from core.light_verdict import plate_light_verdict
+            roi = ((s.roi_x, s.roi_y, s.roi_w, s.roi_h)
+                   if s.roi_enabled and s.roi_w > 0 and s.roi_h > 0 else None)
+            line = plate_light_verdict(plate, roi).line()
+            print(f"[Calibrate] {line}")
+            return "\n" + line
+        except Exception:  # noqa: BLE001 - the card must show whatever happens here
+            return ""
 
     def show_calib2_dialog(self, rows, proposal: str):
         self._app.bus.publish(api.Calib2PoolChanged(rows, proposal))
@@ -2327,6 +2348,16 @@ class WallDanceApp:
             recordings_dir=self.recorder.recordings_dir,
             warn_free_gb=OPS_DISK_WARN_FREE_GB,
             fail_free_gb=OPS_DISK_FAIL_FREE_GB))
+        from core.ops_monitor import CheckResult, check_wall_light   # X2 (#t-054): the empty wall's light
+        try:
+            _det, _s = getattr(self.processor, "_fg_detector", None), self.settings
+            results.append(check_wall_light(
+                plate=_det.plate if _det is not None else None,
+                roi=((_s.roi_x, _s.roi_y, _s.roi_w, _s.roi_h)
+                     if _s.roi_enabled and _s.roi_w > 0 and _s.roi_h > 0 else None),
+                plate_status=str(self.processor.plate_status)))
+        except Exception as e:  # noqa: BLE001 - one row never breaks the report
+            results.append(CheckResult("wall light", "skip", f"not judged ({type(e).__name__}: {e})"))
         results.append(check_gpu_temp(gpu_stats=get_gpu_stats(),
                                       warn_c=int(self._health.gpu_temp_c)))
         return ReadinessReport(results)
