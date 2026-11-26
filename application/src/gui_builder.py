@@ -848,6 +848,8 @@ def build_phase_wall(gui: Any):
             dpg.add_text("Camera/FPS, TensorRT, OSC, calibration age, disk, GPU temp.\n"
                          "~0.3 s; never blocks RUN.  Also runs when you open this phase.")
         dpg.add_spacer(height=scaled(6))
+        # H3: the report's verdict above its rows (gui.show_readiness_rows): READY only when every row is OK.
+        dpg.add_text("", tag="readiness_summary_text", wrap=scaled(_PHASE_WRAP), show=False)
         # Readiness rows render here on demand (gui.show_readiness_rows).
         with dpg.group(tag="readiness_rows_container"):
             dpg.add_text("Press 'Check readiness' (or open this phase) to run "

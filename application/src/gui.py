@@ -2996,20 +2996,29 @@ class WallDanceGUI:
         """Render Go-Live readiness rows into the phase-⑤ Verify panel.
 
         Called on the main-loop/command thread (DPG-safe).  ``rows`` is a list
-        of {name, status, detail}; each line colored by ok/warn/fail/skip."""
+        of {name, status, detail}; each line colored by ok/warn/fail/skip.
+        H3: a skip row is NOT CHECKED, in its own neutral colour (never green), and the
+        verdict line above the rows says READY only when every row is OK."""
+        from core.ops_monitor import NOT_CHECKED_COLOR, STATUS_COLORS, STATUS_WORDS, readiness_verdict
         container = "readiness_rows_container"
         if not dpg.does_item_exist(container):
             return
         dpg.delete_item(container, children_only=True)
         palette = {"ok": OK_GREEN, "warn": WARN_AMBER,
-                   "fail": ALERT_RED, "skip": TEXT_HINT}
+                   "fail": ALERT_RED, "skip": NOT_CHECKED_COLOR}
+        if dpg.does_item_exist("readiness_summary_text"):
+            state, verdict = readiness_verdict(
+                [(r.get("name", ""), str(r.get("status", "")).lower()) for r in rows or []])
+            dpg.set_value("readiness_summary_text", verdict)
+            dpg.configure_item("readiness_summary_text", show=True,
+                               color=STATUS_COLORS.get(state, ALERT_RED))
         if not rows:
             dpg.add_text("No readiness results.", parent=container, color=TEXT_HINT)
             return
         for row in rows:
             status = str(row.get("status", "")).lower()
             color = palette.get(status, TEXT_NORMAL)
-            line = (f"[{status.upper()}] {row.get('name', '')}: "
+            line = (f"[{STATUS_WORDS.get(status, status.upper())}] {row.get('name', '')}: "
                     f"{row.get('detail', '')}")
             dpg.add_text(line, parent=container, color=color, wrap=scaled(340))
 

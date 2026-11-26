@@ -516,6 +516,7 @@ class MainLoop:
         app.api.drain()
         self._tick_remote()
         self._live_plate_minute()
+        getattr(app, "_readiness_auto_tick", lambda: None)()   # H3: readiness at start and after Calibrate
         if self._tick_pumps():
             return
         self._tick_ui_input()

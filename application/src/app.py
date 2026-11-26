@@ -211,6 +211,9 @@ class _CalibrationUiAdapter:
         # wires the dialog's "Save to project" to a SaveConfig command, so the
         # event stays pure data (tablet-transportable, §4).
         self._app.bus.publish(api.CalibReportCard(summary + self._wall_light_line()))
+        ended = getattr(self._app, "_readiness_calibrate_ended", None)   # H3: readiness once nothing is busy
+        if ended is not None:
+            ended()
 
     def _wall_light_line(self, fresh_s: float = 600.0) -> str:
         """X2 (#t-054): the light verdict of the empty wall this Calibrate just took, as the card's last
@@ -760,6 +763,8 @@ class WallDanceApp:
         # Ops cluster (TODO Phase 7): health alerts + main-loop watchdog
         self._health = HealthMonitor(gpu_stats_fn=get_gpu_stats)
         self._watchdog = LoopWatchdog()
+        # H3 (#t-026 ④): readiness runs by itself at start and after Calibrate, never over a toast on screen
+        self.bus.subscribe(self._readiness_note_toast)
 
         # Wire the command vocabulary to its runtime handlers (Phase 3 seam).
         self._register_command_handlers()
@@ -2410,6 +2415,7 @@ class WallDanceApp:
             recordings_dir=self.recorder.recordings_dir,
             warn_free_gb=OPS_DISK_WARN_FREE_GB,
             fail_free_gb=OPS_DISK_FAIL_FREE_GB))
+        results.extend(self._readiness_setup_rows())   # H3 (#t-026 ④): enhancement, ROI, plate exposure
         from core.ops_monitor import CheckResult, check_wall_light   # X2 (#t-054): the empty wall's light
         try:
             _det, _s = getattr(self.processor, "_fg_detector", None), self.settings
@@ -2439,8 +2445,9 @@ class WallDanceApp:
         except Exception as e:  # noqa: BLE001 - never disturb Go-Live
             print(f"[Readiness] check failed: {e}")
 
-    def _cb_check_readiness(self):
-        """Phase-⑤ on-demand readiness: run checks, render rows, toast.
+    def _cb_check_readiness(self, why: str = ""):
+        """Phase-⑤ on-demand readiness: run checks, render rows, toast.  H3: also by itself, at start and
+        after each Calibrate (``_readiness_auto_tick``; ``why`` names the cause in the log).
 
         Runs synchronously on the command/main-loop thread (the DPG-safe seam,
         ~0.3 s incl. the OSC probe) so the rows render without a cross-thread
@@ -2456,11 +2463,104 @@ class WallDanceApp:
         rows = [{"name": r.name, "status": r.status, "detail": r.detail}
                 for r in report.results]
         print(report.console_block(
-            f"(project={self.configs._current_project}, "
+            f"({why + ', ' if why else ''}project={self.configs._current_project}, "
             f"profile={self.configs._active_profile}) "))
         self.bus.publish(api.ReadinessResult(rows))
         msg, color = report.toast_summary()
         self.bus.publish(api.Toast(msg, 5.0, color))
+
+    # --- H3 (#t-026 ④): readiness by itself, at start and after each Calibrate ---------------------
+    def _readiness_auto(self):
+        """The ReadinessAuto of this session (core/ops_monitor.py), made on first use."""
+        auto = getattr(self, "_readiness_auto_state", None)
+        if auto is None:
+            from core.ops_monitor import ReadinessAuto
+            auto = self._readiness_auto_state = ReadinessAuto()
+        return auto
+
+    def _readiness_calibrate_ended(self) -> None:
+        """A Calibrate showed its result card (the scene pass, or the dancers' Apply): a report is due once
+        nothing is busy."""
+        self._readiness_auto().calibrate_ended()
+
+    def _readiness_note_toast(self, event) -> None:
+        """Bus subscriber: until when a toast is on screen, so an automatic report waits for it to go (the
+        GUI shows one toast at a time: « Previous session crashed » must not be covered after 3 s)."""
+        if isinstance(event, api.Toast):
+            self._readiness_toast_until = time.monotonic() + float(event.duration or 0.0)
+
+    def _readiness_auto_tick(self, now: Optional[float] = None) -> None:
+        """Every main-loop tick (runtime/main_loop.py ``_tick``): the readiness report -- rows in the 2 Calibrate
+        panel, the [Readiness] log block, the toast -- runs by itself once at start (the project loaded, the
+        camera given its chance) and once after each Calibrate, never while a Calibrate runs
+        (ReadinessAuto).  On this thread, as the button's (the DPG-safe seam).  It reads the state and never
+        sets RUN/STANDBY (A4: one writer).  Never raises: readiness must not disturb the loop."""
+        try:
+            t = time.monotonic() if now is None else float(now)
+            cal, models, proc = self.calibration, self.models, self.processor
+            calibrating = bool(getattr(cal, "_calibrating", False))
+            busy = (bool(getattr(cal, "_calibrating2", False))
+                    or getattr(proc, "_plate_capture", None) is not None)
+            ready = (bool(self.bus.ui_ready) and bool(models._model_loaded) and not models._model_loading
+                     and getattr(self.configs, "_pending_project_switch", None) is None)
+            flowing = bool((self.camera.state.is_open and not self.cameras._camera_reconnecting)
+                           or self.recorder.is_playing)
+            quiet = t >= float(getattr(self, "_readiness_toast_until", 0.0) or 0.0)
+            why = self._readiness_auto().poll(t, ready=ready, busy=busy, calibrating=calibrating,
+                                              flowing=flowing, quiet=quiet)
+        except Exception as e:  # noqa: BLE001 - never the loop's problem
+            if not getattr(self, "_readiness_auto_failed", False):
+                self._readiness_auto_failed = True
+                print(f"[Readiness] automatic check off ({type(e).__name__}: {e})")
+            return
+        if why:
+            print(f"[Readiness] automatic check: {why}")
+            self._cb_check_readiness(why=why)
+
+    def _readiness_setup_rows(self):
+        """H3 (#t-026 ④): the enhancement, the ROI and the plate's exposure (core/ops_monitor.py), each read here
+        and guarded: one row never breaks the report (an error is a NOT CHECKED row that says so)."""
+        from core.ops_monitor import CheckResult, check_enhancement, check_plate_exposure, check_roi
+        s, proc = self.settings, self.processor
+        flowing = bool((self.camera.state.is_open and not self.cameras._camera_reconnecting)
+                       or self.recorder.is_playing)
+        frame = tuple(int(v) for v in self.roi.state.source_size) if flowing else None
+
+        def enhancement():
+            st = getattr(self.calibration, "calibration_state", None) or {}
+            stamps = [v for k, v in st.items() if k in ("gamma", "clahe") and isinstance(v, dict)]
+            when = str(max(stamps, key=lambda v: v.get("epoch") or 0).get("ts", "")) if stamps else ""
+            bright = None
+            if not s.enhance_force:
+                bright = float((getattr(self, "timing", None) or {}).get("brightness", 0) or 0) or None
+            return check_enhancement(enabled=bool(s.enhance_enabled), gamma=float(self.enhancer.gamma),
+                                     clahe=float(self.enhancer.clahe_clip), lite=bool(s.enhance_lite),
+                                     force=bool(s.enhance_force), brightness=bright,
+                                     threshold=float(s.brightness_threshold), calibrated=when)
+
+        def roi():
+            return check_roi(enabled=bool(s.roi_enabled), drawn=tuple(self.roi.state.stored_roi()),
+                             live=(int(s.roi_x), int(s.roi_y), int(s.roi_w), int(s.roi_h)), frame_size=frame)
+
+        def plate():
+            det = getattr(proc, "_fg_detector", None)
+            path = str(getattr(s, "fg_plate_path", "") or "")
+            pending = (os.path.basename(path)
+                       if path and getattr(proc, "_fg_loaded_path", None) != path else "")
+            exp, gain = self.cameras.exposure_gain_now()
+            return check_plate_exposure(plate=det.plate if det is not None else None, exposure_us=exp,
+                                        gain_db=gain, frame_size=frame,
+                                        invalid=str(getattr(proc, "_plate_invalid", None) or ""),
+                                        pending=pending, source=os.path.basename(path),
+                                        capturing=getattr(proc, "_plate_capture", None) is not None)
+
+        rows = []
+        for name, fn in (("enhancement", enhancement), ("ROI", roi), ("plate exposure", plate)):
+            try:
+                rows.append(fn())
+            except Exception as e:  # noqa: BLE001 - one row never breaks the report
+                rows.append(CheckResult(name, "skip", f"not checked ({type(e).__name__}: {e})"))
+        return rows
 
     def _cb_run_dry_run(self):
         """Phase-⑤ dry-run: replay the last recording with the current config.

@@ -48,13 +48,50 @@ from core.config import (
 # Readiness
 # --------------------------------------------------------------------------
 
-_STATUS_ORDER = {"ok": 0, "skip": 0, "warn": 1, "fail": 2}
+# H3 (#t-026 ④): « skip » is a row that was NOT CHECKED (not measured, or not applicable).  It is never green:
+# it ranks above ok when the rows fold into one worst state (``worst_status``, which H2 can reuse), it has its
+# own words and its own neutral colour, and a report with one is never called READY (``readiness_verdict``).
+_STATUS_ORDER = {"ok": 0, "skip": 1, "warn": 2, "fail": 3}
+STATUS_WORDS = {"ok": "OK", "warn": "WARN", "fail": "FAIL", "skip": "NOT CHECKED"}
+NOT_CHECKED_COLOR = (150, 170, 215)     # a neutral blue-grey: readable, and neither green nor a hint's grey
+STATUS_COLORS = {"ok": (120, 255, 120), "warn": (255, 200, 100), "fail": (255, 80, 80),
+                 "skip": NOT_CHECKED_COLOR}
+_VERDICT_HEAD = {"ok": "READY", "skip": "NOT ALL CHECKED", "warn": "CHECK", "fail": "NOT READY"}
+
+
+def worst_status(statuses) -> str:
+    """The worst of row statuses: fail > warn > skip (not checked) > ok; an unknown status counts as fail.
+    No rows: skip (nothing was checked)."""
+    statuses = list(statuses)
+    if not statuses:
+        return "skip"
+    return max(statuses, key=lambda s: _STATUS_ORDER.get(s, _STATUS_ORDER["fail"]))
+
+
+def readiness_verdict(rows) -> Tuple[str, str]:
+    """H3: (state, one line) for readiness rows -- CheckResults, or (name, status) pairs.  ``state`` is
+    ``worst_status``; the line starts with READY only when every row is ok, and names the rows that are not
+    (« NOT ALL CHECKED - 9 ok, 2 not checked (dancer size, gpu) »)."""
+    pairs = [(r.name, r.status) if isinstance(r, CheckResult) else (str(r[0]), str(r[1])) for r in rows]
+    state = worst_status(s for _n, s in pairs)
+    if not pairs:
+        return state, f"{_VERDICT_HEAD[state]} - no rows"
+    parts = []
+    for st, word in (("ok", "ok"), ("fail", "fail"), ("warn", "warn"), ("skip", "not checked")):
+        names = [n for n, s in pairs if s == st]
+        if names:
+            shown = ", ".join(names[:3]) + (", ..." if len(names) > 3 else "")
+            parts.append(f"{len(names)} {word}" + ("" if st == "ok" else f" ({shown})"))
+    others = [n for n, s in pairs if s not in _VERDICT_HEAD]
+    if others:
+        parts.append(f"{len(others)} unknown ({', '.join(others[:3])})")
+    return state, f"{_VERDICT_HEAD.get(state, 'NOT READY')} - " + ", ".join(parts)
 
 
 @dataclass
 class CheckResult:
     name: str
-    status: str  # "ok" | "warn" | "fail" | "skip"
+    status: str  # "ok" | "warn" | "fail" | "skip" (not checked: never green, see readiness_verdict)
     detail: str
 
 
@@ -64,11 +101,7 @@ class ReadinessReport:
 
     @property
     def worst(self) -> str:
-        worst = "ok"
-        for r in self.results:
-            if _STATUS_ORDER[r.status] > _STATUS_ORDER[worst]:
-                worst = r.status
-        return worst
+        return worst_status(r.status for r in self.results) if self.results else "ok"
 
     def counts(self) -> Dict[str, int]:
         out = {"ok": 0, "warn": 0, "fail": 0, "skip": 0}
@@ -76,26 +109,22 @@ class ReadinessReport:
             out[r.status] += 1
         return out
 
+    def verdict(self) -> Tuple[str, str]:
+        return readiness_verdict(self.results)
+
     def console_block(self, header: str = "") -> str:
         lines = [f"[Readiness] ===== Go-Live check {header}====="]
         for r in self.results:
             lines.append(f"[Readiness] {r.status:<5} {r.name:<12} {r.detail}")
         c = self.counts()
         lines.append(
-            f"[Readiness] ===== {c['ok']} ok, {c['warn']} warn, {c['fail']} fail =====")
+            f"[Readiness] ===== {c['ok']} ok, {c['warn']} warn, {c['fail']} fail, "
+            f"{c['skip']} not checked: {self.verdict()[1].split(' - ')[0]} =====")
         return "\n".join(lines)
 
     def toast_summary(self) -> Tuple[str, Tuple[int, int, int]]:
-        c = self.counts()
-        msg = f"Go-Live check: {c['ok']} ok"
-        if c["warn"]:
-            msg += f", {c['warn']} warn"
-        if c["fail"]:
-            msg += f", {c['fail']} FAIL"
-        msg += " - see console"
-        color = {"ok": (120, 255, 120), "warn": (255, 200, 100),
-                 "fail": (255, 80, 80)}[self.worst]
-        return msg, color
+        state, line = self.verdict()
+        return f"Go-Live check: {line}", STATUS_COLORS.get(state, STATUS_COLORS["fail"])
 
 
 def check_camera(*, is_open: bool, reconnecting: bool, source: str, fps: float,
@@ -361,6 +390,188 @@ def check_gpu_temp(*, gpu_stats: Optional[dict], warn_c: int) -> CheckResult:
     if temp >= warn_c:
         return CheckResult("gpu", "warn", detail + f" - at/above {warn_c} C")
     return CheckResult("gpu", "ok", detail)
+
+
+# --------------------------------------------------------------------------
+# H3 (#t-026 ④): the setup rows -- the enhancement, the ROI, the plate's exposure
+# --------------------------------------------------------------------------
+
+ENHANCE_ON_HOW = "Ctrl+Shift+E, Advanced > Enhancement > Enable"
+
+
+def check_enhancement(*, enabled: bool, gamma: float, clahe: float, lite: bool = False, force: bool = True,
+                      brightness: Optional[float] = None, threshold: float = 60.0,
+                      calibrated: str = "") -> CheckResult:
+    """The enhancement YOLO's picture gets: on / off, which (gamma, CLAHE), and red when it is OFF on a project
+    whose Calibrate chose one that changes the picture (08/10: switched off by one key, worth ~18 points of
+    recall, and nothing said so).  ``calibrated``: when Calibrate (or the dancer step) last set the gamma or the
+    CLAHE of this project ("2026-10-08 21:32"), "" when never.  ``brightness``: the picture's, for the
+    brightness gate (only when ``force`` is off), None when unknown."""
+    which = (f"gamma {gamma:.2f}, no CLAHE (lite)" if lite else f"gamma {gamma:.2f} / CLAHE {clahe:.1f}")
+    changes = abs(float(gamma) - 1.0) > 1e-3 or (not lite and float(clahe) > 1.0)
+    if not enabled:
+        if calibrated and changes:
+            return CheckResult("enhancement", "fail",
+                               f"OFF, but Calibrate chose {which} for this project ({calibrated}): turn it on - "
+                               + ENHANCE_ON_HOW)
+        if calibrated:
+            return CheckResult("enhancement", "ok", f"off; Calibrate chose none here ({which}, {calibrated})")
+        return CheckResult("enhancement", "warn",
+                           f"OFF, and Calibrate never chose one for this project ({which}): Calibrate on the empty "
+                           f"wall, then turn it on - {ENHANCE_ON_HOW}")
+    by = f"Calibrate {calibrated}" if calibrated else "not chosen by Calibrate on this project"
+    if not changes:
+        return CheckResult("enhancement", "ok", f"on, neutral ({which}, {by}): the picture goes to YOLO as it is")
+    if not force and brightness is not None and brightness >= threshold:
+        return CheckResult("enhancement", "warn",
+                           f"on ({which}) but faded out: the picture's brightness {brightness:.0f} is over its gate "
+                           f"{threshold:.0f} - tick Force (expert mode, Advanced > Enhancement)")
+    if not calibrated:
+        return CheckResult("enhancement", "warn", f"on ({which}), {by} - Calibrate on the empty wall")
+    return CheckResult("enhancement", "ok", f"on: {which} ({by})")
+
+
+def check_roi(*, enabled: bool, drawn: Optional[Tuple[int, ...]], live: Optional[Tuple[int, int, int, int]] = None,
+              frame_size: Optional[Tuple[int, int]] = None) -> CheckResult:
+    """The zone YOLO watches (the ROI) and whether it still fits the camera's crop.  ``drawn`` = (x, y, w, h,
+    src_w, src_h), the zone as drawn or loaded in its own picture (RoiState.stored_roi); ``live`` = the zone on
+    the frames flowing (settings.roi_*: clamped onto them); ``frame_size`` = their (W, H), None with no
+    picture.  The crop changed since the zone was drawn: orange when the zone still fits (it may frame
+    another part of the wall), red when the new crop cuts it."""
+    where = f"{frame_size[0]}x{frame_size[1]} picture" if frame_size else "picture"
+    if not enabled:
+        return CheckResult("ROI", "warn", f"off: YOLO watches the whole {where} - draw the dancers' wall "
+                                          "(1 Rig > Region of Interest)")
+    if not drawn or len(drawn) < 6 or int(drawn[2]) <= 0 or int(drawn[3]) <= 0:
+        return CheckResult("ROI", "fail", "the zone is empty - draw the dancers' wall (1 Rig > Region of Interest)")
+    x, y, w, h, sw, sh = (int(v) for v in drawn[:6])
+    zone = f"{w}x{h} at ({x}, {y})"
+    if not frame_size:
+        return CheckResult("ROI", "skip", f"zone {zone}, drawn on a {sw}x{sh} picture; no picture now, so not "
+                                          "checked against the camera's crop")
+    W, H = int(frame_size[0]), int(frame_size[1])
+    if (sw, sh) == (W, H):
+        share = 100.0 * w * h / max(1, W * H)
+        return CheckResult("ROI", "ok", f"{zone} on the {W}x{H} picture ({share:.0f} % of it)")
+    if x + w <= W and y + h <= H:
+        return CheckResult("ROI", "warn", f"zone {zone} drawn on a {sw}x{sh} picture, the camera gives {W}x{H}: it "
+                                          "may frame another part of the wall - check it on the picture (1 Rig)")
+    lw, lh = (int(live[2]), int(live[3])) if live else (max(0, min(w, W - x)), max(0, min(h, H - y)))
+    return CheckResult("ROI", "fail", f"zone {zone} drawn on a {sw}x{sh} picture, cut to {lw}x{lh} by the "
+                                      f"camera's {W}x{H}: draw it again (1 Rig > Region of Interest), then Calibrate")
+
+
+def check_plate_exposure(*, plate=None, exposure_us: Optional[float] = None, gain_db: Optional[float] = None,
+                         frame_size: Optional[Tuple[int, int]] = None, invalid: str = "", pending: str = "",
+                         capturing: bool = False, source: str = "") -> CheckResult:
+    """The empty-wall snapshot really loaded (``plate``: FrameProcessor's CleanPlate, the project's own or A2's
+    live.npz) against the camera now: its exposure, gain (X6 stores them in the plate) and crop (its frame size)
+    -- the rule RUN applies (CleanPlate.camera_mismatch, FrameProcessor._fg_frame), said before RUN.
+    ``exposure_us`` / ``gain_db``: the camera's (CameraController.exposure_gain_now; None = auto or not an IDS
+    camera); ``frame_size``: the frames flowing (None: no picture); ``invalid``: X5's reason (exposure, gain or
+    crop changed by hand); ``pending``: the plate file the project names, not loaded yet."""
+    name = "plate exposure"
+    if capturing:
+        return CheckResult(name, "skip", "the empty wall is being captured now")
+    if pending:
+        return CheckResult(name, "skip", f"the empty-wall snapshot {pending} is not loaded yet (no picture since "
+                                         "the project opened)")
+    if plate is None:
+        return CheckResult(name, "skip", "no empty-wall snapshot to compare - Calibrate on the empty wall")
+    cam = dict(getattr(plate, "camera", None) or {})
+    pe, pg = cam.get("exposure_us"), cam.get("gain_db")
+    pw, ph = (int(v) for v in plate.frame_size)
+    created = str(getattr(plate, "created", "") or "")[5:16].replace("T", " ")
+    taken = (f"taken at {float(pe) / 1000:.1f} ms" if pe else "taken at exposure ?") + \
+            (f" / {float(pg):.1f} dB" if pg is not None else " / gain ?") + f" on {pw}x{ph}"
+    stamp = ", ".join(v for v in (created, source) if v)
+    if invalid:
+        return CheckResult(name, "fail", f"refused: {invalid}")
+    problems = []
+    if frame_size and (pw, ph) != (int(frame_size[0]), int(frame_size[1])):
+        problems.append(f"taken on a {pw}x{ph} picture, the camera gives {frame_size[0]}x{frame_size[1]}")
+    why = plate.camera_mismatch(exposure_us, gain_db)
+    if why:
+        problems.append(why.split(" - ")[0])
+    if problems:
+        return CheckResult(name, "fail", "; ".join(problems) + " - RUN refuses it: Calibrate on the empty wall")
+    if not cam or not pe or pg is None:
+        return CheckResult(name, "warn", f"{taken} ({stamp}): the snapshot does not say at which exposure and gain "
+                                         "it was taken - Calibrate on the empty wall")
+    unknown = [what for what, known in (("exposure", exposure_us), ("gain", gain_db), ("crop", frame_size))
+               if not known and known != 0.0]
+    if unknown:
+        return CheckResult(name, "skip", f"{taken} ({stamp}); the camera's {', '.join(unknown)} unknown now (no "
+                                         "picture, auto, or not an IDS camera): not compared")
+    return CheckResult(name, "ok", f"{taken} ({stamp}), as the camera now")
+
+
+class ReadinessAuto:
+    """H3 (#t-026 ④): when the readiness report runs by itself -- once at start, once after each Calibrate.
+
+    ``poll`` is fed every main-loop tick and returns the reason on the one tick a report is due, else None:
+    - « start »: once the app is ready (``ready``: the project and its model loaded, the GUI up, no switch
+      pending) and the camera has had its chance -- frames flowing for ``start_settle_s``, or ``camera_grace_s``
+      of ready with no picture (the report then says the camera is not open);
+    - « after Calibrate »: armed by ``calibrate_ended`` (a Calibrate's result card) and by the scene Calibrate's
+      running flag going down (a cancel or a stop included), due once nothing is ``busy`` (a Calibrate, the
+      dancers pass, a plate capture) for ``calibrate_settle_s``.
+    Nothing is due while busy or not ready.  A due report waits while a toast is on screen (``quiet`` False:
+    a « Previous session crashed » toast is not covered by the report's), at most ``quiet_wait_s``.  One report
+    covers every cause pending, so two causes never make two reports.  It decides nothing else: the state
+    RUN/STANDBY is never touched (A4: one writer)."""
+
+    def __init__(self, start_settle_s: float = 3.0, camera_grace_s: float = 15.0,
+                 calibrate_settle_s: float = 1.0, quiet_wait_s: float = 20.0):
+        self.start_settle_s = start_settle_s
+        self.camera_grace_s = camera_grace_s
+        self.calibrate_settle_s = calibrate_settle_s
+        self.quiet_wait_s = quiet_wait_s
+        self.start_pending = True
+        self.calibrate_pending = False
+        self.reports: List[Tuple[float, str]] = []      # (when, why) of each report made due
+        self._was_calibrating = False
+        self._idle_since: Optional[float] = None
+        self._flow_since: Optional[float] = None
+        self._due_since: Optional[float] = None
+
+    def calibrate_ended(self) -> None:
+        self.calibrate_pending = True
+
+    def poll(self, now: float, *, ready: bool, busy: bool, calibrating: bool, flowing: bool,
+             quiet: bool = True) -> Optional[str]:
+        if self._was_calibrating and not calibrating:
+            self.calibrate_pending = True
+        self._was_calibrating = bool(calibrating)
+        idle = bool(ready) and not busy and not calibrating
+        if not idle:
+            self._idle_since = self._due_since = None
+        elif self._idle_since is None:
+            self._idle_since = now
+        if not flowing:
+            self._flow_since = None
+        elif self._flow_since is None:
+            self._flow_since = now
+        if not idle:
+            return None
+        idle_s = now - self._idle_since
+        start_due = self.start_pending and idle_s >= self.start_settle_s and (
+            (self._flow_since is not None and now - self._flow_since >= self.start_settle_s)
+            or idle_s >= self.camera_grace_s)
+        calibrate_due = self.calibrate_pending and idle_s >= self.calibrate_settle_s
+        if not (start_due or calibrate_due):
+            self._due_since = None
+            return None
+        if self._due_since is None:
+            self._due_since = now
+        if not quiet and now - self._due_since < self.quiet_wait_s:
+            return None
+        reason = ", ".join(w for w, pending in (("start", self.start_pending),
+                                                ("after Calibrate", self.calibrate_pending)) if pending)
+        self.start_pending = self.calibrate_pending = False
+        self._due_since = None
+        self.reports.append((now, reason))
+        return reason
 
 
 def check_wall_light(*, plate=None, roi: Optional[Tuple[int, int, int, int]] = None,
