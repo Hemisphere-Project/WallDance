@@ -2,8 +2,11 @@
 
 Release 1's servo aimed the zone's median at 70 and tolerated 15 % of it clipped: on the façade of 08/10 the IR
 flood's oval sat at white while the servo was satisfied.  X1: the zone's 99.5th percentile, belt-sized blobs left
-out, stays under 235 and at most 0.5 % of it is at white; the median is a floor (35); when both cannot hold the
-servo stops at the floor and says the light is the limit, in the « wall light » row's words.
+out, stays under 235 and at most 0.5 % of it is at white; the median is a floor, the bottom of its own aim band
+(70 - 12 = 58: a darker wall costs detection, measured 26/11); when both cannot hold the servo keeps the exposure at
+the floor and says the bright spot stays at white, with the « wall light » row's instruction -- not a failure.
+With the floor at 58 the servo removes mild clipping only: over the reference wall (median ~68) an oval up to 1.1x
+white ends unclipped, from ~1.12x it ends in the reported conflict.
 
 The closed loops run on a simulated sensor: pixel = radiance x level / reference level, clipped at 255, with
 sensor noise; the level is exposure (us) x gain (as a linear factor).
@@ -124,8 +127,15 @@ def test_the_top_of_a_broad_highlight_is_not_taken_for_a_belt(monkeypatch):
 
 
 # ---------------------------------------------------------------------------------------------------- the gate
-def test_x1_unclips_a_hot_oval_where_release_1_left_it_clipped():
-    rad = _wall(oval=1.4)                                            # median ~70, the oval's peak 1.4x white
+def test_the_floor_is_the_bottom_of_the_medians_own_band():
+    from core.config import AUTOCAL_SERVO_TARGET_BRIGHTNESS, AUTOCAL_SERVO_TOLERANCE
+    assert SERVO_MEDIAN_FLOOR == AUTOCAL_SERVO_TARGET_BRIGHTNESS - AUTOCAL_SERVO_TOLERANCE == 58.0
+    assert ExposureServo(20000.0, 12.0).median_floor == SERVO_MEDIAN_FLOOR
+
+
+@pytest.mark.parametrize("oval", [1.05, 1.1])
+def test_x1_unclips_a_hot_oval_where_release_1_left_it_clipped(oval):
+    rad = _wall(oval=oval)                                           # median ~68, the oval's peak 1.05 / 1.1x white
     r1, cmds1, _d1, fin1, _c1 = _loop(ExposureServo(20000.0, 12.0), rad, rule="release1")
     assert r1.converged and fin1.p995 >= 250 and fin1.clip_pct > SERVO_CLIP_MAX_PCT   # release 1: satisfied
     r, cmds, dirs, fin, _cam = _loop(ExposureServo(20000.0, 12.0), rad)
@@ -138,7 +148,23 @@ def test_x1_unclips_a_hot_oval_where_release_1_left_it_clipped():
     assert "highlights p99.5" in r.summary_line() and "median" in r.summary_line()
 
 
-@pytest.mark.parametrize("wall,oval", [(80.0, 0.0), (68.0, 1.4), (68.0, 2.0)])
+@pytest.mark.parametrize("oval", [1.25, 1.4, 2.0])
+def test_a_hotter_oval_keeps_the_wall_at_the_floor_and_is_reported_where_release_1_was_silent(oval):
+    # the floor (58) leaves ~1 dB under a wall at ~68: an oval this hot cannot come under white without the wall
+    # going under its band, so the servo steps down to the floor, keeps that exposure and says so
+    rad = _wall(oval=oval)
+    r1, _c1, _d1, fin1, _cam1 = _loop(ExposureServo(20000.0, 12.0), rad, rule="release1")
+    assert r1.converged and fin1.clip_pct > SERVO_CLIP_MAX_PCT and "white" not in r1.summary_line()
+    r, cmds, dirs, fin, cam = _loop(ExposureServo(20000.0, 12.0), rad)
+    assert r.conflict and not r.converged, r.summary_line()
+    assert cmds[0][0] == "gain" and cmds[0][1] < 12.0 and len(cmds) <= 2 and _reversals(dirs) == 0
+    assert SERVO_MEDIAN_FLOOR * 0.95 <= fin.median <= SERVO_MEDIAN_FLOOR * 1.1    # at the floor, in the band
+    assert fin.p995 >= SERVO_HIGHLIGHT_DN                            # ... with the oval still over the limit
+    assert 20.0 * np.log10(_lv(*cam) / _REF) > -2.0                  # ~-1 dB, never the -5 dB of a floor at 35
+    assert r.conflict_line().startswith("Kept the exposure, the bright spot stays at white: ")
+
+
+@pytest.mark.parametrize("wall,oval", [(80.0, 0.0), (68.0, 1.05), (68.0, 1.4), (68.0, 2.0)])
 def test_a_belt_sized_blob_at_white_does_not_move_the_command(wall, oval):
     _r0, cmds0, _d0, _f0, cam0 = _loop(ExposureServo(20000.0, 12.0), _wall(wall=wall, oval=oval))
     r, cmds, _d, fin, cam = _loop(ExposureServo(20000.0, 12.0), _wall(wall=wall, oval=oval, belts=3))
@@ -159,12 +185,14 @@ def test_the_median_floor_holds_and_the_conflict_is_reported():
     rad = _wall(oval=3.0)                                            # an oval far above white: no level fits
     r, cmds, dirs, fin, _cam = _loop(ExposureServo(20000.0, 12.0), rad)
     assert r.conflict and not r.converged and "floor" in r.note
-    assert SERVO_MEDIAN_FLOOR * 0.95 <= fin.median <= SERVO_MEDIAN_FLOOR * 1.25     # at the floor, not under
+    assert SERVO_MEDIAN_FLOOR * 0.95 <= fin.median <= SERVO_MEDIAN_FLOOR * 1.1      # at the floor, not under
     assert fin.p995 >= SERVO_HIGHLIGHT_DN                            # ... with the oval still at white
     assert len(cmds) <= 5 and _reversals(dirs) == 0
     assert "IR flood" in r.instruction and "exposure" not in r.instruction.lower()  # the light, not a setting
     line = r.summary_line()
-    assert "the light is the limit" in line and r.instruction in line and "(35)" in line
+    assert "Kept the exposure, the bright spot stays at white" in line and r.instruction in line
+    assert f"kept at the wall's floor {SERVO_MEDIAN_FLOOR:.0f}" in line
+    assert "stopped" not in line and "fail" not in line.lower()     # not a failure: the plate is good to use
 
 
 def test_the_conflict_words_are_the_wall_light_rows():
@@ -179,10 +207,10 @@ def test_the_servo_and_the_wall_light_row_agree_on_white():
     # one « at white » (LIGHT_CLIP_DN): where the servo holds the highlights the row sees no part at white;
     # where the servo reports the conflict the row sees the bright part at white
     from core.light_verdict import light_verdict
-    for oval in (1.2, 1.4, 1.6):
+    for oval in (1.0, 1.05, 1.1):
         r, _c, _d, _f, cam = _loop(ExposureServo(20000.0, 12.0), _wall(oval=oval))
         assert r.converged and not light_verdict(_expose(_wall(oval=oval), _lv(*cam))).clipped
-    for oval in (3.0, 5.0):
+    for oval in (1.4, 3.0, 5.0):
         r, _c, _d, _f, cam = _loop(ExposureServo(20000.0, 12.0), _wall(oval=oval))
         assert r.conflict and light_verdict(_expose(_wall(oval=oval), _lv(*cam))).clipped
 
@@ -203,7 +231,7 @@ _STARTS = [(20000.0, 12.0, 36.0), (51600.0, 10.0, 36.0), (25000.0, 36.0, 30.0), 
            (5000.0, 0.0, 30.0)]
 
 
-@pytest.mark.parametrize("oval", [0.0, 0.8, 1.2, 1.6, 2.5, 5.0])
+@pytest.mark.parametrize("oval", [0.0, 0.8, 1.05, 1.2, 1.6, 2.5, 5.0])    # 1.05: unclipped over a wall at 68
 @pytest.mark.parametrize("wall", [8.0, 40.0, 68.0, 160.0])
 @pytest.mark.parametrize("start", _STARTS)
 def test_it_converges_in_a_bounded_number_of_steps_without_hunting(oval, wall, start):
@@ -216,15 +244,15 @@ def test_it_converges_in_a_bounded_number_of_steps_without_hunting(oval, wall, s
     if r.converged:                                                  # the highlights hold, the floor holds
         assert fin.p995 < SERVO_HIGHLIGHT_DN and fin.clip_pct <= SERVO_CLIP_MAX_PCT, r.summary_line()
         assert fin.median >= SERVO_MEDIAN_FLOOR * 0.95, r.summary_line()
-    elif r.conflict:                                                 # stopped at the floor, said so
-        assert SERVO_MEDIAN_FLOOR * 0.95 <= fin.median <= SERVO_MEDIAN_FLOOR * 1.25 and r.instruction
+    elif r.conflict:                                                 # kept at the floor, said so
+        assert SERVO_MEDIAN_FLOOR * 0.95 <= fin.median <= SERVO_MEDIAN_FLOOR * 1.1 and r.instruction
     else:                                                            # at a limit of the camera
         assert ("add IR" in r.note and fin.median < 70 - 12) or "minimum" in r.note, r.summary_line()
 
 
 def test_a_clamped_start_is_commanded_first_then_the_highlights_rule():
     # A6 ①: the hangar project saved at 51.6 ms against the 25 ms blur budget -- the clamp goes out first
-    rad = _wall(oval=1.4) * (_REF / _lv(25000.0, 10.0))               # the scene as the camera sees it at 25 ms
+    rad = _wall(oval=1.05) * (_REF / _lv(25000.0, 10.0))              # the scene as the camera sees it at 25 ms
     s = ExposureServo(51600.0, 10.0)
     r, cmds, dirs, fin, cam = _loop(s, rad, cam=(51600.0, 10.0))
     assert cmds[0] == ("exposure", pytest.approx(25000.0))
@@ -232,7 +260,7 @@ def test_a_clamped_start_is_commanded_first_then_the_highlights_rule():
     assert r.converged and fin.p995 < SERVO_HIGHLIGHT_DN and _reversals(dirs[1:]) == 0
     assert cam[0] == pytest.approx(25000.0) == r.exposure_us
     s2 = ExposureServo(25000.0, 36.0, gain_max_db=30.0)              # a gain above the camera's ceiling
-    r2, cmds2, _d2, fin2, _cam2 = _loop(s2, _wall(oval=1.4) * (_REF / _lv(25000.0, 30.0)), cam=(25000.0, 36.0))
+    r2, cmds2, _d2, fin2, _cam2 = _loop(s2, _wall(oval=1.05) * (_REF / _lv(25000.0, 30.0)), cam=(25000.0, 36.0))
     assert cmds2[0] == ("gain", pytest.approx(30.0)) and r2.converged and fin2.p995 < SERVO_HIGHLIGHT_DN
 
 
@@ -262,7 +290,7 @@ def test_hard_windows_inside_the_zone_stop_the_wall_at_the_floor_and_say_so():
     rad = _wall(wall=20.0, windows=(0, 40, 320, 10))                 # 6.25 % of the ROI at white at any level
     r, cmds, dirs, fin, _cam = _loop(ExposureServo(200.0, 0.5), rad, roi=_BAND)
     assert cmds[0][0] == "exposure" and cmds[0][1] > 200.0           # raised, never driven black
-    assert SERVO_MEDIAN_FLOOR * 0.95 <= fin.median <= SERVO_MEDIAN_FLOOR * 1.25
+    assert SERVO_MEDIAN_FLOOR * 0.95 <= fin.median <= SERVO_MEDIAN_FLOOR * 1.1
     assert r.conflict and r.instruction and _reversals(dirs) <= 1
 
 
@@ -317,13 +345,13 @@ def _run_servo(flows, frames=400):
 
 
 def test_the_live_calibrate_runs_the_highlights_rule():
-    flows, cams = _live_flows(_wall(oval=1.4))
+    flows, cams = _live_flows(_wall(oval=1.05))
     _run_servo(flows)
     assert cams.calls and cams.calls[0][0] == "gain" and cams.calls[0][1] < 12.0   # release 1 sent nothing
     res = flows._servo_result
     assert res.converged and res.p995 < SERVO_HIGHLIGHT_DN and not res.conflict
     assert res.gain_db == pytest.approx(cams.ids_gain_db)
-    assert not any("light is the limit" in str(c) for c in flows.ui.show_toast.call_args_list)
+    assert not any("stays at white" in str(c) for c in flows.ui.show_toast.call_args_list)
 
 
 def test_a_conflict_reaches_the_technician_as_one_instruction_about_the_light():
@@ -332,5 +360,7 @@ def test_a_conflict_reaches_the_technician_as_one_instruction_about_the_light():
     res = flows._servo_result
     assert res.conflict and "IR flood" in res.instruction
     toasts = [c.args[0] for c in flows.ui.show_toast.call_args_list]
-    assert any("the light is the limit" in t and res.instruction in t for t in toasts)
+    assert any(t.startswith("Kept the exposure, the bright spot stays at white: ") and res.instruction in t
+               for t in toasts)
     assert res.instruction in res.summary_line()                     # and on the result card
+    assert flows._calibrator.is_collecting                           # not a failure: Calibrate goes on

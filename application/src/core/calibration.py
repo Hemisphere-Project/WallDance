@@ -218,9 +218,16 @@ SERVO_HIGHLIGHT_PCTL = 99.5
 SERVO_CLIP_MAX_PCT = 0.5       # ... and at most this % of the zone is at white
 SERVO_HIGHLIGHT_AIM = 0.9      # a step for the highlights aims that percentile at 0.9 x 235 (~212), inside the limit
 SERVO_HIGHLIGHT_NEAR = 0.95    # ... and it steps down from 0.95 x 235 (~223): the end state keeps a margin to 235
-# The floor: half the median's aim.  For the highlights the servo may halve the wall's level (-6 dB), never more;
-# release 1's band bottom (58) would leave it 1 dB on a wall like 08/10's (median 64 at 25 ms / 30 dB).
-SERVO_MEDIAN_FLOOR = 0.5 * AUTOCAL_SERVO_TARGET_BRIGHTNESS
+# The floor: the bottom of the median's own aim band, 70 - 12 = 58.  For the highlights the servo may bring the wall
+# down to it, never under; when they still clip there it keeps that exposure and says the light is the limit.  Not
+# lower (X1 first had half the aim, 35: about -5 dB on a wall lit like 08/10's, median 36 to 41 instead of 65): the
+# four long 08/10 takes replayed darker on the show laptop (26/11) say a darker wall costs for certain -- OUTSIDE
+# the clipped oval, where a scaled recording is physically right, the detector loses 1.3 points at -3 dB and 5.5 at
+# -5 dB (90.7 -> 89.4 -> 85.2 %), and mur 5's dark wall with no oval 5.9 and 11.9 (89.2 -> 83.3 -> 77.3 %) -- while
+# INSIDE the oval it is already at 93.2 % at that exposure (90.7 % outside): little left to gain by unclipping it.
+# So it removes mild clipping only: ~1 dB under a wall at the aim (a synthetic oval up to 1.1x white comes under);
+# on 08/10's facade (mur2 take 2) -0.9 dB, median 65 -> 59, and the oval stays at white: the light is the limit.
+SERVO_MEDIAN_FLOOR = AUTOCAL_SERVO_TARGET_BRIGHTNESS - AUTOCAL_SERVO_TOLERANCE
 # Belt-sized: a connected group of pixels at or above 235 covering at most a quarter of one part of the light
 # verdict's grid (core/light_verdict.zone_parts: 1/8 of the zone's long side), and standing out of what is behind
 # it as the belt detector asks of a belt (BeltParams k_bg, min_delta_dn) -- a dancer's belt, a small lamp.  Alone
@@ -381,6 +388,8 @@ class ServoResult:
         state = "converged" if self.converged else f"stopped: {self.note}"
         if self.converged and self.note:
             state += f", {self.note}"
+        if self.conflict:                          # not a failure of Calibrate: the exposure is kept, the plate good
+            state = f"kept at the wall's floor {self.floor or 0.0:.0f}"
         blobs = f", small bright spots left out ({self.blob_pct:.1f}%)" if self.blob_pct >= 0.05 else ""
         line = (f"Exposure: {self.exposure_us/1000.0:.1f} ms  gain {self.gain_db:.1f} dB  "
                 f"-> {self.region} median {self.brightness:.0f}, clip {self.clip_pct:.1f}%, "
@@ -389,9 +398,9 @@ class ServoResult:
         return line + (f"\n{self.conflict_line()}" if self.conflict else "")
 
     def conflict_line(self) -> str:
-        """The technician's one instruction when the highlights and the floor cannot both hold: the light."""
-        return (f"Exposure: the light is the limit - the brightest part of the wall stays at white with the wall "
-                f"already at its floor ({self.floor or 0.0:.0f}): {self.instruction}")
+        """The technician's one instruction when the highlights and the floor cannot both hold: the light.  Not a
+        failure: Calibrate goes on and its plate is good to use."""
+        return f"Kept the exposure, the bright spot stays at white: {self.instruction}"
 
 
 class ExposureServo:

@@ -38,7 +38,8 @@ Conventions, checked by tmp_analysis/r2-1126/gates/s2/run_gate.sh <code-root>:
 - `Scene Calibration`, dernière ligne : `Kept gamma …` ou `Kept the current gamma …` = bon ; `YOLO now and then sees a person on the EMPTY wall …` (un objet pris pour quelqu'un) = l'enlever ou sortir la `Region of Interest` de là, refaire `CALIBRATE`. <!-- src: gui.py:2840 «Scene Calibration» ; core/empty_wall.py:74 «Kept gamma » ; core/empty_wall.py:71 «Kept the current gamma » ; core/empty_wall.py:186 «YOLO now and then sees a person on the EMPTY wall» ; gui_builder.py:1917 «Region of Interest» ; gui_builder.py:784 «CALIBRATE» -->
 - Puis `Save to project` (enregistrer) ; `empty wall: ready (…)` (mur vide : prêt) s'affiche. <!-- src: gui.py:2860 «Save to project» ; app.py:1865 «empty wall: ready» -->
 - Garder 15 s de ce mur vide : `REC`, un slot libre (1 à 9), 15 s, `REC`. Noter slot et éclairage. <!-- src: gui_builder.py:1244 «REC» -->
-- **[X3 : quelqu'un dans l'image : arrêt, et où]** **[X1 : exposition des zones claires ; vrai mur le 4/12]** **[X2 : verdict lumière, quoi déplacer]**
+- **[X3 : quelqu'un dans l'image : arrêt, et où]** **[X2 : verdict lumière, quoi déplacer]**
+- `Kept the exposure, the bright spot stays at white` (le mur vide est bon) → **si possible, l'IR comme dit.** <!-- src: core/calibration.py:403 «Kept the exposure, the bright spot stays at white» -->
 
 **③ Un danseur, 10 s** — `3 Live`, `RUN` ; un danseur debout 10 s contre le mur, au point le plus loin de la caméra. **[X4 : l'étape danseur et la bande de taille ; le modèle si P5 entre]** <!-- src: gui_builder.py:585 «3 Live» ; gui_builder.py:985 «RUN» -->
 
