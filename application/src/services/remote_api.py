@@ -20,6 +20,8 @@ Endpoints (JSON unless noted; all but ``/ping`` need ``Authorization: Bearer``):
     GET  /api/v1/logs?tail=N                tail of the current app log
     GET  /api/v1/snapshot.jpg               current preview (phone-monitor JPEG)
          ?w=320&q=50&max_bytes=30000        ... shrunk for a slow link (S1a, extra/wdwatch.py)
+    GET  /api/v1/window.jpg                 a picture of the app's own window (S1c), ?w=&q=&max_bytes=
+    GET  /api/v1/window.png                 ... full size, lossless (services/window_shot.py)
     POST /api/v1/clip {path,start,frames,scale,codec}   cut a small excerpt (job)
     GET  /api/v1/jobs/<id>                  job status
 
@@ -55,6 +57,7 @@ from urllib.parse import parse_qs, urlparse
 
 from runtime import api
 from services.live_watch import HitRate, snapshot_fitted
+from services.window_shot import WINDOW_PATHS, WindowShot
 
 SAFE, CONTROL, HEAVY, NEVER = "safe", "control", "heavy", "never"
 SUPPORT = "support"     # S1b: the support line, gated by the project key support_line only
@@ -218,6 +221,8 @@ class RemoteApi:
         self.hit_rate = HitRate()
         # S1b: the app's SupportLine (services/support_line.py), set by MainLoop._startup; None = no support line
         self.support = None
+        # S1c: a picture of the app's window, served by the main loop (ui/adapter.py serve_window_shot)
+        self.window_shot = WindowShot()
         bus.subscribe(self._on_event)
 
     # -- runtime side -------------------------------------------------------
@@ -264,6 +269,8 @@ class RemoteApi:
             out["health"] = dict(line.get("data") or {}, state=line.get("state"), line=line.get("text"))
         if self.support is not None:   # S1b: on/off, the message on screen, the waiting and the read ones
             out["support_line"] = self.support.status()
+        if self.window_shot is not None:   # S1c: this build serves /window.jpg; how the last requests went
+            out["window_shot"] = self.window_shot.status()
         return out
 
     def events_since(self, since: int, wait: float, types: Optional[set]) -> Dict:
@@ -568,6 +575,8 @@ def _make_handler(remote: RemoteApi):
                 self.end_headers()
                 self.wfile.write(jpg)
                 return
+            if path in WINDOW_PATHS:     # S1c: the app's own window; a read in every state, like the snapshot
+                return self._send_window(path.endswith(".png"), q)
             if path.startswith("/api/v1/jobs/"):
                 job = remote._jobs.get(path.rsplit("/", 1)[-1])
                 return self._json(200 if job else 404, job or {"error": "no such job"})
@@ -588,6 +597,25 @@ def _make_handler(remote: RemoteApi):
             if path == "/api/v1/clip":
                 return self._json(*remote.start_clip(body))
             return self._json(404, {"error": f"unknown endpoint {path}"})
+
+        def _send_window(self, png: bool, q: Dict[str, str]) -> None:
+            """S1c: wait (on this HTTP thread, a few seconds at most) for the main loop to capture the window."""
+            shot = remote.window_shot
+            if shot is None:
+                return self._json(404, {"error": "this app serves no window picture"})
+            code, body, headers = shot.picture(q, png=png, in_run=remote.state_fn() == "run")
+            if code != 200:
+                body = json.dumps(body, default=str).encode()
+                headers = dict(headers, **{"Content-Type": "application/json"})
+            self.send_response(code)
+            for k, v in headers.items():
+                self.send_header(k, v)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
         def _send_file(self, rel: str) -> None:
             p = remote.resolve(rel)

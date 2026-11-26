@@ -112,6 +112,7 @@ python extra/wdremote.py cmd SetInputTransform mirror=true rotation=90
 python extra/wdremote.py commands                     # allowlist + policy class of each command
 python extra/wdremote.py logs -f                      # the app log (logs/walldance_<stamp>.log)
 python extra/wdremote.py snapshot                     # current preview JPEG
+python extra/wdremote.py ui-shot -o fenetre.jpg       # a picture of the app's own window (§5d)
 python extra/wdremote.py clip projects/<p>/recordings/slot_3_x.avi --start 900 --frames 200 --scale 0.5 --pull
 ```
 
@@ -131,7 +132,8 @@ Every command and refusal is in the app log.
 ## 5b. Watching the app over a slow link (`wdwatch`, S1a)
 
 `extra/wdwatch.py` reads the live app every ~30 s through `wdremote`'s tunnel and token and logs it on the
-dev box. It only reads: four GET endpoints (`ping`, `status`, `events`, `snapshot.jpg`), never a command.
+dev box. It only reads: four GET endpoints (`ping`, `status`, `events`, `snapshot.jpg`; and `window.jpg` with
+`--ui-shot-every`, §5d), never a command.
 
 ```bash
 python extra/wdwatch.py watch                           # supervision (7–8/12): cues printed
@@ -212,6 +214,41 @@ python extra/wdremote.py events --types SupportMessageShown,SupportMessageQueued
 - **The log**: each message sent, refused, shown, queued and acknowledged is a line in the app log
   (`[RemoteApi] SupportMessage …`, `[Support] message … on screen`, `… acknowledged after … s`), and each step
   an event in the ring. `wdwatch` logs the `support_line` block of every status it reads.
+
+## 5d. A picture of the app's own window (S1c)
+
+What the technician sees -- the panels, the readiness rows, the health line, the support band, the cards --
+as a picture, without a remote desktop: for the supervisor of 7–8/12 and for the operator guide's screenshots.
+`GET /api/v1/window.jpg` (fitted like the camera snapshot: `?w=&q=&max_bytes=`; without `w`, the window's full
+width at quality 80) and `GET /api/v1/window.png` (full size, lossless). Only the app's own frame buffer
+(DearPyGui's `output_frame_buffer`), never the desktop or another window. `services/window_shot.py`.
+
+```bash
+python extra/wdremote.py ui-shot -o fenetre.jpg                    # full width, JPEG q 80 (~150 KB at 2010 px)
+python extra/wdremote.py ui-shot -o petit.jpg --width 640 --max-bytes 40000   # a slow 4G link (~17 KB)
+python extra/wdremote.py ui-shot -o guide/phase1.png --full        # the guide's screenshots (lossless PNG)
+python extra/wdwatch.py watch --ui-shot-every 10                   # ... and every 10th poll, ui_last.jpg
+```
+
+- **A read, like the snapshot**: the bearer token, any state, RUN included, whatever *Allow remote control during
+  RUN*. `wdwatch` stays GET-only; its `--ui-shot-every N` is off by default and keeps only the last picture
+  (`ui_last.jpg` in the run folder, its own `--ui-shot-kb` budget, 80 KB at 800 px).
+- **How**: the HTTP thread asks and waits (3 s at most); the main loop arms one capture between two frames
+  (`DpgUiAdapter.serve_window_shot`, ~0.1 ms); DearPyGui reads the next rendered frame and hands it over on its
+  callback thread; the HTTP thread converts and encodes it. No DearPyGui call off the main loop.
+- **What it costs the show**: DearPyGui reads the whole window and converts it inside that one render, so one
+  frame takes longer -- measured on mgr-ran: ~17 ms at 1340×900, **~60 ms at 2010×1350 (the laptop's window,
+  UI scale 1.5), ~100 ms with peaks near 280 ms when the machine is loaded**, ~85 ms at 2680×1800; a plain
+  frame is ~2.5 ms. More than one camera frame (50 ms) at the laptop's size: the loop may log it as a camera
+  stall. Hence the rate: one capture at a time, one a second in STANDBY, **one every 10 s in RUN**; more is `429`
+  with `Retry-After` (`wdremote ui-shot` waits and retries twice). The laptop's own figure is to be measured there.
+- **Never a fake picture**: no window on screen (a headless run, a test), a minimised window, a DearPyGui
+  without the call, no frame within 3 s (a model load, a dialog) or a blank frame each answer `503` with the
+  reason. `/status` carries `window_shot` (the limits, counts, the last one's size and wait).
+- **DearPyGui 2.3.1 facts** (26/11): calling `output_frame_buffer` before a viewport exists crashes the
+  process, and without a display no viewport can be shown (no headless capture: the real capture is checked on
+  a desktop, `tests/window_shot_probe.py`). It releases the callback on the render thread without the GIL, so
+  the app hands it one callback that lives for good -- a fresh one per capture aborted the process.
 
 ## 6. What every recording now carries (MRK-0)
 

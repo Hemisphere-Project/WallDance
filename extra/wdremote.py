@@ -39,6 +39,7 @@ the token is read over SSH once and cached)::
     python extra/wdremote.py cmd SetRigSheet field=f_number value=2.8
     python extra/wdremote.py cmd CheckReadiness ; python extra/wdremote.py commands
     python extra/wdremote.py logs -f --tail 50 ; python extra/wdremote.py snapshot
+    python extra/wdremote.py ui-shot -o fenetre.jpg --width 1024 ; ... ui-shot -o fenetre.png --full
     python extra/wdremote.py clip projects/p/recordings/slot_3_x.avi --start 900 --frames 200 --pull
 
 Control commands are refused while the app is in RUN unless the operator ticked
@@ -1517,6 +1518,57 @@ def cmd_snapshot(tr, remote: Remote, a) -> int:
     return 0
 
 
+def _image_size(data: bytes) -> Optional[Tuple[int, int]]:
+    """(width, height) of a PNG or a baseline/progressive JPEG, else None (stdlib only)."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) >= 24:
+        return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+    i = 2
+    while data[:2] == b"\xff\xd8" and i + 9 < len(data):
+        if data[i] != 0xFF:
+            return None
+        marker, seg = data[i + 1], int.from_bytes(data[i + 2:i + 4], "big")
+        if marker in (0xC0, 0xC1, 0xC2):
+            return int.from_bytes(data[i + 7:i + 9], "big"), int.from_bytes(data[i + 5:i + 7], "big")
+        i += 2 + seg
+    return None
+
+
+def cmd_ui_shot(tr, remote: Remote, a) -> int:
+    """S1c: a picture of the app's own window -- what the technician sees -- saved to a file. A JPEG fitted in
+    the app (full width unless --width; --quality; --max-bytes for a slow link), or with --full the
+    full-size PNG. A busy answer (429: one capture at a time, one every 10 s in RUN) is retried after the
+    wait it names, twice at most. A read: allowed in RUN, whatever the remote-control tick."""
+    if a.full:
+        path, ext = "/api/v1/window.png", "png"
+    else:
+        params = [f"q={a.quality}"] + ([f"w={a.width}"] if a.width else []) + (
+            [f"max_bytes={a.max_bytes}"] if a.max_bytes else [])
+        path, ext = "/api/v1/window.jpg?" + "&".join(params), "jpg"
+    with ApiSession(tr, remote) as s:
+        for attempt in range(3):
+            code, data = s.request(path, raw=True, timeout=30.0)
+            if code != 429 or attempt == 2:
+                break
+            try:
+                wait = float(json.loads(data).get("retry_after", 1))
+            except (ValueError, AttributeError):
+                wait = 1.0
+            print(f"[ui-shot] busy (429), again in {wait:g} s", flush=True)
+            time.sleep(min(max(wait, 0.2), 15.0))
+    if code != 200:
+        print(f"[ui-shot] refused ({code}): {data[:300].decode(errors='replace')}")
+        return 1
+    out = Path(a.out or RUNS_DIR / f"ui-{new_stamp()}.{ext}")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(data)
+    wh = _image_size(data)
+    size = f" {wh[0]}x{wh[1]}" if wh else ""
+    print(f"[ui-shot] {ext.upper()}{size}, {fmt_bytes(len(data))} -> {out}")
+    if out.suffix.lower() not in ({".png"} if ext == "png" else {".jpg", ".jpeg"}):
+        print(f"[ui-shot] note: the file is a {ext.upper()} whatever its name ({out.name})")
+    return 0
+
+
 def cmd_ls(tr, remote: Remote, a) -> int:
     with ApiSession(tr, remote) as s:
         code, res = s.request(f"/api/v1/files?path={urllib.request.quote(a.path or '')}")
@@ -1682,6 +1734,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--follow", "-f", action="store_true")
     s = sub.add_parser("snapshot", help="save the current preview JPEG")
     s.add_argument("-o", "--out")
+    s = sub.add_parser("ui-shot", help="S1c: save a picture of the app's own window (what the technician "
+                       "sees): a fitted JPEG, or --full the full-size PNG")
+    s.add_argument("-o", "--out", help="the file (default tmp_analysis/remote-runs/ui-<stamp>.jpg|png)")
+    s.add_argument("--width", type=int, help="JPEG width in px (default: the window's full width)")
+    s.add_argument("--quality", type=int, default=80, help="JPEG quality (default 80)")
+    s.add_argument("--max-bytes", type=int, help="the app shrinks the JPEG to fit (a slow link)")
+    s.add_argument("--full", action="store_true", help="the full-size lossless PNG (the guide's screenshots)")
     s = sub.add_parser("ls", help="list shared files via the API (projects/, logs/)")
     s.add_argument("path", nargs="?", default="")
     s = sub.add_parser("clip", help="cut an excerpt on the laptop, optionally pull it")
@@ -1745,6 +1804,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "commands": cmd_commands, "cmd": cmd_cmd, "record": cmd_record, "state": cmd_state,
         "logs": cmd_logs, "snapshot": cmd_snapshot, "ls": cmd_ls, "clip": cmd_clip,
         "support-send": cmd_support_send, "support-ack": cmd_support_ack,     # S1b
+        "ui-shot": cmd_ui_shot,                                               # S1c
         **_SLOT_HANDLERS,
     }
     return handlers[a.cmd](tr, remote, a)

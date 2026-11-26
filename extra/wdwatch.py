@@ -8,7 +8,9 @@ SSH tunnel and the cached token of ``extra/wdremote.py``):
   the build's health line when it has one); the **live hit rate** -- foreground groups with a box, scored in
   the app by the swipe's referee (``core/swipe.py``), absent in a build without it;
 * ``/events``: what the app said since the last poll (alerts, toasts, readiness, state and camera changes);
-* ``/snapshot.jpg``, shrunk in the app to a few KB (``?w=&q=&max_bytes=``) -- never the video stream.
+* ``/snapshot.jpg``, shrunk in the app to a few KB (``?w=&q=&max_bytes=``) -- never the video stream;
+* opt-in (``--ui-shot-every N``, off by default): every N polls a small picture of the app's own window,
+  ``/window.jpg`` (S1c), kept as ``ui_last.jpg`` in the run folder -- what the technician sees.
 
 It logs them on this machine, in ``<out>/<YYYY-MM-DD_HHMMSS>/``: ``polls.jsonl`` (one JSON line a poll, plus
 link, restart and cue lines), ``snapshots/*.jpg`` and ``summary.txt``, the one-screen summary rewritten after
@@ -31,7 +33,7 @@ is noticed (its start time, its event counter) and its events are read from its 
 * ``watch --record-only`` -- the show (12/12): it only reads and logs, for the post-mortem.  It never sends a
   command and never contacts anyone: ``--notify`` is refused and the cues only go to the log.
 
-In both modes the API client has no POST and refuses every endpoint but the four reads above: a command is
+In both modes the API client has no POST and refuses every endpoint but the reads above: a command is
 ``wdremote cmd``'s, typed by a person.
 
     python extra/wdwatch.py watch                        # supervision, logs under tmp_analysis/watch/
@@ -63,7 +65,8 @@ REPO = HERE.parent
 DEFAULT_OUT = REPO / "tmp_analysis" / "watch"
 
 # The only endpoints the watcher may call, all GET.  Nothing here can send a command.
-READ_PATHS = ("/api/v1/ping", "/api/v1/status", "/api/v1/events", "/api/v1/snapshot.jpg")
+READ_PATHS = ("/api/v1/ping", "/api/v1/status", "/api/v1/events", "/api/v1/snapshot.jpg",
+              "/api/v1/window.jpg")      # S1c: the window picture, only with --ui-shot-every
 EVENT_TYPES = ("Alert,AlertCleared,Toast,ReadinessResult,StateChanged,CameraStatus,TrtBanner,"
                "CalibReportCard,ConfigSaved")
 JSON_CAP = 256 * 1024          # a status or events answer larger than this is not read (bytes on the wire)
@@ -277,7 +280,8 @@ class Watcher:
                  snap_every: int = 1, full_snapshots: bool = False, max_snap_mb: float = 2000.0,
                  event_types: str = EVENT_TYPES, cue_hit: float = 0.75, cue_fps: float = 10.0,
                  timeout: float = 20.0, notify: Optional[Callable[[str], None]] = None,
-                 host: str = "", clock: Callable[[], float] = time.time, out=None):
+                 host: str = "", clock: Callable[[], float] = time.time, out=None,
+                 ui_shot_every: int = 0, ui_shot_width: int = 800, ui_shot_kb: float = 80.0):
         if record_only and notify is not None:
             raise ValueError("record-only never contacts anyone: no notify hook")
         self.open_session = open_session
@@ -310,6 +314,9 @@ class Watcher:
         self._cues: Dict[str, str] = {}         # active cue -> its text
         self._streak: Dict[str, int] = {}
         self.records: Deque[Dict[str, Any]] = deque(maxlen=6000)
+        # S1c (opt-in, 0 = off): a small picture of the app's window every N polls, the last one kept
+        self.ui_shot_every = max(0, int(ui_shot_every))
+        self.ui_shot_width, self.ui_shot_bytes = int(ui_shot_width), int(ui_shot_kb * 1024)
         (self.run_dir / "snapshots").mkdir(parents=True, exist_ok=True)
         self._log_path = self.run_dir / "polls.jsonl"
 
@@ -397,6 +404,9 @@ class Watcher:
         rec["health"] = health_of(st)
         used += self._events(api, st, rec)
         rec["snapshot"], snap_used = self._snapshot(api, st, self.budget - used, rec)
+        if self.ui_shot_every:                  # S1c, opt-in: its own budget, outside the poll's
+            rec["ui_shot"], ui_used = self._ui_shot(api, st)
+            snap_used += ui_used
         return used + snap_used
 
     def _check_restart(self, st: Dict[str, Any], rec: Dict[str, Any]) -> None:
@@ -482,6 +492,37 @@ class Watcher:
         self.snap_bytes += len(body)
         return {"file": f"snapshots/{name}", "bytes": len(body), "w": w if fit else None,
                 "q": q if fit else None}, wire + OVERHEAD
+
+    def _ui_shot(self, api: ApiReader, st: Dict[str, Any]) -> Tuple[Dict[str, Any], int]:
+        """S1c (``--ui-shot-every N``): every N polls (2N on a slow link) a small picture of the app's own
+        window, fitted in the app to ``--ui-shot-kb``, saved over ``ui_last.jpg`` in the run folder. A GET like
+        the rest; the app may answer 429 (one capture every 10 s in RUN) or 503 (no window): logged, skipped."""
+        every = self.ui_shot_every * (2 if self.pacer.slow >= self.pacer.max_slow else 1)
+        if (self.n - 1) % every:
+            return {"skipped": "cadence"}, 0
+        if "window_shot" not in st:
+            return {"skipped": "this build has no window picture"}, 0
+        room = self.ui_shot_bytes
+        path = f"/api/v1/window.jpg?w={self.ui_shot_width}&q=60&max_bytes={room}"
+        try:
+            code, body, wire = api.get(path, room)
+        except OverBudget as e:
+            return {"skipped": f"over budget: {e.size} B > {room} B, not read"}, OVERHEAD
+        except ApiError as e:
+            return {"skipped": f"link: {e}"}, OVERHEAD
+        if code != 200 or not body:
+            try:
+                why = str(json.loads(body or b"{}").get("error", ""))[:160]
+            except ValueError:
+                why = ""
+            return {"skipped": f"http {code}" + (f": {why}" if why else "")}, wire + OVERHEAD
+        try:
+            tmp = self.run_dir / "ui_last.jpg.part"
+            tmp.write_bytes(body)
+            os.replace(tmp, self.run_dir / "ui_last.jpg")
+        except OSError as e:
+            return {"skipped": f"cannot save: {e}"}, wire + OVERHEAD
+        return {"file": "ui_last.jpg", "bytes": len(body), "w": self.ui_shot_width}, wire + OVERHEAD
 
     # -- failures and the link's state ---------------------------------------------
     def _failed(self, rec: Dict[str, Any], t: float, why: str, state: Optional[str] = None,
@@ -858,6 +899,11 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--cue-hit", type=float, default=0.75, help="cue under this hit rate (default 0.75)")
     w.add_argument("--cue-fps", type=float, default=10.0, help="cue under this fps in RUN (default 10)")
     w.add_argument("--notify", help="supervision only: a command given each cue on stdin")
+    w.add_argument("--ui-shot-every", type=int, default=0, metavar="N",
+                   help="S1c: every N polls also a small picture of the app's window, kept as ui_last.jpg in "
+                        "the run folder (default 0 = off)")
+    w.add_argument("--ui-shot-width", type=int, default=800, help="its width, px (default 800)")
+    w.add_argument("--ui-shot-kb", type=float, default=80.0, help="its size cap, KB (default 80)")
 
     s = sub.add_parser("summary", help="the one-screen summary of a run (default: the latest)")
     s.add_argument("--out", default=str(DEFAULT_OUT))
@@ -887,7 +933,8 @@ def cmd_watch(a) -> int:
                 snap_width=a.snap_width, snap_quality=a.snap_quality, snap_every=a.snap_every,
                 full_snapshots=a.full_snapshots, max_snap_mb=a.max_snap_mb, event_types=a.event_types,
                 cue_hit=a.cue_hit, cue_fps=a.cue_fps, timeout=a.timeout,
-                notify=notify_command(a.notify) if a.notify else None, host=remote.host)
+                notify=notify_command(a.notify) if a.notify else None, host=remote.host,
+                ui_shot_every=a.ui_shot_every, ui_shot_width=a.ui_shot_width, ui_shot_kb=a.ui_shot_kb)
 
     def _term(*_):
         raise _Stop()

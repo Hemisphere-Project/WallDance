@@ -539,6 +539,7 @@ class MainLoop:
         remote = getattr(app, "_remote", None)
         if remote is None:
             return
+        getattr(getattr(app, "ui", None), "serve_window_shot", lambda r: None)(remote)   # S1c: /window.jpg
         now = time.monotonic()
         if now - getattr(self, "_remote_t", 0.0) < REMOTE_API_STATUS_INTERVAL_S:
             return

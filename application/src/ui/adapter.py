@@ -114,6 +114,43 @@ class DpgUiAdapter:
         dpg.destroy_context()
 
     # ------------------------------------------------------------------
+    # S1c: a picture of this window for the remote API (services/window_shot.py)
+    # ------------------------------------------------------------------
+    def serve_window_shot(self, remote) -> None:
+        """Main loop, every tick (``MainLoop._tick_remote``). When the remote API waits for a picture of the
+        window, arm ONE DearPyGui frame-buffer capture: the call returns at once and the next rendered frame is
+        read and handed to ``WindowShot.deliver`` on DearPyGui's callback thread. Or refuse it with the reason
+        (no viewport -- the call would crash the process --, minimised, a build without the call). Never waits,
+        never raises."""
+        shot = getattr(remote, "window_shot", None)
+        rid = shot.wanted() if shot is not None else 0
+        if not rid:
+            return
+        try:
+            reason = self._window_shot_refusal()
+            if reason:
+                shot.refuse(rid, reason)
+                return
+            shot.armed(rid)
+            # the shot's one long-lived callback, never a fresh closure: DearPyGui releases its reference on
+            # the render thread without the GIL, and freeing a closure there aborts the process
+            dpg.output_frame_buffer(callback=shot.on_frame)
+        except Exception as e:  # noqa: BLE001 - the picture goes, the show stays
+            shot.refuse(rid, f"the capture could not be armed ({type(e).__name__}: {e})")
+
+    def _window_shot_refusal(self) -> Optional[str]:
+        if self.gui is None:
+            return "the app's window is not built yet"
+        if not callable(getattr(dpg, "output_frame_buffer", None)):
+            return "this DearPyGui build has no output_frame_buffer"
+        if not dpg.is_viewport_ok():         # before any other viewport call: without one they crash
+            return "no window on screen (no viewport: a headless run or a test)"
+        w, h = dpg.get_viewport_client_width(), dpg.get_viewport_client_height()
+        if w < 16 or h < 16:
+            return f"the window is minimised ({w} x {h} px)"
+        return None
+
+    # ------------------------------------------------------------------
     # Synchronous port surface (documented exceptions to the event flow)
     # ------------------------------------------------------------------
     def show_tensorrt_prompt(self, model_name: str, on_choice) -> None:
