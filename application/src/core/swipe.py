@@ -114,9 +114,10 @@ class Candidate:
 @dataclass
 class SwipeParams:
     frames: int = 150                 # frames a swipe runs on: the newest with a dancer group, ``min_gap_s`` apart
-                                      # (one inference each per candidate).  The gate holds at 150; at 60 a
-                                      # worse setting is named on 08/10 mur2 8 (0.05-0.4 % of swipes, 0 of 2,000
-                                      # at 90); with 120 a 15-point gain was missed on 12 % of mur2 8 swipes
+                                      # (one inference each per candidate; the live setting's come free: its row
+                                      # is scored from the boxes the live pass stored).  The gate holds at 150; at
+                                      # 60 a worse setting is named on 08/10 mur2 8 (0.05-0.4 % of swipes, 0 of
+                                      # 2,000 at 90); with 120 a 15-point gain was missed on 12 % of mur2 8 swipes
     min_gap_s: float = 1.0            # between two kept frames (neighbours say the same thing)
     group_min_area: float = 300.0     # px^2: a foreground group this large is a dancer to cover
     box_margin: float = 0.10          # a box covers a group whose centre lies within it, grown by this share ...

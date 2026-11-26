@@ -838,7 +838,7 @@ class KnownNResult(Event):
 class SettingsSwipeProgress(Event):
     """P5 swipe progress: state (idle | collecting | running | done | cancelled | dropped | error |
     no_verdict), the plain line (« collecting 12 / 150 frames with a dancer on the wall », « trying l @ 1920 x
-    1056 (2/3) ») and 0..1."""
+    1056 (2/2) ») and 0..1."""
     state: str
     text: str
     progress: float = 0.0

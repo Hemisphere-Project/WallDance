@@ -872,12 +872,71 @@ def test_a_failed_live_re_run_ends_the_swipe_in_error():
             return CandidateRun(cand, error="inference failed: AcceleratorError") if cand == X1280 \
                 else super().run(images, cand, engine_path, **kw)
     proc = _FakeProc(_frames(), 30)
-    c, ev = _controller(proc, {"v": _live()}, _LiveFails())
+    c, ev = _controller(proc, {"v": _live()}, _LiveFails(), rerun_live=True)    # the check path re-runs it
     c.start()
     c.join(5)
     assert c.state == "error" and c.outcome is None
     assert c.text == "the live setting could not be re-run: inference failed: AcceleratorError"
     assert c.applicable(_live())[0].startswith("no swipe result")
+
+
+def test_the_live_row_comes_from_the_stored_boxes_and_its_engine_never_runs():
+    """The operator's swipe scores the live setting from the boxes the live pass stored with each kept frame:
+    two engines run, not three; the live row says so (stored, no load, no ms of its own: the cost bar is
+    ``Candidate.cost``'s for every row)."""
+    class _NoLive(_FakeRunner):
+        def run(self, images, cand, engine_path, **kw):
+            assert cand != X1280, "the live engine must not run"
+            return super().run(images, cand, engine_path, **kw)
+    runner = _NoLive()
+    proc = _FakeProc(_frames(), 30)
+    c, ev = _controller(proc, {"v": _live()}, runner)
+    c.start()
+    c.join(5)
+    assert c.state == "done" and X1280 not in runner.calls and len(runner.calls) == 2
+    row = next(r for r in c.outcome.to_dict()["rows"] if r["label"] == "x @ 1280")
+    assert row["load_s"] == 0.0 and row["frames_run"] == 30 and row["ms_p50"] is None
+    assert [t for s, t, p in ev["progress"] if s == "running"] == ["trying x @ 1920 x 1056 (1/2)",
+                                                                   "trying l @ 1920 x 1056 (2/2)"]
+
+
+def test_stored_and_re_run_live_rows_give_the_same_verdict_on_the_same_boxes():
+    """Same boxes, same scores: the stored row and a re-run that finds exactly those boxes give one verdict,
+    and the excluded cells are applied once (a stored row already had them)."""
+    from core.swipe import SwipeFrame
+    from core.swipe_runner import live_run_from_boxes, score_runs
+    frames = [SwipeFrame(float(i), np.zeros((8, 8), np.uint8), Observation(groups=[DANCER]), i % 3 == 0,
+                         () if i % 3 == 0 else (ON_HER,)) for i in range(150)]
+    obs = [f.obs for f in frames]
+    other = CandidateRun(L1920, boxes=[[ON_HER] for _ in frames], ms=[20.0] * 150)
+    rerun = CandidateRun(X1280, boxes=[list(f.boxes) for f in frames], ms=[18.0] * 150)
+    a = score_runs(obs, [live_run_from_boxes(X1280, [f.boxes for f in frames]), other], X1280, SwipeParams())
+    b = score_runs(obs, [rerun, other], X1280, SwipeParams())
+    assert (a.winner, a.switch, a.reason) == (b.winner, b.switch, b.reason)
+
+    class _DropAll:
+        def filter(self, boxes):
+            return []
+    c = score_runs(obs, [live_run_from_boxes(X1280, [f.boxes for f in frames]), other], X1280, SwipeParams(),
+                   exclusion=_DropAll())
+    live_row = next(r for r in c.rows if r.candidate == X1280)
+    assert live_row.coverage > 0                                          # the stored row is not filtered again
+
+
+def test_a_confidence_change_starts_the_pool_over():
+    """The stored live boxes are cut at the show's confidence: frames kept under another one start over."""
+    proc, clock = _proc()
+    frame = np.dstack([np.full((40, 30), 9, np.uint8)] * 3)
+    for i in range(3):
+        clock["t"] = float(i)
+        _tap(proc, frame, _fg((15, 20, 900)))
+    assert len(proc.swipe_snapshot()[0]) == 3
+    proc.settings.confidence = 0.2                                        # the dial moved
+    assert proc.swipe_snapshot()[0] == []                                 # not this confidence's frames
+    clock["t"] = 3.0
+    _tap(proc, frame, _fg((15, 20, 900)))
+    frames = proc.swipe_snapshot()[0]
+    assert len(frames) == 1 and frames[0].t == 3.0
 
 
 def test_a_run_just_after_an_end_is_refused():

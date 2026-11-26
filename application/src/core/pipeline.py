@@ -913,11 +913,12 @@ class FrameProcessor:
     def _swipe_setting_key(self) -> tuple:
         """What the kept frames depend on; another value starts the pool over.  The plate is the one in memory
         (``plate_identity``: the object and its ``created`` stamp), not its file -- a plate taken again lands in
-        the same plates/latest.npz, and Calibrate holds it in memory until Save."""
+        the same plates/latest.npz, and Calibrate holds it in memory until Save.  The confidence too: the live
+        boxes kept with each frame (the swipe's live row) are cut at it."""
         s = self.settings
         return (id(self.model), int(s.imgsz), tuple(s.yolo_shape) if s.yolo_shape else None,
                 (bool(s.roi_enabled), int(s.roi_x), int(s.roi_y), int(s.roi_w), int(s.roi_h)),
-                self.plate_identity, self._plate_invalid)
+                self.plate_identity, self._plate_invalid, round(float(s.confidence or 0.0), 4))
 
     def _swipe_tap(self, raw_frame, fg_before, mono_raw: bool, timing: Dict[str, float]) -> None:
         """Offer this frame to the swipe's collector: its foreground, the live boxes, and the raw frame as a
@@ -930,7 +931,8 @@ class FrameProcessor:
         try:
             col = self.swipe_collector
             key = self._swipe_setting_key()
-            if key != self._swipe_key:                # another model / input / ROI / plate in memory: over
+            if key != self._swipe_key:                # another model / input / ROI / plate in memory /
+                                                      # confidence: start over
                 with self._swipe_lock:
                     col.reset()
                     self._swipe_key = key
