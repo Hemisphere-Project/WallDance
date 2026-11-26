@@ -1065,6 +1065,43 @@ def test_the_controller_refuses_without_plate_or_tensorrt():
     assert c.start() == "no model loaded"
 
 
+def test_the_operators_swipe_refuses_a_ready_plate_that_is_not_usable():
+    """``plate_status`` "ready" while ``plate_usable`` is False (found stale, refused for its camera, invalidated):
+    'Try other settings' does not start -- its verdict would be judged against a plate that does not hold, and
+    its Apply allowed -- and the operator reads the sentence he reads without a plate; usable, it starts as
+    before.  The start and the readiness row ask the one predicate, ``WallDanceApp._swipe_plate_ready``."""
+    pytest.importorskip("dearpygui")
+    import inspect
+    import app as appmod
+    from runtime import api
+    proc = _FakeProc(_frames(), 30)
+    proc.plate_status, proc.plate_usable = "ready", False
+    events = []
+    fake = SimpleNamespace(processor=proc, bus=SimpleNamespace(publish=events.append), system_state=None)
+    fake._swipe_plate_ready = lambda: appmod.WallDanceApp._swipe_plate_ready(fake)
+    fake.swipe, ev = _controller(proc, {"v": _live()}, _FakeRunner())
+    fake.swipe.plate_ready = fake._swipe_plate_ready             # what WallDanceApp.__init__ passes
+    appmod.WallDanceApp._cb_run_settings_swipe(fake)
+    why = "no valid empty-wall plate: Calibrate on the empty wall first"
+    assert not fake.swipe.busy and fake.swipe.state == "error" and fake.swipe.text == why
+    assert ev["result"][-1] == ({}, why)
+    toasts = [e.message for e in events if isinstance(e, api.Toast)]
+    assert toasts == [f"Swipe: {why}"]
+    proc.plate_usable = True
+    appmod.WallDanceApp._cb_run_settings_swipe(fake)
+    fake.swipe.join(5)
+    assert fake.swipe.state == "done" and fake.swipe.outcome is not None
+    assert events[-1].message.startswith("Swipe: keeping 150 frames")
+    proc.plate_status = "stale"                                  # not ready: refused as before
+    assert appmod.WallDanceApp._swipe_plate_ready(fake) is False
+    # a processor without ``plate_usable`` (a fake, an older build): ready is enough, as before
+    assert appmod.WallDanceApp._swipe_plate_ready(SimpleNamespace(processor=SimpleNamespace(plate_status="ready")))
+    # the start and the readiness row both call it
+    assert "plate_ready=self._swipe_plate_ready," in inspect.getsource(appmod.WallDanceApp.__init__)
+    assert ("plate_ready=self._swipe_plate_ready()"
+            in inspect.getsource(appmod.WallDanceApp._build_readiness_report))
+
+
 def _dancing(n, lost=5):
     from core.swipe import SwipeFrame
     return [SwipeFrame(float(i), np.zeros((1824, 1260), np.uint8), Observation(groups=[DANCER]), i < lost)

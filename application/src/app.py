@@ -746,7 +746,7 @@ class WallDanceApp:
             processor=lambda: self.processor,
             live=self._swipe_live_setting,
             engine_path=lambda c: self.models.model_manager.get_engine_path(c.model, c.imgsz, c.shape),
-            plate_ready=lambda: self.processor.plate_status == "ready",
+            plate_ready=self._swipe_plate_ready,
             on_progress=lambda state, text, progress: self.bus.publish(
                 api.SettingsSwipeProgress(state, text, float(progress))),
             on_result=self._swipe_on_result,
@@ -2375,7 +2375,7 @@ class WallDanceApp:
                                          imgsz=int(self.settings.imgsz),
                                          shape=self.settings.yolo_shape, roi_w=_roi_w, roi_h=_roi_h))
         try:
-            row = self.swipe.readiness(plate_ready=self.processor.plate_status == "ready",
+            row = self.swipe.readiness(plate_ready=self._swipe_plate_ready(),
                                        live_now=self._swipe_live_setting(), other_fault=self.swipe_switch.health(),
                                        seamless=self._swipe_seamless_winner() is not None)
             if row is not None:                 # advice, not a condition: usually no row at all
@@ -2661,6 +2661,14 @@ class WallDanceApp:
     # ------------------------------------------------------------------
     # Settings swipe (Plan Cordée P5)
     # ------------------------------------------------------------------
+    def _swipe_plate_ready(self) -> bool:
+        """The empty-wall plate the operator's swipe may start on, and its readiness row's word: ready
+        (``plate_status``) and usable (``plate_usable``: loaded, not invalidated, not refused for its camera, not
+        found stale -- the predicate the background swipe and the verdict's ``plate_ok`` use).  A plate that is
+        ready but not usable would give a verdict judged against a plate that does not hold."""
+        proc = self.processor
+        return proc.plate_status == "ready" and bool(getattr(proc, "plate_usable", True))
+
     def _swipe_live_setting(self) -> Optional[LiveSetting]:
         """What the live loop runs now (model, the input it really runs, the loaded model object); None while
         a model loads (a running swipe stops: no CUDA work beside the load's graph capture)."""
