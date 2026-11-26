@@ -913,12 +913,15 @@ class FrameProcessor:
     def _swipe_setting_key(self) -> tuple:
         """What the kept frames depend on; another value starts the pool over.  The plate is the one in memory
         (``plate_identity``: the object and its ``created`` stamp), not its file -- a plate taken again lands in
-        the same plates/latest.npz, and Calibrate holds it in memory until Save.  The confidence too: the live
-        boxes kept with each frame (the swipe's live row) are cut at it."""
+        the same plates/latest.npz, and Calibrate holds it in memory until Save.  The plate found stale too
+        (the foreground's ``stale_latched``, F2, where the build has it): frames kept before the latch were
+        refereed against a plate that no longer fits, and a new plate lifts it -- either way the pool starts
+        over.  The confidence too: the live boxes kept with each frame (the swipe's live row) are cut at it."""
         s = self.settings
         return (id(self.model), int(s.imgsz), tuple(s.yolo_shape) if s.yolo_shape else None,
                 (bool(s.roi_enabled), int(s.roi_x), int(s.roi_y), int(s.roi_w), int(s.roi_h)),
-                self.plate_identity, self._plate_invalid, round(float(s.confidence or 0.0), 4))
+                self.plate_identity, self._plate_invalid,
+                bool(getattr(self._fg_detector, "stale_latched", False)), round(float(s.confidence or 0.0), 4))
 
     def _swipe_tap(self, raw_frame, fg_before, mono_raw: bool, timing: Dict[str, float]) -> None:
         """Offer this frame to the swipe's collector: its foreground, the live boxes, and the raw frame as a
@@ -932,7 +935,7 @@ class FrameProcessor:
             col = self.swipe_collector
             key = self._swipe_setting_key()
             if key != self._swipe_key:                # another model / input / ROI / plate in memory /
-                                                      # confidence: start over
+                                                      # plate found stale (F2) / confidence: start over
                 with self._swipe_lock:
                     col.reset()
                     self._swipe_key = key
@@ -1572,9 +1575,12 @@ class FrameProcessor:
 
     @property
     def plate_usable(self) -> bool:
-        """A plate is loaded, not invalidated by hand (X5) and not refused for its camera (X6)."""
+        """A plate is loaded, not invalidated by hand (X5), not refused for its camera (X6) and not found stale
+        (the foreground's ``stale_latched``, F2, where the build has it: it holds until a new plate, even once
+        single frames are valid again).  The swipe's ``LiveSetting.plate_ok``: a verdict found before goes."""
         return (self._fg_detector is not None and not self._plate_invalid
-                and not self.plate_refusal)
+                and not self.plate_refusal
+                and not getattr(self._fg_detector, "stale_latched", False))
 
     @property
     def plate_stamp(self) -> str:

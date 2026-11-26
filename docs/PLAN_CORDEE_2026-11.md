@@ -681,6 +681,29 @@ Filled by the step named. Until then the cell says so.
     evening: a window fitted for the two safety clauses on mur2 6 and 7 alone picks 60 frames and fails on
     mur2 8. At confidence 0.10, 0.25 and 0.30 the two safety clauses hold everywhere; the third slips to
     82–96 % in five cells.
+  - *Gate 1 on the rehearsal build's foreground* (F2: `core/foreground.py` as on `origin/cordee-r2`; the mask
+    records of mur2 6 / 7 / 8 made again with it, the boxes identical on all 21,167 frames; the `5d615d3` referee,
+    2,000 swipes a cell; `tmp_analysis/swipe-1126/f2measure/`). The three clauses hold in all 36 cells, as before;
+    a setting worse than the live one is named on 0.00 % of swipes in every cell; the truth values and the best
+    setting are unchanged. The shares move by two points at most:
+
+    | Live setting | Verdict on F2's foreground, share of swipes on mur2 6 / 7 / 8 |
+    |---|---|
+    | x @ 1280 | l @ 1920 × 1056 on 100 / 100 / 100 % |
+    | x @ 1760 × 960 | l @ 1920 × 1056 on 100 / 99.7 / 99.3 %, else kept |
+    | x @ 1920 × 1056 | l @ 1920 × 1056 on 96.2 / 84.2 / 89.5 %, else kept |
+    | l @ 1280 | kept on 91.3 / 95.1 / 97.7 %, else l @ 1920 × 1056 |
+    | l @ 1760 × 960 | kept on 75.6 / 93.7 / 88.2 %, else l @ 1920 × 1056 |
+    | l @ 1920 × 1056 | kept on 100 / 100 / 100 % |
+
+    The background pair: from x, l named on 97.8–100 % at 1280 and 1760 × 960; from l, kept on 100 %. The masks:
+    groups on a dancer are unchanged (2.01 → 2.03, 1.44 → 1.44, 1.44 → 1.43 a frame on mur2 6 / 7 / 8); groups on
+    nobody fall on mur2 7 and 8 (0.18 → 0.11, 0.42 → 0.34) and rise a little on mur2 6 (0.06 → 0.08). « Plate
+    stale » never latches on these takes (the foreground's 90th percentile is about 1 % of the zone, the
+    threshold 25 %). Not measured: gate 2 on F2's masks; F2 with the rest of the rehearsal build's pipeline (the
+    replay kept the 26/11 night pipeline so that only the foreground differs). The first records had run with
+    the F3 box veto on (the façade driver's `fg_box_veto=false` was never read): 9, 1 and 0 boxes vetoed on
+    mur2 6 / 7 / 8, and no gate row changes with it off.
   - *Gate 2, corpus* — green by refusal only. The 4 corpus plates (8 scenarios) are medians of takes with dancers
     in them; there even the cleanest setting puts 0.38 boxes a frame and more on nobody (0.004–0.011 on 08/10's
     real plate), and above 0.10 the swipe answers « no verdict: every setting puts boxes where the empty-wall
@@ -688,36 +711,54 @@ Filled by the step named. Until then the cell says so.
     no verdict on 334 swipes of 500, kept on 166). The outdoor scenarios, where yolo11l collapses, have no plate.
     So this gate says the swipe knows a plate it cannot trust, not that it chooses well in a hangar: that needs
     a real empty-wall plate there (B5).
+  - *The plate, watched* (`b860890`, `44addae`). Every finished swipe tells the rehearsal build's reference watch
+    (H4, `core/reference_watch.py`) what the referee made of the empty-wall plate: refused it, or judged on it
+    (« keep », a switch); any other end tells nothing. A refusal counts only on frames the last refusal told did
+    not use, so the same pool pressed three times is one; the watch raises its plate alert at three in a row.
+    Without that module the swipe runs as before. When F2 latches « plate stale », the plate stops being usable
+    for the swipe until a new one is taken: no swipe starts, an advice already shown is withdrawn (« the
+    empty-wall plate is no longer valid - Calibrate on the empty wall, then run 'Try other settings' again »),
+    a swipe in flight is dropped, the kept frames start over. Shown by unit tests, and on a copy of the
+    rehearsal build's tree with its real detector driven into the latch; no take latches, and the hook has run
+    against the real watch on that copy only until the merge.
   - *Gate 3, the laptop* — the real code from a scratch copy, the take played in real time beside the worker,
-    pacing 50 ms, x @ 1280 live, three settings:
+    pacing 50 ms. Since `5d615d3` the live setting's row comes from the boxes the live pass stored with each
+    kept frame (identical to a re-run of its engine on 150 of 150 frames of mur2 7, from x @ 1280 and from
+    l @ 1920 × 1056), so a swipe loads two engines and makes 300 inferences instead of 450:
 
-    | Run | Frames | Swipe: loads / inference / total | Live frame p50 / p95 / max, collecting → during the swipe |
+    | Run (150 frames, `5d615d3`, 26/11) | Swipe: loads / inference / total | Live frame p50 / p95 / max, collecting → during the swipe | Over 50 ms during the swipe |
     |---|---|---|---|
-    | mur2 6 (`0e7fbe5`) | 150 | 0.88 / 19.2 / **28.9 s** | 33.6 / 38.7 / 52 → 53.7 / 61.8 / 123 ms |
-    | mur2 7 | 150 | 0.91 / 17.9 / **29.2 s** | 32.5 / 35.4 / 40 → 50.9 / 58.1 / 182 ms |
-    | mur2 8 | 150 | 0.96 / 20.1 / **28.9 s** | 32.3 / 36.4 / 44 → 50.1 / 64.9 / 125 ms |
-    | mur2 6 / 7 / 8 at 60 frames (`93e92eb`) | 60 | 0.9 / 7.0–8.2 / 12.0–12.2 s | 31–32 / 35–38 / 40–47 → 49–52 / 59–62 / 79–146 ms |
-    | mur2 7 at 60 frames, with TouchDesigner | 60 | 0.97 / 7.65 / 12.4 s | 29.4 / 34.1 / 40 → 49.1 / 67.3 / 107 ms |
+    | mur2 6 from x @ 1280 | 0.6 / 12.2 / **18.9 s** | 33.7 / 38.4 / 49 → 49.4 / 56.9 / 186 ms | 44 % |
+    | mur2 7 from x @ 1280 | 0.6 / 12.2 / **18.9 s** | 32.4 / 36.3 / 44 → 48.5 / 54.7 / 68 ms | 36 % |
+    | mur2 8 from x @ 1280 | 0.6 / 12.2 / **18.8 s** | 32.7 / 36.3 / 46 → 48.4 / 55.1 / 172 ms | 34 % |
+    | mur2 7 from x @ 1280, with TouchDesigner | 0.6 / 12.5 / **19.3 s** | 31.2 / 36.2 / 42 → 49.9 / 60.4 / 133 ms | 49 % |
+    | mur2 7 from l @ 1920 × 1056 (one other setting) | 0.3 / 5.5 / **9.9 s** | 29.3 / 32.3 / 38 → 54.3 / 57.4 / 163 ms | 71 % |
+    | mur2 7 from l @ 1280 | 0.5 / 8.4 / **19.5 s** | 25.9 / 29.5 / 36 → 31.9 / 53.1 / 69 ms | 15 % |
+    | mur2 7 from x @ 1280, the old path (`--rerun-live`, three engines) | 0.9 / 17.1 / 28.5 s | 32.5 / 35.6 / 40 → 48.1 / 56.1 / 66 ms | 41 % |
 
-    Under the 30 s gate by one second, and not measured beside TouchDesigner at 150 frames (the laptop was taken
-    by another job; at 60 frames TouchDesigner added 0.2–0.5 s). The run is set by the pacing, not by the GPU:
-    450 inferences at one per live frame, the loop at about 17.8 fps meanwhile. For those 29 s, 51–64 % of the
-    live frames pass 50 ms; collecting costs nothing measurable (148 s of dancers on the wall, passively, before
-    the button answers). The verdict on the three runs: l @ 1920 × 1056, 97–99 % of the dancers against 54–66 %
-    for x @ 1280. The full pool weighs about 347 MB from the IDS camera and about 1 GB from a take played in the
-    app (3 channels). Engine alone on the laptop: a load 0.14–0.20 s, a release 0.06 s with all its GPU memory
-    back; TouchDesigner on the show patch holds 2.4 GB (the « 4 GB » of P2 was the device total). ultralytics
-    8.4.63 there has no CUDA-graph path, so the capture guard is inert; on mgr-ran (8.4.173) a load beside
-    another thread's CUDA work broke the capture, hence one engine load at a time in the process
-    (`ENGINE_LOAD_LOCK`).
+    Under the 30 s gate by ten seconds, also beside TouchDesigner. The run is set by the pacing, not by the
+    GPU: one candidate inference per live frame. For those 19 s a third to a half of the live frames pass 50 ms
+    (the loop near 20 fps, one frame over 100 ms in some runs); collecting costs nothing measurable (148 s of
+    dancers on the wall, passively, before the button answers). Verdicts: from x @ 1280, l @ 1920 × 1056 (97–99 %
+    of the dancers against 54–66 %) on all four runs; from l @ 1920 × 1056 and from l @ 1280, « keep ». The
+    process peaks at 2.2–2.3 GB of RAM (the kept frames of a played take weigh about 350 MB, as from the
+    camera) and the GPU at 2.6 GB, 5.0 GB with TouchDesigner. Before the stored boxes (`0e7fbe5`, three engines):
+    28.9 / 29.2 / 28.9 s on mur2 6 / 7 / 8; at 60 frames (`93e92eb`): 12.0–12.4 s. Engine alone on the laptop:
+    a load 0.14–0.20 s, a release 0.06 s with all its GPU memory back; TouchDesigner on the show patch holds
+    2.4 GB. ultralytics 8.4.63 there has no CUDA-graph path, so the capture guard is inert; on mgr-ran
+    (8.4.173) a load beside another thread's CUDA work broke the capture, hence one engine load at a time in
+    the process (`ENGINE_LOAD_LOCK`).
   - *Open.* The real GUI and Apply's full switch (camera reopen, engine load) are not exercised by a test or a
     run. The referee still counts a box on a shadow or a rope as a dancer covered, and the 25 % share may make
     that a little more frequent: unmeasured without a real plate in a hangar. The plate refusal rests on one
     real plate (08/10) against medians. It cannot see one model's own ghosts (by design), a plate that only
-    misses a light change, or a still person who was in the plate. The referee goes blind to a dancer the live
-    setting loses for long, because the slow plate update absorbs her (F2). No take has a dancer of 200 px at
-    the live input: that branch of the planner is gated only through the background pair. « Largest input » can
-    name x @ 1920 × 1056, which has 3.5 ms of margin on the laptop (P2), and now needs 6.1 points to be named.
+    misses a light change, or a still person who was in the plate. With x @ 1280 live the referee has no group
+    on a dancer on 8.5 / 1.8 / 0.4 % of her frames on mur2 6 / 7 / 8, and F2's foreground leaves that as it is
+    (8.2 / 1.8 / 0.4 %): her foreground is there but in pieces under the referee's 300 px² group floor (the
+    opening seconds and the last 40 s of mur2 6), not absorbed by the plate update as this paragraph first said.
+    No take has a dancer of 200 px at the live input: that branch of the planner is gated only through the
+    background pair. « Largest input » can name x @ 1920 × 1056, which has 3.5 ms of margin on the laptop (P2),
+    and now needs 6.1 points to be named.
     Three takes, one evening, one wall: the first take with a real plate on another wall is to be put through
     `tests/swipe_gate.py`.
 - **F1 — foreground** (2026-11-26, `tests/fg_eval.py`, mur2 with the 21:36 plate, every 3rd frame):
