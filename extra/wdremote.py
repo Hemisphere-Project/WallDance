@@ -1704,12 +1704,18 @@ def _split_passthrough(argv: List[str]) -> Tuple[List[str], Optional[List[str]]]
     if "--" in argv:
         i = argv.index("--")
         return argv[:i], argv[i + 1:]
-    for cmd in ("pytest", "run"):
-        if cmd in argv:
-            i = argv.index(cmd) + 1
-            if cmd == "run" and argv[i:i + 1] == ["--cwd"]:
-                i += 2
-            return argv[:i], argv[i:]
+    # `pytest` / `run` pass everything on only when they ARE the subcommand: the first word after
+    # the global options.  As a value (`state run`, `slot run`, a word of a support message) they
+    # are ordinary arguments -- `wdremote state run` used to die on "unexpected arguments".
+    i = 0
+    while i < len(argv) and argv[i].startswith("-"):
+        i += 1 if (argv[i] == "--local" or "=" in argv[i]) else 2
+    if i < len(argv) and argv[i] in ("pytest", "run"):
+        cmd = argv[i]
+        i += 1
+        if cmd == "run" and argv[i:i + 1] == ["--cwd"]:
+            i += 2
+        return argv[:i], argv[i:]
     return argv, None
 
 

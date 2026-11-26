@@ -239,3 +239,24 @@ def test_every_remote_git_call_is_lock_free():
                for line in agent_calls)
     assert 'GIT_RO = ["git", "--no-optional-locks"]' in wdremote.AGENT_PY
     assert wdremote.GIT_RO == ("git", "--no-optional-locks")
+
+
+def test_run_and_pytest_pass_through_only_as_the_subcommand():
+    """`run` / `pytest` hand the rest of the line to the laptop only when they are the subcommand;
+    as a value they are plain arguments (`wdremote state run` died on 26/11)."""
+    sp = wdremote._split_passthrough
+    assert sp(["state", "run"]) == (["state", "run"], None)
+    assert sp(["--slot", "dev", "state", "run"]) == (["--slot", "dev", "state", "run"], None)
+    assert sp(["slot", "run", "--slot", "dev"]) == (["slot", "run", "--slot", "dev"], None)
+    assert sp(["support-send", "un run de pytest"]) == (["support-send", "un run de pytest"], None)
+    assert sp(["support-send", "run"]) == (["support-send", "run"], None)
+    # the subcommand itself still passes everything on, verbatim and in order
+    assert sp(["--slot", "dev", "pytest", "tests/test_x.py", "-k", "run"]) == (
+        ["--slot", "dev", "pytest"], ["tests/test_x.py", "-k", "run"])
+    assert sp(["--host=h", "--local", "run", "--cwd", "application", "dir", "/b"]) == (
+        ["--host=h", "--local", "run", "--cwd", "application"], ["dir", "/b"])
+    assert sp(["slot", "run", "--slot", "dev", "--", "--project", "p"]) == (
+        ["slot", "run", "--slot", "dev"], ["--project", "p"])
+    # and the parser accepts the state command now
+    a = wdremote.build_parser().parse_args(sp(["state", "run"])[0])
+    assert (a.cmd, a.state) == ("state", "run")
