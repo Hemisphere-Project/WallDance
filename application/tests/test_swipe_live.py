@@ -1352,8 +1352,9 @@ def _apply_fixture(trt=True):
     from runtime.api import SystemState
     fake = SimpleNamespace(
         swipe=c, _swipe_live_setting=lambda: live["v"], _swipe_pending_apply=None,
-        system_state=SystemState.STANDBY,
+        system_state=SystemState.STANDBY, _swipe_shown="operator",
         # P6: no seamless switch here (the winner's engine is not built): Apply is the reload
+        swipe_bg=SimpleNamespace(suggestion=None, dismiss=lambda: None),
         swipe_switch=SimpleNamespace(can_switch=lambda w: f"its engine is not built ({w.engine_file})",
                                      dismiss=lambda: None),
         configs=SimpleNamespace(_current_project="jeudi0809_mur2"), settings=SimpleNamespace(imgsz=1280),
@@ -1442,11 +1443,12 @@ def _run_apply_fake(seamless_why):
     events, asked = [], []
     winner = L1920
     fake = SimpleNamespace(
-        system_state=SystemState.RUN, bus=SimpleNamespace(publish=events.append),
+        system_state=SystemState.RUN, bus=SimpleNamespace(publish=events.append), _swipe_shown="operator",
         _swipe_live_setting=lambda: _live(),
         swipe=SimpleNamespace(applicable=lambda live: (None, winner, None)),
-        swipe_switch=SimpleNamespace(can_switch=lambda w: seamless_why,
-                                     request=lambda w, text, on_done=None: asked.append((w, text)) or None),
+        swipe_switch=SimpleNamespace(can_switch=lambda w: seamless_why),
+        swipe_bg=SimpleNamespace(suggestion=None,
+                                 request_switch=lambda w, text, on_done=None: asked.append((w, text)) or None),
         models=SimpleNamespace(request_setting=lambda *a, **k: pytest.fail("no reload during a show")))
     appmod.WallDanceApp._cb_apply_settings_swipe(fake)
     return events, asked, winner
@@ -1525,11 +1527,12 @@ def test_quit_cancels_and_joins_the_swipe():
     calls = []
     fake = SimpleNamespace(swipe=SimpleNamespace(cancel=lambda: calls.append("cancel"),
                                                  join=lambda t: calls.append(("join", t))),
+                           swipe_bg=SimpleNamespace(stop=lambda t: calls.append(("bg-stop", t))),
                            swipe_switch=SimpleNamespace(stop=lambda t: calls.append(("switch-stop", t))),
                            tracker=SimpleNamespace(logger=SimpleNamespace(close=lambda: None)),
                            recorder=SimpleNamespace(close=lambda: None), running=True)
     appmod.WallDanceApp._cb_quit(fake)
-    assert calls[:2] == ["cancel", ("join", 2.0)] and ("switch-stop", 2.0) in calls
+    assert calls[:2] == ["cancel", ("join", 2.0)] and ("bg-stop", 2.0) in calls and ("switch-stop", 2.0) in calls
     assert fake.running is False
 
 

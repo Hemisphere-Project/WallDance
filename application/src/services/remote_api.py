@@ -86,8 +86,9 @@ POLICY: Dict[str, str] = {
     # P5 settings swipe: Run goes beside the show (paced, one engine at a time) during the warmup, in RUN by
     # design (frames are kept while YOLO runs) -- so control.  P6: Apply is the seamless switch whenever the
     # winner's engine is built (loaded beside, swapped between two frames: no pause) -- control; the app itself
-    # refuses in RUN the one Apply that reloads (an engine to build), as it does for the operator.
-    "RunSettingsSwipe": CONTROL, "ApplySettingsSwipe": CONTROL,
+    # refuses in RUN the one Apply that reloads (an engine to build), as it does for the operator.  The
+    # automatic swipe's mode (off / suggest / switch): control.
+    "RunSettingsSwipe": CONTROL, "ApplySettingsSwipe": CONTROL, "SetSwipeAuto": CONTROL,
     # heavy: STANDBY only
     "RunDryRunReplay": HEAVY, "RunCalibSweep": HEAVY, "RunKnownNTune": HEAVY,
     "RebuildTrt": HEAVY, "LoadModel": HEAVY, "SetImgsz": HEAVY, "ToggleTrt": HEAVY,

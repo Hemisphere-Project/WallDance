@@ -843,6 +843,25 @@ def build_phase_wall(gui: Any):
                              "(else the other model at the live input), and names the setting\n"
                              "that covers the dancers best.  The show runs on; nothing switches\n"
                              "until you Apply.  Press again to cancel.")
+        # P6 the automatic swipe: its mode, right under the swipe button (never in the health line)
+        with dpg.group(horizontal=True):
+            dpg.add_spacer(width=scaled(160))
+            swipe_auto = dpg.add_combo(
+                items=["Auto: off", "Auto: suggest", "Auto: switch"],
+                default_value="Auto: off",
+                tag="swipe_auto_combo",
+                width=scaled(130),
+                callback=gui._on_swipe_auto,
+            )
+            with dpg.tooltip(swipe_auto):
+                dpg.add_text("The automatic swipe, while the show runs:\n"
+                             "  off      nothing in the background (the project's default)\n"
+                             "  suggest  each time two and a half minutes of dancing are kept, it\n"
+                             "           tries the other model at the same network input on them and\n"
+                             "           says so here when it does better (Apply now, or Dismiss)\n"
+                             "  switch   the same, and when the other model is clearly better it\n"
+                             "           switches between two frames, with an alert\n"
+                             "An empty wall costs nothing.  Saved with the project when not off.")
         dpg.add_text("", tag="swipe_status_text", color=TEXT_MUTED, wrap=scaled(_PHASE_WRAP))
         with dpg.group(horizontal=True):
             swipe_apply = dpg.add_button(label="Apply", tag="swipe_apply_btn", show=False,

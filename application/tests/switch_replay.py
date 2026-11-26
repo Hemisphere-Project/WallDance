@@ -1,4 +1,4 @@
-"""The seamless switch on a recorded take (Plan Cordee P6), headless.
+"""The seamless switch (and the automatic swipe) on a recorded take (Plan Cordee P6), headless.
 
 Plays a take through the real ``FrameProcessor`` on the GPU/TensorRT show path (``swipe_replay``'s setup: the
 take's own config and plate, ``--set`` overrides), with the app's ``SeamlessSwitch`` beside it -- its worker
@@ -9,6 +9,9 @@ thread loads, the switch is drained between two frames exactly as the main loop 
   every frame's emitted ids and points, the frame times, the GPU memory with one and two engines resident.
 * no ``--swap-to``: the same take without a switch, the reference.
 * ``--compare REF.json RUN.json``: ids and emitted points around the switch frame, frame by frame (no GPU).
+* ``--auto suggest|auto``: the automatic swipe (``BackgroundSwipe``) over the take: looks, advices, switches (take
+  time, frame, the frame times of the switch frame and the 5 after, emitted ids before/after), live frame times
+  while a background run is in progress and outside, inferences, GPU memory with the resident.
 * ``--realtime``: pace the take at ``--fps`` (the frame times beside a load or a run are then the show's);
   otherwise frames go back to back (the take clock still runs at ``--fps``: the policy's windows are take time).
 
@@ -112,7 +115,7 @@ def _compare(ref_path: str, run_path: str, before: int = 10, after: int = 60) ->
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="The seamless switch on a take (P6)")
+    ap = argparse.ArgumentParser(description="The seamless switch / the automatic swipe on a take (P6)")
     ap.add_argument("--compare", nargs=2, metavar=("REF", "RUN"))
     ap.add_argument("--project")
     ap.add_argument("--slot", type=int)
@@ -142,6 +145,8 @@ def main(argv=None):
                     help="allow the switch to another input size (the app's is off since gate a: STANDBY reload)")
     ap.add_argument("--no-pin", action="store_true",
                     help="experiment: a size switch WITHOUT the pinned tracker space (what it would do)")
+    ap.add_argument("--auto", choices=("suggest", "auto"), default=None)
+    ap.add_argument("--look-s", type=float, default=None, help="--auto: the looker's period (wall seconds)")
     ap.add_argument("--out", default=None)
     args = ap.parse_args(argv)
     if args.compare:
@@ -220,6 +225,12 @@ def play(args):
     sw = SeamlessSwitch(processor=lambda: proc, live=live, engine_path=engine_path, port=port, notify=notify,
                         period_s=0.5, size_change=args.size_change)
     bg = None
+    if args.auto:                                       # the automatic swipe beside the take
+        from runtime.swipe_background import BackgroundSwipe
+        bg = BackgroundSwipe(processor=lambda: proc, live=live, engine_path=engine_path, busy=lambda: None,
+                             switch=sw, notify=notify, mode=args.auto,
+                             look_s=args.look_s if args.look_s else (5.0 if args.realtime else 2.5))
+        bg.start()
     target = parse_candidate(args.swap_to, current.imgsz) if args.swap_to else None
 
     def gpu_used_mb():

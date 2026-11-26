@@ -87,6 +87,7 @@ from core.config import (
     OPS_DISK_WARN_FREE_GB,
     OPS_DISK_FAIL_FREE_GB,
     RIG_DEFAULTS,
+    SWIPE_AUTO,
     SWIPE_COLLECT,
 )
 from core.osc_output import OSCSender
@@ -126,6 +127,7 @@ from runtime.calibration_flows import CalibrationFlows
 from runtime.roi_state import RoiState
 from runtime.swipe_controller import LiveSetting, SwipeController, say
 from runtime.seamless_switch import SeamlessSwitch
+from runtime.swipe_background import BackgroundSwipe
 from ui.adapter import DpgUiAdapter
 from ui.roi_mask_editor import RoiMaskEditor
 from services.web_monitor import WebMonitor
@@ -755,6 +757,13 @@ class WallDanceApp:
         _engine_path = lambda c: self.models.model_manager.get_engine_path(c.model, c.imgsz, c.shape)  # noqa: E731
         self.swipe_switch = SeamlessSwitch(processor=lambda: self.processor, live=self._swipe_live_setting,
                                            engine_path=_engine_path, port=self.models, notify=self._swipe_notify)
+        # P6 the autonomous swipe (runtime/swipe_background.py): a looker thread, started with the first mode
+        # that is not off; it switches through the seamless switch.
+        self.swipe_bg = BackgroundSwipe(
+            processor=lambda: self.processor, live=self._swipe_live_setting, engine_path=_engine_path,
+            busy=self._swipe_bg_busy, switch=self.swipe_switch, notify=self._swipe_notify, mode=SWIPE_AUTO,
+            referee=self.swipe.referee)     # fix6: one plate-watch report for the operator's swipe and ours
+        self._swipe_shown = ""          # which verdict the swipe line shows: "operator" | "background"
 
         # Pending operations (deferred to main loop)
 
@@ -893,6 +902,7 @@ class WallDanceApp:
         reg(api.RunSettingsSwipe, lambda c: self._cb_run_settings_swipe())
         reg(api.CancelSettingsSwipe, lambda c: self.swipe.cancel())
         reg(api.ApplySettingsSwipe, lambda c: self._cb_apply_settings_swipe())
+        reg(api.SetSwipeAuto, lambda c: self._cb_swipe_auto(c.mode))
         reg(api.DismissSwipeNotice, lambda c: self._cb_dismiss_swipe())
         # detection / sensitivity
         reg(api.SetSensitivity, lambda c: self._cb_sensitivity_change(c.value))
@@ -1077,7 +1087,8 @@ class WallDanceApp:
             "rig": dict(self.rig_sheet),
             "input_transform": self.input_transform.to_config(),
             "import_running": self.recording.import_running,
-            "swipe": {**self.swipe.status_dict(), "switch": self.swipe_switch.status()},
+            "swipe": {**self.swipe.status_dict(), "switch": self.swipe_switch.status(),
+                      "auto": self.swipe_bg.status()},
         }
 
     def _sync_rig_sheet(self):
@@ -1312,6 +1323,8 @@ class WallDanceApp:
             "osc_send_state": self.settings.osc_send_state,
             "camera_stall_hold": self.settings.camera_stall_hold,
             "swipe_collect": self.settings.swipe_collect,
+            # P6: written only when not off -- an existing project file never gains the key by a Save
+            **({"swipe_auto": self.swipe_bg.mode} if self.swipe_bg.mode != "off" else {}),
             "motion_sensitivity": self.processor.get_motion_sensitivity(),
             "osc_enabled": self.osc_enabled,
             "osc_ip": self.osc_ip,
@@ -1539,6 +1552,8 @@ class WallDanceApp:
             self.settings.fg_clip_aware = bool(config.get("fg_clip_aware", FOREGROUND_CLIP_AWARE))
         if "swipe_collect" in config or full_config:         # P5 (no GUI: a project key)
             self.settings.swipe_collect = bool(config.get("swipe_collect", SWIPE_COLLECT))
+        if "swipe_auto" in config or full_config:            # P6: absent = off
+            self._cb_swipe_auto(config.get("swipe_auto", SWIPE_AUTO), quiet=True)
         if full_config:
             self.swipe_bg.clear_bans()                       # a project load: failed automatic switches may retry
         if full_config:
@@ -2186,7 +2201,8 @@ class WallDanceApp:
     def _cb_quit(self):
         self.swipe.cancel()          # P5: stop a running settings swipe ...
         self.swipe.join(2.0)         # ... and let it drop its engine before the process tears CUDA down
-        self.swipe_switch.stop(2.0)  # P6: the seamless switch's worker
+        self.swipe_bg.stop(2.0)      # P6: the background swipe's looker ...
+        self.swipe_switch.stop(2.0)  # ... and the seamless switch's worker
         self.tracker.logger.close()  # Phase 0: flush and close tracking log
         self.running = False
         self.recorder.close()
@@ -2692,6 +2708,7 @@ class WallDanceApp:
                                    5.0, (120, 170, 220)))
 
     def _swipe_on_result(self, result, error) -> None:
+        self._swipe_shown = "operator"
         res = self.swipe.outcome.result if self.swipe.outcome is not None else None
         if not error and res is not None and res.switch and res.winner is not None:
             result = {**result, **self._swipe_apply_hint(res.winner)}
@@ -2717,7 +2734,8 @@ class WallDanceApp:
         return res.winner if self.swipe_switch.can_switch(res.winner) is None else None
 
     def _cb_apply_settings_swipe(self):
-        """« Apply »: the swipe's winner.
+        """« Apply » / « Apply now »: the winner of what the swipe line shows -- the background swipe's suggestion
+        or the operator's swipe result.
 
         Seamless whenever the winner's engine is built and the live model runs TensorRT: the engine loads beside
         the live one (``runtime.seamless_switch``: its worker thread, under ENGINE_LOAD_LOCK) and the loop swaps
@@ -2730,16 +2748,21 @@ class WallDanceApp:
         run the winner on TensorRT (``_swipe_apply_done``) is the recommended confidence applied and the result
         marked applied.  Neither is saved: the operator's Save keeps it (model, yolo_imgsz, yolo_shape,
         confidence, the dial's seed)."""
+        sug = self.swipe_bg.suggestion
+        from_bg = sug is not None and self._swipe_shown == "background"
         live = self._swipe_live_setting()
-        why, winner, conf = self.swipe.applicable(live)
-        if why:
-            self.bus.publish(api.Toast(f"Swipe Apply: {why}", 5.0, (255, 200, 100)))
-            return
+        if from_bg:
+            winner, conf = sug["winner_c"], None
+        else:
+            why, winner, conf = self.swipe.applicable(live)
+            if why:
+                self.bus.publish(api.Toast(f"Swipe Apply: {why}", 5.0, (255, 200, 100)))
+                return
         seamless_why = self.swipe_switch.can_switch(winner)
         if seamless_why is None:
-            why = self.swipe_switch.request(
+            why = self.swipe_bg.request_switch(
                 winner, f"switching to {winner.label} (Apply)",
-                on_done=lambda ok, text: self._swipe_switch_done(ok, text, winner, conf))
+                on_done=lambda ok, text: self._swipe_switch_done(ok, text, winner, conf, from_bg))
             if why:
                 self.bus.publish(api.Toast(f"Swipe Apply: {why}", 5.0, (255, 200, 100)))
                 return
@@ -2751,6 +2774,8 @@ class WallDanceApp:
             self.bus.publish(api.Toast(f"Apply: stop the show first - this Apply reloads the model "
                                        f"({seamless_why}), a few seconds without tracking", 5.0, (255, 200, 100)))
             return
+        if from_bg:
+            self.swipe_bg.dismiss()
         why = self.models.request_setting(winner.model, winner.imgsz, winner.shape,
                                           on_done=self._swipe_apply_done)
         if why:
@@ -2763,7 +2788,7 @@ class WallDanceApp:
         say(f"[Swipe] applying {winner.label} (reload)")
         self.bus.publish(api.SettingsSwipeProgress("applying", f"switching to {winner.label}...", 0.0))
 
-    def _swipe_switch_done(self, ok: bool, text: str, winner, conf) -> None:
+    def _swipe_switch_done(self, ok: bool, text: str, winner, conf, from_bg: bool) -> None:
         """A seamless Apply ran (loop thread): its first frames went well, or it failed and the old model runs."""
         if not ok:
             self._sync("combo", "imgsz", str(int(self.settings.imgsz)))
@@ -2774,7 +2799,10 @@ class WallDanceApp:
             return
         if conf is not None:
             self._swipe_set_confidence(float(conf))
-        self.swipe.mark_applied(winner)
+        if from_bg:
+            self.swipe_bg.dismiss()
+        else:
+            self.swipe.mark_applied(winner)
         self._sync("combo", "imgsz", str(int(winner.imgsz)))
         say(f"[Swipe] applied {winner.label} between two frames" +
             (f", confidence {conf:.2f}" if conf is not None else ""))
@@ -2849,19 +2877,78 @@ class WallDanceApp:
         self.bus.publish(api.SettingsSwipeProgress("apply_failed", text, 0.0))
 
     def _cb_dismiss_swipe(self) -> None:
-        """Dismiss: the swipe's advice goes (its readiness row too), a failed Apply -- the reload's or the seamless
-        switch's -- is acknowledged (its fail row goes)."""
+        """Dismiss: the swipe's advice goes -- the operator's verdict (its readiness row too) or the background
+        suggestion -- and a failed Apply or automatic switch is acknowledged (its fail row goes)."""
         self.swipe.dismiss()
         self.swipe_switch.dismiss()
+        self.swipe_bg.dismiss()
         self.bus.publish(api.SettingsSwipeProgress("dismissed", "dismissed", 0.0))
 
+    # -- P6 the autonomous swipe ------------------------------------------------------------------------------
+    _SWIPE_AUTO_LABELS = {"off": "Auto: off", "suggest": "Auto: suggest", "auto": "Auto: switch"}
+
+    def _cb_swipe_auto(self, mode, quiet: bool = False) -> None:
+        """The operator's (or the project's) mode.  The looker thread starts with the first mode that is not
+        off and stays (it releases the resident model when the mode goes off)."""
+        m = self.swipe_bg.set_mode(mode)
+        if m != "off":
+            self.swipe_bg.start()
+        self._sync("combo", "swipe_auto", self._SWIPE_AUTO_LABELS[m])
+        if not quiet:
+            say(f"[SwipeAuto] mode {m}")
+            if m != "off" and not self.settings.swipe_collect:
+                self.bus.publish(api.Toast("The automatic swipe needs the frame tap (project key swipe_collect)",
+                                           5.0, (255, 200, 100)))
+
+    def _swipe_bg_busy(self) -> Optional[str]:
+        """Why the background swipe must not look now (None: it may)."""
+        if self.swipe.busy:
+            return "the operator's swipe runs"
+        m = self.models
+        if (m._model_loading or m._pending_model_switch is not None or m._pending_trt_build is not None
+                or getattr(m, "_setting_request", None) is not None):
+            return "a model load"
+        if self._swipe_pending_apply is not None:
+            return "an Apply is under way"
+        if self.calibration._calibrating or self.calibration._calibrating2:
+            return "a calibration"
+        if getattr(self.processor, "_plate_capture", None) is not None:
+            return "an empty-wall capture"
+        if self.configs._pending_project_switch is not None:
+            return "a project switch"
+        return None
+
     def _swipe_notify(self, kind: str, payload: Dict) -> None:
-        """The seamless switch's events -> the swipe line beside the button, an alert.  Never the health line:
-        only a switch that failed is a fault (the readiness row, ``swipe_switch.health()``)."""
+        """The seamless switch's and the background swipe's events -> the swipe line beside the button, a toast,
+        an alert.  Never the health line: only a switch that failed is a fault (the readiness row,
+        ``swipe_switch.health()``)."""
         text = str(payload.get("text", ""))
-        if kind == "fault":
+        if kind == "suggest":
+            self._swipe_shown = "background"
+            res = dict(payload.get("result") or {})
+            res["switch"] = True
+            res["winner"] = payload.get("winner")
+            res["auto"] = {k: payload.get(k) for k in ("kind", "level", "text", "seamless", "why_not_auto",
+                                                       "winner")}
+            sug = self.swipe_bg.suggestion
+            if sug is not None:
+                res.update(self._swipe_apply_hint(sug["winner_c"]))
+            self.bus.publish(api.SettingsSwipeResult(res, ""))
+            self.bus.publish(api.Toast("A better model may be available - see 'Try other settings' "
+                                       "(Apply now)", 6.0, (255, 200, 100)))
+        elif kind == "switching":
+            self.bus.publish(api.Alert("swipe_switch", text, {"from": payload.get("from"),
+                                                              "to": payload.get("to")}))
+            self.bus.publish(api.SettingsSwipeProgress("auto_switching", text, 0.5))
+        elif kind == "switched":
+            if payload.get("auto"):                       # the operator's Apply has its own line (_swipe_switch_done)
+                self.bus.publish(api.SettingsSwipeProgress("auto_switched", text, 1.0))
+        elif kind == "fault":
             self.bus.publish(api.Alert("swipe_failed", text))
             self.bus.publish(api.SettingsSwipeProgress("apply_failed", text, 0.0))
+        elif kind == "cleared":
+            if self._swipe_shown == "background":         # never over the operator's own verdict
+                self.bus.publish(api.SettingsSwipeProgress("auto_cleared", text, 0.0))
 
     def _swipe_set_confidence(self, conf: float) -> None:
         """The recommended confidence is the winner model's own calibrated seed: it becomes the Drops/Ghosts

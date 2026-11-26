@@ -696,6 +696,15 @@ def _jsonable_fields(obj, skip: Sequence[str] = ()) -> Dict[str, Any]:
     return {f.name: _jsonable(getattr(obj, f.name)) for f in fields(obj) if f.name not in skip}
 
 
+def result_dict(result) -> Dict[str, Any]:
+    """A bare ``SwipeResult`` (the background swipe's: no SwipeOutcome around it), JSON-ready like
+    ``SwipeOutcome.to_dict``'s verdict part."""
+    rows = [{**_jsonable_fields(r, skip=("candidate",)), "label": r.candidate.label} for r in result.rows]
+    out = {**_jsonable_fields(result, skip=("current", "winner", "rows")), "rows": rows,
+           "current": result.current.label, "winner": result.winner.label if result.winner else None}
+    return out
+
+
 def recommended_conf(result) -> Optional[float]:
     """The confidence the verdict recommends for its winner (``SwipeResult.recommended_conf``), or None.
     Only that field: ``SwipeParams.conf`` is the referee's own threshold, not the show's."""

@@ -343,6 +343,16 @@ def validate_flat(flat: Dict) -> Tuple[Dict, List[str]]:
         out["rig"], rig_warnings = drop_legacy_rig_prefill(out["rig"])
         warnings.extend(rig_warnings)
 
+    if "swipe_auto" in out:
+        # P6: off | suggest | auto; anything else is dropped (= off, the default)
+        from core.swipe_auto import MODES
+        v = str(out["swipe_auto"] if out["swipe_auto"] is not None else "").strip().lower()
+        if v in MODES:
+            out["swipe_auto"] = v
+        else:
+            warnings.append(f"swipe_auto: invalid value {out['swipe_auto']!r} dropped (off)")
+            out.pop("swipe_auto")
+
     _validate_input_transform(out, warnings)
     for key in _BOOL_KEYS:
         _validate_bool(out, key, warnings)

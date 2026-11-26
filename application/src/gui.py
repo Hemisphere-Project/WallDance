@@ -716,6 +716,14 @@ class WallDanceGUI:
         if 'on_swipe' in self.callbacks:
             self.callbacks['on_swipe'](bool(getattr(self, "_swipe_busy", False)))
 
+    _SWIPE_AUTO_MODES = {"Auto: off": "off", "Auto: suggest": "suggest", "Auto: switch": "auto"}
+
+    def _on_swipe_auto(self, sender=None, app_data=None, *args):
+        """P6: the automatic swipe's mode (the combo beside 'Try other settings')."""
+        mode = self._SWIPE_AUTO_MODES.get(str(app_data), "off")
+        if 'on_swipe_auto' in self.callbacks:
+            self.callbacks['on_swipe_auto'](mode)
+
     def _on_swipe_apply(self, *args):
         if 'on_swipe_apply' in self.callbacks:
             self.callbacks['on_swipe_apply']()
@@ -1977,6 +1985,7 @@ class WallDanceGUI:
             'imgsz': ['adv_imgsz_combo'],
             'camera': ['adv_camera_combo'],
             'input_rotation': ['input_rotation_combo'],
+            'swipe_auto': ['swipe_auto_combo'],
         }
         if name == 'input_rotation':
             value = rotation_label(value)
@@ -3046,7 +3055,9 @@ class WallDanceGUI:
             dpg.configure_item(tag, color=WARN_AMBER)
             return
         r = result or {}
-        lines = [str(r.get("reason", ""))]
+        auto = r.get("auto") or {}
+        lines = [str(auto.get("text"))] if auto.get("text") else []     # P6: the background suggestion's line
+        lines.append(str(r.get("reason", "")))
         for row in r.get("rows", []):
             cov, loose, ms = row.get("coverage"), row.get("loose_per_frame"), row.get("ms_p50")
             line = f"  {row.get('label', '?')}: "

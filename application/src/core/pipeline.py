@@ -958,6 +958,15 @@ class FrameProcessor:
                     conf=float(self.settings.confidence), iou=YOLO_IOU_THRESHOLD,
                     half=bool(self.settings.use_fp16))
 
+    def swipe_fresh(self, after_t: Optional[float] = None) -> Tuple[list, float]:
+        """(the kept frames newer than ``after_t`` -- those a previous background run did not use --, now on the
+        loop's clock): the background swipe's look, every few seconds -- a lock, a list of <= 150 references, no
+        copy of any image."""
+        frames = self.swipe_snapshot()[0]
+        if after_t is not None:
+            frames = [f for f in frames if float(f.t) > float(after_t)]
+        return frames, self.loop_clock()
+
     # ------------------------------------------------------------------
     # P6 seamless switch: a model swapped between two frames, the tracker's space pinned across a size change
     # ------------------------------------------------------------------

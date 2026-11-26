@@ -312,8 +312,18 @@ class ApplySettingsSwipe(Command):
 
 
 @dataclass(frozen=True)
+class SetSwipeAuto(Command):
+    """P6: the autonomous swipe's mode -- off | suggest | auto (the project key swipe_auto)."""
+    mode: str
+
+    def __post_init__(self):
+        _check_member(self.mode, ("off", "suggest", "auto"), "SetSwipeAuto.mode")
+
+
+@dataclass(frozen=True)
 class DismissSwipeNotice(Command):
-    """P5: dismiss the swipe's advice (its readiness row goes) and acknowledge a failed Apply."""
+    """P5 / P6: dismiss the swipe's advice -- the operator's verdict (its readiness row goes) or the background
+    swipe's suggestion -- and acknowledge a failed Apply or a failed automatic switch."""
     pass
 
 
