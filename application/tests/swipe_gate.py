@@ -1,47 +1,55 @@
 #!/usr/bin/env python3
-"""The settings swipe's two gates (Plan Cordée P5), on recorded takes, with the shipped ``core.swipe`` code.
+"""The settings swipe's gates (Plan Cordee P5), on recorded takes, with the shipped ``core.swipe`` -- per swipe, as
+the app runs it.
 
-Gate 1 -- façade (truth): on each take, the setting the swipe picks is within ``--tol`` (1.5) points of truth recall
-of the best candidate.  The swipe collects the way the app does: from a random start time, every frame is offered
-to ``FrameCollector`` (the live setting's boxes, the live foreground) until it holds ``frames`` lost frames
-(the live setting left a dancer group bare, >= ``min_gap_s`` apart); the candidates are scored on the kept frames
-(``score_frame``) and ``decide`` names the pick.  ``--draws`` draws per take; a take too short to fill the
-window is walked round again, up to 10 times (the clock runs on, as if the scene went on as recorded).  Green when,
-on every take, the mean truth recall of the pick over the draws is within ``--tol`` of the best (the hub note's
-measure); the share of draws more than ``--tol`` under the best and the worst pick are printed beside it, and
-``--max-miss`` (default 1.0: off) also gates on that share.  « keep » and « no verdict » count as the live setting
-(the app keeps what runs).  The median dancing time a window took to collect is printed too.
+Gate 1 -- facade (truth).  For every take and every LIVE setting among the take's records:
 
-Gate 2 -- corpus (scenario score, known N): on each take, the swipe never names a setting whose scenario score
-(``scoring.score_timeline``: drop + ghost + 0.3 fragmentation + 0.1 identity, lower is better) is worse than the
-live setting's.  Same collection (the corpus takes are 15-130 s: most are walked round several times, so every
-swipe gets its full window).  Green when no draw on any take names a worse setting.
+* the candidate set is the planner's (``plan_set``, the rule ``core.swipe_runner.plan_candidates`` follows since
+  the P5 review): the dancer's height at the live input (``--dancer-px``, else measured: the median height of the
+  live setting's confident boxes on the wall, times the input's letterbox scale) >= 200 px -> the live setting and
+  the other model at the live input; under 200 px -> the live setting and both models at the LARGEST input among
+  the take's records.  ``--pair`` gates the background swipe's set instead (P6): the live setting and the other
+  model at the live input, whatever the height;
+* the operator's excluded cells are dropped from every setting's boxes (the pipeline drops them before tracking);
+* the collection is the app's: from a random start, every frame offered to ``FrameCollector`` with the live
+  boxes at the project's confidence (``--conf``), until it is ready or ``--timeout-s`` passed (190 s: 150 frames
+  1 s apart need two and a half minutes of dancing -- the controller's collect timeout must allow it); every
+  planned setting scored on the kept frames; ``decide``;
+* ``--draws`` (2,000) swipes; truth recall per setting from ``truth_score`` at the same confidence.
 
-Records (one per setting per take; the live setting first on the command line):
+Clauses, per take x live setting (``best`` = the best truth in the planned set):
 
-  ``<name>.jsonl``  one JSON object per processed frame, in frame order:
-      ``frame``  int, the frame index (the same index across the settings of one take);
-      ``t``      float seconds (optional; default ``frame / --fps``);
-      ``low``    every YOLO box down to conf 0.02, ``[x0, y0, x1, y1, conf, n_keypoints]``, original px;
-      ``fg``     the frame's foreground (only the live setting's is read): ``v`` valid (bool), ``ball`` every
-                 group ``[x, y, area, bx0, by0, bx1, by1]`` (or ``b``: ``[x, y, area]``, the largest six), ``mx``
-                 ``[x0, y0, ds]`` the mask's origin (original px) and downscale.
-  ``<name>.masks.npz`` (beside the live record; optional): ``frame`` (n,), ``shape`` (h, w), ``packed`` (n, k) =
-      ``np.packbits`` of each valid frame's uint8 mask.  Without it the referee falls back to group centres.
-  ``<name>.info.json``: the setting -- ``model`` / ``imgsz`` / ``config.model`` / ``config.yolo_imgsz`` /
-      ``config.yolo_shape``; for gate 2 also ``score`` (the scenario score) and ``scenario``.
+  (i)   a setting whose truth is below the live one's is named on at most 1 % of swipes;
+  (ii)  a named setting is within 1.5 points of ``best`` on at least 95 % of the swipes that name one;
+  (iii) when ``best`` is 10 points or more above the live setting, it or one within 1.5 points of it is named on
+        at least 95 % of swipes;
+  (iv)  reported, not gated: when ``best`` is 1.5 to 10 points above the live setting, the share of swipes that
+        keep it (a real gain missed).
 
-Writers on mgr-ran: ``tmp_analysis/night-1126/scripts/cx_replay_n.py`` (the façade takes; ``fg.b`` only),
-``tmp_analysis/swipe-1126/core/drv_facade.py`` and ``drv_corpus.py`` (+ ``ball``, ``mx`` and the masks).
+Gate 2 -- corpus (scenario score, known N): on each take, the swipe never names a setting whose scenario score is
+worse than the live setting's (``--corpus``; same collection, the live setting first, no truth).  Every corpus
+plate on mgr-ran is a median with dancers in it: this gate passes by refusal (« no verdict »).
 
-Usage (from ``application/``):
+Records (one per setting per take; the take's FIRST record carries the foreground):
 
-  python tests/swipe_gate.py \\
-      --facade "mur2 6" REC/jeudi0809_mur2__slot_6_..x1280m.jsonl P3/jeudi0809_mur2__slot_6_..l1920.jsonl ... \\
-      --corpus texture-duo REC/corpus/texture-duo.x1280.jsonl REC/corpus/texture-duo.l1280.jsonl \\
-      --truth-dir tests/truth0810 [--draws 2000] [--seed 1] [--json out.json]
+  ``<name>.jsonl``  one JSON object per processed frame, in frame order: ``frame``; ``t`` (optional, default
+      ``frame / --fps``; a record whose info says ``clock: uniform`` with an ``actual_fps`` is re-timed to that
+      rate); ``low`` = every YOLO box down to conf 0.02, ``[x0, y0, x1, y1, conf, n_keypoints]``, original
+      px; on the first record ``fg``: ``v`` valid, ``ball`` every group ``[x, y, area, bx0, by0, bx1, by1]`` (or
+      ``b``: ``[x, y, area]``), ``mx`` ``[x0, y0, ds]``.
+  ``<name>.masks.npz`` (beside the first record; optional): ``frame``, ``shape``, ``packed`` = ``np.packbits`` of
+      each valid frame's mask.  Without it the referee falls back to group centres.
+  ``<name>.info.json``: the setting (``model`` / ``imgsz`` / ``config.yolo_shape``); in ``config`` the ROI and the
+      exclusion (``exclusion_grid``, ``exclusion_cells``, ``exclusion_manual_add``, ``exclusion_manual_remove``);
+      for gate 2 also ``score``.
 
-Exit status: 0 both gates green, 1 a gate red, 2 bad input.  Does not import ``replay.py`` (no GPU).
+Writers on mgr-ran: ``tmp_analysis/night-1126/scripts/cx_replay_n.py``, ``tmp_analysis/swipe-1126/core/
+drv_facade.py`` / ``drv_corpus.py``.  ``tests/test_swipe_records.py`` runs gate 1 when the records are present.
+
+  python tests/swipe_gate.py --facade "mur2 6" REC/<stem>.x1280m.jsonl REC/<stem>.l1280.jsonl P3/<stem>.x1760.jsonl \\
+      ... --truth-dir tests/truth0810 [--pair] [--live "l @ 1280"] [--draws 2000] [--conf 0.15] [--json out.json]
+
+Exit status: 0 green, 1 a clause red, 2 bad input.  Does not import ``replay.py`` (no GPU).
 """
 from __future__ import annotations
 
@@ -49,8 +57,9 @@ import argparse
 import json
 import random
 import sys
+from dataclasses import replace
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 
@@ -59,9 +68,12 @@ for _p in (HERE.parent / "src", HERE):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-from core.input_shape import parse_shape  # noqa: E402
+from core.input_shape import letterbox_scale, parse_shape, target_hw  # noqa: E402
 from core.swipe import (Candidate, FrameCollector, Observation, SwipeParams, Tally, decide,  # noqa: E402
                         score_frame)
+
+LARGE_NET_PX = 200.0          # the planner's: over this the input size no longer matters
+TIMEOUT_S = 190.0             # the controller must wait this long to collect 150 frames 1 s apart (it waited 120 s)
 
 
 # ── records ──────────────────────────────────────────────────────────────────
@@ -88,6 +100,9 @@ class Record:
         self.info = _info(self.path)
         self.candidate = candidate_of(self.info, str(self.path))
         self.frames: Dict[int, dict] = {}
+        # a replay written on a uniform 20 fps clock (``clock`` "uniform") is re-timed to the camera's real rate:
+        # the swipe's « 1 s apart » is wall-clock time in the app
+        real = self.info.get("actual_fps") if self.info.get("clock") == "uniform" else None
         with open(self.path) as fh:
             for line in fh:
                 if not line.strip():
@@ -97,7 +112,7 @@ class Record:
                 except ValueError:
                     break
                 f = int(r["frame"])
-                row = {"t": float(r["t"]) if r.get("t") is not None else f / fps,
+                row = {"t": f / float(real) if real else (float(r["t"]) if r.get("t") is not None else f / fps),
                        "low": [tuple(float(v) for v in b[:5]) for b in r.get("low") or []]}
                 if live:
                     row["fg"] = r.get("fg")
@@ -112,46 +127,77 @@ class Record:
         fg = self.frames[f].get("fg") if f in self.frames else None
         if not fg or not fg.get("v"):
             return None
+        group_boxes = None
         if fg.get("ball") is not None:
-            groups = [(float(g[0]), float(g[1]), float(g[2])) for g in fg["ball"]]
+            ball = sorted(fg["ball"], key=lambda g: -float(g[2]))
+            groups = [(float(g[0]), float(g[1]), float(g[2])) for g in ball]
+            if all(len(g) >= 7 for g in ball):
+                group_boxes = [tuple(float(v) for v in g[3:7]) for g in ball]
         else:
-            groups = [(float(g[0]), float(g[1]), float(g[2])) for g in fg.get("b") or []]
-        groups.sort(key=lambda g: -g[2])
+            groups = sorted(((float(g[0]), float(g[1]), float(g[2])) for g in fg.get("b") or []), key=lambda g: -g[2])
         mask, (x0, y0, ds) = None, (fg.get("mx") or [0.0, 0.0, 4])
         if with_mask and self.masks is not None and f in self.masks[0]:
             idx, shape, packed = self.masks
             mask = np.unpackbits(packed[idx[f]])[: shape[0] * shape[1]].reshape(shape)
-        return Observation(groups=groups, mask=mask, x0=float(x0), y0=float(y0), ds=int(ds))
+        return Observation(groups=groups, mask=mask, x0=float(x0), y0=float(y0), ds=int(ds), group_boxes=group_boxes)
+
+
+def exclusion_filter(info: dict):
+    """The operator's excluded cells as the pipeline applies them before tracking (``FrameProcessor.
+    _apply_exclusion`` via ``ExclusionMaskBuilder.excluded``): a box whose centre, normalised over the ROI, falls in
+    an effective cell ``(cells | manual_add) - manual_remove`` of the ``exclusion_grid`` (cols, rows) is dropped.
+    The pipeline's exception for a box near a recently updated track is not mirrored (no tracks here).  None when
+    the config names no cell."""
+    cfg = info.get("config") or {}
+    grid = cfg.get("exclusion_grid")
+    cells = ({tuple(c) for c in cfg.get("exclusion_cells") or []}
+             | {tuple(c) for c in cfg.get("exclusion_manual_add") or []}) \
+        - {tuple(c) for c in cfg.get("exclusion_manual_remove") or []}
+    if not grid or not cells or not cfg.get("roi_w"):
+        return None
+    gx, gy = int(grid[0]), int(grid[1])
+    x0, y0, w, h = float(cfg.get("roi_x", 0)), float(cfg.get("roi_y", 0)), float(cfg["roi_w"]), float(cfg["roi_h"])
+
+    def keep(b) -> bool:
+        nx, ny = ((b[0] + b[2]) * 0.5 - x0) / w, ((b[1] + b[3]) * 0.5 - y0) / h
+        return not (0.0 <= nx < 1.0 and 0.0 <= ny < 1.0 and (int(nx * gx), int(ny * gy)) in cells)
+    return keep
 
 
 class Take:
-    """The settings of one take, the live one first, scored once per frame."""
+    """The settings of one take (the first record carries the foreground), boxes filtered by the exclusion."""
 
-    def __init__(self, label: str, paths: List[str], fps: float = 20.0):
+    def __init__(self, label: str, paths: List[str], fps: float = 20.0, exclusion: bool = True):
         self.label = label
         self.live = Record(paths[0], fps, live=True)
         self.records = [self.live] + [Record(p, fps) for p in paths[1:]]
         self.cands = [r.candidate for r in self.records]
         if len(set(self.cands)) != len(self.cands):
             raise SystemExit(f"{label}: two records of the same setting")
+        self.by = {r.candidate: r for r in self.records}
+        keep = exclusion_filter(self.live.info) if exclusion else None
+        if keep is not None:
+            for r in self.records:
+                for fr in r.frames.values():
+                    fr["low"] = [b for b in fr["low"] if keep(b)]
         common = set(self.live.frames)
         for r in self.records[1:]:
             common &= set(r.frames)
         self.order = sorted(common)
         self._scores: Dict[tuple, Dict[int, dict]] = {}
+        cfg = self.live.info.get("config") or {}
+        self.roi = (int(cfg.get("roi_w") or 0), int(cfg.get("roi_h") or 0))
 
-    def offers(self, params: SwipeParams):
-        """(frame, t, groups-only observation or None, live boxes) for every frame, in order."""
-        out = []
-        for f in self.order:
-            obs = self.live.observation(f, with_mask=False)
-            out.append((f, self.live.frames[f]["t"], obs, self.live.frames[f]["low"]))
-        return out
+    def label_of(self, text: str) -> Candidate:
+        for c in self.cands:
+            if c.label == text:
+                return c
+        raise SystemExit(f"{self.label}: no record for {text!r} (have {[c.label for c in self.cands]})")
 
     def scores(self, params: SwipeParams) -> Dict[int, dict]:
         """frame -> {candidate: FrameScore} on every frame with a valid foreground and a dancer group."""
         key = (params.group_min_area, params.box_margin, params.conf, params.loose_min_area,
-               getattr(params, "one_box_one_dancer", None))
+               params.one_box_one_dancer, params.cover_share)
         if key not in self._scores:
             out = {}
             for f in self.order:
@@ -163,92 +209,135 @@ class Take:
             self._scores[key] = out
         return self._scores[key]
 
+    def scale(self, c: Candidate) -> float:
+        return letterbox_scale(self.roi[0], self.roi[1], c.imgsz, c.shape) if self.roi[0] else 1.0
 
-# ── one swipe ────────────────────────────────────────────────────────────────
-
-def swipe_once(take: Take, params: SwipeParams, start: int, offers=None, scores=None, laps: int = 10):
-    """Offer the take's frames from ``start`` until the collector is ready -- a take too short for the window is
-    walked round again (at most ``laps`` times, the clock running on: the scene goes on as recorded) -- then
-    score the kept frames and decide (on what was kept, ready or not)."""
-    offers = offers if offers is not None else take.offers(params)
-    scores = scores if scores is not None else take.scores(params)
-    col = FrameCollector(params)
-    n = len(offers)
-    span = offers[-1][1] - offers[0][1] + (offers[1][1] - offers[0][1] if n > 1 else 0.05)
-    t0 = t_end = offers[start % n][1]
-    on_wall = 0           # frames with a dancer group offered: the dancing time the window took
-    for k in range(max(1, laps) * n):
-        j = (start + k) % n
-        f, t, obs, boxes = offers[j]
-        t_end = t + span * ((start + k) // n)
-        on_wall += obs is not None and bool(obs.dancer_groups(params))
-        col.offer(t_end, f, obs, boxes)
-        if col.ready:
-            break
-    col.elapsed_s = t_end - t0
-    col.on_wall_frames = on_wall
-    tallies = {c: Tally() for c in take.cands}
-    for fr in col.frames:
-        for c in take.cands:
-            tallies[c].add(scores[fr.image][c], lost=fr.lost)
-    return decide(tallies, take.live.candidate, params, lost_share=col.lost_share), col
+    def dancer_px(self, live: Candidate, conf: float = 0.5) -> Optional[float]:
+        """The dancer's height at the live input: the median height of the live setting's confident boxes."""
+        hs = [b[3] - b[1] for f in self.order for b in self.by[live].frames[f]["low"] if b[4] >= conf]
+        return float(np.median(hs)) * self.scale(live) if hs else None
 
 
-def draws(take: Take, params: SwipeParams, n: int, seed: int):
-    rng = random.Random(seed)
-    offers, scores = take.offers(params), take.scores(params)
-    out = []
-    for _ in range(n):
-        res, col = swipe_once(take, params, rng.randrange(len(offers)), offers, scores)
-        out.append((res, col.lost_frames, len(col.frames), col.elapsed_s))
+def plan_set(take: Take, live: Candidate, dancer_px: Optional[float], pair: bool = False) -> List[Candidate]:
+    """The planner's candidates (the rule ``plan_candidates`` follows since the P5 review), among the take's
+    records: the live setting first."""
+    models = sorted({c.model for c in take.cands})
+    here = target_hw(live.imgsz, live.shape)
+    other_here = [c for c in take.cands if c != live and target_hw(c.imgsz, c.shape) == here and c.model != live.model]
+    if pair or (dancer_px is not None and dancer_px >= LARGE_NET_PX):
+        return [live] + other_here[:1]
+    out = [live]
+    for m in models:
+        mine = sorted((c for c in take.cands if c.model == m), key=lambda c: -take.scale(c))
+        if mine and mine[0] not in out:
+            out.append(mine[0])
     return out
 
 
-def _verdict(res) -> str:
-    return "switch" if res.switch else ("keep" if res.winner is not None else "none")
+# ── one swipe ────────────────────────────────────────────────────────────────
+
+def offers_for(take: Take, live: Candidate, params: SwipeParams):
+    out = []
+    for f in take.order:
+        obs = take.live.observation(f, with_mask=False)
+        boxes = [b for b in take.by[live].frames[f]["low"] if b[4] >= params.conf]
+        out.append((f, take.live.frames[f]["t"], obs, boxes))
+    return out
 
 
-# ── gate 1 ───────────────────────────────────────────────────────────────────
+def swipe_once(take: Take, live: Candidate, cands: Sequence[Candidate], params: SwipeParams, start: int,
+               offers, scores, timeout_s: float = TIMEOUT_S, laps: int = 10):
+    """Offer the take's frames from ``start`` (a short take is walked round again, the clock running on) until the
+    collector is ready or ``timeout_s`` passed; score the planned settings on the kept frames; decide."""
+    col = FrameCollector(params)
+    n = len(offers)
+    span = offers[-1][1] - offers[0][1] + (offers[1][1] - offers[0][1] if n > 1 else 0.05)
+    t0 = None
+    for k in range(max(1, laps) * n):
+        f, t, obs, boxes = offers[(start + k) % n]
+        t = t + span * ((start + k) // n)
+        t0 = t if t0 is None else t0
+        col.offer(t, f, obs, boxes)
+        if col.ready or t - t0 >= timeout_s:
+            break
+    tallies = {c: Tally() for c in cands}
+    for fr in col.frames:
+        for c in cands:
+            tallies[c].add(scores[fr.image][c], lost=fr.lost)
+    return decide(tallies, live, params, lost_share=col.lost_share), col
 
-def truth_recall(take: Take, truth_dir: Path) -> Dict[Candidate, float]:
+
+def truth_recall(take: Take, truth_dir: Path, conf: float = 0.15) -> Dict[Candidate, float]:
     import truth_score as ts
     out = {}
     for r in take.records:
         stem = r.path.name.split(".")[0]
         T = ts.load_truth(truth_dir / f"{stem}.npz")
-        Z = ts.score_replay(T, ts.read_jsonl(r.path), conf=0.15)
+        Z = ts.score_replay(T, ts.read_jsonl(r.path), conf=conf)
         out[r.candidate] = 100.0 * ts.take_summary(T, Z)["det"]["wall"]
     return out
 
 
-def gate1(takes: List[Take], truth: Dict[str, Dict[Candidate, float]], params: SwipeParams, n: int, seed: int,
-          tol: float, max_miss: float):
+def clause_row(take: Take, live: Candidate, cands: List[Candidate], truth: Dict[Candidate, float],
+               params: SwipeParams, draws: int, seed: int, timeout_s: float = TIMEOUT_S) -> dict:
+    rng = random.Random(seed)
+    offers = offers_for(take, live, params)
+    scores = take.scores(params)
+    tl = truth[live]
+    best = max(truth[c] for c in cands)
+    named, worse, near, keep, none = 0, 0, 0, 0, 0
+    counts: Dict[str, int] = {}
+    for _ in range(draws):
+        res, _col = swipe_once(take, live, cands, params, rng.randrange(len(offers)), offers, scores, timeout_s)
+        if res.winner is not None and res.switch:
+            w = res.winner
+            named += 1
+            worse += truth[w] < tl - 1e-9
+            near += truth[w] >= best - 1.5
+            k = w.label
+        elif res.winner is not None:
+            keep += 1
+            k = "keep"
+        else:
+            none += 1
+            k = "no verdict"
+        counts[k] = counts.get(k, 0) + 1
+    row = {"take": take.label, "live": live.label, "cands": [c.label for c in cands], "live_truth": round(tl, 1),
+           "best": round(best, 1), "draws": draws,
+           "worse": worse / draws,                                         # (i)
+           "near_of_named": (near / named) if named else None,             # (ii)
+           "near_of_all": near / draws,                                    # (iii) when best >= live + 10
+           "keep": keep / draws, "none": none / draws,
+           "named": dict(sorted(counts.items(), key=lambda kv: -kv[1]))}
+    gap = best - tl
+    row["clause_i"] = row["worse"] <= 0.01
+    row["clause_ii"] = named == 0 or row["near_of_named"] >= 0.95
+    row["clause_iii"] = (gap < 10.0) or row["near_of_all"] >= 0.95
+    row["missed_small_gain"] = row["keep"] + row["none"] if 1.5 < gap < 10.0 else None   # (iv), not gated
+    row["green"] = row["clause_i"] and row["clause_ii"] and row["clause_iii"]
+    return row
+
+
+def gate1(takes: List[Take], truth_dir: Path, params: SwipeParams, draws: int, seed: int, pair: bool,
+          lives: Optional[Sequence[str]] = None, dancer_px: Optional[float] = None, timeout_s: float = TIMEOUT_S):
     rows, green = [], True
     for take in takes:
-        tr = truth[take.label]
-        best = max(tr.values())
-        res = draws(take, params, n, seed)
-        picks = [tr[r.winner] if r.winner is not None else tr[take.live.candidate] for r, _, _, _ in res]
-        miss = float(np.mean([p < best - tol for p in picks]))
-        mean = float(np.mean(picks))
-        ok = mean >= best - tol and miss <= max_miss
-        green &= ok
-        counts: Dict[str, int] = {}
-        for r, _, _, _ in res:
-            k = r.winner.label if (r.winner is not None and r.switch) else _verdict(r)
-            counts[k] = counts.get(k, 0) + 1
-        rows.append({"take": take.label, "best": round(best, 1), "pick_mean": round(mean, 2),
-                     "miss_share": round(miss, 4), "worst": round(min(picks), 1), "green": ok,
-                     "picks": dict(sorted(counts.items(), key=lambda kv: -kv[1])),
-                     "truth": {c.label: round(v, 1) for c, v in tr.items()},
-                     "frames_mean": round(float(np.mean([k for _, _, k, _ in res])), 1),
-                     "collect_s_median": round(float(np.median([e for _, _, _, e in res])), 1)})
+        truth = truth_recall(take, truth_dir, params.conf)
+        for live in take.cands:
+            if lives and live.label not in lives:
+                continue
+            h = dancer_px * take.scale(live) / take.scale(take.cands[0]) if dancer_px else take.dancer_px(live)
+            cands = plan_set(take, live, h, pair)
+            if len(cands) < 2:
+                continue
+            row = clause_row(take, live, cands, truth, params, draws, seed, timeout_s)
+            row["dancer_px"] = round(h, 1) if h else None
+            rows.append(row)
+            green &= row["green"]
     return green, rows
 
 
-# ── gate 2 ───────────────────────────────────────────────────────────────────
-
-def gate2(takes: List[Take], params: SwipeParams, n: int, seed: int):
+def gate2(takes: List[Take], params: SwipeParams, draws: int, seed: int, timeout_s: float = TIMEOUT_S):
     rows, green = [], True
     for take in takes:
         score = {}
@@ -256,42 +345,45 @@ def gate2(takes: List[Take], params: SwipeParams, n: int, seed: int):
             if "score" not in r.info:
                 raise SystemExit(f"{r.path}: no scenario score in its .info.json")
             score[r.candidate] = float(r.info["score"])
-        live = take.live.candidate
-        res = draws(take, params, n, seed)
-        worse = 0
-        counts: Dict[str, int] = {}
-        for r, _, _, _ in res:
-            named = r.winner if (r.winner is not None and r.switch) else None
-            if named is not None and score[named] > score[live]:
-                worse += 1
-            k = named.label if named is not None else _verdict(r)
+        live = take.cands[0]
+        rng = random.Random(seed)
+        offers, scores = offers_for(take, live, params), take.scores(params)
+        worse, counts = 0, {}
+        for _ in range(draws):
+            res, _col = swipe_once(take, live, take.cands, params, rng.randrange(len(offers)), offers, scores,
+                                   timeout_s=1e9)
+            named = res.winner if (res.winner is not None and res.switch) else None
+            worse += named is not None and score[named] > score[live]
+            k = named.label if named is not None else ("keep" if res.winner is not None else "no verdict")
             counts[k] = counts.get(k, 0) + 1
         ok = worse == 0
         green &= ok
         rows.append({"take": take.label, "scores": {c.label: round(v, 3) for c, v in score.items()},
-                     "worse_named": worse, "green": ok, "verdicts": dict(sorted(counts.items(), key=lambda kv: -kv[1])),
-                     "lost_frames_mean": round(float(np.mean([k for _, k, _, _ in res])), 1)})
+                     "worse_named": worse, "green": ok, "verdicts": counts})
     return green, rows
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--facade", nargs="+", action="append", default=[], metavar="LABEL REC",
-                    help="a façade take: its label, then its records, the live setting first")
+                    help="a facade take: its label, then its records (the first carries the foreground)")
     ap.add_argument("--corpus", nargs="+", action="append", default=[], metavar="LABEL REC",
                     help="a corpus take: its label, then its records, the live setting first")
     ap.add_argument("--truth-dir", default=str(HERE / "truth0810"))
+    ap.add_argument("--pair", action="store_true", help="gate the background swipe's pair (P6) instead of the plan")
+    ap.add_argument("--live", action="append", default=[], help="only these live settings (labels)")
+    ap.add_argument("--dancer-px", type=float, default=None, help="the dancer's height at the FIRST record's input")
     ap.add_argument("--draws", type=int, default=2000)
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--conf", type=float, default=0.15, help="the project's confidence (the referee scores there)")
+    ap.add_argument("--timeout-s", type=float, default=TIMEOUT_S)
+    ap.add_argument("--no-exclusion", action="store_true", help="keep the operator's excluded cells' boxes")
     ap.add_argument("--fps", type=float, default=20.0, help="clock of records without 't'")
-    ap.add_argument("--tol", type=float, default=1.5, help="gate 1: points of truth recall under the best")
-    ap.add_argument("--max-miss", type=float, default=1.0,
-                    help="gate 1: share of draws allowed beyond --tol (default 1.0: reported, not gated)")
     ap.add_argument("--set", dest="sets", action="append", default=[], metavar="KEY=VALUE",
                     help="override a SwipeParams field (exploration; the gate is the defaults)")
     ap.add_argument("--json", default=None)
     a = ap.parse_args(argv)
-    params = SwipeParams()
+    params = replace(SwipeParams(), conf=a.conf)
     for kv in a.sets:
         k, _, v = kv.partition("=")
         if not hasattr(params, k):
@@ -301,32 +393,32 @@ def main(argv=None) -> int:
     if not a.facade and not a.corpus:
         print("nothing to check: give --facade and/or --corpus", file=sys.stderr)
         return 2
-    out = {"params": vars(params), "draws": a.draws, "seed": a.seed}
+    out = {"params": vars(params), "draws": a.draws, "seed": a.seed, "pair": a.pair}
     green = True
     if a.facade:
-        takes = [Take(x[0], x[1:], a.fps) for x in a.facade]
-        truth = {t.label: truth_recall(t, Path(a.truth_dir)) for t in takes}
-        g1, rows = gate1(takes, truth, params, a.draws, a.seed, a.tol, a.max_miss)
+        takes = [Take(x[0], x[1:], a.fps, exclusion=not a.no_exclusion) for x in a.facade]
+        g1, rows = gate1(takes, Path(a.truth_dir), params, a.draws, a.seed, a.pair, a.live, a.dancer_px, a.timeout_s)
         green &= g1
         out["gate1"] = {"green": g1, "rows": rows}
-        print(f"Gate 1 -- façade: the pick's truth recall against the best ({a.draws} windows per take, "
-              f"{params.frames} lost frames >= {params.min_gap_s} s apart from a random start)")
-        print(f"  {'take':10s} {'best':>6s} {'pick':>6s} {'>tol':>6s} {'worst':>6s} {'collect':>8s}  picks")
+        what = "the background pair" if a.pair else "the planned set"
+        print(f"Gate 1 -- facade, per swipe ({a.draws} swipes, {what}, "
+              f"conf {a.conf}, {params.frames} frames >= {params.min_gap_s} s apart): (i) worse than live <= 1 %, "
+              f"(ii) named within 1.5 of the best >= 95 %, (iii) best named when >= 10 above live >= 95 %")
         for r in rows:
-            print(f"  {r['take']:10s} {r['best']:6.1f} {r['pick_mean']:6.2f} {100 * r['miss_share']:5.1f}% "
-                  f"{r['worst']:6.1f} {r['collect_s_median']:7.0f}s  {r['picks']}  {'GREEN' if r['green'] else 'RED'}")
-        print("  (truth: " + "; ".join(f"{r['take']}: " + ", ".join(f"{k} {v}" for k, v in r['truth'].items())
-                                     for r in rows) + ")")
+            nn = "-" if r["near_of_named"] is None else f"{100 * r['near_of_named']:.1f}%"
+            iv = "" if r["missed_small_gain"] is None else f" (iv) missed {100 * r['missed_small_gain']:.1f}%"
+            print(f"  {r['take']:7s} live {r['live']:16s} {r['live_truth']:5.1f} best {r['best']:5.1f} "
+                  f"(i) {100 * r['worse']:5.2f}% (ii) {nn:>6s} (iii) {100 * r['near_of_all']:5.1f}%{iv} "
+                  f"{r['named']}  {'GREEN' if r['green'] else 'RED'}")
     if a.corpus:
-        takes = [Take(x[0], x[1:], a.fps) for x in a.corpus]
+        takes = [Take(x[0], x[1:], a.fps, exclusion=not a.no_exclusion) for x in a.corpus]
         g2, rows = gate2(takes, params, a.draws, a.seed)
         green &= g2
         out["gate2"] = {"green": g2, "rows": rows}
-        print(f"Gate 2 -- corpus: never name a setting the scenario scores worse than the live one "
-              f"({a.draws} windows per take)")
+        print(f"Gate 2 -- corpus: never name a setting the scenario scores worse than the live one ({a.draws} swipes)")
         for r in rows:
-            print(f"  {r['take']:20s} scores {r['scores']}  worse named {r['worse_named']}  "
-                  f"lost frames {r['lost_frames_mean']}  {r['verdicts']}  {'GREEN' if r['green'] else 'RED'}")
+            print(f"  {r['take']:20s} scores {r['scores']}  worse named {r['worse_named']}  {r['verdicts']}  "
+                  f"{'GREEN' if r['green'] else 'RED'}")
     print("GATES GREEN" if green else "GATE RED")
     if a.json:
         Path(a.json).write_text(json.dumps(out, indent=1, default=str))
