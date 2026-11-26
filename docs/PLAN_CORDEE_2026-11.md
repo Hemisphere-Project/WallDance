@@ -498,10 +498,10 @@ Rev 2 (release in the last column):
 | M1 | 08/10 truth and scorer in the repo | bench ⚙ | – | 1d | #t-031 ④ | done 26/11 | 1 |
 | M2 | A live session can be scored | bench ⚙ | – | 0.5d | #t-023 ④ | done 26/11 | 1 |
 | M3 | Playback on a frame clock | bench ⚙ | – | in B1 | #t-030 ④ | todo | – |
-| P1 | Rectangular input | bench GPU | – | 1.5d | #t-047 | built 26/11, landing held (§5) | 1 |
+| P1 | Rectangular input | bench GPU | – | 1.5d | #t-047 | landed 26/11 (§5) | 1 |
 | P2 | Engines and timing | laptop | P1 | window | #t-048 | done 26/11 (§5) | 1 |
 | P3 | Model by the ratchet | bench GPU | P1, F3 | 0.5d | #t-049 | measured 26/11, choice open (§5) | 1 |
-| P4 | Dancer height at the network | bench ⚙ | P1 | 0.5d | #t-050 | built 26/11, lands with P1 | 1 |
+| P4 | Dancer height at the network | bench ⚙ | P1 | 0.5d | #t-050 | landed 26/11; the live band open | 1 |
 | X1 | Servo on the highlights | bench ⚙ | – | 1d | #t-027 ④ | todo | 2 |
 | X2 | Light verdict | bench ⚙ | – | 0.5d | #t-054 | todo | 2 |
 | X3 | Emptiness first | bench ⚙ | – | 1d | #t-027 ⑤ | todo | 2 |
@@ -510,7 +510,7 @@ Rev 2 (release in the last column):
 | X6 | Crop and plate bookkeeping | bench ⚙ | – | 1d | #t-053 | ② ③ done 26/11, ① open | 1 |
 | F1 | A foreground that works | bench GPU | – | 1d | #t-051 | done 26/11 but the hand sample | 1 |
 | F2 | The plate is honest | bench ⚙ | X6 | 0.5d | X6 ③, C2 ④, C5 ② | todo | 2 |
-| F3 | The veto | bench GPU | F1 | 0.5d | #t-052 | built 26/11, gate not met (§5) | 1 |
+| F3 | The veto | bench GPU | F1 | 0.5d | #t-052 | built 26/11, gate not met, held (§5) | 1 |
 | F4 | A held slot sits on a foreground group | bench GPU | F1 | 2d | #t-056 | todo | 2 |
 | H1 | The four steps as a wizard | bench ⚙ | X4 | 2d | #t-057 | todo | 3 |
 | H2 | One health line | bench ⚙ | E1 | 1.5d | #t-040 ① | todo | 3 |
@@ -544,7 +544,8 @@ Filled by the step named. Until then the cell says so.
   | l @ 1920 × 1056 | 91.0 % | 89.2 / 93.5 / 90.5 / 91.0 | 0.0222 | 93.9 % / 5.5 % | 35.1 ms |
 
   P1's gate as the night brief set it (x at 1760 × 960, ≥ 80 %) is not met; the row's (≥ 80 % with yolo11x) is,
-  at 1920 × 1056. The 1 fps experiment had predicted 78 / 85 / 91 / 93.5 % for these rows.
+  at 1920 × 1056. The 1 fps experiment had predicted 78 / 85 / 91 / 93.5 % for these rows. Thomas landed P1 and
+  P4 on `remote-ops` on 26/11, without F3.
 - **P2 — the loop on the laptop with TouchDesigner** (2026-11-26, night session; `extra/measure_loop.py` from a
   scratch folder, the laptop's own `jeudi0809_mur2` take 7, frames 1500–2730 with both dancers on the wall, its
   plate, F1 on; TouchDesigner 2025.32820 open on a copy of `ByNight_scenes_NOVEMBRE.314.toe`, 25 % GPU alone):
@@ -589,13 +590,23 @@ Filled by the step named. Until then the cell says so.
   for TouchDesigner; elsewhere keep the shipped x @ 1280 until the corpus has real empty-wall plates (B5/B6):
   without a plate yolo11l loses on 10 of 13 corpus scenarios (ghosts on the textured walls, drops outdoors at
   night), and the corpus plates are medians of takes with dancers in them, which make the veto cut real boxes. The model is a per-project choice; the default is unchanged.
+
+  The dancer's height in the network (2026-11-26, the median of the confident boxes): it picks the input size,
+  not the model. The 08/10 takes reach it at 70–82 px in the 1280 square, 96–113 px at 1760 × 960 and 105–123 px
+  at 1920 × 1056 (x: 50.9 → 73.7 → 83.3 %); the hangar scenarios at ~200 px (hangar, white walls), 146–324 px
+  (textured walls); outdoor-night and outdoor-sitter at 114 and 134 px, where yolo11l loses badly while it wins on
+  the façade at the same height. The order of evidence (Thomas, 26/11): the `mur` takes stand for the show and
+  lead; the hangar corpus stands for indoor rehearsals and must still be covered.
 - **F1 — foreground** (2026-11-26, `tests/fg_eval.py`, mur2 with the 21:36 plate, every 3rd frame):
   foreground under 6,263 of 6,263 boxes a network gives at conf ≥ 0.5; a group on the dancer 94.7–100 % of
   dancer-frames; groups on nobody inside the wall 0.000–0.201 per frame; take 2 (empty) 0.0 and no stale frame (the
-  old rule: 5.1, 25 % stale). The hand-labelled sample is open.
+  old rule: 5.1, 25 % stale). The hand-labelled sample is open. On the stream alone (2026-11-26: x @ 1280 square,
+  veto off, the four long takes, F1 against the old rule): a point on her 89.3 → 90.3 %, points on nobody 10.1 →
+  9.5 %, the detector unchanged, no take worse (mur 5's plate is another crop: equal).
 - **F3 — the veto** (2026-11-26): with l @ 1920 × 1056, 0.0225 → 0.0222 false boxes per frame (gate ≤ 0.02: not
   met), the detector 91.0 → 90.9 % (recall unchanged); with x @ 1920 × 1056, 0.0206 → 0.0202. The boxes it keeps
-  have foreground under them (mur 5's plate is another crop: no veto there).
+  have foreground under them (mur 5's plate is another crop: no veto there). Held on 26/11 (Thomas): it stays on
+  the branch until a take shows false boxes on the bare wall that it removes.
 
 ## 6. Existing hub rows
 
