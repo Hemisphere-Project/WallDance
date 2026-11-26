@@ -5,6 +5,7 @@ Handles YOLO model loading, downloading, and TensorRT export.
 
 import os
 import shutil
+import threading
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -55,6 +56,12 @@ class ModelProgress:
     message: str = ""
     progress: float = 0.0  # 0.0 to 1.0
     error: Optional[str] = None
+
+
+# One engine load at a time in the process (P5): ultralytics captures a CUDA graph when it loads a TensorRT
+# engine, and CUDA work on another thread during that capture breaks it (and fails the other thread's call).
+# The settings swipe's worker holds this lock for each candidate's run and stops when a live load begins.
+ENGINE_LOAD_LOCK = threading.RLock()
 
 
 def is_tensorrt_available() -> bool:
@@ -183,6 +190,11 @@ class ModelManager:
         return os.path.exists(self.get_engine_path(model_name, imgsz))
 
     def load_model(self, model_name: str, force_pt: bool = False) -> YOLO:
+        """Load a YOLO model (``_load_model``), one engine load at a time in the process (ENGINE_LOAD_LOCK)."""
+        with ENGINE_LOAD_LOCK:
+            return self._load_model(model_name, force_pt=force_pt)
+
+    def _load_model(self, model_name: str, force_pt: bool = False) -> YOLO:
         """
         Load a YOLO model, with TensorRT export if needed.
         

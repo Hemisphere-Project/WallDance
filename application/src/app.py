@@ -87,6 +87,7 @@ from core.config import (
     OPS_DISK_WARN_FREE_GB,
     OPS_DISK_FAIL_FREE_GB,
     RIG_DEFAULTS,
+    SWIPE_COLLECT,
 )
 from core.osc_output import OSCSender
 from core.pipeline import FrameProcessor, ProcessingSettings, ScaledTrack
@@ -107,6 +108,7 @@ from core.ops_monitor import (
 )
 from core.enhancer import ImageEnhancer
 from core.input_shape import shape_str
+from core.swipe import Candidate
 from core.tracker import DancerTracker
 from core.tracking_logger import _json_default
 from core.video_recorder import VideoRecorder
@@ -122,6 +124,7 @@ from runtime.camera_controller import CameraController
 from runtime.config_manager import ConfigManager
 from runtime.calibration_flows import CalibrationFlows
 from runtime.roi_state import RoiState
+from runtime.swipe_controller import LiveSetting, SwipeController, say
 from ui.adapter import DpgUiAdapter
 from ui.roi_mask_editor import RoiMaskEditor
 from services.web_monitor import WebMonitor
@@ -582,6 +585,8 @@ class WallDanceApp:
             denoise_strength=0.0,
             osc_enabled=OSC_ENABLED,
         )
+        # P5: keep the frames a settings swipe runs on (project key swipe_collect)
+        self.settings.swipe_collect = SWIPE_COLLECT
 
         # Camera: Use UnifiedCamera (IDS + OpenCV fallback) if available
         self._use_unified_camera = UNIFIED_CAMERA_AVAILABLE
@@ -761,6 +766,19 @@ class WallDanceApp:
             capture_plate=lambda source: self._cb_capture_plate(PLATE_CAPTURE_FRAMES, source),
         )
         
+        # P5 settings swipe (runtime/swipe_controller.py): a worker thread beside the live loop tries the
+        # other model / input settings on the kept frames; readiness reads its verdict, Apply acts on it.
+        self.swipe = SwipeController(
+            processor=lambda: self.processor,
+            live=self._swipe_live_setting,
+            engine_path=lambda c: self.models.model_manager.get_engine_path(c.model, c.imgsz, c.shape),
+            plate_ready=lambda: self.processor.plate_status == "ready",
+            on_progress=lambda state, text, progress: self.bus.publish(
+                api.SettingsSwipeProgress(state, text, float(progress))),
+            on_result=lambda result, error: self.bus.publish(api.SettingsSwipeResult(result, error)),
+        )
+        self._swipe_pending_apply: Optional[tuple] = None   # (winner, confidence, project, monotonic time)
+
         # Pending operations (deferred to main loop)
 
         # Ops cluster (TODO Phase 7): health alerts + main-loop watchdog
@@ -899,6 +917,10 @@ class WallDanceApp:
         reg(api.ApplyCalibSweep, lambda c: self._cb_apply_calib_sweep())
         reg(api.RunKnownNTune, lambda c: self._cb_run_known_n())
         reg(api.ApplyKnownNTune, lambda c: self._cb_apply_known_n())
+        reg(api.RunSettingsSwipe, lambda c: self._cb_run_settings_swipe())
+        reg(api.CancelSettingsSwipe, lambda c: self.swipe.cancel())
+        reg(api.ApplySettingsSwipe, lambda c: self._cb_apply_settings_swipe())
+        reg(api.DismissSwipeNotice, lambda c: self._cb_dismiss_swipe())
         # detection / sensitivity
         reg(api.SetSensitivity, lambda c: self._cb_sensitivity_change(c.value))
         reg(api.SetConfidence, lambda c: self._cb_confidence_change(c.value))
@@ -1083,6 +1105,7 @@ class WallDanceApp:
             "rig": dict(self.rig_sheet),
             "input_transform": self.input_transform.to_config(),
             "import_running": self.recording.import_running,
+            "swipe": self.swipe.status_dict(),
         }
 
     def _sync_rig_sheet(self):
@@ -1316,6 +1339,7 @@ class WallDanceApp:
             "use_ir_belt": self.settings.use_ir_belt,
             "osc_send_state": self.settings.osc_send_state,
             "camera_stall_hold": self.settings.camera_stall_hold,
+            "swipe_collect": self.settings.swipe_collect,
             "motion_sensitivity": self.processor.get_motion_sensitivity(),
             "osc_enabled": self.osc_enabled,
             "osc_ip": self.osc_ip,
@@ -1544,6 +1568,8 @@ class WallDanceApp:
             self._cb_foreground(bool(config.get("fg_enabled", FOREGROUND_ENABLED)))
         if "fg_clip_aware" in config or full_config:         # F1 (no GUI: a project key)
             self.settings.fg_clip_aware = bool(config.get("fg_clip_aware", FOREGROUND_CLIP_AWARE))
+        if "swipe_collect" in config or full_config:         # P5 (no GUI: a project key)
+            self.settings.swipe_collect = bool(config.get("swipe_collect", SWIPE_COLLECT))
         if full_config:
             self._load_project_plate()
         # Conditional Dial-B visibility (OPERATOR_V2 P3 / build #3): calibration
@@ -2249,6 +2275,8 @@ class WallDanceApp:
         self.recording._update_recording_ui()
 
     def _cb_quit(self):
+        self.swipe.cancel()          # P5: stop a running settings swipe ...
+        self.swipe.join(2.0)         # ... and let it drop its engine before the process tears CUDA down
         self.tracker.logger.close()  # Phase 0: flush and close tracking log
         self.running = False
         self.recorder.close()
@@ -2420,6 +2448,13 @@ class WallDanceApp:
                                          lb_scale=float(getattr(self.processor, "last_lb_scale", 0.0)),
                                          imgsz=int(self.settings.imgsz),
                                          shape=self.settings.yolo_shape, roi_w=_roi_w, roi_h=_roi_h))
+        try:
+            row = self.swipe.readiness(plate_ready=self.processor.plate_status == "ready",
+                                       live_now=self._swipe_live_setting())
+            if row is not None:                 # advice, not a condition: usually no row at all
+                results.append(row)
+        except Exception as e:  # noqa: BLE001 - one row must not sink the report
+            print(f"[Readiness] swipe row failed: {e}")
         results.append(check_disk(
             recordings_dir=self.recorder.recordings_dir,
             warn_free_gb=OPS_DISK_WARN_FREE_GB,
@@ -2446,11 +2481,11 @@ class WallDanceApp:
         """
         try:
             report = self._build_readiness_report()
-            print(report.console_block(
-                f"(project={self.configs._current_project}, "
-                f"profile={self.configs._active_profile}) "))
             msg, color = report.toast_summary()
             self.bus.publish(api.Toast(msg, 6.0, color))
+            say(report.console_block(
+                f"({why + ', ' if why else ''}project={self.configs._current_project}, "
+                f"profile={self.configs._active_profile}) "))
         except Exception as e:  # noqa: BLE001 - never disturb Go-Live
             print(f"[Readiness] check failed: {e}")
 
@@ -2471,12 +2506,16 @@ class WallDanceApp:
             return
         rows = [{"name": r.name, "status": r.status, "detail": r.detail}
                 for r in report.results]
-        print(report.console_block(
-            f"({why + ', ' if why else ''}project={self.configs._current_project}, "
-            f"profile={self.configs._active_profile}) "))
         self.bus.publish(api.ReadinessResult(rows))
         msg, color = report.toast_summary()
         self.bus.publish(api.Toast(msg, 5.0, color))
+        # after the rows: a console that cannot print a character (cp1252) must not hide them
+        try:
+            say(report.console_block(
+                f"({why + ', ' if why else ''}project={self.configs._current_project}, "
+                f"profile={self.configs._active_profile}) "))
+        except Exception as e:  # noqa: BLE001
+            print(f"[Readiness] console print failed: {type(e).__name__}")
 
     # --- H3 (#t-026 ④): readiness by itself, at start and after each Calibrate ---------------------
     def _readiness_auto(self):
@@ -2796,6 +2835,163 @@ class WallDanceApp:
         self.bus.publish(api.Toast(
             f"Auto-tune applied: CLAHE {cfg.get('clahe_clip')} conf "
             f"{cfg.get('confidence')} + saved.{imgsz_note}", 7.0, (120, 220, 140)))
+
+    # ------------------------------------------------------------------
+    # Settings swipe (Plan Cordée P5)
+    # ------------------------------------------------------------------
+    def _swipe_live_setting(self) -> Optional[LiveSetting]:
+        """What the live loop runs now (model, the input it really runs, the loaded model object); None while
+        a model loads (a running swipe stops: no CUDA work beside the load's graph capture)."""
+        if self.models.model is None or not self.models._model_loaded or self.models._model_loading:
+            return None
+        try:
+            trt = bool(self.models.model_manager.is_using_tensorrt())
+        except Exception:  # noqa: BLE001
+            trt = False
+        s = self.settings
+        shape = s.yolo_shape
+        try:
+            frame = tuple(int(v) for v in self.roi.state.source_size)
+        except Exception:  # noqa: BLE001
+            frame = ()
+        enhance = (bool(s.enhance_enabled), bool(s.enhance_lite), bool(s.enhance_force),
+                   round(float(self.enhancer.clahe_clip), 3), round(float(self.enhancer.gamma), 3),
+                   bool(getattr(s, "greyscale", False)), bool(s.bg_subtract_enabled), int(s.bg_subtract_sensitivity),
+                   round(float(s.brightness_threshold), 1), round(float(s.denoise_strength), 3))
+        try:
+            grid, cells = self.processor.get_exclusion()
+            exclusion = (tuple(int(v) for v in grid), tuple(sorted((int(c[0]), int(c[1])) for c in cells)))
+        except Exception:  # noqa: BLE001
+            exclusion = ()
+        return LiveSetting(project=self.configs._current_project,
+                           candidate=Candidate(self.models.current_model_name, int(s.imgsz),
+                                               tuple(shape) if shape else None),
+                           model_id=id(self.models.model), trt=trt,
+                           roi=(bool(s.roi_enabled), int(s.roi_x), int(s.roi_y), int(s.roi_w), int(s.roi_h)),
+                           # the plate the pipeline holds in memory (captured again = another scene)
+                           plate=getattr(self.processor, "plate_identity", None),
+                           plate_ok=bool(getattr(self.processor, "plate_usable", True)), frame=frame,
+                           enhance=enhance, exclusion=exclusion)
+
+    def _cb_run_settings_swipe(self):
+        """Start the swipe (worker thread; the show runs on at the live setting)."""
+        why = self.swipe.start()
+        if why:
+            self.bus.publish(api.Toast(f"Swipe: {why}", 5.0, (255, 200, 100)))
+            return
+        note = ("" if self.system_state == SystemState.RUN
+                else " - frames are kept only while YOLO runs: press RUN")
+        self.bus.publish(api.Toast("Swipe: keeping 150 frames with a dancer on the wall (about two and a half "
+                                   "minutes of dancing), then trying other settings; the show runs on" + note,
+                                   5.0, (120, 170, 220)))
+
+    def _cb_apply_settings_swipe(self):
+        """Switch to the swipe's winner through the model-switch path (as the model combo / Image Size do with
+        TensorRT): engine check, processing paused until the engine is loaded, the input it runs set by
+        ``_attach_model``.  Only once that switch has run the winner on TensorRT (``_swipe_apply_done``) is
+        the recommended confidence applied and the result marked applied; a failed load keeps the old model,
+        its input and its confidence.  Like a manual change it is not saved: the operator's Save keeps it
+        (model, yolo_imgsz, yolo_shape, confidence, the dial's seed).
+
+        STANDBY only, like the dry-run, the calibration sweep and known-N (and the remote API's HEAVY class):
+        the reload closes the camera and stops tracking and OSC for a few seconds."""
+        if self.system_state == SystemState.RUN:
+            self.bus.publish(api.Toast("Apply: stop the show first - Apply reloads the model, a few seconds "
+                                       "without tracking", 5.0, (255, 200, 100)))
+            return
+        live = self._swipe_live_setting()
+        why, winner, conf = self.swipe.applicable(live)
+        if why is None:
+            why = self.models.request_setting(winner.model, winner.imgsz, winner.shape,
+                                              on_done=self._swipe_apply_done)
+        if why:
+            self.bus.publish(api.Toast(f"Swipe Apply: {why}", 5.0, (255, 200, 100)))
+            return
+        self._swipe_pending_apply = (winner, conf, self.configs._current_project, time.monotonic(),
+                                     live.candidate if live is not None else None)
+        self.models.ui.sync_model_combo(winner.model)
+        self._sync("combo", "imgsz", str(int(winner.imgsz)))
+        say(f"[Swipe] applying {winner.label}")
+        self.bus.publish(api.SettingsSwipeProgress("applying", f"switching to {winner.label}...", 0.0))
+
+    def _swipe_apply_done(self, ok: bool) -> None:
+        """The Apply switch has run (main loop).  Applied only when the winner now runs on TensorRT."""
+        pend, self._swipe_pending_apply = self._swipe_pending_apply, None
+        if pend is None:
+            return
+        winner, conf, project, t0, prev = pend
+        live = self._swipe_live_setting()
+        trt = bool(self.models.model_manager.is_using_tensorrt())
+        runs = (ok and trt and live is not None and live.candidate == winner
+                and project == self.configs._current_project and time.monotonic() - t0 < 600.0)
+        if not runs:
+            now = live.candidate.label if live is not None else "no model"
+            rebuild = f"rebuild {winner.engine_file} (extra/build_engines) before applying it again"
+            recovered = False                       # a setting that ran before runs on TensorRT: a notice (warn)
+            if ok and not trt and prev is not None:
+                # the TensorRT engine did not load and PyTorch would run the winner far over the frame budget:
+                # back to the setting that ran, through the same switch
+                back = self.models.request_setting(prev.model, prev.imgsz, prev.shape,
+                                                   on_done=lambda ok2: self._swipe_restore_done(ok2, winner, prev))
+                text = (f"Apply of {winner.label} failed: its engine did not load on TensorRT; going back to "
+                        f"{prev.label} (a few seconds without tracking)" if back is None else
+                        f"Apply of {winner.label} failed: its engine did not load and {now} runs on PyTorch, far "
+                        f"over the frame budget - load {prev.label} by hand ({back})")
+            elif ok:
+                text = (f"Apply of {winner.label} did not complete: {now} runs - press Dismiss; run 'Try other "
+                        f"settings' again for a new verdict")
+                recovered = trt and live is not None
+            else:
+                text = (f"Apply of {winner.label} failed: its engine did not load; {now} still runs, as before - "
+                        f"press Dismiss ({rebuild})")
+                recovered = trt and live is not None
+            self.swipe.set_fault(text, recovered=recovered)
+            self.models.ui.sync_model_combo(self.models.current_model_name)
+            self._sync("combo", "imgsz", str(int(self.settings.imgsz)))
+            say(f"[Swipe] {text}")
+            self.bus.publish(api.SettingsSwipeProgress("apply_failed", f"{text}; the confidence is unchanged", 0.0))
+            return
+        if conf is not None:
+            self._swipe_set_confidence(float(conf))
+        self.swipe.mark_applied(winner)
+        say(f"[Swipe] applied {winner.label}" + (f", confidence {conf:.2f}" if conf is not None else ""))
+        self.bus.publish(api.SettingsSwipeProgress(
+            "applied", f"running {winner.label}, the swipe's pick - Save the project to keep it", 1.0))
+        self.bus.publish(api.Toast(f"Running {winner.label} (the swipe's pick) - Save the project to keep it",
+                                   6.0, (120, 220, 140)))
+
+    def _swipe_restore_done(self, ok: bool, winner, prev) -> None:
+        """The way back after an Apply that fell back to PyTorch."""
+        live = self._swipe_live_setting()
+        trt = bool(self.models.model_manager.is_using_tensorrt())
+        now = live.candidate.label if live is not None else "no model"
+        back_ok = bool(ok and trt and live is not None and live.candidate == prev)
+        if back_ok:
+            text = (f"Apply of {winner.label} failed: its engine did not load on TensorRT; {prev.label} runs again, "
+                    f"as before - press Dismiss (rebuild {winner.engine_file} (extra/build_engines) before applying "
+                    f"it again)")
+        else:
+            text = (f"Apply of {winner.label} failed and going back to {prev.label} failed too: {now} runs"
+                    f"{' on PyTorch' if not trt else ''} - reload the project")
+        self.swipe.set_fault(text, recovered=back_ok)
+        self.models.ui.sync_model_combo(self.models.current_model_name)
+        self._sync("combo", "imgsz", str(int(self.settings.imgsz)))
+        say(f"[Swipe] {text}")
+        self.bus.publish(api.SettingsSwipeProgress("apply_failed", text, 0.0))
+
+    def _cb_dismiss_swipe(self) -> None:
+        """Dismiss: the swipe's advice goes (its readiness row too), a failed Apply is acknowledged."""
+        self.swipe.dismiss()
+        self.bus.publish(api.SettingsSwipeProgress("dismissed", "dismissed", 0.0))
+
+    def _swipe_set_confidence(self, conf: float) -> None:
+        """The recommended confidence is the winner model's own calibrated seed: it becomes the Drops/Ghosts
+        dial's anchor (what Calibrate's sensitivity_conf_seed is), the dial keeps its position, and the
+        confidence and MOG2 varThreshold follow from the macro exactly as a dial move does -- at 50 the
+        confidence IS the recommended one and varThreshold its calibrated anchor.  The confidence slider
+        shows what runs (``_cb_sensitivity_change`` syncs it)."""
+        self._sensitivity_conf_seed = float(conf)
+        self._cb_sensitivity_change(self.sensitivity)
 
     # ------------------------------------------------------------------
     # Known-N auto-tune (K1) — phase ④ advanced

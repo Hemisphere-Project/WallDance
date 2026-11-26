@@ -291,6 +291,33 @@ class ApplyKnownNTune(Command):
 
 
 @dataclass(frozen=True)
+class RunSettingsSwipe(Command):
+    """P5 settings swipe: during the warmup, run the kept frames with a dancer on the wall (150, 1 s apart)
+    through the other model / input settings (worker thread; the show runs on). Reports SettingsSwipeProgress
+    then a SettingsSwipeResult; switches nothing (ApplySettingsSwipe)."""
+    pass
+
+
+@dataclass(frozen=True)
+class CancelSettingsSwipe(Command):
+    """P5: stop a running settings swipe (its result is dropped)."""
+    pass
+
+
+@dataclass(frozen=True)
+class ApplySettingsSwipe(Command):
+    """P5: switch to the last swipe's winner (model, input size, and its confidence if it gives one)
+    through the model-switch path, as a manual change; not saved (Save the project to keep it)."""
+    pass
+
+
+@dataclass(frozen=True)
+class DismissSwipeNotice(Command):
+    """P5: dismiss the swipe's advice (its readiness row goes) and acknowledge a failed Apply."""
+    pass
+
+
+@dataclass(frozen=True)
 class SetPersonHeight(Command):
     value: int
 
@@ -826,6 +853,24 @@ class CalibSweepResult(Event):
 class KnownNResult(Event):
     """Phase-④ known-N tune result: {project, baseline_score, tuned_score, delta,
     final, changed, evals} or an error."""
+    result: Dict[str, Any]
+    error: str = ""
+
+
+@dataclass(frozen=True)
+class SettingsSwipeProgress(Event):
+    """P5 swipe progress: state (idle | collecting | running | done | cancelled | dropped | error |
+    no_verdict), the plain line (« collecting 12 / 150 frames with a dancer on the wall », « trying l @ 1920 x
+    1056 (2/3) ») and 0..1."""
+    state: str
+    text: str
+    progress: float = 0.0
+
+
+@dataclass(frozen=True)
+class SettingsSwipeResult(Event):
+    """P5 swipe verdict (``SwipeOutcome.to_dict``: current, winner, switch, reason, rows best first with
+    coverage / loose boxes / ms p50 / load s, skipped candidates, timing) or an error."""
     result: Dict[str, Any]
     error: str = ""
 

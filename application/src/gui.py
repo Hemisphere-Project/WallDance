@@ -730,6 +730,19 @@ class WallDanceGUI:
         if 'on_dryrun' in self.callbacks:
             self.callbacks['on_dryrun']()
 
+    def _on_swipe(self, *args):
+        """P5: Try other settings (or Cancel while a swipe runs)."""
+        if 'on_swipe' in self.callbacks:
+            self.callbacks['on_swipe'](bool(getattr(self, "_swipe_busy", False)))
+
+    def _on_swipe_apply(self, *args):
+        if 'on_swipe_apply' in self.callbacks:
+            self.callbacks['on_swipe_apply']()
+
+    def _on_swipe_dismiss(self, *args):
+        if 'on_swipe_dismiss' in self.callbacks:
+            self.callbacks['on_swipe_dismiss']()
+
     def _on_calib_sweep(self, *args):
         if 'on_calib_sweep' in self.callbacks:
             n = dpg.get_value("calib_sweep_n") if dpg.does_item_exist("calib_sweep_n") else 1
@@ -3090,6 +3103,66 @@ class WallDanceGUI:
             line = (f"[{STATUS_WORDS.get(status, status.upper())}] {row.get('name', '')}: "
                     f"{row.get('detail', '')}")
             dpg.add_text(line, parent=container, color=color, wrap=scaled(340))
+
+    def show_swipe_progress(self, state, text, progress=0.0):
+        """P5 swipe progress line + the button's label (Cancel while it runs).  Posted from the swipe's
+        worker thread: set_value / configure_item only, like the dry-run result."""
+        busy = state in ("collecting", "running")
+        self._swipe_busy = busy
+        if dpg.does_item_exist("swipe_btn"):
+            dpg.configure_item("swipe_btn", label="Cancel swipe" if busy else "Try other settings")
+        if state != "done" and dpg.does_item_exist("swipe_apply_btn"):
+            dpg.configure_item("swipe_apply_btn", show=False)      # pressed, or a new swipe: nothing to apply
+        if dpg.does_item_exist("swipe_dismiss_btn"):                 # a failed Apply waits for its acknowledgement
+            dpg.configure_item("swipe_dismiss_btn", show=(state == "apply_failed"))
+        if dpg.does_item_exist("swipe_status_text"):
+            if busy:
+                dpg.set_value("swipe_status_text", f"{text} ({100 * float(progress):.0f} %)")
+                dpg.configure_item("swipe_status_text", color=TEXT_MUTED)
+            elif state in ("applying", "applied", "apply_failed", "dismissed"):   # Apply / Dismiss and outcome
+                dpg.set_value("swipe_status_text", "" if state == "dismissed" else text)
+                dpg.configure_item("swipe_status_text",
+                                   color={"applied": OK_GREEN, "apply_failed": ALERT_RED}.get(state, TEXT_MUTED))
+
+    def show_swipe_result(self, result, error=""):
+        """P5 swipe verdict: the reason, one line per setting (best first), what was not tried, how long it
+        took; the Apply button when another setting is worth switching to."""
+        tag = "swipe_status_text"
+        self._swipe_busy = False
+        if dpg.does_item_exist("swipe_btn"):
+            dpg.configure_item("swipe_btn", label="Try other settings")
+        for b in ("swipe_apply_btn", "swipe_dismiss_btn"):
+            if dpg.does_item_exist(b):
+                dpg.configure_item(b, show=False)
+        if not dpg.does_item_exist(tag):
+            return
+        if error:
+            dpg.set_value(tag, error)
+            dpg.configure_item(tag, color=WARN_AMBER)
+            return
+        r = result or {}
+        lines = [str(r.get("reason", ""))]
+        for row in r.get("rows", []):
+            cov, loose, ms = row.get("coverage"), row.get("loose_per_frame"), row.get("ms_p50")
+            line = f"  {row.get('label', '?')}: "
+            line += f"{100 * cov:.0f} % of the dancers" if isinstance(cov, (int, float)) else "-"
+            if isinstance(loose, (int, float)):
+                line += f", {loose:.2f} boxes on nobody/frame"
+            if isinstance(ms, (int, float)):
+                line += f", {ms:.0f} ms"
+            if not row.get("ok", True) and row.get("note"):
+                line += f" (set aside: {row['note']})"
+            lines.append(line)
+        lines += [f"  {s.get('text', '')}" for s in r.get("skipped", [])]
+        took = (r.get("timing") or {}).get("total_s")
+        if isinstance(took, (int, float)):
+            lines.append(f"{r.get('frames', '?')} frames, {took:.0f} s")
+        dpg.set_value(tag, "\n".join(lines))
+        dpg.configure_item(tag, color=WARN_AMBER if r.get("switch") else TEXT_NORMAL)
+        if r.get("switch") and r.get("winner") and dpg.does_item_exist("swipe_apply_btn"):
+            dpg.configure_item("swipe_apply_btn", label=f"Apply {r['winner']} (STANDBY)", show=True)
+            if dpg.does_item_exist("swipe_dismiss_btn"):
+                dpg.configure_item("swipe_dismiss_btn", show=True)
 
     def show_dryrun_result(self, summary, error=""):
         """Render the phase-⑤ dry-run replay summary into a single text widget.

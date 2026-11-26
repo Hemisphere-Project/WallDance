@@ -872,17 +872,48 @@ def build_phase_wall(gui: Any):
         dpg.add_separator()
         dpg.add_spacer(height=scaled(6))
         dpg.add_text("Pre-show check", color=TEXT_NORMAL)
-        check_btn = dpg.add_button(
-            label="Check readiness",
-            tag="check_readiness_btn",
-            width=scaled(160),
-            height=scaled(30),
-            callback=gui._on_check_readiness,
-        )
-        dpg.bind_item_theme(check_btn, gui._btn_standby_theme)
-        with dpg.tooltip(check_btn):
-            dpg.add_text("Camera/FPS, TensorRT, OSC, calibration age, disk, GPU temp.\n"
-                         "~0.3 s; never blocks RUN.  Also runs when you open this phase.")
+        with dpg.group(horizontal=True):
+            check_btn = dpg.add_button(
+                label="Check readiness",
+                tag="check_readiness_btn",
+                width=scaled(160),
+                height=scaled(30),
+                callback=gui._on_check_readiness,
+            )
+            dpg.bind_item_theme(check_btn, gui._btn_standby_theme)
+            with dpg.tooltip(check_btn):
+                dpg.add_text("Camera/FPS, TensorRT, OSC, calibration age, disk, GPU temp.\n"
+                             "~0.3 s; never blocks RUN.  Also runs when you open this phase.")
+            # P5 settings swipe: one button (Cancel while it runs), a progress line, Apply on a result
+            swipe_btn = dpg.add_button(
+                label="Try other settings",
+                tag="swipe_btn",
+                width=scaled(160),
+                height=scaled(30),
+                callback=gui._on_swipe,
+            )
+            dpg.bind_item_theme(swipe_btn, gui._btn_standby_theme)
+            with dpg.tooltip(swipe_btn):
+                dpg.add_text("During the warmup, in RUN, with the empty-wall snapshot ready:\n"
+                             "keeps 150 frames with a dancer on the wall, one a second (about\n"
+                             "two and a half minutes of dancing), then tries on them both models\n"
+                             "at the largest input when the dancers are small in the network\n"
+                             "(else the other model at the live input), and names the setting\n"
+                             "that covers the dancers best.  The show runs on; nothing switches\n"
+                             "until you Apply, in STANDBY.  Press again to cancel.")
+        dpg.add_text("", tag="swipe_status_text", color=TEXT_MUTED, wrap=scaled(_PHASE_WRAP))
+        with dpg.group(horizontal=True):
+            swipe_apply = dpg.add_button(label="Apply", tag="swipe_apply_btn", show=False,
+                                         width=scaled(240), height=scaled(26), callback=gui._on_swipe_apply)
+            with dpg.tooltip(swipe_apply):
+                dpg.add_text("STANDBY only: switches the model / network input to the swipe's\n"
+                             "pick -- the engine reloads, a few seconds without tracking, as\n"
+                             "when you change the model by hand.  Not saved: Save the project\n"
+                             "to keep it.")
+            swipe_dismiss = dpg.add_button(label="Dismiss", tag="swipe_dismiss_btn", show=False,
+                                           width=scaled(80), height=scaled(26), callback=gui._on_swipe_dismiss)
+            with dpg.tooltip(swipe_dismiss):
+                dpg.add_text("Drop this advice (or acknowledge a failed Apply).")
         dpg.add_spacer(height=scaled(6))
         # H3: the report's verdict above its rows (gui.show_readiness_rows): READY only when every row is OK.
         dpg.add_text("", tag="readiness_summary_text", wrap=scaled(_PHASE_WRAP), show=False)

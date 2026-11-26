@@ -65,6 +65,8 @@ SUPPORT = "support"     # S1b: the support line, gated by the project key suppor
 POLICY: Dict[str, str] = {
     # safe: observation / metadata only
     "CheckReadiness": SAFE, "SetRigSheet": SAFE, "ToggleOverlay": SAFE,
+    "CancelSettingsSwipe": SAFE,       # P5: stopping a swipe only gives the GPU back
+    "DismissSwipeNotice": SAFE,        # P5: dismisses advice / acknowledges a failed Apply, changes nothing live
     "SetPreviewScale": SAFE, "TogglePreviewCap": SAFE,
     # control: changes what the show does -- free in STANDBY, gated in RUN
     "SetState": CONTROL, "StartRecordingSlot": CONTROL, "StopRecording": CONTROL,
@@ -90,9 +92,14 @@ POLICY: Dict[str, str] = {
     "ApplyKnownNTune": CONTROL, "SaveConfig": CONTROL, "SwitchProfile": CONTROL,
     "LoadSafeDefaults": CONTROL, "SelectConfigVersion": CONTROL,
     "SetInputTransform": CONTROL,
+    # P5 settings swipe: Run goes beside the show (paced, one engine at a time) during the warmup, in RUN by
+    # design (frames are kept while YOLO runs) -- so control.  Apply is the model reload LoadModel / SetImgsz
+    # run (camera closed, no OSC for seconds): heavy, STANDBY only.
+    "RunSettingsSwipe": CONTROL,
     # heavy: STANDBY only
     "RunDryRunReplay": HEAVY, "RunCalibSweep": HEAVY, "RunKnownNTune": HEAVY,
     "RebuildTrt": HEAVY, "LoadModel": HEAVY, "SetImgsz": HEAVY, "ToggleTrt": HEAVY,
+    "ApplySettingsSwipe": HEAVY,
     "LaunchProject": HEAVY, "SelectProject": HEAVY, "LoadConfig": HEAVY,
     "ImportVideoToSlot": HEAVY,   # multi-GB disk copy / transcode
     # support (S1b): a message on the operator's screen until he acknowledges it -- any state, RUN included,
