@@ -1,8 +1,10 @@
 """The settings swipe's referee, collector and verdict (Plan Cordée P5) -- no GPU, no video."""
+from dataclasses import replace
+
 import numpy as np
 
-from core.swipe import (Candidate, FrameCollector, Observation, SwipeParams, Tally, bare_groups, decide,
-                        on_nobody, score_frame)
+from core.swipe import (Candidate, FrameCollector, FrameScore, Observation, SwipeParams, Tally, bare_groups,
+                        decide, on_nobody, score_frame)
 
 X1280 = Candidate("yolo11x-pose", 1280)
 X1920 = Candidate("yolo11x-pose", 1280, (1920, 1056))
@@ -45,28 +47,22 @@ def test_with_a_mask_a_box_is_on_nobody_only_when_no_foreground_lies_under_it():
     assert (s.boxes, s.loose) == (2, 1)
 
 
-def test_the_collector_keeps_lost_frames_spaced_and_counts_how_often_the_live_setting_loses_one():
-    p = SwipeParams(frames=3, covered_frames=2, min_gap_s=0.5)
+def test_the_collector_keeps_the_newest_frames_with_dancers_whatever_the_live_setting_did():
+    # an unbiased sample: frames are kept for having a dancer group, spaced, newest first -- lost or not
+    p = SwipeParams(frames=3, min_gap_s=0.5)
     c = FrameCollector(p)
     img = np.zeros((4, 4), np.uint8)
     lost, held = _obs((100, 100, 900)), [(80, 60, 120, 140, 0.4)]
     assert not c.offer(0.0, img, None, [])                    # no valid foreground
     assert not c.offer(0.0, img, _obs((5, 5, 20)), [])        # nobody on the wall
-    assert c.offer(0.0, img, lost, held)                      # a covered dancer
-    assert not c.offer(0.2, img, lost, held)                  # too close to the last covered frame
-    assert c.offer(0.2, img, lost, [])                        # a lost frame: spaced from the last LOST frame only
-    assert not c.offer(0.4, img, lost, [])
-    for t in (1.0, 2.0):
-        assert c.offer(t, img, lost, [])
-    assert c.ready and c.lost_frames == 3
+    assert c.offer(0.0, img, lost, held)                      # a covered dancer: kept like any other
+    assert not c.offer(0.2, img, lost, [])                    # too close to the last kept frame, whatever its kind
+    assert c.offer(1.0, img, lost, []) and c.offer(2.0, img, lost, held)
+    assert c.ready and c.lost_frames == 1 and [f.lost for f in c.frames] == [False, True, False]
     assert c.offer(4.0, img, lost, [])                        # full: the newest replaces the oldest
-    assert [f.t for f in c.frames if f.lost] == [1.0, 2.0, 4.0]
-    for t in (5.0, 6.0, 7.0):
-        assert c.offer(t, img, lost, held)                    # covered frames: the newest two are kept
-    assert [f.lost for f in c.frames] == [True, True, True, False, False]
-    assert [f.t for f in c.frames][-2:] == [6.0, 7.0]
-    # every frame with a dancer counts, kept or not: 5 lost (0.2 0.4 1 2 4), 5 covered (0 0.2 5 6 7)
-    assert c.lost_share == 0.5
+    assert [f.t for f in c.frames] == [1.0, 2.0, 4.0]
+    # every frame with a dancer counts toward the share, kept or not: lost at 0.2, 1, 4; covered at 0, 2
+    assert c.lost_share == 3 / 5
 
 
 def test_the_collector_drops_frames_older_than_max_age():
@@ -116,29 +112,37 @@ def _frames(spec):
     return out
 
 
-def test_lost_frames_are_weighed_by_how_often_they_happen():
-    # on lost frames the candidate covers what the live setting misses; on covered frames it loses a dancer
-    # the live setting holds, one frame in three
-    live = [(2, 1, 0, True)] * 30 + [(2, 2, 0, False)] * 15
-    cand = [(2, 2, 0, True)] * 30 + [(2, 1, 0, False)] * 5 + [(2, 2, 0, False)] * 10
+def test_the_share_of_lost_frames_is_reported_and_weighs_nothing():
+    # frames chosen by the live setting's failures would favour any other setting; on an unbiased sample the plain
+    # paired mean is the estimate, whatever ``lost_share`` says
+    live = [(2, 1, 0, True)] * 30 + [(2, 2, 0, False)] * 30
+    cand = [(2, 2, 0, True)] * 30 + [(2, 1, 0, False)] * 30
     T = _frames({X1280: live, L1920: cand})
-    r = decide(T, X1280, lost_share=0.6)             # the live setting often loses a dancer: worth it
-    assert r.switch and r.winner == L1920
-    r = decide(T, X1280, lost_share=0.1)             # it rarely does: the candidate would lose more than it gains
-    assert not r.switch and r.winner == X1280
-    assert decide(T, X1280).lost_share == 30 / 45    # no share given: the kept frames' own mix
+    for share in (0.1, 0.5, 0.9, None):
+        r = decide(T, X1280, lost_share=share)
+        assert not r.switch and r.lost_share == share        # 60 dancers gained, 30 lost... and 30 lost back
 
 
-def test_a_gain_inside_the_noise_is_not_a_switch():
-    # 30 frames of two dancers: the candidate covers one more on 5 frames, one fewer on 1 -- a gain of 6.7
-    # points, one standard error 4.0 points
-    live = [(2, 1, 0, True)] * 30
-    cand = [(2, 2, 0, True)] * 5 + [(2, 0, 0, True)] + [(2, 1, 0, True)] * 24
+def test_a_gain_inside_the_noise_is_not_a_switch_and_more_settings_ask_more():
+    # 60 frames of two dancers: the candidate covers one more on 9 frames, one fewer on 2 -- a gain of 5.8 points;
+    # its standard error (i.i.d. here, noise_block 1) is about 2.6 points
+    live = [(2, 1, 0, True)] * 60
+    cand = [(2, 2, 0, True)] * 9 + [(2, 0, 0, True)] * 2 + [(2, 1, 0, True)] * 49
     T = _frames({X1280: live, L1920: cand})
-    row = next(x for x in decide(T, X1280).rows if x.candidate == L1920)
-    assert abs(row.gain - 4 / 60) < 1e-9 and 0.035 < row.noise < 0.045
-    assert decide(T, X1280, SwipeParams(noise_z=1.0)).switch          # over one standard error: named
-    assert not decide(T, X1280, SwipeParams(noise_z=2.0)).switch      # under two: noise
+    p = SwipeParams(noise_block=1, cost_gain=0.0)
+    row = next(x for x in decide(T, X1280, p).rows if x.candidate == L1920)
+    assert abs(row.gain - 7 / 120) < 1e-9 and 0.02 < row.noise < 0.03
+    z = row.gain / row.noise
+    assert 1.96 < z < 2.58
+    assert decide(T, X1280, replace(p, alpha=0.05)).switch                # one alternative: z 1.64 asked
+    assert not decide(T, X1280, replace(p, alpha=0.01)).switch            # z 2.33 asked
+    # two alternatives at alpha 0.05: each must clear z 1.96 (Bonferroni)
+    T[X1920] = _frames({X1920: live})[X1920]
+    assert decide(T, X1280, replace(p, alpha=0.05)).switch
+    T3 = dict(T)
+    T3[L1760] = _frames({L1760: live})[L1760]
+    T3[Candidate("yolo11l-pose", 1280)] = _frames({X1280: live})[X1280]
+    assert not decide(T3, X1280, replace(p, alpha=0.05)).switch           # four alternatives: z 2.24
 
 
 def test_among_settings_as_good_as_each_other_the_lighter_one_is_named():
@@ -173,19 +177,22 @@ def test_the_operator_reads_plain_sentences():
                  L1760: [(2, 2, 2, True)] * 40})
     r = decide(T, X1280)
     assert r.reason.isascii() and any(row.note for row in r.rows) and all(row.note.isascii() for row in r.rows)
-    r = decide(_frames({X1280: [(2, 1, 1, True)] * 40, L1920: [(2, 2, 0, True)] * 40}), X1280)
-    assert r.reason.isascii() and "take the empty wall again" in r.reason
+    r = decide(_frames({X1280: [(2, 1, 1, True)] * 40, L1920: [(2, 2, 1, True)] * 40}), X1280)
+    assert r.reason.isascii() and "when the wall is empty" in r.reason
 
 
-def test_no_verdict_when_the_empty_wall_picture_does_not_match_the_wall():
-    # the live setting itself puts a box on nobody every other frame: a plate with dancers baked in, or another
-    # light -- the referee cannot be trusted to judge the others
+def test_the_plate_is_blamed_only_when_every_setting_puts_boxes_on_nobody():
+    # one ghost-prone live model on a good plate: the cleaner setting shows the plate is fine -- a verdict
     live = [(2, 1, 1, True)] * 20 + [(2, 1, 0, True)] * 20
     T = _frames({X1280: live, L1920: [(2, 2, 0, True)] * 40})
     r = decide(T, X1280)
-    assert r.winner is None and not r.switch and "take the empty wall again" in r.reason
-    r = decide(T, X1280, SwipeParams(referee_max_loose=1.0))
     assert r.switch and r.winner == L1920
+    # every setting puts boxes where the picture shows nobody: people baked into it, another light -- no verdict,
+    # and no order to retake it now (dancers are on the wall)
+    T = _frames({X1280: live, L1920: [(2, 2, 1, True)] * 40})
+    r = decide(T, X1280)
+    assert r.winner is None and not r.switch and "when the wall is empty" in r.reason and r.reason.isascii()
+    assert decide(T, X1280, SwipeParams(referee_max_loose=1.0)).winner is not None
 
 
 def test_a_group_no_setting_covers_is_not_counted_as_a_dancer():
@@ -203,7 +210,7 @@ def test_a_group_no_setting_covers_is_not_counted_as_a_dancer():
 
 
 def test_the_image_is_fetched_only_for_a_kept_frame():
-    p = SwipeParams(frames=2, covered_frames=0)
+    p = SwipeParams(frames=2)
     c = FrameCollector(p)
     calls = []
 
@@ -213,8 +220,8 @@ def test_the_image_is_fetched_only_for_a_kept_frame():
     lost = _obs((100, 100, 900))
     assert c.offer(0.0, grab, lost, []) and len(calls) == 1 and c.frames[0].image.shape == (4, 4)
     assert not c.offer(0.2, grab, lost, []) and len(calls) == 1          # too close: not kept, not fetched
-    assert not c.offer(1.0, grab, lost, [(80, 60, 120, 140, 0.4)])       # covered, no covered pool
-    assert len(calls) == 1
+    assert not c.offer(1.0, grab, None, []) and len(calls) == 1          # no valid foreground
+    assert c.offer(1.0, grab, lost, [(80, 60, 120, 140, 0.4)]) and len(calls) == 2
 
 
 def test_the_swipe_names_no_confidence_of_its_own():
@@ -233,3 +240,52 @@ def test_across_input_sizes_the_better_setting_wins_a_near_tie():
     assert L1280.cost < L1920.cost
     assert decide(T, X1280).winner == L1920                         # 0.6 points apart, another input: no tie
     assert decide(T, X1280, SwipeParams(tie_across_inputs=True)).winner == L1280
+
+
+def test_a_costlier_setting_must_gain_more():
+    # x @ 1920 x 1056 costs 1.24 x what x @ 1280 does per frame: its bar is 3 points + 5 x log2(1.24) = 4.5 points
+    live = [(2, 1, 0, True)] * 100
+    gain4 = [(2, 2, 0, True)] * 8 + [(2, 1, 0, True)] * 92                 # +4 points, far out of the noise
+    T = _frames({X1280: live, X1920: gain4})
+    r = decide(T, X1280, SwipeParams(noise_block=1))
+    row = next(x for x in r.rows if x.candidate == X1920)
+    assert abs(row.bar - (0.03 + 0.05 * np.log2(X1920.cost / X1280.cost))) < 1e-9 and not r.switch
+    T = _frames({X1280: live, L1920: gain4})                                # cheaper than the live one: 3 points
+    assert decide(T, X1280, SwipeParams(noise_block=1)).winner == L1920
+    # measured times, when the tallies carry them, replace the model's cost
+    t_live, t_x = Tally(), Tally()
+    for (g, c, lo, lost), (g2, c2, lo2, lost2) in zip(live, gain4):
+        t_live.add(FrameScore(g, c, c + lo, lo), ms=40.0, lost=lost)
+        t_x.add(FrameScore(g2, c2, c2 + lo2, lo2), ms=20.0, lost=lost2)
+    assert decide({X1280: t_live, X1920: t_x}, X1280, SwipeParams(noise_block=1)).winner == X1920
+
+
+def test_once_a_setting_is_proven_better_the_best_is_named():
+    # the same model at another size errs like the live one: a smaller, sure gain (z 3.9); the other model gains
+    # more but errs on its own frames (z 2.5, under the 2.58 two alternatives ask) -- once the first is proven,
+    # the better one is named
+    live = [(2, 1, 0, True)] * 60
+    near = [(2, 2, 0, True)] * 12 + [(2, 1, 0, True)] * 48
+    far = [(2, 2, 0, True)] * 24 + [(2, 0, 0, True)] * 10 + [(2, 1, 0, True)] * 26
+    T = _frames({X1280: live, X1920: near, L1920: far})
+    p = SwipeParams(noise_block=1, cost_gain=0.0, alpha=0.01)
+    r = decide(T, X1280, p)
+    rows = {x.candidate: x for x in r.rows}
+    assert rows[X1920].gain / rows[X1920].noise > 2.58 > rows[L1920].gain / rows[L1920].noise
+    assert r.switch and r.winner == L1920
+    # nothing proven: keep, even if a point estimate is high
+    T = _frames({X1280: live, L1920: far})
+    assert not decide(T, X1280, replace(p, alpha=0.001)).switch
+
+
+def test_a_box_holding_a_share_of_a_merged_group_covers_it():
+    # two dancers in contact make one group whose centre lies between them; a box on either covers it
+    p = SwipeParams()
+    m = np.zeros((250, 250), np.uint8)
+    m[25:50, 20:30] = 1                                     # dancer A at x 80-120
+    m[25:50, 40:50] = 1                                     # dancer B at x 160-200; the group's centre ~ x 140
+    obs = Observation(groups=[(140.0, 150.0, 2 * 16 * 250.0)], mask=m, x0=0.0, y0=0.0, ds=4,
+                      group_boxes=[(80.0, 100.0, 200.0, 200.0)])
+    on_a = (80, 100, 120, 200, 0.6)
+    assert score_frame(obs, [on_a], p).covered == 1
+    assert score_frame(obs, [on_a], replace(p, cover_share=0.0)).covered == 0   # the centre test alone
