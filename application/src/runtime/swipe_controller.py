@@ -43,8 +43,8 @@ from core.swipe_runner import (SWIPE_MODELS, CandidateRunner, ExclusionCells, Sw
 
 IDLE, COLLECTING, RUNNING, DONE, CANCELLED, DROPPED, ERROR, NO_VERDICT = (
     "idle", "collecting", "running", "done", "cancelled", "dropped", "error", "no_verdict")
-# A verdict stands on at least this share of SwipeParams.frames, for every setting: the gate holds at 150 frames,
-# its two safety clauses still at 120, and at 90 a worse setting is named on mur2 8 (core/REPORT_FIX, 26/11).
+# A verdict stands on at least this share of SwipeParams.frames, for every setting: the gate holds at 150 frames;
+# at 60 a worse setting is named on mur2 8 (0.05-0.4 % of swipes); 120 is the floor, with a margin.
 MIN_SHARE = 0.8
 _MINUTES = {1.0: "a minute", 1.5: "a minute and a half", 2.0: "two minutes", 2.5: "two and a half minutes",
             3.0: "three minutes", 3.5: "three and a half minutes", 4.0: "four minutes"}
@@ -169,7 +169,8 @@ class SwipeController:
         from core.config import SWIPE_RUN_MAX_S, SWIPE_VERDICT_MAX_AGE_S
         self.run_max_s = float(SWIPE_RUN_MAX_S if run_max_s is None else run_max_s)
         self.verdict_max_age_s = float(SWIPE_VERDICT_MAX_AGE_S if verdict_max_age_s is None else verdict_max_age_s)
-        self.fault: Optional[str] = None        # a failed Apply: the readiness row's one ``fail``
+        self.fault: Optional[str] = None        # a failed Apply: the readiness row's one ``fail`` ...
+        self.fault_recovered = False            # ... ``warn`` instead once the previous setting runs again
         self.dismissed = False                  # the operator dismissed the verdict's advice
         self.poll_s = float(poll_s)
         self.engine_exists = engine_exists
@@ -225,7 +226,7 @@ class SwipeController:
                 return why
             self._cancel.clear()
             self.outcome, self.outcome_live, self.applied = None, live, None
-            self.fault, self.dismissed = None, False
+            self.fault, self.dismissed, self.fault_recovered = None, False, False
             self.state, self.text, self.progress = COLLECTING, "collecting frames", 0.0
             self._thread = threading.Thread(target=self._work, args=(live,), name="SettingsSwipe",
                                             daemon=True)
@@ -389,11 +390,12 @@ class SwipeController:
 
     def readiness(self, *, plate_ready: bool, live_now: Optional[LiveSetting]):
         """The swipe's readiness row, or None: the swipe is advice, not a readiness condition.  A ``warn`` row
-        only while a swipe the operator ran recommends a switch (worded for STANDBY), a ``fail`` row only for a
-        failed Apply; no row otherwise (no swipe yet, collecting, no verdict, stale, too old, « keep », no
-        plate) -- the swipe's own line beside its button says those."""
+        only while a swipe the operator ran recommends a switch (worded for STANDBY); for a failed Apply a
+        ``fail`` row while nothing sure runs and a ``warn`` one once the previous setting runs again; no row
+        otherwise (no swipe yet, collecting, no verdict, stale, too old, « keep », no plate) -- the swipe's own
+        line beside its button says those."""
         from core.ops_monitor import check_swipe
-        return check_swipe(fault=self.fault,
+        return check_swipe(fault=self.fault, fault_recovered=self.fault_recovered,
                            result=self.outcome.result if self._advice_live(live_now) else None)
 
     def applicable(self, live_now: Optional[LiveSetting]) -> Tuple[Optional[str], Optional[Candidate],
@@ -421,14 +423,17 @@ class SwipeController:
     def dismiss(self) -> None:
         """The operator's Dismiss: the advice goes, a failed Apply is acknowledged."""
         self.dismissed = True
-        self.fault = None
+        self.fault, self.fault_recovered = None, False
 
-    def set_fault(self, text: Optional[str]) -> None:
+    def set_fault(self, text: Optional[str], recovered: bool = False) -> None:
+        """A failed Apply.  ``recovered``: a setting that ran before runs again on TensorRT (the row is a notice
+        to acknowledge, ``warn``); else nothing sure runs yet (``fail``)."""
         self.fault = text
+        self.fault_recovered = bool(recovered) and bool(text)
 
     def mark_applied(self, winner: Candidate) -> None:
         self.applied = winner
-        self.fault = None
+        self.fault, self.fault_recovered = None, False
 
     def status_dict(self) -> Dict[str, Any]:
         res = self.outcome.result if self.outcome is not None else None

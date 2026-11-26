@@ -130,9 +130,10 @@ def test_the_tap_keeps_a_copy_of_a_lost_frame_and_its_live_boxes():
     assert "swipe_tap" in t
     frames, lost, prog, ready = proc.swipe_snapshot()
     assert lost == 1 and len(frames) == 1 and frames[0].lost
-    assert frames[0].image is not frame and np.array_equal(frames[0].image, frame)
-    frame[:] = 0                                                    # the camera reuses its buffer
-    assert frames[0].image[0, 0, 0] == 7
+    # a gray 3-channel frame is kept as its one channel (a copy: the camera reuses its buffer)
+    assert frames[0].image.shape == (40, 30) and np.array_equal(frames[0].image, frame[..., 0])
+    frame[:] = 0
+    assert frames[0].image[0, 0] == 7
 
 
 def test_the_tap_keeps_one_channel_of_a_mono_ids_frame():
@@ -182,6 +183,7 @@ def test_a_refused_frame_is_never_copied():
             return kept
     proc._swipe_collector = Spy(SwipeParams(frames=3))
     frame = np.zeros((40, 30, 3), np.uint8).view(_CountingFrame)
+    frame[..., 2] = 7                                              # a colour frame: kept as it is (a copy)
     _CountingFrame.copies = 0
     for i in range(3):                                             # fills the pool: 3 copies
         clock["t"] = float(i)
@@ -193,6 +195,108 @@ def test_a_refused_frame_is_never_copied():
     kept = sum(k for _f, k in offers)
     assert len(offers) == 43 and all(is_fn for is_fn, _k in offers)
     assert _CountingFrame.copies == kept and kept < 10            # 40 offers at 20 fps: a handful kept
+
+
+def test_a_plate_taken_again_starts_the_pool_over():
+    """J1 (review of 0e7fbe5): a plate taken again lands in the same plates/latest.npz (and Calibrate holds it in
+    memory until Save): the pool keys on the plate in memory, so frames refereed against the old plate go."""
+    from core.foreground import CleanPlate
+    proc, clock = _proc()
+    proc.settings.fg_plate_path = "/x/plates/latest.npz"
+    plate = lambda v: CleanPlate.from_frames([np.full((64, 64), v, np.uint8)] * 2)   # noqa: E731
+    proc.set_clean_plate(plate(10))
+    frame = np.dstack([np.full((40, 30), 9, np.uint8)] * 3)
+    for i in range(5):
+        clock["t"] = 1.1 * i
+        _tap(proc, frame, _fg((15, 20, 900)))
+    assert len(proc.swipe_snapshot()[0]) == 5
+    proc.set_clean_plate(plate(200))                               # the empty wall taken again, same path
+    assert proc.swipe_snapshot()[0] == []                          # not this plate's frames
+    clock["t"] = 10.0
+    _tap(proc, frame, _fg((15, 20, 900)))
+    frames = proc.swipe_snapshot()[0]
+    assert len(frames) == 1 and frames[0].t == 10.0
+
+
+def test_a_gray_three_channel_frame_is_kept_as_one_channel_checked_only_when_kept(monkeypatch):
+    """A take of the IDS camera played in the app: R == G == B exactly -- the pool keeps one channel (a third of
+    the RAM); a frame whose channels differ stays as it is; the check runs only on a frame the collector keeps."""
+    import core.pipeline as pl
+    from core.pipeline import one_channel_if_gray
+    from core.swipe import FrameCollector
+    proc, clock = _proc()
+    proc._swipe_collector = FrameCollector(SwipeParams(frames=3))
+    checks = []
+    monkeypatch.setattr(pl, "one_channel_if_gray", lambda f: checks.append(1) or one_channel_if_gray(f))
+    gray = np.dstack([np.arange(40 * 30, dtype=np.uint8).reshape(40, 30)] * 3)
+    colour = gray.copy()
+    colour[5, 7, 2] += 1                                           # one value off: a colour frame
+    for i, frame in enumerate((gray, colour)):
+        clock["t"] = 10.0 * i
+        _tap(proc, frame, _fg((15, 20, 900)))
+        for k in range(5):                                         # refused: within min_gap_s of the kept one
+            clock["t"] = 10.0 * i + 0.05 * (k + 1)
+            _tap(proc, frame, _fg((15, 20, 900)))
+    kept = [f.image for f in proc.swipe_snapshot()[0]]
+    assert len(checks) == 2 and len(kept) == 2
+    assert kept[0].shape == (40, 30) and np.array_equal(kept[0], gray[..., 0])
+    assert kept[1].shape == (40, 30, 3) and np.array_equal(kept[1], colour)
+
+
+def test_the_one_channel_copy_gives_the_same_network_input_boxes_and_scores(monkeypatch):
+    """From the one-channel copy the runner's network input is the 3-channel frame's bit for bit -- enhancement
+    off, full or lite, both inputs -- and so the boxes and the referee's scores.  (The 3-channel frame's input is
+    the live playback path's: P5's runner tests.)"""
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("kornia")
+    import core.gpu_pipeline as gp
+    from core.pipeline import one_channel_if_gray
+    from core.swipe_runner import CandidateRunner, boxes_from_results
+    monkeypatch.setattr(gp, "DEVICE", torch.device("cpu"))
+    rng = np.random.default_rng(7)
+    img = rng.integers(25, 70, (1824, 1260)).astype(np.uint8)
+    img[600:900, 400:520] = 255
+    bgr = np.dstack([img] * 3)
+    kept = one_channel_if_gray(bgr)
+    assert kept.ndim == 2
+    x, y, w, h = FACADE_ROI
+    obs = Observation(groups=[(460.0, 750.0, 36000.0)])
+    for enh in ({"enhance_enabled": False}, {"enhance_enabled": True, "enhance_force": True},
+                {"enhance_enabled": True, "enhance_lite": True, "enhance_force": True}):
+        inp = SwipeInput(roi_enabled=True, roi_x=x, roi_y=y, roi_w=w, roi_h=h, clahe_clip=2.5, gamma=1.2,
+                         half=False, **enh)
+        model = _BrightBoxModel()
+        runner = CandidateRunner(inp, device="cpu", loader=lambda p: model)
+        for cand in (X1280, L1920):
+            t3, lb3, roi3 = runner.prepare(bgr, cand)
+            t1, lb1, roi1 = runner.prepare(kept, cand)
+            assert torch.equal(t3, t1) and lb3 == lb1 and roi3 == roi1
+            b3 = boxes_from_results(model(t3), lb3, *roi3)
+            b1 = boxes_from_results(model(t1), lb1, *roi1)
+            assert b1 == b3 and b1
+            assert score_frame(obs, b1, SwipeParams()) == score_frame(obs, b3, SwipeParams())
+
+
+@pytest.mark.parametrize("enh", [{"enhance_enabled": False},
+                                 {"enhance_enabled": True, "enhance_force": True},
+                                 {"enhance_enabled": True, "enhance_lite": True, "enhance_force": True},
+                                 {"enhance_enabled": True, "enhance_lite": True, "brightness_threshold": 200.0}])
+def test_the_network_input_is_contiguous(enh, monkeypatch):
+    """26/11: the lite enhancement of a 3-channel frame left the tensor strided, and a TensorRT engine without a
+    CUDA graph reads its raw pointer -- no box at all.  ``prepare`` hands a contiguous tensor, whatever the
+    enhancement (off, full, lite, the lite blend of a dark frame), from a 3-channel or a mono frame."""
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("kornia")
+    import core.gpu_pipeline as gp
+    from core.swipe_runner import CandidateRunner
+    monkeypatch.setattr(gp, "DEVICE", torch.device("cpu"))
+    x, y, w, h = FACADE_ROI
+    inp = SwipeInput(roi_enabled=True, roi_x=x, roi_y=y, roi_w=w, roi_h=h, clahe_clip=2.5, gamma=1.2,
+                     half=False, **enh)
+    runner = CandidateRunner(inp, device="cpu", loader=lambda p: None)
+    for frame in (_facade_frame(), _facade_frame(mono=True)):
+        for cand in (X1280, L1920):
+            assert runner.prepare(frame, cand)[0].is_contiguous()
 
 
 def test_a_mono_frame_is_extracted_only_when_kept(monkeypatch):
@@ -688,7 +792,7 @@ def test_the_controller_collects_runs_and_reports_a_switch():
     assert err == "" and res["switch"] and res["winner"].startswith("l @")
     row = c.readiness(plate_ready=True, live_now=live["v"])
     assert row.status == "warn" and "covers 100 % of the dancers, x @ 1280 0 %" in row.detail
-    assert row.detail.endswith("- in STANDBY: Try other settings, then Apply")
+    assert row.detail.endswith("- in STANDBY press 'Apply l @ 1920 x 1056 (STANDBY)', under Try other settings")
     why, winner, conf = c.applicable(live["v"])
     assert why is None and winner.model == "yolo11l-pose"
     assert conf == getattr(c.outcome.result, "recommended_conf", None)
@@ -918,12 +1022,16 @@ def test_readiness_row_only_for_advice_or_a_fault():
     switch = _result(X1280, 0.51, L1920, 0.91)
     r = check_swipe(result=switch)
     assert r.status == "warn"
-    assert r.detail == ("l @ 1920 x 1056 covers 91 % of the dancers, x @ 1280 51 % - in STANDBY: "
-                        "Try other settings, then Apply")
-    r = check_swipe(fault="Apply of l @ 1920 x 1056 failed: its engine did not load; x @ 1280 runs again - "
-                          "rebuild yolo11l-pose_1920x1056.engine (extra/build_engines) before trying it again",
-                    result=switch)
+    # J2 (review of 0e7fbe5): the row names the Apply button by its label; « Try other settings » would start a
+    # new swipe and drop the advice
+    assert r.detail == ("l @ 1920 x 1056 covers 91 % of the dancers, x @ 1280 51 % - in STANDBY press "
+                        "'Apply l @ 1920 x 1056 (STANDBY)', under Try other settings")
+    r = check_swipe(fault="Apply of l @ 1920 x 1056 failed: its engine did not load on TensorRT; x @ 1280 runs "
+                          "again, as before - press Dismiss (rebuild yolo11l-pose_1920x1056.engine "
+                          "(extra/build_engines) before applying it again)", result=switch)
     assert r.status == "fail" and "x @ 1280 runs again" in r.detail and r.detail.isascii()
+    # ... a notice (warn), not a show that is not ready, once the caller says the previous setting runs again
+    assert check_swipe(fault=r.detail, fault_recovered=True, result=switch).status == "warn"
 
 
 def test_the_advice_goes_when_applied_dismissed_stale_or_too_old():
@@ -1115,7 +1223,13 @@ def test_a_failed_load_is_a_fault_with_what_runs_and_what_to_do():
     last = [e for e in calls if isinstance(e, api.SettingsSwipeProgress)][-1]
     assert last.state == "apply_failed" and "confidence is unchanged" in last.text
     row = c.readiness(plate_ready=True, live_now=live["v"])
-    assert row.status == "fail" and "x @ 1280 still runs" in row.detail and "rebuild" in row.detail
+    # the old setting never stopped: a notice to acknowledge (warn), readiness stays READY
+    assert row.status == "warn" and row.detail == (
+        "Apply of l @ 1920 x 1056 failed: its engine did not load; x @ 1280 still runs, as before - press Dismiss "
+        "(rebuild yolo11l-pose_1920x1056.engine (extra/build_engines) before applying it again)")
+    fake._cb_dismiss_swipe = lambda: appmod.WallDanceApp._cb_dismiss_swipe(fake)
+    fake._cb_dismiss_swipe()
+    assert c.readiness(plate_ready=True, live_now=live["v"]) is None       # Dismiss clears it
 
 
 def test_a_pytorch_fallback_goes_back_to_the_previous_setting():
@@ -1127,13 +1241,28 @@ def test_a_pytorch_fallback_goes_back_to_the_previous_setting():
     live["v"] = _live(cand=winner, model_id=3)                     # the winner, on PyTorch
     pending["done"](True)
     assert ("switch", "yolo11x-pose", 1280, None) in calls          # back to x @ 1280, queued
-    assert c.readiness(plate_ready=True, live_now=live["v"]).detail.startswith(
-        f"Apply of {winner.label} failed: its engine did not load; going back to x @ 1280")
+    back = c.readiness(plate_ready=True, live_now=live["v"])
+    assert back.status == "fail" and back.detail == (               # nothing sure runs yet: a fault
+        f"Apply of {winner.label} failed: its engine did not load on TensorRT; going back to x @ 1280 (a few "
+        f"seconds without tracking)")
     fake.models.model_manager.is_using_tensorrt = lambda: True
     live["v"] = _live(model_id=4)                                  # x @ 1280 runs again
     pending["done"](True)
     row = c.readiness(plate_ready=True, live_now=live["v"])
-    assert row.status == "fail" and "x @ 1280 runs again" in row.detail and winner.engine_file in row.detail
+    # M1 (review of 0e7fbe5): after a rollback that worked, the row says what is true and what to press, and it
+    # is a notice (warn): the show is ready again
+    assert row.status == "warn" and row.detail == (
+        f"Apply of {winner.label} failed: its engine did not load on TensorRT; x @ 1280 runs again, as before - "
+        f"press Dismiss (rebuild {winner.engine_file} (extra/build_engines) before applying it again)")
+
+
+def test_a_good_apply_clears_a_failed_one():
+    """The fault row of a failed Apply goes on Dismiss (above) or with the next Apply that works."""
+    appmod, c, live, calls, pending, fake = _apply_fixture(trt=True)
+    pending["done"](False)
+    assert c.readiness(plate_ready=True, live_now=live["v"]).status == "warn"
+    c.mark_applied(c.outcome.result.winner)                        # what _swipe_apply_done does on success
+    assert c.readiness(plate_ready=True, live_now=live["v"]) is None
 
 
 def test_apply_is_refused_during_a_show():

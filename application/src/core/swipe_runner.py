@@ -458,17 +458,22 @@ class CandidateRunner:
 
     # -- one frame ---------------------------------------------------------------------------------------
     def _upload(self, image: np.ndarray):
-        """BGR uint8 (H, W, 3) or a mono (H, W) frame -> (1, 3, H, W) float RGB [0, 1] on the device, as
-        ``GpuPipeline._upload_to_gpu`` (a mono frame is the IDS frame's one channel: R == G == B)."""
+        """BGR uint8 (H, W, 3) or a mono (H, W) frame -> (1, 3, H, W) float RGB [0, 1] on the device, contiguous,
+        as ``GpuPipeline._upload_to_gpu`` (a mono frame is the IDS frame's one channel, or a take's gray frame
+        kept as one: R == G == B).  Both layouts are the same contiguous tensor, so a gray frame gives the same
+        network input bit for bit kept with one channel or three -- the lite enhancement's arithmetic depends on
+        the layout (2.98e-08 apart on 0.0003 % of the values from a strided upload, 26/11)."""
         torch = self._torch
         t = torch.from_numpy(np.ascontiguousarray(image)).to(self.device)
         if t.dim() == 2:
             return t.float().mul_(1.0 / 255.0).unsqueeze(0).unsqueeze(0).expand(1, 3, -1, -1).contiguous()
-        return t.permute(2, 0, 1).unsqueeze(0).float().mul_(1.0 / 255.0).flip(1)
+        return t.permute(2, 0, 1).unsqueeze(0).float().mul_(1.0 / 255.0).flip(1).contiguous()
 
     def prepare(self, image: np.ndarray, cand: Candidate):
         """(network tensor, letterbox info, (roi_x, roi_y)) for one kept frame at ``cand``'s input: the live
-        path's ROI crop, enhancement and letterbox."""
+        path's ROI crop, enhancement and letterbox.  The tensor is contiguous: the lite enhancement of a 3-channel
+        frame left it strided (26/11), and a TensorRT engine without a CUDA graph (every swipe engine, every
+        engine on ultralytics 8.4.63) reads its raw data pointer."""
         from core.gpu_pipeline import GpuFrame
         h, w = image.shape[:2]
         pipe = self.pipe
@@ -479,7 +484,7 @@ class CandidateRunner:
         frame = pipe._crop_to_roi(frame, roi)
         enhanced, _ = pipe._enhancer.enhance(frame, pipe.settings)
         tensor, lb = pipe._prepare_yolo_input(enhanced, int(cand.imgsz), cand.shape)
-        return tensor, lb, (int(roi["x"]), int(roi["y"]))
+        return tensor.contiguous(), lb, (int(roi["x"]), int(roi["y"]))      # (a no-op when it already is)
 
     # -- one candidate -----------------------------------------------------------------------------------
     def run(self, images: Sequence[np.ndarray], cand: Candidate, engine_path: str, *,

@@ -337,6 +337,18 @@ class _LetterboxMotionProxy:
         )
 
 
+def one_channel_if_gray(frame: np.ndarray) -> np.ndarray:
+    """A copy of a 3-channel frame to keep -- its one channel when the three are identical (a take of the IDS camera
+    played in the app decodes to R == G == B exactly: a third of the RAM, a full swipe pool 1.0 GB -> 0.35 GB), else
+    the frame as it is.  The candidate runner's mono upload gives the same network input bit for bit
+    (``CandidateRunner._upload``).  Checked on the frame itself, only when the collector keeps it (one a second):
+    ~2.4 ms on a 1824 x 1260 frame, the kept copy included."""
+    g = cv2.extractChannel(frame, 0)
+    if cv2.norm(frame, cv2.merge((g, g, g)), cv2.NORM_INF) == 0:
+        return g
+    return frame.copy()
+
+
 @dataclass
 class _TrackerSpace:
     """How the tracker's coordinate space relates to the motion model's
@@ -899,10 +911,13 @@ class FrameProcessor:
             self._swipe_last_t = None
 
     def _swipe_setting_key(self) -> tuple:
+        """What the kept frames depend on; another value starts the pool over.  The plate is the one in memory
+        (``plate_identity``: the object and its ``created`` stamp), not its file -- a plate taken again lands in
+        the same plates/latest.npz, and Calibrate holds it in memory until Save."""
         s = self.settings
         return (id(self.model), int(s.imgsz), tuple(s.yolo_shape) if s.yolo_shape else None,
                 (bool(s.roi_enabled), int(s.roi_x), int(s.roi_y), int(s.roi_w), int(s.roi_h)),
-                str(s.fg_plate_path or ""), self._plate_invalid)
+                self.plate_identity, self._plate_invalid)
 
     def _swipe_tap(self, raw_frame, fg_before, mono_raw: bool, timing: Dict[str, float]) -> None:
         """Offer this frame to the swipe's collector: its foreground, the live boxes, and the raw frame as a
@@ -915,7 +930,7 @@ class FrameProcessor:
         try:
             col = self.swipe_collector
             key = self._swipe_setting_key()
-            if key != self._swipe_key:                # another model / input / ROI / plate: start over
+            if key != self._swipe_key:                # another model / input / ROI / plate in memory: over
                 with self._swipe_lock:
                     col.reset()
                     self._swipe_key = key
@@ -943,6 +958,8 @@ class FrameProcessor:
             if mono_raw and raw_frame.ndim == 3:
                 # the IDS frame is mono expanded to BGR (R == G == B): one channel says it all, a third of the RAM
                 image = lambda: cv2.extractChannel(raw_frame, 0)       # noqa: E731
+            elif raw_frame.ndim == 3 and raw_frame.shape[2] == 3:
+                image = lambda: one_channel_if_gray(raw_frame)        # noqa: E731 - a take of the IDS camera
             else:
                 image = raw_frame.copy
             with self._swipe_lock:

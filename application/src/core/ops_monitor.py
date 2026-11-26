@@ -322,23 +322,31 @@ def check_dancer_size(*, measured: Optional[Tuple[float, int, float]], lb_scale:
                        + "; ".join(tips))
 
 
-def check_swipe(*, fault: Optional[str] = None, result=None) -> Optional[CheckResult]:
+def check_swipe(*, fault: Optional[str] = None, result=None,
+                fault_recovered: bool = False) -> Optional[CheckResult]:
     """P5 (Plan Cordee): the settings swipe's readiness row -- or None, its usual answer.  The swipe is advice,
     not a readiness condition: no row when there is nothing to say (no swipe yet, collecting, no verdict, a
     stale or too old verdict, « keep », no plate; the swipe's own line beside its button says those), so READY
     is reachable without a swipe and never claims one ran.
 
-    * ``fault``: a failed Apply (the model fell back to PyTorch or did not load) -- ``fail``, with what runs
-      now and the one thing to do;
+    * ``fault``: a failed Apply (the model fell back to PyTorch or did not load), with what runs now and the
+      one thing to do -- ``fail`` while nothing sure runs, ``warn`` (``fault_recovered``) once a setting that
+      ran before runs again on TensorRT: a notice to acknowledge, not a show that is not ready;
     * ``result``: a verdict from a swipe the operator ran that still recommends a switch (the caller passes it
       only then: not applied, dismissed, stale or too old) -- ``warn``, worded for STANDBY: Apply reloads the
-      model (a few seconds without tracking), so nothing here says to press it during a show."""
+      model (a few seconds without tracking), so nothing here says to press it during a show; it names the Apply
+      button by its label (pressing « Try other settings » again would start a new swipe and drop the advice)."""
     name = "swipe"
     if fault:
-        return CheckResult(name, "fail", str(fault))
+        # a failed Apply whose previous setting runs again on TensorRT is a notice to acknowledge, not a show that
+        # is not ready: ``warn``; ``fail`` while nothing sure runs (the way back in progress or failed, PyTorch)
+        return CheckResult(name, "warn" if fault_recovered else "fail", str(fault))
     if result is not None and getattr(result, "winner", None) is not None and getattr(result, "switch", False):
         reason = str(getattr(result, "reason", "") or "")
-        return CheckResult(name, "warn", f"{reason} - in STANDBY: Try other settings, then Apply")
+        win = getattr(getattr(result, "winner", None), "label", "")
+        # the Apply button's label as the GUI shows it; « Try other settings » would start a NEW swipe
+        return CheckResult(name, "warn", f"{reason} - in STANDBY press 'Apply {win} (STANDBY)', under Try other "
+                                         f"settings")
     return None
 
 

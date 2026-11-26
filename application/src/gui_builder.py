@@ -838,11 +838,11 @@ def build_phase_wall(gui: Any):
             with dpg.tooltip(swipe_btn):
                 dpg.add_text("During the warmup, in RUN, with the empty-wall snapshot ready:\n"
                              "keeps 150 frames with a dancer on the wall, one a second (about\n"
-                             "two and a half minutes of dancing), tries the other model -- at the\n"
-                             "largest input when the dancers are small in the network -- on those\n"
-                             "frames, and names the setting that covers the dancers best.  The show\n"
-                             "runs on; nothing switches until you Apply, in STANDBY.  Press again\n"
-                             "to cancel.")
+                             "two and a half minutes of dancing), then tries on them both models\n"
+                             "at the largest input when the dancers are small in the network\n"
+                             "(else the other model at the live input), and names the setting\n"
+                             "that covers the dancers best.  The show runs on; nothing switches\n"
+                             "until you Apply, in STANDBY.  Press again to cancel.")
         dpg.add_text("", tag="swipe_status_text", color=TEXT_MUTED, wrap=scaled(_PHASE_WRAP))
         with dpg.group(horizontal=True):
             swipe_apply = dpg.add_button(label="Apply", tag="swipe_apply_btn", show=False,

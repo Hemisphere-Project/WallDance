@@ -357,8 +357,9 @@ PLATE_CAPTURE_FRAMES = 40               # 2 s at 20 fps
 # pipeline keeps the frames a swipe runs on -- the newest frames with a dancer on the wall, whatever the live
 # setting did on them, one per SwipeParams.min_gap_s at most (SwipeParams.frames = 150, 1 s apart: two and a half
 # minutes of dancing fill the pool; the tap copies a frame only when it keeps it: ~2.3 MB for a mono IDS frame,
-# ~360 MB for a full pool) -- so a swipe asked for during the warmup starts from frames already there.  Project
-# key swipe_collect; False = no tap, no frames kept.
+# ~350 MB for a full pool -- a take played in the app too: its gray 3-channel frames are kept as one channel; a
+# colour source, ~1 GB) -- so a swipe asked for during the warmup starts from frames already there.  Project key
+# swipe_collect; False = no tap, no frames kept.
 SWIPE_COLLECT = True
 # The swipe's candidate inferences run beside the live loop: back to back they doubled the live inference on the
 # show laptop (15 -> 38 ms p50, 26/11), so each starts right after a live network pass and at least this long

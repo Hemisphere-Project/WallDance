@@ -2678,7 +2678,7 @@ class WallDanceApp:
         note = ("" if self.system_state == SystemState.RUN
                 else " - frames are kept only while YOLO runs: press RUN")
         self.bus.publish(api.Toast("Swipe: keeping 150 frames with a dancer on the wall (about two and a half "
-                                   "minutes of dancing), then trying the other settings; the show runs on" + note,
+                                   "minutes of dancing), then trying other settings; the show runs on" + note,
                                    5.0, (120, 170, 220)))
 
     def _cb_apply_settings_swipe(self):
@@ -2722,21 +2722,26 @@ class WallDanceApp:
                 and project == self.configs._current_project and time.monotonic() - t0 < 600.0)
         if not runs:
             now = live.candidate.label if live is not None else "no model"
-            rebuild = f"rebuild {winner.engine_file} (extra/build_engines) before trying it again"
+            rebuild = f"rebuild {winner.engine_file} (extra/build_engines) before applying it again"
+            recovered = False                       # a setting that ran before runs on TensorRT: a notice (warn)
             if ok and not trt and prev is not None:
                 # the TensorRT engine did not load and PyTorch would run the winner far over the frame budget:
                 # back to the setting that ran, through the same switch
                 back = self.models.request_setting(prev.model, prev.imgsz, prev.shape,
                                                    on_done=lambda ok2: self._swipe_restore_done(ok2, winner, prev))
-                text = (f"Apply of {winner.label} failed: its engine did not load; going back to {prev.label} - "
-                        f"{rebuild}" if back is None else
+                text = (f"Apply of {winner.label} failed: its engine did not load on TensorRT; going back to "
+                        f"{prev.label} (a few seconds without tracking)" if back is None else
                         f"Apply of {winner.label} failed: its engine did not load and {now} runs on PyTorch, far "
                         f"over the frame budget - load {prev.label} by hand ({back})")
             elif ok:
-                text = f"Apply of {winner.label} did not complete: {now} runs - run 'Try other settings' again"
+                text = (f"Apply of {winner.label} did not complete: {now} runs - press Dismiss; run 'Try other "
+                        f"settings' again for a new verdict")
+                recovered = trt and live is not None
             else:
-                text = f"Apply of {winner.label} failed: the model did not load, {now} still runs - {rebuild}"
-            self.swipe.set_fault(text)
+                text = (f"Apply of {winner.label} failed: its engine did not load; {now} still runs, as before - "
+                        f"press Dismiss ({rebuild})")
+                recovered = trt and live is not None
+            self.swipe.set_fault(text, recovered=recovered)
             self.models.ui.sync_model_combo(self.models.current_model_name)
             self._sync("combo", "imgsz", str(int(self.settings.imgsz)))
             say(f"[Swipe] {text}")
@@ -2756,13 +2761,15 @@ class WallDanceApp:
         live = self._swipe_live_setting()
         trt = bool(self.models.model_manager.is_using_tensorrt())
         now = live.candidate.label if live is not None else "no model"
-        if ok and trt and live is not None and live.candidate == prev:
-            text = (f"Apply of {winner.label} failed: its engine did not load; {prev.label} runs again - rebuild "
-                    f"{winner.engine_file} (extra/build_engines) before trying it again")
+        back_ok = bool(ok and trt and live is not None and live.candidate == prev)
+        if back_ok:
+            text = (f"Apply of {winner.label} failed: its engine did not load on TensorRT; {prev.label} runs again, "
+                    f"as before - press Dismiss (rebuild {winner.engine_file} (extra/build_engines) before applying "
+                    f"it again)")
         else:
             text = (f"Apply of {winner.label} failed and going back to {prev.label} failed too: {now} runs"
                     f"{' on PyTorch' if not trt else ''} - reload the project")
-        self.swipe.set_fault(text)
+        self.swipe.set_fault(text, recovered=back_ok)
         self.models.ui.sync_model_combo(self.models.current_model_name)
         self._sync("combo", "imgsz", str(int(self.settings.imgsz)))
         say(f"[Swipe] {text}")
