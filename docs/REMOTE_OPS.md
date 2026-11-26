@@ -123,6 +123,7 @@ python extra/wdremote.py clip projects/<p>/recordings/slot_3_x.avi --start 900 -
 | control | `SetState`, `StartRecordingSlot`, `PlaybackControl`, dials, `StartCalibration`, `SaveConfig`, `SetInputTransform`… | in STANDBY; in **RUN only while the operator ticks *Allow remote control during RUN*** (phase 6 Live, GUI-only) |
 | heavy | `RunKnownNTune`, `RunCalibSweep`, `RunDryRunReplay`, model/engine/project loads, clips, `ImportVideoToSlot` | STANDBY only |
 | never | `Quit`, delete/rename project, dialogs | never; anything not listed is denied |
+| support | `SupportMessage` (§5c) | any state, RUN included, while the project key `support_line` is on; the RUN tick plays no part |
 
 A **REMOTE** chip shows in the top bar while a client is active (**REMOTE\*** when control in RUN is allowed).
 Every command and refusal is in the app log.
@@ -159,6 +160,52 @@ kill -USR1 <pid>                                        # the same screen in the
 - **The log**: `tmp_analysis/watch/<YYYY-MM-DD_HHMMSS>/`: `polls.jsonl` (each poll with the full status, plus
   `link`, `restart`, `cue`, `start` and `stop` lines), `snapshots/`, `summary.txt` (rewritten after each poll).
 - **Record-only**: `--notify` is refused and cues go to the log only. In both modes the client has no POST.
+
+## 5c. The support line: a message on the laptop's screen until it is read (S1b)
+
+The one channel from the supervising session to the technician during the rehearsal (7–8/12): a short message
+on the laptop's screen that stays until he clicks its button. The session drafts each message and sends it only
+once Thomas has said yes. `services/support_line.py`; the client is `wdremote` (`wdwatch` never sends).
+
+```bash
+python extra/wdremote.py support-ack                                        # the line: on/off, on screen, waiting, read
+python extra/wdremote.py support-send "Relance Calibrate, s'il te plaît"   # prints the message's id
+python extra/wdremote.py support-send --file msg.txt --wait 600            # ... and waits until it is read
+python extra/wdremote.py support-ack 143502-1 --wait 300                   # read? after how long (exit 0 read, 2 not yet)
+python extra/wdremote.py events --types SupportMessageShown,SupportMessageQueued,SupportMessageAcked
+```
+
+- **What governs it: the project key `support_line`, not *Allow remote control during RUN*.** A message changes
+  nothing in the show, and turning the key on in a project is the consent. Off by default (`core/config.py`
+  `SUPPORT_LINE = False`); a project turns it on with `"support_line": true` in its config file (no GUI; the
+  operator's saves keep it). On in the rehearsal project only; off in every other project, and on 12/12. Key on:
+  accepted in any state, RUN included, ticked or not. Key off: `403 SupportMessage refused: the support line is
+  off in this project (project key support_line)`, and nothing shows. `/status` says which (`support_line.enabled`).
+- **On the screen**: a yellow band at the top of the preview: `MESSAGE DU SUPPORT`, the time it came, how many
+  more wait, the text, and one button, `J'ai lu`. It stays until that click. It is not a window: no modal, no
+  popup, no text field (the shortcuts and every control keep working), and the frame loop never waits on it. It
+  sits in the preview's panel, pushing the picture down by its height (its bottom is clipped while it shows),
+  never over the phase panel (readiness rows, the Live controls), the alerts strip or the bottom bar. A click
+  within 1 s of a message coming on screen is ignored, so a double click never reads the next one unseen.
+- **A second message waits its turn** (first in, first out) and never replaces the one on screen: each is read
+  and acknowledged on its own, so the session knows which were read. The band says `encore N message(s) après
+  celui-ci`. At most 5 wait behind the one on screen; one more is refused (429).
+- **The acknowledgement** is the event `SupportMessageAcked` in the ring (`/api/v1/events`): `msg_id`, `text`,
+  `sent_at`, `shown_at`, `acked_at` (the click), `seconds` (from sending to the click), `on_screen_s`, all on the
+  laptop's clock. `/status` carries `support_line`: `enabled`, the message `showing`, the `waiting` ids and the
+  last ten `read` with their `seconds`, so an acknowledgement older than the ring is still found. Only the
+  operator acknowledges: `AckSupportMessage` is never allowed remotely.
+- **The text**: plain text, at most 280 characters after cleaning (longer is refused, never cut: send two);
+  markup (`<b>`, `&eacute;`) is refused; line breaks and tabs become spaces; other control and format characters
+  are removed. The app's font (DearPyGui's default, ProggyClean) draws all of Latin-1, so every French accent,
+  `« »` and `ç` show as typed. What it lacks is transliterated visibly and listed in the answer's `notes`:
+  `’ ‘` → `'`, `“ ”` → `"`, `…` → `...`, `– —` → `-`, `œ Œ` → `oe OE`, `€` → `EUR`, thin spaces → a space; any
+  other character → `?`, never a box.
+- **Quoting**: give the text as **one** argument in double quotes (French apostrophes), or `--file F` (`-` =
+  stdin), which a session sending drafted text should prefer.
+- **The log**: each message sent, refused, shown, queued and acknowledged is a line in the app log
+  (`[RemoteApi] SupportMessage …`, `[Support] message … on screen`, `… acknowledged after … s`), and each step
+  an event in the ring. `wdwatch` logs the `support_line` block of every status it reads.
 
 ## 6. What every recording now carries (MRK-0)
 

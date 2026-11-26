@@ -84,6 +84,6 @@ Conventions, checked by tmp_analysis/r2-1126/gates/s2/run_gate.sh <code-root>:
 
 ## 5. Qui répond
 
-**Les 7 et 8/12** — Une session sur l'ordinateur de Thomas regarde le portable (Nico est d'accord) : état, alertes, image de la caméra ; `REMOTE` s'allume. Elle peut écrire sur l'écran **[S1b : le message, le bouton qui l'efface ; `Allow remote control during RUN` ?]**. Thomas au téléphone : **[numéro de Thomas]**. Noter l'heure de chaque souci (journaux relus la nuit). <!-- src: gui_builder.py:432 «REMOTE» ; gui_builder.py:1040 «Allow remote control during RUN» -->
+**Les 7 et 8/12** — Une session sur l'ordinateur de Thomas regarde le portable (Nico est d'accord) : état, alertes, image de la caméra ; `REMOTE` s'allume. Elle peut écrire sur l'écran : une bande jaune en haut de l'image, `MESSAGE DU SUPPORT` et le texte, qui reste jusqu'au clic sur `J'ai lu` (elle voit alors qu'il est lu ; un deuxième message attend son tour) ; le spectacle continue, rien à cocher (pas `Allow remote control during RUN`). Thomas au téléphone : **[numéro de Thomas]**. Noter l'heure de chaque souci (journaux relus la nuit). <!-- src: gui_builder.py:432 «REMOTE» ; gui_builder.py:519 «MESSAGE DU SUPPORT» ; gui_builder.py:520 «J'ai lu» ; gui_builder.py:1097 «Allow remote control during RUN» -->
 
 **Le 12/12** — Personne : cette fiche est tout. Un souci : sa ligne au §3 ; rien ne va : relancer ; ne repart pas : le secours (§4).

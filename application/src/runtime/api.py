@@ -79,8 +79,8 @@ class Command(_Payload):
 
 @dataclass(frozen=True)
 class SetState(Command):
-    """STANDBY/RUN button. The GUI flips its own visuals immediately (as
-    before); this keeps the runtime's authoritative mirror in sync."""
+    """STANDBY/RUN: a request, from the button or the remote API. The runtime
+    holds the one state (A4); the GUI paints it from the StateChanged event."""
     state: str  # 'standby' | 'run'
 
     def __post_init__(self):
@@ -765,6 +765,29 @@ class SetRemoteControl(Command):
     enabled: bool
 
 
+# --- the support line (S1b, services/support_line.py) -------------------------
+
+@dataclass(frozen=True)
+class SupportMessage(Command):
+    """Show a short plain-text message on the operator's screen until he acknowledges it (remote
+    supervision, 7-8/12). Only while the project key support_line is on; any state, RUN included.
+    The remote API cleans ``text`` and fills ``msg_id`` / ``sent_at``; a second message waits its turn."""
+    text: str
+    msg_id: str = ""
+    sent_at: float = 0.0
+
+    def __post_init__(self):
+        if not str(self.text or "").strip():
+            raise ValueError("SupportMessage.text is empty")
+
+
+@dataclass(frozen=True)
+class AckSupportMessage(Command):
+    """The operator's acknowledge button on the support band (GUI only, never remote)."""
+    msg_id: str
+    clicked_at: float = 0.0
+
+
 # ======================================================================
 # Events (runtime -> UI)
 # ======================================================================
@@ -1060,6 +1083,40 @@ class RemoteStatus(Event):
     active: bool            # an authenticated client in the last few seconds
     control_enabled: bool
     client: str = ""
+
+
+@dataclass(frozen=True)
+class SupportMessageShown(Event):
+    """S1b: this support message is on the operator's screen now; ``waiting`` = messages queued behind it."""
+    msg_id: str
+    text: str
+    sent_at: float
+    shown_at: float
+    waiting: int = 0
+
+
+@dataclass(frozen=True)
+class SupportMessageQueued(Event):
+    """S1b: a support message arrived while another is on screen; it waits its turn (``waiting`` = how many
+    wait now, this one included)."""
+    msg_id: str
+    text: str
+    sent_at: float
+    waiting: int
+
+
+@dataclass(frozen=True)
+class SupportMessageAcked(Event):
+    """S1b: the operator acknowledged the support message. ``seconds`` = from its sending to the click;
+    ``on_screen_s`` = from its coming on screen to the click (both on the app's clock)."""
+    msg_id: str
+    text: str
+    sent_at: float
+    shown_at: float
+    acked_at: float
+    seconds: float
+    on_screen_s: float
+    waiting: int = 0
 
 
 @dataclass(frozen=True)

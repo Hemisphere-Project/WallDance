@@ -1364,6 +1364,125 @@ def cmd_state(tr, remote: Remote, a) -> int:
         return _submit(s, "SetState", {"state": a.state})
 
 
+# -- S1b: the support line (services/support_line.py): a message on the laptop's screen until acknowledged ------
+_SUPPORT_EVENTS = "SupportMessageShown,SupportMessageQueued,SupportMessageAcked"
+
+
+def _hhmmss(t) -> str:
+    return time.strftime("%H:%M:%S", time.localtime(float(t))) if t else "?"
+
+
+def _support_text(a) -> str:
+    if a.file:
+        src = sys.stdin if a.file == "-" else open(a.file, encoding="utf-8")
+        with src:
+            return src.read()
+    if a.text is None:
+        raise SystemExit("wdremote support-send: give the text (quoted) or --file F (- = stdin)")
+    return a.text
+
+
+def _support_wait(s: "ApiSession", msg_id: str, since: int, wait_s: float) -> Tuple[int, Optional[dict]]:
+    """Long-poll the event ring for ``msg_id``'s acknowledgement: (0, the SupportMessageAcked event), or
+    (2, None) when ``wait_s`` runs out first. Says when it comes on screen if it was waiting."""
+    deadline = time.time() + max(0.0, wait_s)
+    while True:
+        left = deadline - time.time()
+        code, ev = s.request(f"/api/v1/events?since={since}&wait={max(0.0, min(25.0, left)):.1f}"
+                             f"&types={_SUPPORT_EVENTS}")
+        if code != 200:
+            raise SystemExit(f"wdremote: events -> {code} {ev.get('error')}")
+        for e in ev["events"]:
+            if e.get("msg_id") != msg_id:
+                continue
+            if e["type"] == "SupportMessageAcked":
+                return 0, e
+            if e["type"] == "SupportMessageShown":
+                print(f"[support] {msg_id} on screen since {_hhmmss(e.get('shown_at'))}", flush=True)
+        since = ev["next"]
+        if time.time() >= deadline:
+            return 2, None
+
+
+def _print_ack(e: dict) -> None:
+    print(f"[support] {e['msg_id']} READ at {_hhmmss(e.get('acked_at'))}, {e.get('seconds')} s after it was sent "
+          f"({e.get('on_screen_s')} s on screen): {e.get('text')!r}")
+
+
+def cmd_support_send(tr, remote: Remote, a) -> int:
+    """S1b: put a message on the laptop's screen until the operator acknowledges it. Refused unless the loaded
+    project's key support_line is on. Prints the message id; --wait S waits that long for the acknowledgement."""
+    text = _support_text(a)
+    with ApiSession(tr, remote) as s:
+        code, res = s.request("/api/v1/command", {"type": "SupportMessage", "args": {"text": text}})
+        if code != 200:
+            print(f"[support] refused ({code}): {res.get('error')}")
+            return 1
+        print(f"[support] {res['id']} sent at {_hhmmss(res.get('sent_at'))}: {res['text']!r}")
+        for note in res.get("notes") or []:
+            print(f"[support]   {note}")
+        if not a.wait:
+            print(f"[support] read it back: wdremote support-ack {res['id']} [--wait S]")
+            return 0
+        rc, ack = _support_wait(s, res["id"], int(res.get("event_seq") or 0), a.wait)
+    if ack:
+        _print_ack(ack)
+    else:
+        print(f"[support] {res['id']} not read after {a.wait:g} s (still on screen or waiting)")
+    return rc
+
+
+def cmd_support_ack(tr, remote: Remote, a) -> int:
+    """S1b: was the support message ``id`` read, and how long it took (its SupportMessageAcked event). Without an
+    id: the line's state (on/off, the message on screen, the waiting ones, the last ones read).
+    Exit 0 = read, 2 = not yet, 1 = unknown id or no support line."""
+    with ApiSession(tr, remote) as s:
+        code, st = s.request("/api/v1/status")
+        line = st.get("support_line") if code == 200 else None
+        if line is None:
+            print(f"[support] this app has no support line ({code} {st.get('error', '')})".rstrip())
+            return 1
+        if not a.id:
+            if a.json:
+                _print_json(line)
+                return 0
+            cur = line.get("showing")
+            print(f"[support] the line is {'ON' if line.get('enabled') else 'OFF (project key support_line)'}")
+            print("[support] on screen: " + (f"{cur['id']} since {_hhmmss(cur.get('shown_at'))}: "
+                                             f"{cur.get('text')!r}" if cur else "nothing"))
+            print(f"[support] waiting: {', '.join(line.get('waiting') or []) or 'none'}")
+            for r in line.get("read") or []:
+                print(f"[support] read: {r['id']} at {_hhmmss(r.get('acked_at'))} after {r.get('seconds')} s")
+            return 0
+        code, ev = s.request("/api/v1/events?since=0&wait=0&types=SupportMessageAcked")
+        events = ev.get("events", []) if code == 200 else []
+        ack = next((e for e in events if e.get("msg_id") == a.id), None)
+        pending = (line.get("showing") or {}).get("id") == a.id or a.id in (line.get("waiting") or [])
+        if ack is None and pending and a.wait:
+            _, ack = _support_wait(s, a.id, int(ev.get("next") or 0), a.wait)
+            if ack is None:
+                line = s.request("/api/v1/status")[1].get("support_line") or line
+    if ack is not None:
+        if a.json:
+            _print_json(ack)
+        else:
+            _print_ack(ack)
+        return 0
+    cur = line.get("showing") or {}
+    read = next((r for r in line.get("read") or [] if r.get("id") == a.id), None)
+    if read is not None:            # older than the event ring: the status keeps the last ones read
+        print(f"[support] {a.id} READ at {_hhmmss(read.get('acked_at'))}, {read.get('seconds')} s after it was sent")
+        return 0
+    if cur.get("id") == a.id:
+        print(f"[support] {a.id} NOT READ yet: on screen since {_hhmmss(cur.get('shown_at'))}")
+        return 2
+    if a.id in (line.get("waiting") or []):
+        print(f"[support] {a.id} NOT READ yet: waiting behind {cur.get('id')}")
+        return 2
+    print(f"[support] {a.id}: no such message in this app run (restarted? the id is printed by support-send)")
+    return 1
+
+
 def cmd_logs(tr, remote: Remote, a) -> int:
     with ApiSession(tr, remote) as s:
         last: Optional[str] = None
@@ -1548,6 +1667,16 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--slot", type=int)
     s = sub.add_parser("state", help="state run | standby")
     s.add_argument("state", choices=["run", "standby"])
+    s = sub.add_parser("support-send", help="S1b: a message on the laptop's screen until the operator "
+                       "acknowledges it (project key support_line); prints its id")
+    s.add_argument("text", nargs="?", help='the message, quoted as ONE argument ("..." for French apostrophes)')
+    s.add_argument("--file", help="read the message from this UTF-8 file (- = stdin)")
+    s.add_argument("--wait", type=float, default=0.0, help="seconds to wait for the acknowledgement")
+    s = sub.add_parser("support-ack", help="S1b: was a support message read, and after how long "
+                       "(no id: the support line's state)")
+    s.add_argument("id", nargs="?", help="the id support-send printed")
+    s.add_argument("--wait", type=float, default=0.0, help="seconds to wait for it to be read")
+    s.add_argument("--json", action="store_true")
     s = sub.add_parser("logs", help="tail the app log")
     s.add_argument("--tail", type=int, default=100)
     s.add_argument("--follow", "-f", action="store_true")
@@ -1609,6 +1738,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "token": cmd_token, "status": cmd_status, "events": cmd_events,
         "commands": cmd_commands, "cmd": cmd_cmd, "record": cmd_record, "state": cmd_state,
         "logs": cmd_logs, "snapshot": cmd_snapshot, "ls": cmd_ls, "clip": cmd_clip,
+        "support-send": cmd_support_send, "support-ack": cmd_support_ack,     # S1b
         **_SLOT_HANDLERS,
     }
     return handlers[a.cmd](tr, remote, a)

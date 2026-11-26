@@ -486,6 +486,7 @@ def build_video_panel(gui: Any):
                 dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (130, 25, 25))
         dpg.bind_item_theme("trt_banner_window", _trt_banner_theme)
         build_playback_banner(gui)
+        build_support_band(gui)
         dpg.add_image(
             gui.frame_texture_tag,
             width=gui.video_width,
@@ -513,6 +514,40 @@ def build_playback_banner(gui: Any):
         with dpg.theme_component(dpg.mvChildWindow):
             dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (170, 20, 20))
     dpg.bind_item_theme("playback_banner_window", _playback_banner_theme)
+
+
+SUPPORT_BAND_TITLE = "MESSAGE DU SUPPORT"
+SUPPORT_ACK_LABEL = "J'ai lu"
+SUPPORT_BAND_BG = (255, 205, 0)          # a yellow nothing else on screen uses (the banners above are red)
+
+
+def build_support_band(gui: Any):
+    """S1b, the support line (services/support_line.py): a yellow band over the preview, hidden;
+    gui.show_support_message shows a message there until the operator clicks SUPPORT_ACK_LABEL.  A child
+    window in the video panel, like the playback banner: no modal, no popup, no text field (shortcuts keep
+    working), nothing over the phase panel (readiness rows, the Live controls), the alerts strip or the bottom
+    bar.  The default font draws Latin-1, so French accents show as typed (the line folds the rest)."""
+    with dpg.child_window(tag="support_band_window", autosize_x=True, height=scaled(64), border=True,
+                          no_scrollbar=True, show=False):
+        with dpg.group(horizontal=True):
+            dpg.add_text(SUPPORT_BAND_TITLE, tag="support_band_title", color=(90, 0, 0))
+            dpg.add_text("", tag="support_band_meta", color=(60, 45, 0))
+        with dpg.group(horizontal=True):
+            dpg.add_button(label=SUPPORT_ACK_LABEL, tag="support_band_ack_btn", width=scaled(96),
+                           height=scaled(30), callback=gui._on_support_ack)
+            dpg.add_text("", tag="support_band_text", color=(0, 0, 0), wrap=max(scaled(200), gui.video_width
+                                                                               - scaled(130)))
+    with dpg.theme() as _support_band_theme:
+        with dpg.theme_component(dpg.mvAll):
+            dpg.add_theme_color(dpg.mvThemeCol_ChildBg, SUPPORT_BAND_BG)
+            dpg.add_theme_color(dpg.mvThemeCol_Border, (0, 0, 0))
+            dpg.add_theme_color(dpg.mvThemeCol_Text, (0, 0, 0))
+            dpg.add_theme_color(dpg.mvThemeCol_Button, (255, 255, 255))
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (235, 235, 235))
+            dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (200, 200, 200))
+            dpg.add_theme_style(dpg.mvStyleVar_ChildBorderSize, 2)
+            dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, 2)
+    dpg.bind_item_theme("support_band_window", _support_band_theme)
 
 
 def build_bottom_bar(gui: Any):

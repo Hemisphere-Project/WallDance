@@ -88,6 +88,9 @@ _IMGSZ_PRESETS = (640, 800, 960, 1280, 1536, 1920)
 # lighting profiles). Clockwise quarter turns; mirror = left-right flip.
 INPUT_ROTATIONS = (0, 90, 180, 270)
 
+# S1b: the support line's project key (services/support_line.py), a shared key: off unless the file says true.
+_BOOL_KEYS += ("support_line",)
+
 # Rig sheet (MRK-0): the shooting setup the camera cannot report -- entered once
 # per project in phase 1 Rig, copied into every recording's .meta. A shared key
 # (same rig for both lighting profiles). field -> (kind, lo, hi); str = max len.

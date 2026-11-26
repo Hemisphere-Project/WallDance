@@ -16,6 +16,7 @@ import numpy as np
 from gui_builder import build_ui, create_texture, setup_theme, load_icon_font, SystemState, scaled, CONTROL_PANEL_WIDTH
 from gui_builder import rotation_from_label, rotation_label
 from core.config import RECORDING_SLOTS
+from core.config import SUPPORT_ACK_GUARD_S
 from core.video_import import IMPORTABLE_EXTS
 from gui_constants import (
     TEXT_NORMAL, TEXT_MUTED, TEXT_DIM, TEXT_HINT, TEXT_FAINT,
@@ -316,6 +317,9 @@ class WallDanceGUI:
         # written only by show_system_state (StateChanged); the runtime starts in RUN too.
         self._system_state = SystemState.RUN
         self._playback_source = False   # A4 ③: the source is a recording, not the camera
+        self._support_msg_id: Optional[str] = None   # S1b: the support message on the band, if any
+        self._support_shown_t = 0.0                  # ... when it came on screen (time.monotonic)
+        self._support_sent_at = 0.0                  # ... and when the supervisor sent it (time.time)
         
         # DPI scaling for high-resolution displays (4K)
         self._dpi_scale = get_display_scale()
@@ -959,6 +963,58 @@ class WallDanceGUI:
                           + (" - control in RUN allowed" if control_enabled else ""))
         if dpg.does_item_exist("remote_control_checkbox"):
             dpg.set_value("remote_control_checkbox", bool(control_enabled))
+
+    # --- S1b: the support line's band (services/support_line.py) ------------------------------------------
+    def show_support_message(self, msg_id: str, text: str, sent_at: float = 0.0, waiting: int = 0):
+        """Put a support message on the yellow band over the preview; it stays until the operator clicks its
+        button.  Paints and returns: nothing modal, nothing waits, the keyboard stays the app's."""
+        if not dpg.does_item_exist("support_band_window"):
+            return
+        if msg_id != self._support_msg_id:
+            self._support_shown_t = time.monotonic()   # a new message: the double-click guard starts again
+        self._support_msg_id = msg_id
+        wrap = max(scaled(200), int(self.video_width) - scaled(130))
+        dpg.configure_item("support_band_text", wrap=wrap)
+        dpg.set_value("support_band_text", text)
+        # ProggyClean is 7 px a character at scale 1; the band grows with the lines (280 characters: ~3)
+        per_line = max(20, wrap // max(1, scaled(7)))
+        lines = max(1, -(-len(text) // per_line) + (1 if len(text) > per_line else 0))
+        dpg.configure_item("support_band_window",
+                           height=scaled(28) + max(scaled(34), lines * scaled(15)) + scaled(8))
+        self._support_meta(sent_at, waiting)
+        dpg.configure_item("support_band_window", show=True)
+
+    def update_support_waiting(self, waiting: int):
+        """Another support message waits behind the one on the band: say how many."""
+        if self._support_msg_id is not None and dpg.does_item_exist("support_band_meta"):
+            self._support_meta(self._support_sent_at, waiting)
+
+    def _support_meta(self, sent_at: float, waiting: int):
+        self._support_sent_at = float(sent_at or 0.0)
+        # the French words outside strftime (a non-ASCII format string is not safe there on Windows)
+        when = (" - reçu à " + time.strftime("%H:%M", time.localtime(sent_at))) if sent_at else ""
+        after = ("" if waiting <= 0 else
+                 f" - encore {waiting} message{'s' if waiting > 1 else ''} après celui-ci")
+        dpg.set_value("support_band_meta", when + after)
+
+    def clear_support_message(self, msg_id: str):
+        """The message was acknowledged: the band goes (the next waiting one comes with its own event)."""
+        if msg_id != self._support_msg_id:
+            return
+        self._support_msg_id = None
+        if dpg.does_item_exist("support_band_window"):
+            dpg.configure_item("support_band_window", show=False)
+
+    def _on_support_ack(self, sender=None, app_data=None):
+        """The band's button: acknowledge the message on it (the runtime takes the band down).  A click within
+        SUPPORT_ACK_GUARD_S of a message coming on screen is ignored, so a double click on the previous one
+        never acknowledges the next unread."""
+        msg_id = self._support_msg_id
+        if not msg_id or 'on_support_ack' not in self.callbacks:
+            return
+        if time.monotonic() - self._support_shown_t < SUPPORT_ACK_GUARD_S:
+            return
+        self.callbacks['on_support_ack'](msg_id, time.time())
 
     def _on_rig_field(self, sender, value, user_data=None):
         if 'on_rig_field' in self.callbacks and user_data:

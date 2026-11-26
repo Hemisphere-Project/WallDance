@@ -125,6 +125,7 @@ from runtime.roi_state import RoiState
 from ui.adapter import DpgUiAdapter
 from ui.roi_mask_editor import RoiMaskEditor
 from services.web_monitor import WebMonitor
+from services.support_line import SupportLine
 from core.sensitivity_macro import macro_to_settings, bridge_macro_to_settings
 
 # Phase-⑤ dry-run: bound the offline replay to a quick glance, not a full pass.
@@ -682,6 +683,8 @@ class WallDanceApp:
         self.running = False
         self._web_monitor: Optional[WebMonitor] = None  # smartphone focus/lighting monitor
         self._remote = None  # services.remote_api.RemoteApi; created by MainLoop._startup()
+        # S1b: the support line (a message on screen until acknowledged); off until a project's key turns it on
+        self.support_line = SupportLine(self.bus)
         self._started_at = time.time()
         # Sensitivity macro (UX_PLAN U5): one operator dial; 50 = calibrated seed.
         self.sensitivity: float = 50.0
@@ -888,6 +891,8 @@ class WallDanceApp:
         reg(api.Quit, lambda c: self._cb_quit())
         reg(api.ShowQr, lambda c: self._show_qr())
         reg(api.SetRemoteControl, self._cmd_set_remote_control)
+        reg(api.SupportMessage, self.support_line.show)          # S1b: remote API -> the band
+        reg(api.AckSupportMessage, self.support_line.ack)        # S1b: the band's button
         reg(api.CheckReadiness, lambda c: self._cb_check_readiness())
         reg(api.RunDryRunReplay, lambda c: self._cb_run_dry_run())
         reg(api.RunCalibSweep, lambda c: self._cb_run_calib_sweep(c.n, c.slot))
@@ -1314,6 +1319,7 @@ class WallDanceApp:
             "osc_enabled": self.osc_enabled,
             "osc_ip": self.osc_ip,
             "osc_port": self.osc_port,
+            "support_line": self.support_line.enabled,       # S1b (no GUI: a project key)
             "preview_enabled": self.preview_enabled,
             "preview_fps_cap": self.preview_fps_cap,
             "input_fps_cap": self.input_fps_cap,
@@ -1373,6 +1379,8 @@ class WallDanceApp:
         # Its ROI / mask are already in its transformed space: no remap.
         if "input_mirror" in config or "input_rotation" in config or full_config:
             self._set_input_transform(InputTransform.from_config(config), remap=False)
+        if "support_line" in config or full_config:         # S1b (no GUI: a project key; absent = off)
+            self.support_line.configure(config)
         # YOLO settings (except imgsz which is handled separately)
         if "confidence" in config:
             self.settings.confidence = config["confidence"]

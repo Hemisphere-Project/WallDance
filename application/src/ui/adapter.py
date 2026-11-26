@@ -210,6 +210,8 @@ class DpgUiAdapter:
             "on_osc_config": lambda ip, port: submit(api.SetOscTarget(ip, port)),
             "on_rig_field": lambda field, value: submit(api.SetRigSheet(field, value)),
             "on_remote_control": lambda enabled: submit(api.SetRemoteControl(bool(enabled))),
+            "on_support_ack": lambda msg_id, clicked_at: submit(           # S1b: the support band's button
+                api.AckSupportMessage(str(msg_id), float(clicked_at))),
             "on_preview_toggle": lambda v: submit(api.TogglePreview(bool(v))),
             "on_input_fps_cap_toggle": lambda v: submit(api.ToggleInputFpsCap(bool(v))),
             "on_preview_cap_toggle": lambda v: submit(api.TogglePreviewCap(bool(v))),
@@ -347,6 +349,11 @@ class DpgUiAdapter:
             api.ControlSync: self._sync_control,
             api.RemoteStatus: lambda e: self.gui.update_remote_status(
                 e.active, e.control_enabled, e.client),
+            # S1b: the support line's band (services/support_line.py); the runtime decides, the band paints
+            api.SupportMessageShown: lambda e: self.gui.show_support_message(
+                e.msg_id, e.text, e.sent_at, e.waiting),
+            api.SupportMessageQueued: lambda e: self.gui.update_support_waiting(e.waiting),
+            api.SupportMessageAcked: lambda e: self.gui.clear_support_message(e.msg_id),
             api.Toast: lambda e: self.gui.show_toast(
                 e.message, duration=e.duration, color=tuple(e.color)),
             api.ReadinessResult: lambda e: self.gui.show_readiness_rows(e.rows),

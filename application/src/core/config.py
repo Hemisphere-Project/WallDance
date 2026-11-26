@@ -588,6 +588,13 @@ REMOTE_API_HOST = "127.0.0.1"
 REMOTE_API_PORT = 8765
 REMOTE_API_TOKEN_FILE = "~/.walldance/remote_token"
 REMOTE_API_STATUS_INTERVAL_S = 0.5  # main loop -> /status snapshot cadence
+# S1b, the support line (services/support_line.py): the remote API's SupportMessage puts a short message on the
+# operator's screen until he acknowledges it.  Project key support_line, no GUI: on only in the rehearsal project
+# (7-8/12), off everywhere else and on the show (12/12).  The key is the consent, not "Allow remote control".
+SUPPORT_LINE = False
+SUPPORT_MESSAGE_MAX_CHARS = 280     # after cleaning; a longer message is refused, never cut
+SUPPORT_MESSAGE_MAX_WAITING = 5     # messages queued behind the one on screen; one more is refused
+SUPPORT_ACK_GUARD_S = 1.0           # a click this soon after a message came on screen is ignored (double click)
 
 # Persistent app log (services/app_log.py): stdout/stderr teed to
 # <repo>/logs/walldance_<stamp>.log (gitignored); newest APP_LOG_KEEP kept.

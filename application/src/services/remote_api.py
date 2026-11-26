@@ -32,6 +32,9 @@ Endpoints (JSON unless noted; all but ``/ping`` need ``Authorization: Bearer``):
 - ``heavy``: STANDBY only (subprocess tunes, model/engine/project loads, clips),
   because they compete with the show for the GPU/CPU or block the loop.
 - ``never``: quit, delete/rename project, dialogs. Anything unlisted is denied.
+- ``support`` (S1b): ``SupportMessage`` only, a message on the operator's screen until he acknowledges it
+  (``services/support_line.py``). Any state, RUN included, while the project key ``support_line`` is on; the
+  *Allow remote control* tick does not govern it (it changes nothing in the show; the key is the consent).
 """
 from __future__ import annotations
 
@@ -54,6 +57,7 @@ from runtime import api
 from services.live_watch import HitRate, snapshot_fitted
 
 SAFE, CONTROL, HEAVY, NEVER = "safe", "control", "heavy", "never"
+SUPPORT = "support"     # S1b: the support line, gated by the project key support_line only
 
 POLICY: Dict[str, str] = {
     # safe: observation / metadata only
@@ -88,6 +92,9 @@ POLICY: Dict[str, str] = {
     "RebuildTrt": HEAVY, "LoadModel": HEAVY, "SetImgsz": HEAVY, "ToggleTrt": HEAVY,
     "LaunchProject": HEAVY, "SelectProject": HEAVY, "LoadConfig": HEAVY,
     "ImportVideoToSlot": HEAVY,   # multi-GB disk copy / transcode
+    # support (S1b): a message on the operator's screen until he acknowledges it -- any state, RUN included,
+    # while the project key support_line is on; not gated by the operator's remote-control tick
+    "SupportMessage": SUPPORT,
     # never: destructive, or a GUI dialog nobody is there to answer
     "Quit": NEVER, "DeleteProject": NEVER, "RenameProject": NEVER,
     "StartBlankProject": NEVER, "NewProject": NEVER, "SaveSafeDefaults": NEVER,
@@ -95,6 +102,7 @@ POLICY: Dict[str, str] = {
     "RequestLoadConfigDialog": NEVER, "RequestIssueReport": NEVER,
     "SubmitIssue": NEVER, "IssueDialogClosed": NEVER, "ShowQr": NEVER,
     "ViewCalib2Pool": NEVER, "ViewAimCalibState": NEVER, "EditMask": NEVER,
+    "AckSupportMessage": NEVER,   # S1b: only the operator's click acknowledges a support message
 }
 
 # High-rate / non-JSON events stay out of the ring buffer; the latest value of
@@ -124,7 +132,8 @@ def load_or_create_token(path: Path) -> str:
 
 
 def check_policy(type_name: str, args: Dict[str, Any], state: str,
-                 control_enabled: bool, allow_quit: bool = False) -> Optional[str]:
+                 control_enabled: bool, allow_quit: bool = False,
+                 support_line: bool = False) -> Optional[str]:
     """None when allowed, else the refusal reason.
 
     ``allow_quit``: the DEV slot is launched with WD_REMOTE_ALLOW_QUIT=1 so
@@ -137,6 +146,9 @@ def check_policy(type_name: str, args: Dict[str, Any], state: str,
         return f"{type_name} is not on the remote allowlist"
     if cls == NEVER:
         return f"{type_name} is never allowed remotely"
+    if cls == SUPPORT:   # S1b: the project key decides, in any state; the RUN tick does not
+        return None if support_line else (f"{type_name} refused: the support line is off in this project "
+                                          "(project key support_line)")
     if type_name == "SelectSlot" and args.get("history"):
         return "SelectSlot(history=True) opens a GUI menu; use PlaySlotRecording"
     if cls == HEAVY and state == "run":
@@ -203,6 +215,8 @@ class RemoteApi:
         self._server: Optional[ThreadingHTTPServer] = None
         # S1a: the live hit rate the watch tool reads (fed by MainLoop._tick_remote; services/live_watch.py)
         self.hit_rate = HitRate()
+        # S1b: the app's SupportLine (services/support_line.py), set by MainLoop._startup; None = no support line
+        self.support = None
         bus.subscribe(self._on_event)
 
     # -- runtime side -------------------------------------------------------
@@ -243,6 +257,8 @@ class RemoteApi:
         if hit is not None:
             out["hit_rate"] = hit
         out["snapshot_fit"] = True
+        if self.support is not None:   # S1b: on/off, the message on screen, the waiting and the read ones
+            out["support_line"] = self.support.status()
         return out
 
     def events_since(self, since: int, wait: float, types: Optional[set]) -> Dict:
@@ -258,6 +274,8 @@ class RemoteApi:
                 self._lock.wait(timeout=max(0.05, deadline - time.time()))
 
     def submit(self, type_name: str, args: Dict[str, Any]) -> Tuple[int, Dict]:
+        if POLICY.get(type_name) == SUPPORT:
+            return self.submit_support(type_name, args)
         reason = check_policy(type_name, args, self.state_fn(), self.control_enabled,
                               self.allow_quit)
         if reason:
@@ -282,6 +300,28 @@ class RemoteApi:
             return 400, {"error": f"bad arguments for {type_name}: {e}"}
         self.runtime.submit(command)
         return 200, {"queued": type_name, "args": args, "event_seq": self._seq}
+
+    def submit_support(self, type_name: str, args: Dict[str, Any]) -> Tuple[int, Dict]:
+        """S1b: a support message. Refused unless this project's key support_line is on (any state; the
+        operator's remote-control tick plays no part); the text is cleaned and given an id, which the answer
+        returns with the cleaned text and what changed in it."""
+        support = self.support
+        on = support is not None and support.enabled
+        reason = check_policy(type_name, args, self.state_fn(), self.control_enabled, self.allow_quit,
+                              support_line=on)
+        if reason and support is None:
+            reason = f"{type_name} refused: this app has no support line"
+        if reason:
+            print(f"[RemoteApi] {reason}")
+            return 403, {"error": reason}
+        code, ready = support.prepare(dict(args))
+        if code != 200:
+            print(f"[RemoteApi] {ready['error']}")
+            return code, ready
+        self.runtime.submit(api.SupportMessage(ready["text"], ready["msg_id"], ready["sent_at"]))
+        print(f"[RemoteApi] SupportMessage {ready['msg_id']} queued: {ready['text']!r}")
+        return 200, {"queued": type_name, "id": ready["msg_id"], "text": ready["text"],
+                     "notes": ready["notes"], "sent_at": ready["sent_at"], "event_seq": self._seq}
 
     def resolve(self, rel: str, absolute_ok: bool = False) -> Optional[Path]:
         """Map 'projects/x/y' (or an absolute path under a root) to a real path

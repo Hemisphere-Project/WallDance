@@ -384,6 +384,7 @@ class MainLoop:
                     port=int(os.environ.get("WD_REMOTE_API_PORT", REMOTE_API_PORT)),
                     version=app_version(),
                     allow_quit=os.environ.get("WD_REMOTE_ALLOW_QUIT") == "1")
+                app._remote.support = getattr(app, "support_line", None)   # S1b: the support line
                 # DEV-slot launches (wdremote slot run --slot dev) are test
                 # sessions: remote control in RUN starts enabled there. The
                 # field (LIVE) app always starts gated by the operator toggle.
