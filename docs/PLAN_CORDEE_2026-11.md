@@ -681,6 +681,29 @@ Filled by the step named. Until then the cell says so.
     evening: a window fitted for the two safety clauses on mur2 6 and 7 alone picks 60 frames and fails on
     mur2 8. At confidence 0.10, 0.25 and 0.30 the two safety clauses hold everywhere; the third slips to
     82–96 % in five cells.
+  - *Gate 1 on the rehearsal build's foreground* (F2: `core/foreground.py` as on `origin/cordee-r2`; the mask
+    records of mur2 6 / 7 / 8 made again with it, the boxes identical on all 21,167 frames; the `5d615d3` referee,
+    2,000 swipes a cell; `tmp_analysis/swipe-1126/f2measure/`). The three clauses hold in all 36 cells, as before;
+    a setting worse than the live one is named on 0.00 % of swipes in every cell; the truth values and the best
+    setting are unchanged. The shares move by two points at most:
+
+    | Live setting | Verdict on F2's foreground, share of swipes on mur2 6 / 7 / 8 |
+    |---|---|
+    | x @ 1280 | l @ 1920 × 1056 on 100 / 100 / 100 % |
+    | x @ 1760 × 960 | l @ 1920 × 1056 on 100 / 99.7 / 99.3 %, else kept |
+    | x @ 1920 × 1056 | l @ 1920 × 1056 on 96.2 / 84.2 / 89.5 %, else kept |
+    | l @ 1280 | kept on 91.3 / 95.1 / 97.7 %, else l @ 1920 × 1056 |
+    | l @ 1760 × 960 | kept on 75.6 / 93.7 / 88.2 %, else l @ 1920 × 1056 |
+    | l @ 1920 × 1056 | kept on 100 / 100 / 100 % |
+
+    The background pair: from x, l named on 97.8–100 % at 1280 and 1760 × 960; from l, kept on 100 %. The masks:
+    groups on a dancer are unchanged (2.01 → 2.03, 1.44 → 1.44, 1.44 → 1.43 a frame on mur2 6 / 7 / 8); groups on
+    nobody fall on mur2 7 and 8 (0.18 → 0.11, 0.42 → 0.34) and rise a little on mur2 6 (0.06 → 0.08). « Plate
+    stale » never latches on these takes (the foreground's 90th percentile is about 1 % of the zone, the
+    threshold 25 %). Not measured: gate 2 on F2's masks; F2 with the rest of the rehearsal build's pipeline (the
+    replay kept the 26/11 night pipeline so that only the foreground differs). The first records had run with
+    the F3 box veto on (the façade driver's `fg_box_veto=false` was never read): 9, 1 and 0 boxes vetoed on
+    mur2 6 / 7 / 8, and no gate row changes with it off.
   - *Gate 2, corpus* — green by refusal only. The 4 corpus plates (8 scenarios) are medians of takes with dancers
     in them; there even the cleanest setting puts 0.38 boxes a frame and more on nobody (0.004–0.011 on 08/10's
     real plate), and above 0.10 the swipe answers « no verdict: every setting puts boxes where the empty-wall
@@ -688,6 +711,16 @@ Filled by the step named. Until then the cell says so.
     no verdict on 334 swipes of 500, kept on 166). The outdoor scenarios, where yolo11l collapses, have no plate.
     So this gate says the swipe knows a plate it cannot trust, not that it chooses well in a hangar: that needs
     a real empty-wall plate there (B5).
+  - *The plate, watched* (`b860890`, `44addae`). Every finished swipe tells the rehearsal build's reference watch
+    (H4, `core/reference_watch.py`) what the referee made of the empty-wall plate: refused it, or judged on it
+    (« keep », a switch); any other end tells nothing. A refusal counts only on frames the last refusal told did
+    not use, so the same pool pressed three times is one; the watch raises its plate alert at three in a row.
+    Without that module the swipe runs as before. When F2 latches « plate stale », the plate stops being usable
+    for the swipe until a new one is taken: no swipe starts, an advice already shown is withdrawn (« the
+    empty-wall plate is no longer valid - Calibrate on the empty wall, then run 'Try other settings' again »),
+    a swipe in flight is dropped, the kept frames start over. Shown by unit tests, and on a copy of the
+    rehearsal build's tree with its real detector driven into the latch; no take latches, and the hook has run
+    against the real watch on that copy only until the merge.
   - *Gate 3, the laptop* — the real code from a scratch copy, the take played in real time beside the worker,
     pacing 50 ms. Since `5d615d3` the live setting's row comes from the boxes the live pass stored with each
     kept frame (identical to a re-run of its engine on 150 of 150 frames of mur2 7, from x @ 1280 and from
@@ -719,10 +752,13 @@ Filled by the step named. Until then the cell says so.
     run. The referee still counts a box on a shadow or a rope as a dancer covered, and the 25 % share may make
     that a little more frequent: unmeasured without a real plate in a hangar. The plate refusal rests on one
     real plate (08/10) against medians. It cannot see one model's own ghosts (by design), a plate that only
-    misses a light change, or a still person who was in the plate. The referee goes blind to a dancer the live
-    setting loses for long, because the slow plate update absorbs her (F2). No take has a dancer of 200 px at
-    the live input: that branch of the planner is gated only through the background pair. « Largest input » can
-    name x @ 1920 × 1056, which has 3.5 ms of margin on the laptop (P2), and now needs 6.1 points to be named.
+    misses a light change, or a still person who was in the plate. With x @ 1280 live the referee has no group
+    on a dancer on 8.5 / 1.8 / 0.4 % of her frames on mur2 6 / 7 / 8, and F2's foreground leaves that as it is
+    (8.2 / 1.8 / 0.4 %): her foreground is there but in pieces under the referee's 300 px² group floor (the
+    opening seconds and the last 40 s of mur2 6), not absorbed by the plate update as this paragraph first said.
+    No take has a dancer of 200 px at the live input: that branch of the planner is gated only through the
+    background pair. « Largest input » can name x @ 1920 × 1056, which has 3.5 ms of margin on the laptop (P2),
+    and now needs 6.1 points to be named.
     Three takes, one evening, one wall: the first take with a real plate on another wall is to be put through
     `tests/swipe_gate.py`.
 - **F1 — foreground** (2026-11-26, `tests/fg_eval.py`, mur2 with the 21:36 plate, every 3rd frame):
