@@ -54,8 +54,8 @@ import numpy as np  # noqa: E402
 import replay as R  # noqa: E402  (no re-exec: the environment is already set up above)
 from core.input_shape import parse_shape  # noqa: E402
 from core.swipe import Candidate, SwipeParams  # noqa: E402
-from core.swipe_runner import (CandidateRunner, SwipeInput, install_capture_guards,  # noqa: E402
-                               parse_candidate, plan_candidates, run_swipe)
+from core.swipe_runner import (CandidateRunner, ExclusionCells, SwipeInput,  # noqa: E402
+                               install_capture_guards, parse_candidate, plan_candidates, run_swipe)
 
 
 def say(text: str = "") -> None:
@@ -159,7 +159,7 @@ def plan_for(args, proc, current, images):
         only = [parse_candidate(t, current.imgsz) for t in args.candidates.split(",") if t.strip()]
     ep = engine_path_fn()
     plan = plan_candidates(current, roi_w, roi_h, lambda c: os.path.exists(ep(c)),
-                           dancer_net_px=None if args.no_prune else net_px, only=only)
+                           dancer_net_px=net_px, only=only, all_sizes=args.all_sizes)
     return inp, plan, (roi_w, roi_h), net_px
 
 
@@ -169,6 +169,8 @@ def print_table(outcome, args):
     say(f"current setting : {d['current']}")
     say(f"kept frames     : {d['frames']} ({d['lost_frames']} with a dancer bare at the live setting)")
     say(f"verdict         : {d.get('reason', '-')}")
+    if d.get("live_error"):
+        say(f"no verdict      : the live setting could not be re-run: {d['live_error']}")
     say(f"winner          : {d.get('winner')}  switch={d.get('switch')}")
     say("")
     say(f"{'setting':<18}{'coverage':>9}{'loose/fr':>10}{'ms p50':>8}{'load s':>8}{'frames':>8}  note")
@@ -205,10 +207,12 @@ def run_sequential(args):
         cap.set(cv2.CAP_PROP_POS_FRAMES, start)
     max_frames = int(round(args.max_s * fps)) if args.max_s else None
     col = proc.swipe_collector
-    taps_idle, taps_kept, proc_ms = [], [], []
+    taps_idle, taps_kept, taps_full, proc_ms = [], [], [], []
     t_wall0 = time.perf_counter()
     played = 0
     fg_valid = 0
+    ready_at = None                       # frames played when the lost pool filled
+    play_wall = None
     while max_frames is None or played < max_frames:
         ok, frame = cap.read()
         if not ok:
@@ -222,14 +226,22 @@ def run_sequential(args):
         fg_valid += bool(proc.last_fg is not None and proc.last_fg.valid)
         kept = proc._swipe_last_t != last_before
         if "swipe_tap" in timing:
-            (taps_kept if kept else taps_idle).append(float(timing["swipe_tap"]))
+            (taps_kept if kept else taps_full if ready_at is not None else taps_idle).append(
+                float(timing["swipe_tap"]))
         played += 1
-        if col.ready:
+        if ready_at is None and col.ready:
+            ready_at = played
+            play_wall = time.perf_counter() - t_wall0
+        if ready_at is not None and played - ready_at >= int(round(args.after_ready_s * fps)):
             break
     cap.release()
-    play_wall = time.perf_counter() - t_wall0
+    if play_wall is None:
+        play_wall = time.perf_counter() - t_wall0
     frames, lost, _prog, ready = proc.swipe_snapshot()
-    say(f"[swipe] played {played} frames ({played / fps:.1f} s of take, {play_wall:.1f} s wall), "
+    played_total = played
+    played = ready_at if ready_at is not None else played
+    say(f"[swipe] played {played} frames until ready ({played / fps:.1f} s of take, {play_wall:.1f} s wall; "
+        f"{played_total} in all), "
         f"foreground valid on {fg_valid}; kept {len(frames)} frames, {lost} lost, ready={ready}")
     if not frames:
         sys.exit("no frame kept: no valid foreground with a dancer")
@@ -242,11 +254,16 @@ def run_sequential(args):
     for t in plan.skipped_text():
         say(f"  {t}")
     install_capture_guards()
+    fh, fw = images[0].shape[:2]
+    exclusion = ExclusionCells.from_processor(proc, inp.roi(fw, fh))
+    if exclusion is not None:
+        say(f"[swipe] the operator's excluded cells: {len(exclusion.cells)} on a {exclusion.gx}x{exclusion.gy} grid")
     runner = CandidateRunner(inp, bg_subtractor=proc.bg_subtractor)
     params = col.params
     outcome = run_swipe(images, observations, plan, current, runner, engine_path_fn(), params,
                         progress=lambda text, f: say(f"[swipe] {text}"), lost_frames=lost,
-                        lost=[bool(f.lost) for f in frames], lost_share=proc.swipe_lost_share())
+                        lost=[bool(f.lost) for f in frames], lost_share=proc.swipe_lost_share(),
+                        exclusion=exclusion)
     take_s = played / fps
     outcome.timing["collect_s"] = take_s
     d = print_table(outcome, args)
@@ -260,14 +277,22 @@ def run_sequential(args):
         f"load {split['load_s']} + inference {split['infer_s']} + prep {split['prep_s']} + release "
         f"{split['release_s']} (+ scoring); total {split['total_s']} s")
     tap = {"frames_not_kept": len(taps_idle), "frames_kept": len(taps_kept),
+           "frames_pool_full_not_kept": len(taps_full),
            "not_kept_ms_p50": pct(taps_idle, 50), "not_kept_ms_p99": pct(taps_idle, 99),
            "not_kept_ms_max": max(taps_idle) if taps_idle else None,
+           "pool_full_ms_p50": pct(taps_full, 50), "pool_full_ms_p99": pct(taps_full, 99),
+           "pool_full_ms_max": max(taps_full) if taps_full else None,
            "kept_ms_p50": pct(taps_kept, 50), "kept_ms_max": max(taps_kept) if taps_kept else None,
            "process_ms_p50": pct(proc_ms, 50)}
-    say(f"tap cost: not kept p50 {tap['not_kept_ms_p50']:.4f} ms, p99 {tap['not_kept_ms_p99']:.4f}, max "
-        f"{tap['not_kept_ms_max']:.3f} ({tap['frames_not_kept']} frames); kept p50 {tap['kept_ms_p50']:.2f} ms, "
-        f"max {tap['kept_ms_max']:.2f} ({tap['frames_kept']} frames); the whole frame p50 "
-        f"{tap['process_ms_p50']:.1f} ms")
+
+    def _ms(v, f=".4f"):
+        return format(v, f) if v is not None else "-"
+    say(f"tap cost: not kept p50 {_ms(tap['not_kept_ms_p50'])} ms, p99 {_ms(tap['not_kept_ms_p99'])}, max "
+        f"{_ms(tap['not_kept_ms_max'], '.3f')} ({tap['frames_not_kept']} frames); pool full, not kept p50 "
+        f"{_ms(tap['pool_full_ms_p50'])} ms, p99 {_ms(tap['pool_full_ms_p99'])}, max "
+        f"{_ms(tap['pool_full_ms_max'], '.3f')} ({tap['frames_pool_full_not_kept']} frames); kept p50 "
+        f"{_ms(tap['kept_ms_p50'], '.2f')} ms, max {_ms(tap['kept_ms_max'], '.2f')} ({tap['frames_kept']} frames); "
+        f"the whole frame p50 {tap['process_ms_p50']:.1f} ms")
     out = {"take": str(video), "config_source": source, "plate": str(plate) if plate else None,
            "engine_dir": str(R.engine_dir()), "fps": fps, "start_s": args.start_s,
            "live": current.label, "confidence": config.get("confidence"),
@@ -392,10 +417,18 @@ def run_concurrent(args):
                                                        say(f"[swipe-live] {s}: {t}")),
                           runner_factory=runner_factory, pace=pace_s > 0, pace_s=pace_s,
                           collect_timeout_s=args.max_s or 600.0)
-    if only is not None:
-        import runtime.swipe_controller as sc
-        orig = sc.plan_candidates
-        sc.plan_candidates = lambda *a, **k: orig(*a, **{**k, "only": only})
+    import runtime.swipe_controller as sc
+    orig = sc.plan_candidates
+
+    def plan_and_say(*a, **k):
+        plan = orig(*a, **{**k, "only": only, "all_sizes": args.all_sizes})
+        net = k.get("dancer_net_px")
+        say(f"[swipe-live] dancer at the network: " + (f"~{net:.0f} px" if net else "not measured")
+            + f"; planned: {', '.join(c.label for c in plan.candidates)}")
+        for t in plan.skipped_text():
+            say(f"  {t}")
+        return plan
+    sc.plan_candidates = plan_and_say
     cap = cv2.VideoCapture(str(video))
     start = int(round(args.start_s * fps))
     if start:
@@ -435,15 +468,21 @@ def run_concurrent(args):
         else:
             nxt = time.perf_counter()                       # fell behind: no burst to catch up
     cap.release()
-    ctl.join(30)
+    if ctl.state == "collecting":                    # the take ended before enough lost frames
+        say("[swipe-live] the take ended while collecting: cancelled")
+        ctl.cancel()
+    ctl.join(60)
     stats = {}
     for ph in ("before", "collecting", "running", "after"):
         v = [ms for p, ms in rows if p == ph]
         if v:
             stats[ph] = {"frames": len(v), "p50": round(pct(v, 50), 1), "p95": round(pct(v, 95), 1),
-                         "max": round(max(v), 1), "over_period": sum(1 for x in v if x > period * 1000.0)}
+                         "p99": round(pct(v, 99), 1), "max": round(max(v), 1),
+                         "over_period": sum(1 for x in v if x > period * 1000.0),
+                         "over_100ms": sum(1 for x in v if x > 100.0)}
             say(f"  live frame ms {ph:<10} n={len(v):4d} p50={stats[ph]['p50']:6.1f} p95={stats[ph]['p95']:6.1f} "
-                f"max={stats[ph]['max']:6.1f}  over {period * 1000:.0f} ms: {stats[ph]['over_period']}")
+                f"p99={stats[ph]['p99']:6.1f} max={stats[ph]['max']:6.1f}  over {period * 1000:.0f} ms: "
+                f"{stats[ph]['over_period']}, over 100 ms: {stats[ph]['over_100ms']}")
     d = ctl.outcome.to_dict() if ctl.outcome is not None else {"state": ctl.state, "text": ctl.text}
     if ctl.outcome is not None:
         print_table(ctl.outcome, args)
@@ -478,7 +517,8 @@ def main(argv=None):
     ap.add_argument("--engine-dir", default=None, help="TensorRT engines (default models/ or $WD_ENGINE_DIR)")
     ap.add_argument("--candidates", default=None, help="restrict, e.g. l@1920x1056,l@1760x960 (the live "
                                                         "setting always runs)")
-    ap.add_argument("--no-prune", action="store_true", help="do not prune by the dancer's height")
+    ap.add_argument("--all-sizes", action="store_true",
+                    help="every model at every suitable size (diagnostics), not the dancer-height rule")
     ap.add_argument("--out", default=None, help="JSON output")
     ap.add_argument("--check-night", default=None, metavar="JSONL",
                     help="compare a candidate's boxes with a plain replay's 'low' boxes")
@@ -488,6 +528,8 @@ def main(argv=None):
     ap.add_argument("--pace-ms", type=float, default=SWIPE_PACE_S * 1000.0,
                     help="--concurrent: min interval between candidate inferences, 0 = back to back")
     ap.add_argument("--after-s", type=float, default=2.0, help="--concurrent: play on after the swipe")
+    ap.add_argument("--after-ready-s", type=float, default=0.0,
+                    help="keep playing this long after the lost pool is full (measures the tap then)")
     args = ap.parse_args(argv)
     if args.engine_dir:
         os.environ["WD_ENGINE_DIR"] = args.engine_dir

@@ -104,6 +104,8 @@ class ModelController:
         # Intent vs reality: requested follows config/operator; the banner fires
         # when requested but the loaded model fell back to PyTorch.
         self._trt_requested: bool = USE_TENSORRT
+        # P5 Apply: (model, on_done, rollback) of a request_setting switch until the main loop has run it
+        self._setting_request: Optional[tuple] = None
 
     @staticmethod
     def _is_trt_input_size_mismatch_error(exc: Exception) -> bool:
@@ -225,12 +227,16 @@ class ModelController:
             self._pending_model_switch = model_name
             self._model_loading = True  # Block processing until model is reloaded
 
-    def request_setting(self, model_name: str, imgsz: int, shape) -> Optional[str]:
+    def request_setting(self, model_name: str, imgsz: int, shape,
+                        on_done: Optional[Callable[[bool], None]] = None) -> Optional[str]:
         """P5: queue a switch to ``model_name`` at ``imgsz`` / ``shape`` (a (height, width) rectangle or None
         for the square) -- the path a model-combo or Image-Size change takes with TensorRT on: the model
         manager's input set, the pending switch drained by the main loop (``_load_model_with_progress``,
         processing blocked until loaded, ``_attach_model`` sets the input the engine runs).  Only onto an
-        existing engine: never builds one.  Not saved, as a manual change.  Returns why not, or None."""
+        existing engine: never builds one.  Not saved, as a manual change.  Returns why not, or None.
+
+        ``on_done(ok)`` runs on the main loop once the switch was attempted (``ok``: a model loaded; the
+        caller checks which).  A failed load leaves the old model, and its input is restored here."""
         from core.model_manager import is_tensorrt_available
         if self._model_loading or self._pending_model_switch is not None:
             return "a model load is already in progress"
@@ -243,9 +249,12 @@ class ModelController:
         path = mm.get_engine_path(base, int(imgsz), tuple(shape) if shape else None)
         if not os.path.exists(path):
             return f"no engine {os.path.basename(path)}"
+        settings = self.processor().settings
+        rollback = (mm.imgsz, mm.shape, settings.imgsz)
         mm.set_imgsz(int(imgsz))
         mm.set_shape(tuple(shape) if shape else None)
-        self.processor().settings.imgsz = int(imgsz)
+        settings.imgsz = int(imgsz)
+        self._setting_request = (base, on_done, rollback)
         self._pending_trt_switch = True
         self._pending_model_switch = base
         self._model_loading = True   # block processing until the model is reloaded
@@ -431,7 +440,21 @@ class ModelController:
         force_pt = (trt_switch == False)  # noqa: E712 - None must not force PT
 
         print(f"Switching to model: {model_to_load}... (TRT: {trt_switch}, force_pt: {force_pt})")
-        if not self._load_model_with_progress(model_to_load, force_pt=force_pt):
+        request, self._setting_request = self._setting_request, None
+        if request is not None and request[0] != model_to_load:      # superseded by another switch
+            if request[1] is not None:
+                request[1](False)
+            request = None
+        ok = self._load_model_with_progress(model_to_load, force_pt=force_pt)
+        if request is not None:
+            if not ok:                         # the old model stays: give it back its input
+                old_imgsz, old_shape, old_settings_imgsz = request[2]
+                self.model_manager.set_imgsz(old_imgsz)
+                self.model_manager.set_shape(old_shape)
+                self.processor().settings.imgsz = old_settings_imgsz
+            if request[1] is not None:
+                request[1](bool(ok))
+        if not ok:
             print(f"Failed to switch to model {model_to_load}")
             self._model_loaded = self.model is not None
             # Revert dropdown to current model

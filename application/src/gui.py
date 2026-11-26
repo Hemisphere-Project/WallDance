@@ -3009,12 +3009,16 @@ class WallDanceGUI:
         self._swipe_busy = busy
         if dpg.does_item_exist("swipe_btn"):
             dpg.configure_item("swipe_btn", label="Cancel swipe" if busy else "Try other settings")
-        if busy:
-            if dpg.does_item_exist("swipe_apply_btn"):
-                dpg.configure_item("swipe_apply_btn", show=False)
-            if dpg.does_item_exist("swipe_status_text"):
+        if state != "done" and dpg.does_item_exist("swipe_apply_btn"):
+            dpg.configure_item("swipe_apply_btn", show=False)      # pressed, or a new swipe: nothing to apply
+        if dpg.does_item_exist("swipe_status_text"):
+            if busy:
                 dpg.set_value("swipe_status_text", f"{text} ({100 * float(progress):.0f} %)")
                 dpg.configure_item("swipe_status_text", color=TEXT_MUTED)
+            elif state in ("applying", "applied", "apply_failed"):    # Apply: the model switch and its outcome
+                dpg.set_value("swipe_status_text", text)
+                dpg.configure_item("swipe_status_text",
+                                   color={"applied": OK_GREEN, "apply_failed": WARN_AMBER}.get(state, TEXT_MUTED))
 
     def show_swipe_result(self, result, error=""):
         """P5 swipe verdict: the reason, one line per setting (best first), what was not tried, how long it

@@ -124,7 +124,7 @@ from runtime.camera_controller import CameraController
 from runtime.config_manager import ConfigManager
 from runtime.calibration_flows import CalibrationFlows
 from runtime.roi_state import RoiState
-from runtime.swipe_controller import LiveSetting, SwipeController
+from runtime.swipe_controller import LiveSetting, SwipeController, say
 from ui.adapter import DpgUiAdapter
 from ui.roi_mask_editor import RoiMaskEditor
 from services.web_monitor import WebMonitor
@@ -748,6 +748,7 @@ class WallDanceApp:
                 api.SettingsSwipeProgress(state, text, float(progress))),
             on_result=lambda result, error: self.bus.publish(api.SettingsSwipeResult(result, error)),
         )
+        self._swipe_pending_apply: Optional[tuple] = None   # (winner, confidence, project, monotonic time)
 
         # Pending operations (deferred to main loop)
 
@@ -2174,7 +2175,8 @@ class WallDanceApp:
         self.recording._update_recording_ui()
 
     def _cb_quit(self):
-        self.swipe.cancel()          # P5: stop a running settings swipe (its worker is a daemon)
+        self.swipe.cancel()          # P5: stop a running settings swipe ...
+        self.swipe.join(2.0)         # ... and let it drop its engine before the process tears CUDA down
         self.tracker.logger.close()  # Phase 0: flush and close tracking log
         self.running = False
         self.recorder.close()
@@ -2366,11 +2368,11 @@ class WallDanceApp:
         """
         try:
             report = self._build_readiness_report()
-            print(report.console_block(
-                f"(project={self.configs._current_project}, "
-                f"profile={self.configs._active_profile}) "))
             msg, color = report.toast_summary()
             self.bus.publish(api.Toast(msg, 6.0, color))
+            say(report.console_block(
+                f"(project={self.configs._current_project}, "
+                f"profile={self.configs._active_profile}) "))
         except Exception as e:  # noqa: BLE001 - never disturb Go-Live
             print(f"[Readiness] check failed: {e}")
 
@@ -2390,12 +2392,16 @@ class WallDanceApp:
             return
         rows = [{"name": r.name, "status": r.status, "detail": r.detail}
                 for r in report.results]
-        print(report.console_block(
-            f"(project={self.configs._current_project}, "
-            f"profile={self.configs._active_profile}) "))
         self.bus.publish(api.ReadinessResult(rows))
         msg, color = report.toast_summary()
         self.bus.publish(api.Toast(msg, 5.0, color))
+        # after the rows: a console that cannot print a character (cp1252) must not hide them
+        try:
+            say(report.console_block(
+                f"(project={self.configs._current_project}, "
+                f"profile={self.configs._active_profile}) "))
+        except Exception as e:  # noqa: BLE001
+            print(f"[Readiness] console print failed: {type(e).__name__}")
 
     def _cb_run_dry_run(self):
         """Phase-⑤ dry-run: replay the last recording with the current config.
@@ -2635,11 +2641,19 @@ class WallDanceApp:
             trt = bool(self.models.model_manager.is_using_tensorrt())
         except Exception:  # noqa: BLE001
             trt = False
-        shape = self.settings.yolo_shape
+        s = self.settings
+        shape = s.yolo_shape
+        try:
+            frame = tuple(int(v) for v in self.roi.state.source_size)
+        except Exception:  # noqa: BLE001
+            frame = ()
         return LiveSetting(project=self.configs._current_project,
-                           candidate=Candidate(self.models.current_model_name, int(self.settings.imgsz),
+                           candidate=Candidate(self.models.current_model_name, int(s.imgsz),
                                                tuple(shape) if shape else None),
-                           model_id=id(self.models.model), trt=trt)
+                           model_id=id(self.models.model), trt=trt,
+                           roi=(bool(s.roi_enabled), int(s.roi_x), int(s.roi_y), int(s.roi_w), int(s.roi_h)),
+                           plate=str(s.fg_plate_path or ""),
+                           plate_ok=bool(getattr(self.processor, "plate_usable", True)), frame=frame)
 
     def _cb_run_settings_swipe(self):
         """Start the swipe (worker thread; the show runs on at the live setting)."""
@@ -2655,22 +2669,61 @@ class WallDanceApp:
     def _cb_apply_settings_swipe(self):
         """Switch to the swipe's winner through the model-switch path (as the model combo / Image Size do with
         TensorRT): engine check, processing paused until the engine is loaded, the input it runs set by
-        ``_attach_model``.  The confidence too when the verdict recommends one.  Like a manual change it is
-        not saved: the operator's Save keeps it (model, yolo_imgsz, yolo_shape, confidence)."""
+        ``_attach_model``.  Only once that switch has run the winner on TensorRT (``_swipe_apply_done``) is
+        the recommended confidence applied and the result marked applied; a failed load keeps the old model,
+        its input and its confidence.  Like a manual change it is not saved: the operator's Save keeps it
+        (model, yolo_imgsz, yolo_shape, confidence, the dial's seed)."""
         why, winner, conf = self.swipe.applicable(self._swipe_live_setting())
         if why is None:
-            why = self.models.request_setting(winner.model, winner.imgsz, winner.shape)
+            why = self.models.request_setting(winner.model, winner.imgsz, winner.shape,
+                                              on_done=self._swipe_apply_done)
         if why:
             self.bus.publish(api.Toast(f"Swipe Apply: {why}", 5.0, (255, 200, 100)))
             return
+        self._swipe_pending_apply = (winner, conf, self.configs._current_project, time.monotonic())
         self.models.ui.sync_model_combo(winner.model)
         self._sync("combo", "imgsz", str(int(winner.imgsz)))
+        say(f"[Swipe] applying {winner.label}")
+        self.bus.publish(api.SettingsSwipeProgress("applying", f"switching to {winner.label}...", 0.0))
+
+    def _swipe_apply_done(self, ok: bool) -> None:
+        """The Apply switch has run (main loop).  Applied only when the winner now runs on TensorRT."""
+        pend, self._swipe_pending_apply = self._swipe_pending_apply, None
+        if pend is None:
+            return
+        winner, conf, project, t0 = pend
+        live = self._swipe_live_setting()
+        trt = bool(self.models.model_manager.is_using_tensorrt())
+        runs = (ok and trt and live is not None and live.candidate == winner
+                and project == self.configs._current_project and time.monotonic() - t0 < 600.0)
+        if not runs:
+            now = live.candidate.label if live is not None else "no model"
+            why = ("the engine did not load: running PyTorch" if ok and not trt
+                   else f"{now} runs" if ok else "the model did not load: the previous one is kept")
+            self.models.ui.sync_model_combo(self.models.current_model_name)
+            self._sync("combo", "imgsz", str(int(self.settings.imgsz)))
+            say(f"[Swipe] apply of {winner.label} did not complete: {why}")
+            self.bus.publish(api.SettingsSwipeProgress(
+                "apply_failed", f"Apply of {winner.label} did not complete: {why}; the confidence is "
+                                "unchanged", 0.0))
+            return
         if conf is not None:
-            self._cb_confidence_change(float(conf))
+            self._swipe_set_confidence(float(conf))
         self.swipe.mark_applied(winner)
-        print(f"[Swipe] applying {winner.label}" + (f", confidence {conf:.2f}" if conf is not None else ""))
-        self.bus.publish(api.Toast(f"Switching to {winner.label} (the swipe's pick) - Save the project "
-                                   "to keep it", 6.0, (120, 220, 140)))
+        say(f"[Swipe] applied {winner.label}" + (f", confidence {conf:.2f}" if conf is not None else ""))
+        self.bus.publish(api.SettingsSwipeProgress(
+            "applied", f"running {winner.label}, the swipe's pick - Save the project to keep it", 1.0))
+        self.bus.publish(api.Toast(f"Running {winner.label} (the swipe's pick) - Save the project to keep it",
+                                   6.0, (120, 220, 140)))
+
+    def _swipe_set_confidence(self, conf: float) -> None:
+        """The recommended confidence is the winner model's own calibrated seed: it becomes the Drops/Ghosts
+        dial's anchor (what Calibrate's sensitivity_conf_seed is), the dial keeps its position, and the
+        confidence and MOG2 varThreshold follow from the macro exactly as a dial move does -- at 50 the
+        confidence IS the recommended one and varThreshold its calibrated anchor.  The confidence slider
+        shows what runs (``_cb_sensitivity_change`` syncs it)."""
+        self._sensitivity_conf_seed = float(conf)
+        self._cb_sensitivity_change(self.sensitivity)
 
     # ------------------------------------------------------------------
     # Known-N auto-tune (K1) — phase ④ advanced
