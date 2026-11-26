@@ -259,6 +259,24 @@ an existing row.
 - **P4 · Readiness shows the dancer's height at the network** and warns under 100 px. After: P1. Where:
   `core/ops_monitor.py`. Gate: the 08/10 projects show the warning as shipped, not after P1. — @est(0.5d) —
   hub #t-050
+- **P5 · Warmup swipe.** After: P1, F1. Which model suits depends on the scene, so the app measures it instead of
+  the operator guessing. With a valid empty-wall plate and dancers on the wall, the pipeline keeps the frames
+  where the live setting leaves a dancer without a box (the newest 40, and 20 covered ones, 1 s apart). On « Try
+  other settings » a worker thread runs them through the other candidates beside the live loop, one paced
+  inference per live frame, one engine loaded at a time. The foreground referees: dancers with a box, minus
+  boxes on nobody (under 64 px² of foreground). The swipe picks the **model**; the dancer's height picks the
+  **size** (her height at the live input ≥ 200 px: the other model at the live input; under 200: both models at
+  the largest input that has an engine; 110–200: also the other model at the live input). Readiness shows the
+  verdict, Apply queues the switch like a manual change, nothing switches by itself. Where: `core/swipe.py`
+  (referee, collector, verdict), `core/swipe_runner.py` (planner, candidate runner), `runtime/swipe_controller.py`,
+  `core/pipeline.py` `_swipe_tap`, `core/ops_monitor.py` `check_swipe`; gates `tests/swipe_gate.py` (records) and
+  `tests/swipe_replay.py` (a take through the real code). Gate: on mur2 6–8 the pick within 1.5 points of the
+  best; never a setting worse than x @ 1280 on the corpus takes with a plate; ≤ 30 s on the laptop. — @est(2d)
+  bench GPU + laptop — hub #t-058
+- **P6 · Swipe during the show.** After: P5. Lost-dancer frames run through the candidates in the loop's slack;
+  a show gets a recommendation, a rehearsal switches after two clear wins and a dwell. Gate: `process_wall`
+  ≤ 55 ms at p95 with TouchDesigner, no switch on mur2 6–8 at l @ 1920 × 1056, a recommendation on a
+  light-change take. — @est(3d) laptop — hub #t-059
 
 Engine-only estimates on the laptop (pixel count against its measured 21.3 ms for x@1280 and 13.5 ms for
 l@1280): x at 1760 × 960 about 22 ms, l at 1760 × 960 about 14 ms, l at 1920 × 1056 about 17 ms, x at
@@ -502,6 +520,8 @@ Rev 2 (release in the last column):
 | P2 | Engines and timing | laptop | P1 | window | #t-048 | done 26/11 (§5) | 1 |
 | P3 | Model by the ratchet | bench GPU | P1, F3 | 0.5d | #t-049 | measured 26/11, choice open (§5) | 1 |
 | P4 | Dancer height at the network | bench ⚙ | P1 | 0.5d | #t-050 | landed 26/11; the live band open | 1 |
+| P5 | Warmup swipe | bench GPU + laptop | P1, F1 | 2d | #t-058 | built 26/11 on `cordee-swipe`, gates in §5; review pending | – |
+| P6 | Swipe during the show | laptop | P5 | 3d | #t-059 | todo | – |
 | X1 | Servo on the highlights | bench ⚙ | – | 1d | #t-027 ④ | todo | 2 |
 | X2 | Light verdict | bench ⚙ | – | 0.5d | #t-054 | todo | 2 |
 | X3 | Emptiness first | bench ⚙ | – | 1d | #t-027 ⑤ | todo | 2 |
@@ -597,6 +617,62 @@ Filled by the step named. Until then the cell says so.
   (textured walls); outdoor-night and outdoor-sitter at 114 and 134 px, where yolo11l loses badly while it wins on
   the façade at the same height. The order of evidence (Thomas, 26/11): the `mur` takes stand for the show and
   lead; the hangar corpus stands for indoor rehearsals and must still be covered.
+- **P5 — the warmup swipe** (2026-11-26; `tests/swipe_gate.py` on per-frame records, `tests/swipe_replay.py
+  --concurrent` on the takes; records, logs and the agents' reports in `tmp_analysis/swipe-1126/` on mgr-ran).
+  Truth recall on mur2 6 / 7 / 8: x @ 1280 (live) 53.9 / 51.2 / 57.0 %, l @ 1280 91.2 / 86.0 / 87.5, l @ 1760 × 960
+  90.6 / 88.5 / 88.6, x @ 1920 × 1056 87.1 / 81.3 / 83.5, l @ 1920 × 1056 93.5 / 90.5 / 91.0 (the best).
+  - *Referee.* « On nobody » = under 64 px² of foreground mask under the box: on real dancers it flags 0–0.003
+    boxes a frame on mur2 7 and 8, where the group-centre rule flagged 0.23–0.41 (dancer and shadow form one
+    group whose centre leaves her box); both catch the truth's ghost boxes alike. One confidence serves both
+    models (at 0.15, l and x at 1920 × 1056 have the same false boxes and l sees 7–9 points more), so the swipe
+    recommends none.
+  - *Gate 1, façade* — 2,000 simulated swipes a take, collected as the app does (a random start, then the
+    collector's frames), the best always taken among the six. Share of swipes more than 1.5 points under the
+    best, and the mean truth of the pick, at 40 lost + 20 covered frames 1 s apart:
+
+    | Candidates | mur2 6 | mur2 7 | mur2 8 |
+    |---|---|---|---|
+    | the six (both models at 1280, 1760 × 960, 1920 × 1056) | 5.5 % · 93.37 | 27.6 % · 89.60 | 25.9 % · 90.01 |
+    | live + both models at 1760 × 960 and 1920 × 1056 | 0.2 % · 93.49 | 14.7 % · 90.21 | 10.8 % · 90.54 |
+    | live + both models at 1920 × 1056 (**the planner's set**) | 0.1 % · 93.49 | 0.0 % · 90.50 | 4.0 % · 90.70 |
+    | the same, the operator's excluded cells dropped first (**as shipped**) | 0 % · 93.50 | 0 % · 90.50 | 1.8 % · 90.86 |
+
+    A window of 60 frames cannot separate input sizes (l @ 1280 and l @ 1760 × 960 sit 2–4.5 points under the
+    best and tie with it on windows), hence the planner: the size from the dancer's height, the model from the
+    swipe. 110 and 200 px are the band of the « dancer size » row; the dancer is 71–89 px at the live input here,
+    far from both; 1760 × 960 (97 / 107 / 122 px) sits on the 110 line, which is why no cut is placed on the
+    candidate inputs themselves. 30 frames 0.5 s apart is red (consecutive frames can sit in a stretch the
+    referee cannot read); the gap matters more than the count. The real code on the takes: l @ 1920 × 1056 named
+    on 9 of 9 runs on mgr-ran (three starts a take) and 5 of 5 on the laptop.
+  - *Gate 2, corpus* — green by refusal only. The 4 corpus plates (8 scenarios) are medians of takes with dancers
+    in them; there the live setting itself puts 0.40–1.25 boxes a frame on nobody (0.011 on 08/10's real plate),
+    and above 0.10 the swipe answers « no verdict: take the empty wall again ». No worse setting is ever named;
+    without that check it names one on texture-wallhang (22 % of swipes), white-duo (99 %) and white-duo-full
+    (93 %). The outdoor scenarios, where yolo11l collapses, have no plate. So this gate says the swipe knows a
+    plate it cannot trust, not that it chooses well in a hangar: that needs a real empty-wall plate there (B5).
+  - *Gate 3, the laptop* — `93e92eb` from a scratch copy, the take played in real time beside the worker, pacing
+    50 ms, three candidates on 60 frames:
+
+    | Run | Swipe: loads / inference / total | Live frame p50 / p95 / max, collecting → during the swipe |
+    |---|---|---|
+    | mur2 6 | 0.93 / 7.10 / **12.2 s** | 32.0 / 37.8 / 43 → 50.7 / 58.6 / 146 ms |
+    | mur2 7 | 0.95 / 8.16 / **12.0 s** | 31.2 / 36.6 / 42 → 52.4 / 60.0 / 93 ms |
+    | mur2 8 | 0.91 / 7.03 / **12.2 s** | 31.8 / 37.3 / 47 → 51.3 / 61.7 / 141 ms |
+    | mur2 7, another start | 0.92 / 6.82 / **12.2 s** | 31.5 / 34.5 / 40 → 49.2 / 59.0 / 79 ms |
+    | mur2 7, with TouchDesigner | 0.97 / 7.65 / **12.4 s** | 29.4 / 34.1 / 40 → 49.1 / 67.3 / 107 ms |
+
+    Under the 30 s gate with room. The cost is on the loop: for those 12 s about half the live frames pass
+    50 ms, so the loop runs under 20 fps (not under the 15 fps floor at p95, except beside TouchDesigner by
+    1 ms); `SWIPE_PACE_S` trades the swipe's length against it. Collecting the frames takes 39–44 s of dancers on
+    the wall, done passively before the button is pressed. Engine alone on the laptop: a load 0.14–0.20 s, a
+    release 0.06 s with all its GPU memory back; TouchDesigner on the show patch holds 2.4 GB (the « 4 GB » of
+    P2 was the device total); peak 6.1 GB of 16.3 with TouchDesigner. ultralytics 8.4.63 there has no CUDA-graph
+    path, so the capture guard is inert; on mgr-ran (8.4.173) a load beside another thread's CUDA work broke the
+    capture, hence one engine load at a time in the process (`ENGINE_LOAD_LOCK`).
+  - *Open.* The real GUI and Apply's full switch (camera reopen, engine load) are not exercised by a test or a
+    run; the middle regime (a dancer of 110–200 px at the live input) has no take; the referee goes blind to a
+    dancer the live setting loses for long, because the slow plate update absorbs her (F2); « largest input » can
+    name x @ 1920 × 1056, which has 3.5 ms of margin on the laptop (P2); three takes, one evening, one wall.
 - **F1 — foreground** (2026-11-26, `tests/fg_eval.py`, mur2 with the 21:36 plate, every 3rd frame):
   foreground under 6,263 of 6,263 boxes a network gives at conf ≥ 0.5; a group on the dancer 94.7–100 % of
   dancer-frames; groups on nobody inside the wall 0.000–0.201 per frame; take 2 (empty) 0.0 and no stale frame (the
@@ -620,7 +696,8 @@ Filled by the step named. Until then the cell says so.
 | #t-016 order the front BP850 and floodlights, #t-017 rig upgrade | Unchanged. B6 can ride on #t-017's visit. |
 
 Rev 2 (hub, 2026-11-25): new rows #t-046 (this revision), P1–P4 #t-047–#t-050, F1 #t-051, F3 #t-052, X6
-#t-053, X2 #t-054, X4 #t-055, F4 #t-056, H1 #t-057. Sub-steps added to wave-1 rows: M1 on B2 (#t-031), M2 on
+#t-053, X2 #t-054, X4 #t-055, F4 #t-056, H1 #t-057. 26/11: P5 #t-058 and P6 #t-059, from Thomas's « settings swipe » (hub note
+2026-11-26-settings-swipe). Sub-steps added to wave-1 rows: M1 on B2 (#t-031), M2 on
 A2 (#t-023), M3 on B1 (#t-030), X5 on A4 (#t-025), H3 on A5 (#t-026), X1 and X3 on A6 (#t-027), U1 on A8
 (#t-029), H2 and U3 on E2 (#t-040), U2 on L2 (#t-043), window 1's timing on L1 (#t-020); T1 already exists
 as the counter-analysis (B7, #t-036), the order is partly answered (G1, #t-037), and foreground becomes the
