@@ -28,14 +28,108 @@ Measured on the night project's bright empty take (slot_1 21:16, wall band, x@12
 ``tests/empty_wall_check.py --full``): from the 10:33 values, gamma 1.8 / CLAHE 1.5 -> a person-sized
 ghost by the equipment (x 654, y 685, h 174) up to conf 0.56 in 17/30 frames; 1.53 -> 8/30 (max 0.24);
 1.27 -> 1-3/30 (0.21); 1.0 and below -> none.  Last night's gamma 0.73 / CLAHE 2.5 -> none.
+
+X3 (roadmap 2026-11-25, emptiness first).  On 08/10 a dancer was in view at the 20:06 Calibrate: every
+rung "failed" on her and the ladder walked the enhancement down to gamma 0.8 / CLAHE 1.0, which the whole
+`mur` evening then ran at (worth about 18 points of recall).  A ghost the enhancement makes and a person
+differ in how often YOLO sees them at a neutral enhancement: the ghost above, at gamma 1.0, in 0 of 30
+frames (a stray 1 in 40 on the bright take); a dancer in most frames.  So ``PersonWatch`` watches
+``PERSON_FRAMES`` frames and calls it a person when at least ``PERSON_MIN_FRAC`` of them hold a box at
+the live confidence.  Calibrate runs it first, at gamma <= ``NEUTRAL_GAMMA``, and stops when someone is
+there (``where`` says where); and the ladder runs it on a rung at or under neutral before stepping lower:
+it never goes under neutral because of a person -- a person there ends the check with ``person`` set,
+and the caller keeps the enhancement it had.  ``EmptyWallResult.ceiling`` records the strongest clean rung.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 GAMMA_FLOOR = 0.8          # AUTOCAL_GAMMA_BOUNDS[0]
 CLAHE_STEPS = (1.5, 1.0)   # tried at the weakest gamma when the calibrated clip is above them
+NEUTRAL_GAMMA = 1.0        # X3: the gamma the person watch runs at; the ladder never goes under it for a person
+PERSON_FRAMES = 30         # X3: frames watched to tell a person (most frames) from a ghost (a stray frame)
+PERSON_MIN_FRAC = 0.2      # X3: ... of which this share holds a box at the live confidence = someone is there
+PERSON_SETTLE = 4          # X3: frames before the watch counts, after an enhancement change
+
+
+@dataclass
+class Sighting:
+    """Where someone is (original px): the place seen most often (``PersonWatch.sighting``); ``hits`` of
+    ``frames`` watched held a person."""
+    x: float
+    y: float
+    h: float
+    conf: float
+    hits: int
+    frames: int
+
+    def where(self, region: Optional[Tuple[float, float, float, float]] = None) -> str:
+        """'middle left of the wall (x 512, y 560)': thirds of ``region`` (the ROI, x, y, w, h), else of
+        nothing -- the coordinates alone."""
+        at = f"x {self.x:.0f}, y {self.y:.0f}"
+        if region is None or region[2] <= 0 or region[3] <= 0:
+            return f"at {at}"
+        rx, ry, rw, rh = (float(v) for v in region)
+        u, v = (self.x - rx) / rw, (self.y - ry) / rh
+        if not (0.0 <= u <= 1.0 and 0.0 <= v <= 1.0):
+            return f"outside the Region of Interest ({at})"
+        row = ("top", "middle", "bottom")[min(2, int(v * 3))]
+        col = ("left", "centre", "right")[min(2, int(u * 3))]
+        place = "centre" if (row, col) == ("middle", "centre") else f"{row} {col}"
+        return f"{place} of the wall ({at})"
+
+
+class PersonWatch:
+    """X3: is someone in view?  ``frames`` frames (after ``settle``) of raw detections (conf, x, y, h);
+    a person when at least ``min_frac`` of them hold a box at ``confidence`` or more.  Decides early once
+    the count is reached or can no longer be."""
+
+    def __init__(self, confidence: float, *, frames: int = PERSON_FRAMES, min_frac: float = PERSON_MIN_FRAC,
+                 settle: int = 0):
+        self.confidence = float(confidence)
+        self.frames = max(1, int(frames))
+        self.need = max(1, int(math.ceil(float(min_frac) * self.frames)))
+        self.settle = max(0, int(settle))
+        self.seen = 0
+        self.hits = 0
+        self._tops: List[Tuple[float, float, float, float]] = []
+        self.person: Optional[bool] = None          # None while watching
+
+    @property
+    def done(self) -> bool:
+        return self.person is not None
+
+    def feed(self, dets: Iterable[Sequence[float]]) -> None:
+        if self.done:
+            return
+        if self.settle > 0:
+            self.settle -= 1
+            return
+        self.seen += 1
+        top = max((d for d in dets if float(d[0]) >= self.confidence), key=lambda d: float(d[0]), default=None)
+        if top is not None:
+            self.hits += 1
+            self._tops.append(tuple(float(v) for v in top[:4]))
+        if self.hits >= self.need:
+            self.person = True
+        elif self.seen - self.hits > self.frames - self.need:
+            self.person = False
+
+    @property
+    def sighting(self) -> Optional[Sighting]:
+        """The place seen most often: the strongest box of each frame, grouped within half a body height
+        (two dancers side by side stay two places, never their midpoint); the median of the largest group."""
+        tops = self._tops
+        if not tops:
+            return None
+        near = lambda a, b: max(abs(a[1] - b[1]), abs(a[2] - b[2])) <= 0.5 * max(a[3], b[3], 1.0)
+        best = max(tops, key=lambda t: sum(near(t, u) for u in tops))
+        group = [u for u in tops if near(best, u)]
+        med = lambda i: sorted(t[i] for t in group)[len(group) // 2]
+        return Sighting(x=med(1), y=med(2), h=med(3), conf=max(t[0] for t in group),
+                        hits=self.hits, frames=self.seen)
 
 
 @dataclass
@@ -46,6 +140,8 @@ class CandidateResult:
     ghost_frames: int = 0
     max_conf: float = 0.0
     worst: Optional[Tuple[float, float, float, float]] = None   # conf, x, y, h of the strongest ghost
+    watched: int = 0                       # X3: frames of the person watch after this rung failed
+    person_hits: int = 0                   # ... holding a box at the live confidence
 
     @property
     def label(self) -> str:
@@ -60,14 +156,26 @@ class EmptyWallResult:
     conf_limit: float
     tried: List[CandidateResult] = field(default_factory=list)
     kept_current: bool = False             # the project's calibrated enhancement passed: left as it was
+    person: Optional[Sighting] = None      # X3: someone in view -- the check stopped there, nothing to keep
+    region: Optional[Tuple[float, float, float, float]] = None   # the ROI, for ``where``
+
+    @property
+    def ceiling(self) -> Optional[Tuple[float, float]]:
+        """X3: the strongest setting found clean on the empty wall (the kept rung), None if none was.  When
+        ``kept_current``, the project's enhancement passed first and stronger rungs were not tried."""
+        return (self.gamma, self.clahe) if self.clean else None
 
     def summary(self) -> str:
         lines = [f"Empty-wall YOLO check (persons >= {self.conf_limit:.2f}):"]
         for c in self.tried:
             mark = "ok" if c.ghost_frames == 0 else f"{c.ghost_frames}/{c.frames} frames"
             near = f", max {c.max_conf:.2f}" if c.max_conf > 0 else ""
-            lines.append(f"  {c.label}: {mark}{near}")
-        if self.clean and self.kept_current:
+            watch = f", someone in {c.person_hits}/{c.watched} more" if c.watched else ""
+            lines.append(f"  {c.label}: {mark}{near}{watch}")
+        if self.person is not None:
+            lines.append(f"Someone is in view, {self.person.where(self.region)}: the check stopped there "
+                         f"and lowered nothing. Clear the wall, then Calibrate again.")
+        elif self.clean and self.kept_current:
             lines.append(f"Kept the current gamma {self.gamma:.2f} / CLAHE {self.clahe:.1f}: YOLO sees nobody "
                          "on the empty wall with it")
         elif self.clean:
@@ -75,13 +183,20 @@ class EmptyWallResult:
         else:
             w = max((c for c in self.tried if c.worst), key=lambda c: c.worst[0], default=None)
             where = f" near x={w.worst[1]:.0f}, y={w.worst[2]:.0f}" if w else ""
-            lines.append(f"YOLO sees a person on the EMPTY wall{where} even at the weakest setting: "
-                         "remove the object or paint an exclusion there, then calibrate again.")
+            lines.append(f"YOLO now and then sees a person on the EMPTY wall{where}, even at the weakest "
+                         "setting (kept): if an object there looks like a person, remove it or move the Region "
+                         "of Interest off it, then Calibrate again.")
         return "\n".join(lines)
 
     def log_line(self) -> str:
         tried = "; ".join(f"{c.gamma:.2f}/{c.clahe:.1f}:{c.ghost_frames}/{c.frames}@{c.max_conf:.2f}"
+                          + (f"+watch {c.person_hits}/{c.watched}" if c.watched else "")
                           for c in self.tried)
+        if self.person is not None:
+            p = self.person
+            return (f"[EmptyWall] stopped: person at x={p.x:.0f} y={p.y:.0f} h={p.h:.0f} conf={p.conf:.2f} "
+                    f"({p.hits}/{p.frames} frames at gamma={self.gamma:.2f} clahe={self.clahe:.1f}) "
+                    f"limit={self.conf_limit:.2f} tried {tried}")
         return (f"[EmptyWall] kept gamma={self.gamma:.2f} clahe={self.clahe:.1f} clean={self.clean} "
                 f"limit={self.conf_limit:.2f} tried {tried}")
 
@@ -107,12 +222,24 @@ def ladder(gamma0: float, clahe0: float) -> List[Tuple[float, float]]:
 class EmptyWallCheck:
     def __init__(self, gamma0: float, clahe0: float, confidence: float, *, frames: int = 120,
                  settle: int = 4, margin: float = 0.8, max_ghost_frames: int = 0,
-                 keep: Optional[Tuple[float, float]] = None):
+                 keep: Optional[Tuple[float, float]] = None,
+                 person_frames: int = PERSON_FRAMES, person_min_frac: float = PERSON_MIN_FRAC,
+                 region: Optional[Tuple[float, float, float, float]] = None):
         """``keep``: the project's already calibrated (gamma, CLAHE), tried FIRST and kept when YOLO
         sees nobody with it -- Calibrate must not trade a working enhancement for the scene formula's
         pick (2026-10-07 demo: gamma 0.73 / CLAHE 2.5 -> 1.0 / 1.5 let a sporadic false person at the
-        door equipment steal the dancer's track on the dark takes)."""
+        door equipment steal the dancer's track on the dark takes).
+
+        X3: a rung at or under ``NEUTRAL_GAMMA`` that fails is watched ``person_frames`` more frames
+        (``PersonWatch`` at the live ``confidence``) before the ladder steps lower; a person there ends
+        the check (``result.person``).  ``person_frames=0`` turns the watch off.  ``region``: the ROI
+        (x, y, w, h), only for the result's ``where``."""
         self.conf_limit = max(0.05, float(margin) * float(confidence))
+        self.person_conf = float(confidence)
+        self.person_frames = int(person_frames)
+        self.person_min_frac = float(person_min_frac)
+        self.region = tuple(region) if region is not None else None
+        self._watch: Optional[PersonWatch] = None
         self.frames = int(frames)
         self.settle = int(settle)
         self.max_ghost_frames = int(max_ghost_frames)
@@ -144,6 +271,9 @@ class EmptyWallCheck:
         when it changes (the next rung), else None; ``done`` / ``result`` when finished."""
         if self.done:
             return None
+        dets = list(dets)
+        if self._watch is not None:                # X3: a failed rung at / under neutral -- someone there?
+            return self._feed_watch(dets)
         self._seen += 1
         if self._seen <= self.settle:              # the enhancer change reaches YOLO a frame or two later
             return None
@@ -159,13 +289,37 @@ class EmptyWallCheck:
         if c.ghost_frames > self.max_ghost_frames or c.frames >= self.frames:
             if c.ghost_frames <= self.max_ghost_frames:
                 self.result = EmptyWallResult(c.gamma, c.clahe, True, self.conf_limit, self.tried,
-                                              kept_current=self._keep is not None and self._i == 0)
+                                              kept_current=self._keep is not None and self._i == 0,
+                                              region=self.region)
                 return None
-            if self._i + 1 >= len(self.steps):
-                self.result = EmptyWallResult(c.gamma, c.clahe, False, self.conf_limit, self.tried)
+            if self.person_frames > 0 and c.gamma <= NEUTRAL_GAMMA + 0.02:
+                self._watch = PersonWatch(self.person_conf, frames=self.person_frames,
+                                          min_frac=self.person_min_frac)
                 return None
-            self._i += 1
-            self._seen = 0
-            self.tried.append(CandidateResult(*self.steps[self._i]))
-            return self.steps[self._i]
+            return self._next_rung()
         return None
+
+    def _feed_watch(self, dets) -> Optional[Tuple[float, float]]:
+        w = self._watch
+        w.feed(dets)
+        if not w.done:
+            return None
+        self._watch = None
+        c = self.tried[-1]
+        c.watched, c.person_hits = w.seen, w.hits
+        if w.person:                               # never under neutral because of a person: stop here
+            self.result = EmptyWallResult(c.gamma, c.clahe, False, self.conf_limit, self.tried,
+                                          person=w.sighting, region=self.region)
+            return None
+        return self._next_rung()                   # a ghost, not a person: on down the ladder
+
+    def _next_rung(self) -> Optional[Tuple[float, float]]:
+        c = self.tried[-1]
+        if self._i + 1 >= len(self.steps):
+            self.result = EmptyWallResult(c.gamma, c.clahe, False, self.conf_limit, self.tried,
+                                          region=self.region)
+            return None
+        self._i += 1
+        self._seen = 0
+        self.tried.append(CandidateResult(*self.steps[self._i]))
+        return self.steps[self._i]

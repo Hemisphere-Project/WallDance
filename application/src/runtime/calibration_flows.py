@@ -18,7 +18,9 @@ verbatim.
 """
 from __future__ import annotations
 
+import copy
 import glob
+import numbers
 import os
 import time
 from typing import Callable, Optional, Protocol
@@ -34,7 +36,7 @@ from core.calibration import (ExposureServo, SceneCalibrator,
 from core.config import (AUTOCAL_BLUR_BUDGET_MS, AUTOCAL2_FRAME_SAMPLES,
                          AUTOCAL2_NOISE_REUSE_S, AUTOCAL2_WINDOW_FRAMES,
                          AUTOCAL_SERVO_GAIN_MAX_DB, EMPTY_WALL_CHECK, MODELS_DIR)
-from core.empty_wall import EmptyWallCheck
+from core.empty_wall import EmptyWallCheck, NEUTRAL_GAMMA, PERSON_SETTLE, PersonWatch
 
 try:
     from camera.ids_camera import CameraSource
@@ -124,6 +126,17 @@ class CalibrationFlows:
         self._wall_result = None                         # EmptyWallResult for the result dialog
         self._scene_pending = None                       # (CalibrationResult, gamma_capped) for the dialog
         self._pre_enhancement = None                     # the project's calibrated (gamma, CLAHE) at Calibrate
+        # X3: emptiness first -- the person watch before anything is measured (core/empty_wall.py)
+        self.emptiness_first: bool = True
+        self._emptiness: Optional[PersonWatch] = None
+        self._emptiness_resume = None                    # the enhancement the next phase expects
+        self.enhancement_ceiling = None                  # X3: the strongest clean (gamma, CLAHE) of the last check
+        self.last_stop: Optional[str] = None             # why the last Calibrate stopped (someone in view)
+        # A6 ②: what Calibrate found, to put back when it is cancelled or stopped; the plate held until Save
+        self._snapshot: Optional[dict] = None
+        self._pending_plate = None                       # (plate, the app's writer) recorded, not yet written
+        self._plate_hold = None                          # our done-callback while the capture runs
+        self._plate_commit_requested = False
         # Calib2 (UX_PLAN U4): dancer evidence pool — accumulative across runs.
         self._calib2 = SubjectCollector()
         self._calibrating2 = False
@@ -153,6 +166,7 @@ class CalibrationFlows:
         "clahe": "CLAHE", "person_height_px": "height", "confidence": "conf",
         "imgsz": "imgsz", "blur_budget_ms": "blur",
         "ids_exposure_us": "exposure", "ids_gain_db": "gain",
+        "enhancement_ceiling": "ceiling",
     }
 
     @staticmethod
@@ -212,12 +226,14 @@ class CalibrationFlows:
             # playback was paused before the window filled).
             self._calibrating = False
             self._servo = None
+            self._emptiness = self._emptiness_resume = None
             self._calibrator.cancel()
             self.processor.cancel_exclusion_calibration()
             if self._wall_check is not None:   # stopped during the empty-wall check: the scene pick, unchecked
                 first = self._wall_check.tried[0]
                 self._set_enhancement(first.gamma, first.clahe)
                 self._end_wall_check(cancelled=True)
+            self._restore_snapshot()           # A6 ②: and everything Calibrate changed goes back
             if self.ui.available:
                 self.ui.set_calibrate_status(None)
                 self.ui.show_toast("Calibration cancelled",
@@ -239,6 +255,9 @@ class CalibrationFlows:
                 self.ui.show_toast("Start the camera or play a recording first",
                                    duration=3.0, color=(255, 180, 80))
             return
+        # A6 ②: what this Calibrate may change, as it is now (put back if it is cancelled or stopped)
+        self._snapshot = self._take_snapshot()
+        self.last_stop = None
         # Calib1 phase A: exposure/gain servo — only when we can actually
         # drive the sensor (live IDS camera, not playback).
         self._servo = None
@@ -271,6 +290,7 @@ class CalibrationFlows:
             if cam is not None:
                 self.cameras._cb_ids_exposure_change(cam["exposure_us"])
                 self.cameras._cb_ids_gain_change(cam["gain_db"])
+                self._snapshot["camera_touched"] = True
                 if self.ui.available:
                     self.ui.sync_slider("ids_exposure_us", self.cameras.ids_exposure_us)
                     self.ui.sync_slider("ids_gain_db", self.cameras.ids_gain_db)
@@ -293,6 +313,8 @@ class CalibrationFlows:
         print("[Calibrate] started "
               f"({'playback' if self.recorder.is_playing else 'live'}"
               f"{', exposure servo' if self._servo else ''})")
+        if self.emptiness_first:
+            self._start_emptiness()
 
     def _servo_gain_max_db(self) -> float:
         """The servo's gain ceiling: AUTOCAL_SERVO_GAIN_MAX_DB, cut to what the camera can do
@@ -331,6 +353,9 @@ class CalibrationFlows:
 
     def _step_calibration(self, tracked, process_wall_ms):
         """Feed one processed frame to the active calibrator; finalize when ready."""
+        if self._emptiness is not None:            # X3: emptiness first, before anything is measured
+            self._step_emptiness()
+            return
         if self._wall_check is not None:
             self._step_wall_check()
             return
@@ -356,10 +381,17 @@ class CalibrationFlows:
                         self.cameras._cb_ids_gain_change(value)
                         if self.ui.available:
                             self.ui.sync_slider("ids_gain_db", self.cameras.ids_gain_db)
+                    if self._snapshot is not None:
+                        self._snapshot["camera_touched"] = True
                 if self.ui.available:
                     self.ui.set_calibrate_status(f"Calibrating exposure ({b:.0f})")
             if self._servo.done:
                 self._servo_result = self._servo.result()
+                # A6 ①: report what the camera controller runs at, not the servo's own idea of it
+                for attr, key in (("exposure_us", "ids_exposure_us"), ("gain_db", "ids_gain_db")):
+                    v = getattr(self.cameras, key, None)
+                    if isinstance(v, numbers.Real) and not isinstance(v, bool):
+                        setattr(self._servo_result, attr, float(v))
                 print("[Calibrate] " + self._servo_result.summary_line())
                 self._seed_gamma_for_calibration(self._servo_result.brightness)
                 self._servo = None
@@ -402,6 +434,9 @@ class CalibrationFlows:
         which needs dancers in frame; an empty-stage height measure is noise
         (Track C: height ownership).
         """
+        if self._snapshot is None:                 # A6 ②: reached without _cb_calibrate (tools, tests)
+            self._snapshot = self._take_snapshot()
+        self._snapshot["scene_applied"] = True
         # Track C apply-gate: warn (never block — calibration is idempotent)
         # when the scene defeats MOG2, so the operator can fix IR/gain before
         # trusting the ghost rejection.
@@ -454,11 +489,8 @@ class CalibrationFlows:
         self.request_reprocess()
         # Calibrate runs on the EMPTY wall: record it as the clean plate (the foreground
         # evidence for the dancer ids; the "clean-plate" Aim always promised, D16).
-        if self.capture_plate is not None:
-            try:
-                self.capture_plate("calibrate")
-            except Exception as exc:  # noqa: BLE001 - never fail a calibration on it
-                print(f"[Foreground] plate capture not started ({type(exc).__name__}: {exc})")
+        # A6 ②: recorded now, written to the project at Save (commit_pending_plate).
+        self._capture_pending_plate()
         self._scene_pending = (result, gamma_capped)
         self._wall_result = None
         if not self._start_wall_check():
@@ -485,7 +517,8 @@ class CalibrationFlows:
         try:
             chk = EmptyWallCheck(float(self.enhancer.gamma), float(self.enhancer.clahe_clip),
                                  float(self.settings.confidence),
-                                 keep=getattr(self, "_pre_enhancement", None))
+                                 keep=getattr(self, "_pre_enhancement", None),
+                                 region=self._wall_region())
         except (TypeError, ValueError) as exc:
             print(f"[EmptyWall] check not started ({exc})")
             return False
@@ -506,7 +539,10 @@ class CalibrationFlows:
         nxt = chk.feed(list(getattr(self.processor, "last_raw_dets", None) or ()))
         if nxt is not None:
             self._set_enhancement(*nxt)
-        if chk.done:
+        if chk.done and chk.result.person is not None:     # X3: never lowered because of a person
+            self._end_wall_check()
+            self._stop_for_person(chk.result.person, chk.result.region)
+        elif chk.done:
             self._set_enhancement(chk.result.gamma, chk.result.clahe)
             self._end_wall_check()
             self._finish_calibration()
@@ -527,18 +563,23 @@ class CalibrationFlows:
         r = chk.result
         self._wall_result = r
         print(r.log_line())
+        if r.person is not None:                   # X3: the caller stops and puts everything back
+            return
         if (r.gamma, r.clahe) != (chk.tried[0].gamma, chk.tried[0].clahe):
             self._stamp_calib_state("aim", "gamma", "clahe")
         self.request_reprocess()
         if not r.clean and self.ui.available:
-            self.ui.show_toast("YOLO sees a person on the EMPTY wall at every setting: remove the "
-                               "object or paint an exclusion there, then calibrate again.",
+            self.ui.show_toast("YOLO now and then sees a person on the EMPTY wall, even at the weakest "
+                               "setting: if an object there looks like a person, remove it or move the "
+                               "Region of Interest off it, then Calibrate again.",
                                duration=8.0, color=(255, 140, 70))
 
     def _finish_calibration(self) -> None:
         """The report card: servo / take exposure, gamma, the scene window, the empty-wall check."""
         result, gamma_capped = self._scene_pending or (None, False)
         self._scene_pending = None
+        self._snapshot = None                      # A6 ②: a finished Calibrate is the session's state now
+        self._record_ceiling()
         if not self.ui.available or result is None:
             return
         self.ui.set_calibrate_status(None)
@@ -554,7 +595,215 @@ class CalibrationFlows:
         # action (ROADMAP bug #6).
         self.ui.show_calibration_result_dialog(
             servo_line + gamma_line + result.summary() + "\n" + wall,
-            on_save=self.configs._cb_save_config)
+            on_save=self._save_calibration)
+
+    # ------------------------------------------------------------------
+    # X3 — emptiness first; A6 ② — a cancelled or stopped Calibrate puts things back
+    # ------------------------------------------------------------------
+    def _wall_region(self):
+        """The ROI (x, y, w, h) on the current frame, else None: where ``Sighting.where`` places someone."""
+        raw = self.last_raw_frame()
+        return self._servo_roi(raw) if raw is not None else None
+
+    def _start_emptiness(self) -> None:
+        """X3: before anything is measured, watch a few frames for someone in view, at gamma <= neutral so
+        an enhancement ghost does not pass for a person (core/empty_wall.py)."""
+        snap = self._snapshot or {}
+        self._emptiness_resume = (float(self.enhancer.gamma), float(self.enhancer.clahe_clip))
+        g0 = snap.get("gamma")
+        g = min(g0, NEUTRAL_GAMMA) if g0 is not None else NEUTRAL_GAMMA
+        c = snap.get("clahe")
+        self._set_enhancement(g, c if c is not None else self._emptiness_resume[1])
+        self._emptiness = PersonWatch(float(self.settings.confidence), settle=PERSON_SETTLE)
+        if self.ui.available:
+            self.ui.set_calibrate_status("Checking that the wall is empty...")
+        print(f"[Calibrate] emptiness first: watching {self._emptiness.frames} frames at gamma {g:.2f}, "
+              f"persons >= {self._emptiness.confidence:.2f}")
+
+    def _step_emptiness(self) -> None:
+        w = self._emptiness
+        w.feed(list(getattr(self.processor, "last_raw_dets", None) or ()))
+        if not w.done:
+            return
+        self._emptiness = None
+        if w.person:
+            self._stop_for_person(w.sighting, self._wall_region())
+            return
+        resume, self._emptiness_resume = self._emptiness_resume, None
+        if resume is not None:
+            self._set_enhancement(*resume)
+        print(f"[Calibrate] the wall is empty: a person in {w.hits} of {w.seen} frames")
+        if self.ui.available:
+            self.ui.set_calibrate_status("Calibrating exposure..." if self._servo is not None
+                                         else "Calibrating 0%")
+
+    def _stop_for_person(self, sighting, region) -> None:
+        """X3: someone is in view -- Calibrate stops, says where, and changes nothing (A6 ②)."""
+        self._calibrating = False
+        self._servo = None
+        self._emptiness = None
+        self._emptiness_resume = None
+        self._calibrator.cancel()
+        self.processor.cancel_exclusion_calibration()
+        if self._wall_check is not None:
+            self._end_wall_check(cancelled=True)
+        self._restore_snapshot()
+        where = sighting.where(region) if sighting is not None else "in the picture"
+        self.last_stop = (f"Someone is in view, {where}: Calibrate stopped and changed nothing. "
+                          "Clear the wall, then press Calibrate again.")
+        print(f"[Calibrate] stopped: {self.last_stop}"
+              + (f" ({sighting.hits}/{sighting.frames} frames, conf up to {sighting.conf:.2f}, "
+                 f"h {sighting.h:.0f} px)" if sighting is not None else ""))
+        if self.ui.available:
+            self.ui.set_calibrate_status(f"Stopped: someone in view, {where}")
+            self.ui.show_toast(self.last_stop, duration=10.0, color=(255, 140, 70))
+
+    @staticmethod
+    def _real(v):
+        return float(v) if isinstance(v, numbers.Real) and not isinstance(v, bool) else None
+
+    def _take_snapshot(self) -> dict:
+        """What a Calibrate may change, as it is before it starts."""
+        r = self._real
+
+        def read(fn):
+            try:
+                return r(fn())
+            except Exception:  # noqa: BLE001
+                return None
+        cams = self.cameras
+        return {
+            "gamma": r(self.enhancer.gamma), "clahe": r(self.enhancer.clahe_clip),
+            "confidence": r(self.settings.confidence),
+            "exposure_us": r(getattr(cams, "ids_exposure_us", None)),
+            "gain_db": r(getattr(cams, "ids_gain_db", None)),
+            "exposure_auto": getattr(cams, "ids_exposure_auto", None),
+            "gain_auto": getattr(cams, "ids_gain_auto", None),
+            "var": read(self.processor.get_motion_var_threshold),
+            "scale": read(self.processor.get_motion_scale),
+            "state": copy.deepcopy(self.calibration_state),
+            "noise": (self._last_calib1_noise_sigma, self._last_calib1_noise_ts),
+            "camera_touched": False, "scene_applied": False,
+        }
+
+    def _restore_snapshot(self) -> bool:
+        """A6 ②: put back what this Calibrate changed -- enhancement, confidence, exposure/gain, MOG2 var
+        and scale, the provenance -- and drop the plate it recorded.  False when there is nothing to restore."""
+        snap, self._snapshot = self._snapshot, None
+        self._drop_pending_plate()
+        self._scene_pending = None
+        self._wall_result = None
+        self._servo_result = None
+        if snap is None:
+            return False
+        if snap["gamma"] is not None and snap["clahe"] is not None:
+            self._set_enhancement(snap["gamma"], snap["clahe"])
+        if snap["confidence"] is not None:
+            self.settings.confidence = snap["confidence"]
+        if snap["camera_touched"]:
+            cams = self.cameras
+            if snap["exposure_auto"] is True:
+                cams._cb_ids_exposure_auto_toggle(True)
+            elif snap["exposure_us"] is not None:
+                cams._cb_ids_exposure_change(snap["exposure_us"])
+            if snap["gain_auto"] is True:
+                cams._cb_ids_gain_auto_toggle(True)
+            elif snap["gain_db"] is not None:
+                cams._cb_ids_gain_change(snap["gain_db"])
+            if self.ui.available:
+                self.ui.sync_slider("ids_exposure_us", cams.ids_exposure_us)
+                self.ui.sync_slider("ids_gain_db", cams.ids_gain_db)
+        if snap["scene_applied"]:
+            if snap["var"] is not None:
+                self.processor.set_motion_var_threshold(snap["var"])
+                self.reset_sensitivity_anchor(var_anchor=snap["var"])
+            if snap["scale"] is not None:
+                self.processor.set_motion_scale(snap["scale"])
+                if self.ui.available:
+                    self.ui.sync_slider("mog2_scale", snap["scale"])
+        self.calibration_state = snap["state"]
+        self._last_calib1_noise_sigma, self._last_calib1_noise_ts = snap["noise"]
+        self.request_reprocess()
+        print(f"[Calibrate] put back: gamma {snap['gamma']}, CLAHE {snap['clahe']}"
+              + (f", exposure {snap['exposure_us']} us, gain {snap['gain_db']} dB" if snap["camera_touched"] else "")
+              + (f", MOG2 var {snap['var']} scale {snap['scale']}" if snap["scene_applied"] else ""))
+        return True
+
+    def _record_ceiling(self) -> None:
+        """X3: the strongest setting the empty-wall check found clean, kept for the dancer step (X4)."""
+        r = self._wall_result
+        self.enhancement_ceiling = r.ceiling if r is not None else None
+        if self.enhancement_ceiling is not None:
+            self._stamp_calib_state("aim", "enhancement_ceiling")
+            g, c = self.enhancement_ceiling
+            self.calibration_state["enhancement_ceiling"].update(
+                gamma=round(float(g), 4), clahe=round(float(c), 3), kept_current=bool(r.kept_current))
+
+    # ------------------------------------------------------------------
+    # A6 ② — the empty-wall plate is written at Save, not before
+    # ------------------------------------------------------------------
+    def _capture_pending_plate(self) -> None:
+        """Record the empty wall with the app's capture (the processor averages the next frames and installs
+        the plate for this session), but hold the app's writer: the file is written when the project is
+        saved (``commit_pending_plate``, on every SaveConfig).  A cancelled or stopped Calibrate, or one
+        kept for this session only, leaves the project's plate on disk as it was."""
+        self._drop_pending_plate(revert=False)
+        if self.capture_plate is None:
+            return
+        try:
+            self.capture_plate("calibrate")
+        except Exception as exc:  # noqa: BLE001 - never fail a calibration on it
+            print(f"[Foreground] plate capture not started ({type(exc).__name__}: {exc})")
+            return
+        proc = self.processor
+        write = getattr(proc, "_plate_capture_done", None)
+        if not callable(write):
+            return                                 # nothing to hold: the capture writes as before
+
+        def hold(plate, error, _write=write):
+            self._plate_hold = None
+            if plate is None or self._plate_commit_requested:   # a failure is reported at once
+                self._plate_commit_requested = False
+                _write(plate, error)
+                return
+            self._pending_plate = (plate, _write)
+            print("[Foreground] empty wall recorded for this session: written to the project at Save")
+        proc._plate_capture_done = hold
+        self._plate_hold = hold
+
+    def _drop_pending_plate(self, revert: bool = True) -> None:
+        pending, self._pending_plate = self._pending_plate, None
+        hold, self._plate_hold = self._plate_hold, None
+        self._plate_commit_requested = False
+        proc = self.processor
+        if hold is not None and getattr(proc, "_plate_capture_done", None) is hold:
+            proc._plate_capture = None             # still averaging: stopped, or its frames become the plate
+            proc._plate_capture_done = None
+            print("[Foreground] Calibrate's empty-wall recording stopped")
+        if revert and pending is not None:         # this session goes back to the project's plate (or none)
+            proc.set_clean_plate(None)
+            proc._fg_loaded_path = None            # the processor reloads settings.fg_plate_path
+            print("[Foreground] Calibrate's empty-wall recording dropped: the project's plate stays")
+
+    def commit_pending_plate(self) -> bool:
+        """A6 ②: write the plate the last Calibrate recorded -- the app calls it on every project save.
+        True when one is written (or will be, the moment its capture ends); never while Calibrate runs."""
+        if self._calibrating:
+            return False
+        pending, self._pending_plate = self._pending_plate, None
+        if pending is not None:
+            plate, write = pending
+            write(plate, "")
+            return True
+        if self._plate_hold is not None and getattr(self.processor, "_plate_capture_done", None) is self._plate_hold:
+            self._plate_commit_requested = True
+            return True
+        return False
+
+    def _save_calibration(self) -> None:
+        """The result dialog's « Save to project »: the config, then the plate Calibrate recorded."""
+        self.configs._cb_save_config()
+        self.commit_pending_plate()
 
     # ------------------------------------------------------------------
     # Calib2 — dancer evidence pool (UX_PLAN U4)

@@ -138,6 +138,8 @@ def calibrate(project: str, take: str, start: int, config: dict, model: str, img
                 stages.append((stage, i))
             flows._step_calibration(tracks, 50.0)
         i += 1
+    if hasattr(flows, "commit_pending_plate"):   # A6 ②: the plate is written at Save -- the operator saves
+        flows.commit_pending_plate()
     wall = flows._wall_result
     res = {"take": take, "start": start, "frames_used": i, "wall_s": round(time.time() - t0),
            "stages": stages, "before": before,

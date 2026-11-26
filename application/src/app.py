@@ -975,7 +975,8 @@ class WallDanceApp:
         reg(api.ViewAimCalibState, lambda c: self.calibration._cb_view_aim_state())
         # config / project
         reg(api.SaveConfig, lambda c: (self.configs._cb_do_save_config(c.name)
-                                       if c.name else self.configs._cb_save_config()))
+                                       if c.name else self.configs._cb_save_config(),
+                                       self.calibration.commit_pending_plate()))   # A6 ②: the plate at Save
         reg(api.SaveConfigAs, lambda c: self.configs._cb_save_as_config())
         reg(api.RequestLoadConfigDialog, lambda c: self.configs._cb_load_config())
         reg(api.LoadConfig, lambda c: self.configs._cb_do_load_config(c.filepath))

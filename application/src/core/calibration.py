@@ -268,6 +268,11 @@ class ExposureServo:
         self.exposure_us = _clamp(float(exposure_us),
                                   self._EXPOSURE_MIN_US, self.exposure_cap_us)
         self.gain_db = _clamp(float(gain_db), 0.0, float(gain_max_db))
+        # A6 ①: a value clamped here is not what the camera runs at (a hangar project saved at 51.6 ms
+        # against the 25 ms blur budget): command it first, or the camera keeps it and the report lies.
+        self._clamp_cmds = [(k, v) for k, v, was in (("exposure", self.exposure_us, float(exposure_us)),
+                                                      ("gain", self.gain_db, float(gain_db)))
+                            if abs(v - was) > 1e-6 * max(1.0, abs(was))]
         self.target = float(target)
         self.tolerance = float(tolerance)
         self.clip_max_pct = float(clip_max_pct)
@@ -299,6 +304,8 @@ class ExposureServo:
         self._clip_pct = float(clip_high_pct)
         if region is not None:
             self._region = str(region)
+        if self._clamp_cmds:                       # A6 ①: the clamped start values reach the camera first
+            return self._command(*self._clamp_cmds.pop(0))
         if self._settle > 0:
             self._settle -= 1
             return None

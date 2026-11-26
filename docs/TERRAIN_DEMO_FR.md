@@ -13,6 +13,8 @@
 - **Contrôle « personne sur le mur vide »** (nouveau, automatique) : à la fin de CALIBRATE, le logiciel vérifie que la
   détection ne voit **personne** sur le mur vide. Sinon il baisse l'éclaircissement de l'image jusqu'à ce que ce soit
   le cas (le 7 octobre, un réglage trop éclairci faisait voir un « danseur » près du matériel à gauche de la porte).
+  Jamais à cause d'une vraie personne (novembre) : si quelqu'un est dans l'image, CALIBRATE s'arrête, dit où, et ne
+  change rien.
 - **Taille des danseurs automatique** : plus besoin de calibrer avec des danseurs. Si la taille réglée ne correspond
   pas aux danseurs vus, le logiciel la corrige seul (message « Person height 45 -> 127 px »).
 - **Ceinture IR** : tenue tant que la détection ou la photo du mur vide confirme qu'un danseur est là (avant : 8 s au
@@ -47,11 +49,15 @@
    - Pour régler l'éclairage du moment : **lire la prise de mur vide de cet éclairage** (clic sur son slot), puis
      **CALIBRATE**. Attendre le résultat (20 à 30 s, la ligne bleue indique l'avancement), puis **Save**.
    - En direct, sans prise : mur vide, **CALIBRATE** (la caméra règle aussi son exposition).
-   - Lire la fin du résultat : « Kept gamma … » = bon. **« YOLO sees a person on the EMPTY wall »** = un objet ressemble
-     à une personne : l'enlever, ou peindre une case d'exclusion dessus (jamais sur le chemin des danseurs), puis
-     refaire CALIBRATE. Sinon prévenir Thomas.
+   - **« Someone is in view … »** (dès le début) : quelqu'un est dans l'image, à l'endroit indiqué. CALIBRATE s'arrête
+     et **ne change rien**. Vider le mur, puis refaire CALIBRATE.
+   - Lire la fin du résultat : « Kept gamma … » = bon. **« YOLO now and then sees a person on the EMPTY wall »** = un
+     objet ressemble à une personne : l'enlever, ou resserrer la Region of Interest pour le laisser dehors, puis refaire
+     CALIBRATE (une case d'exclusion peinte dessus ne change pas ce contrôle). Sinon prévenir Thomas.
    - **Check readiness** : tout doit être vert ou orange.
-   - Changement d'éclairage pendant la soirée : relire la prise de cet éclairage et refaire CALIBRATE (30 s).
+   - Changement d'éclairage pendant la soirée : **entre deux passages, en STANDBY**, refaire CALIBRATE sur le mur vide
+     (en direct, scène vide, ou sur la prise de cet éclairage puis retour en **LIVE**), puis **Save**. **Jamais de
+     prise lue en RUN** : TouchDesigner recevrait la prise en boucle, pas les danseurs.
 4. **3 Live → bloc « Dancer IDs »** :
 
    | Réglage | Valeur de départ |
@@ -81,7 +87,7 @@
 | Un point **reste** après le départ du danseur | baisser **Hold** (1 à 1.5 s) |
 | Un point apparaît sur un **objet fixe** | refaire **2 Calibrate → CALIBRATE** ; resserrer la Region of Interest |
 | « empty wall: scene changed » ou « other camera crop » | lumière ou cadrage changé : refaire **CALIBRATE** sur le mur vide |
-| Alerte « The light is …x the empty-wall snapshot » (aussi à l'ouverture du projet) | l'éclairage n'est plus celui de la photo du mur vide : refaire **CALIBRATE** sur le mur vide — **en direct** si on peut vider la scène, sinon **sur la prise de mur vide de cet éclairage** (le spectacle continue) |
+| Alerte « The light is …x the empty-wall snapshot » (aussi à l'ouverture du projet) | l'éclairage n'est plus celui de la photo du mur vide : **entre deux passages, en STANDBY**, refaire **CALIBRATE** sur le mur vide — **en direct** si on peut vider la scène, sinon **sur la prise de mur vide de cet éclairage** puis retour en **LIVE** — et **Save**. Jamais de prise lue en RUN |
 | Message « Person height … » | rien à faire (correction automatique) |
 | Alerte « Person height calibration looks stale » | prévenir Thomas |
 

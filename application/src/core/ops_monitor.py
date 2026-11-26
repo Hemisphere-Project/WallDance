@@ -284,8 +284,8 @@ def light_out_of_band(ratio: Optional[float], band: float = LIGHT_CHANGE_RATIO) 
     return ratio is not None and not (1.0 / band <= ratio <= band)
 
 
-LIGHT_REMEDY = ("Calibrate on the empty wall: live if the stage can be cleared, else play this "
-                "lighting's empty take and Calibrate on it")
+LIGHT_REMEDY = ("between two pieces, in STANDBY, Calibrate on the empty wall (live with the stage cleared, or "
+                "on this lighting's empty take, then back to LIVE) and Save - never play a take in RUN")
 
 
 def check_empty_wall(*, status: str, detail: str = "", light_ratio: Optional[float] = None,
