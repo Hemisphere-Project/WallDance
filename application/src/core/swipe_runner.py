@@ -413,6 +413,7 @@ class CandidateRun:
     load_s: float = 0.0                                    # engine load + warm-up
     release_s: float = 0.0                                 # dropping the model (its destructor frees the engine)
     error: str = ""                                        # "" = ran; "cancelled"; or why it failed
+    stored: bool = False                                   # the live setting's own boxes, kept by the tap: no run
 
     @property
     def frames(self) -> int:
@@ -688,6 +689,44 @@ def _accepts(fn, name: str) -> bool:
         return False
 
 
+def live_run_from_boxes(current: Candidate, boxes: Sequence[Sequence[Box]]) -> CandidateRun:
+    """The live setting's row without running its engine: the boxes the live pass made on each kept frame
+    (``SwipeFrame.boxes``: cut at the show's confidence, after the operator's excluded cells).  ``ms`` empty: the
+    referee's cost bar then takes ``Candidate.cost`` for every row."""
+    return CandidateRun(current, boxes=[list(b) for b in boxes], stored=True)
+
+
+def score_runs(observations: Sequence[Any], runs: Sequence[CandidateRun], current: Candidate,
+               params: SwipeParams, *, lost: Optional[Sequence[bool]] = None, lost_share: Optional[float] = None,
+               exclusion: Optional[ExclusionCells] = None) -> Optional[SwipeResult]:
+    """The tallies and ``decide`` for runs on the same frames -- one code path for the operator's swipe and the
+    background one.  A run that failed or stopped part-way is left out (the live one's: None, no verdict);
+    the excluded cells are applied once (a stored live row already has them)."""
+    p = params
+    tallies: Dict[Candidate, Tally] = {}
+    n = len(observations)
+    for run in runs:
+        if run.error or len(run.boxes) < n:
+            if run.candidate == current:
+                return None
+            continue
+        t = Tally()
+        flags = list(lost) if lost is not None and _accepts(t.add, "lost") else [None] * n
+        ms = list(run.ms) if len(run.ms) == len(run.boxes) else [None] * len(run.boxes)
+        for obs, boxes, m, fl in zip(observations, run.boxes, ms, flags):
+            if exclusion is not None and not run.stored:
+                boxes = exclusion.filter(boxes)
+            if fl is None:
+                t.add(score_frame(obs, boxes, p), m)
+            else:
+                t.add(score_frame(obs, boxes, p), m, lost=bool(fl))
+        tallies[run.candidate] = t
+    if current not in tallies:
+        return None
+    kw = {"lost_share": lost_share} if lost_share is not None and _accepts(decide, "lost_share") else {}
+    return decide(tallies, current, p, **kw)
+
+
 def run_swipe(images: Sequence[np.ndarray], observations: Sequence[Any], plan: CandidatePlan,
               current: Candidate, runner: CandidateRunner, engine_path: Callable[[Candidate], str],
               params: Optional[SwipeParams] = None, *,
@@ -695,12 +734,14 @@ def run_swipe(images: Sequence[np.ndarray], observations: Sequence[Any], plan: C
               cancelled: Optional[Callable[[], bool]] = None, pace: Optional[Callable[[], None]] = None,
               lost_frames: int = 0, lost: Optional[Sequence[bool]] = None,
               lost_share: Optional[float] = None, exclusion: Optional[ExclusionCells] = None,
-              max_s: Optional[float] = None,
+              max_s: Optional[float] = None, live_boxes: Optional[Sequence[Sequence[Box]]] = None,
               clock: Callable[[], float] = time.perf_counter) -> SwipeOutcome:
     """Every planned candidate on the same frames, one engine at a time; the tallies; ``decide``.
 
+    ``live_boxes``: the live setting's own boxes on each frame (``SwipeFrame.boxes``) -- its row is scored from
+    them and its engine is not loaded nor re-run (``live_run_from_boxes``); None re-runs it like a candidate.
     ``lost`` (per frame: the live setting left a dancer bare) and ``lost_share`` (the collector's estimate of
-    how often it does) go to ``Tally.add`` / ``decide`` when ``core.swipe`` takes them (its frame weighting).
+    how often it does) go to ``Tally.add`` / ``decide`` when ``core.swipe`` takes them (for the record).
     ``exclusion``: boxes in the operator's excluded cells are dropped before scoring (``ExclusionCells``).
     ``max_s``: a ceiling on the whole run (``core.config.SWIPE_RUN_MAX_S`` in the app): past it the run stops at
     the next frame and gives no verdict (``timed_out``) rather than running on.
@@ -709,7 +750,6 @@ def run_swipe(images: Sequence[np.ndarray], observations: Sequence[Any], plan: C
     being cancelled is left out like one that failed (the live setting's: no verdict)."""
     p = params or SwipeParams()
     out = SwipeOutcome(current, None, skipped=list(plan.skipped), frames=len(images), lost_frames=lost_frames)
-    tallies: Dict[Candidate, Tally] = {}
     t0 = clock()
     outer = cancelled
 
@@ -718,10 +758,14 @@ def run_swipe(images: Sequence[np.ndarray], observations: Sequence[Any], plan: C
             out.timed_out = True
             return True
         return outer is not None and outer()
-    n = len(plan.candidates)
+    stored = live_boxes is not None and current in plan.candidates
+    if stored:
+        out.runs.append(live_run_from_boxes(current, live_boxes))
+    to_run = [c for c in plan.candidates if not (stored and c == current)]
+    n = len(to_run)
     fin: Dict[str, float] = {}
     try:
-        for k, cand in enumerate(plan.candidates):
+        for k, cand in enumerate(to_run):
             if cancelled():
                 out.cancelled = not out.timed_out
                 break
@@ -734,21 +778,9 @@ def run_swipe(images: Sequence[np.ndarray], observations: Sequence[Any], plan: C
                 break
             if not run.error and len(run.boxes) < len(images):
                 run.error = f"ran {len(run.boxes)} / {len(images)} frames"
-            if run.error:
-                if cand == current:          # nothing to compare the others with: stop here
-                    out.live_error = run.error
-                    break
-                continue
-            t = Tally()
-            flags = list(lost) if lost is not None and _accepts(t.add, "lost") else [None] * len(run.boxes)
-            for obs, boxes, ms, fl in zip(observations, run.boxes, run.ms, flags):
-                if exclusion is not None:
-                    boxes = exclusion.filter(boxes)
-                if fl is None:
-                    t.add(score_frame(obs, boxes, p), ms)
-                else:
-                    t.add(score_frame(obs, boxes, p), ms, lost=bool(fl))
-            tallies[cand] = t
+            if run.error and cand == current:   # nothing to compare the others with: stop here
+                out.live_error = run.error
+                break
     finally:
         if hasattr(runner, "finalize"):
             fin = runner.finalize(pace, empty_cache=not out.cancelled)
@@ -757,9 +789,10 @@ def run_swipe(images: Sequence[np.ndarray], observations: Sequence[Any], plan: C
                   "prep_s": sum(sum(r.prep_ms) for r in out.runs) / 1000.0,
                   "release_s": sum(r.release_s for r in out.runs) + sum(fin.values()),
                   "run_s": clock() - t0}
-    if current not in tallies and not out.cancelled and not out.live_error and not out.timed_out:
-        out.live_error = "not run"
-    if not out.cancelled and not out.live_error and not out.timed_out and tallies:
-        kw = {"lost_share": lost_share} if lost_share is not None and _accepts(decide, "lost_share") else {}
-        out.result = decide(tallies, current, p, **kw)
+    if not out.cancelled and not out.live_error and not out.timed_out:
+        if not any(r.candidate == current and not r.error for r in out.runs):
+            out.live_error = "not run"
+        else:
+            out.result = score_runs(observations, out.runs, current, p, lost=lost, lost_share=lost_share,
+                                    exclusion=exclusion)
     return out

@@ -6,9 +6,10 @@ The operator asks for it during the dancers' warmup (« Try other settings »). 
    (``SwipeParams.frames``, one per ``min_gap_s``: « collecting 12 / 150 frames with a dancer on the wall »),
    ``collect_timeout_s`` at most: then it runs on what it holds only with at least ``MIN_SHARE`` of them, and
    otherwise ends without a verdict (no fault: the dancing was too short);
-2. runs those frames through each candidate setting, one engine at a time (``core.swipe_runner``:
-   « trying l @ 1920 x 1056 (2/3) »), its inferences paced one per live frame, in the loop's slack, the run
-   phase bounded by ``core.config.SWIPE_RUN_MAX_S``;
+2. runs those frames through each OTHER candidate setting, one engine at a time (``core.swipe_runner``:
+   « trying l @ 1920 x 1056 (1/2) »), its inferences paced one per live frame, in the loop's slack, the run
+   phase bounded by ``core.config.SWIPE_RUN_MAX_S``; the live setting's row is scored from the boxes the live
+   pass made on each kept frame (``SwipeFrame.boxes``), its engine not re-run (``rerun_live``: re-run it);
 3. ends with a ``core.swipe.SwipeResult`` (``on_result``): advice -- the swipe's own line beside its button,
    a readiness row only while it recommends a switch (``readiness``) -- which Apply acts on, in STANDBY.
 
@@ -148,6 +149,7 @@ class SwipeController:
                  params: Optional[SwipeParams] = None, models: Sequence[str] = SWIPE_MODELS,
                  collect_timeout_s: float = 190.0, pace: bool = True, pace_s: Optional[float] = None,
                  run_max_s: Optional[float] = None, verdict_max_age_s: Optional[float] = None,
+                 rerun_live: bool = False,
                  poll_s: float = 0.25,
                  engine_exists: Callable[[str], bool] = os.path.exists,
                  clock: Callable[[], float] = time.monotonic):
@@ -161,6 +163,7 @@ class SwipeController:
         self.params = params
         self.models = tuple(models)
         self.collect_timeout_s = float(collect_timeout_s)
+        self.rerun_live = bool(rerun_live)       # True: the live setting's engine re-runs the frames (a check)
         self.pace = bool(pace)
         if pace_s is None:
             from core.config import SWIPE_PACE_S
@@ -303,6 +306,8 @@ class SwipeController:
                                             "(RUN on, the empty-wall plate valid?)")
                 self._cancel.wait(self.poll_s)
             collect_s = self.clock() - t0
+            # the referee's threshold now: the frames were kept at this confidence (the tap starts over on another)
+            p = self._params(proc)
             # 2. the candidates
             images = [f.image for f in frames]
             observations = [f.obs for f in frames]
@@ -331,7 +336,8 @@ class SwipeController:
             outcome = run_swipe(images, observations, plan, live0.candidate, runner, self.engine_path, p,
                                 progress=progress, cancelled=cancelled, pace=self._pacer(proc),
                                 lost_frames=lost, lost=[bool(f.lost) for f in frames], lost_share=share,
-                                exclusion=exclusion, max_s=self.run_max_s)
+                                exclusion=exclusion, max_s=self.run_max_s,
+                                live_boxes=None if self.rerun_live else [f.boxes for f in frames])
             outcome.timing["collect_s"] = collect_s
             outcome.timing["total_s"] = collect_s + outcome.timing.get("run_s", 0.0)
             if self._cancel.is_set():

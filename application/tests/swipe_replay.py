@@ -269,7 +269,10 @@ def run_sequential(args):
     outcome = run_swipe(images, observations, plan, current, runner, engine_path_fn(), params,
                         progress=lambda text, f: say(f"[swipe] {text}"), lost_frames=lost,
                         lost=[bool(f.lost) for f in frames], lost_share=proc.swipe_lost_share(),
-                        exclusion=exclusion)
+                        exclusion=exclusion,
+                        live_boxes=None if args.rerun_live else [f.boxes for f in frames])
+    live_check = check_live(runner, images, observations, frames, current, params, exclusion) \
+        if args.check_live else None
     take_s = played / fps
     outcome.timing["collect_s"] = take_s
     d = print_table(outcome, args)
@@ -302,13 +305,59 @@ def run_sequential(args):
     out = {"take": str(video), "config_source": source, "plate": str(plate) if plate else None,
            "engine_dir": str(R.engine_dir()), "fps": fps, "start_s": args.start_s,
            "live": current.label, "confidence": config.get("confidence"),
-           "kept_abs_frames": abs_frames, "swipe": d, "split": split, "tap": tap}
+           "kept_abs_frames": abs_frames, "swipe": d, "split": split, "tap": tap, "live_check": live_check,
+           "live_row": "re-run" if args.rerun_live else "stored boxes"}
     if args.check_night:
         out["night_check"] = check_night(args, outcome, abs_frames, current)
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
         Path(args.out).write_text(json.dumps(out, indent=1))
         say(f"wrote {args.out}")
+    return out
+
+
+def check_live(runner, images, observations, frames, current, params, exclusion):
+    """The live row from the boxes the live pass stored with each frame against a re-run of the live engine on the
+    same frames: per-frame scores, and the boxes at the show's confidence matched one to one."""
+    from core.swipe import score_frame
+    run = runner.run(images, current, engine_path_fn()(current))
+    if run.error:
+        say(f"[check-live] the re-run failed: {run.error}")
+        return {"error": run.error}
+    same = 0
+    d_cov, d_loose, d_boxes, box_d, conf_d, unmatched = [], [], [], [], [], 0
+    rows = []
+    for i, (f, obs, rb) in enumerate(zip(frames, observations, run.boxes)):
+        rb = exclusion.filter(rb) if exclusion is not None else rb
+        a, b = score_frame(obs, list(f.boxes), params), score_frame(obs, rb, params)
+        same += a == b
+        d_cov.append(b.covered - a.covered)
+        d_loose.append(b.loose - a.loose)
+        d_boxes.append(b.boxes - a.boxes)
+        ka = [x for x in f.boxes if x[4] >= params.conf]
+        kb = [x for x in rb if x[4] >= params.conf]
+        for x in ka:
+            best = max(kb, key=lambda y: _iou(x, y), default=None)
+            if best is None or _iou(x, best) < 0.5:
+                unmatched += 1
+                continue
+            box_d.append(max(abs(x[j] - best[j]) for j in range(4)))
+            conf_d.append(abs(x[4] - best[4]))
+        unmatched += max(0, len(kb) - len(ka))
+        if a != b:
+            rows.append({"i": i, "t": round(float(f.t), 2), "stored": [a.groups, a.covered, a.boxes, a.loose],
+                         "rerun": [b.groups, b.covered, b.boxes, b.loose]})
+    out = {"frames": len(frames), "same_score_frames": same, "covered_diff_sum": int(sum(d_cov)),
+           "loose_diff_sum": int(sum(d_loose)), "boxes_diff_sum": int(sum(d_boxes)),
+           "box_coord_max_diff_px": round(max(box_d), 3) if box_d else None,
+           "conf_max_diff": round(max(conf_d), 5) if conf_d else None, "unmatched_boxes": unmatched,
+           "differing_frames": rows[:20]}
+    say(f"[check-live] {current.label}: per-frame score identical on {same} / {len(frames)} frames; sums re-run minus "
+        f"stored: covered {out['covered_diff_sum']}, loose {out['loose_diff_sum']}, boxes {out['boxes_diff_sum']}; "
+        f"boxes at {params.conf:.2f}: unmatched {unmatched}, max coordinate gap {out['box_coord_max_diff_px']} px, "
+        f"max confidence gap {out['conf_max_diff']}")
+    for r in rows[:10]:
+        say(f"[check-live]   frame {r['i']} (t {r['t']}): stored g/c/b/l {r['stored']} re-run {r['rerun']}")
     return out
 
 
@@ -421,7 +470,7 @@ def run_concurrent(args):
                           plate_ready=lambda: proc.plate_status == "ready",
                           on_progress=lambda s, t, p: (events.append((time.perf_counter(), s, t)),
                                                        say(f"[swipe-live] {s}: {t}")),
-                          runner_factory=runner_factory, pace=pace_s > 0, pace_s=pace_s,
+                          runner_factory=runner_factory, pace=pace_s > 0, pace_s=pace_s, rerun_live=args.rerun_live,
                           collect_timeout_s=args.max_s or 600.0)
     import runtime.swipe_controller as sc
     orig = sc.plan_candidates
@@ -534,6 +583,11 @@ def main(argv=None):
     ap.add_argument("--pace-ms", type=float, default=SWIPE_PACE_S * 1000.0,
                     help="--concurrent: min interval between candidate inferences, 0 = back to back")
     ap.add_argument("--after-s", type=float, default=2.0, help="--concurrent: play on after the swipe")
+    ap.add_argument("--rerun-live", action="store_true",
+                    help="re-run the live setting's engine on the frames (as before 26/11) instead of scoring its "
+                         "row from the boxes the live pass stored with each frame")
+    ap.add_argument("--check-live", action="store_true",
+                    help="sequential: compare the live row from the stored boxes with a re-run of its engine")
     ap.add_argument("--after-ready-s", type=float, default=0.0,
                     help="keep playing this long after the lost pool is full (measures the tap then)")
     args = ap.parse_args(argv)
