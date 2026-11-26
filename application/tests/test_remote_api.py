@@ -191,7 +191,11 @@ def test_app_log_tee_survives_dead_console(tmp_path):
     tee.write("first\n")          # console raises -> swallowed, file keeps going
     tee.write("second\n")
     tee.flush()
-    assert (tmp_path / "a.log").read_text() == "first\nsecond\n"
+    # M2 / plan A2 ③: each line of the file carries its time
+    import re
+    lines = (tmp_path / "a.log").read_text().splitlines()
+    assert [re.sub(r"^\d\d:\d\d:\d\d\.\d{3} ", "", ln) for ln in lines] == ["first", "second"]
+    assert all(re.match(r"^\d\d:\d\d:\d\d\.\d{3} ", ln) for ln in lines)
     for i in range(5):
         p = tmp_path / f"walldance_{i}.log"
         p.write_text("x")
