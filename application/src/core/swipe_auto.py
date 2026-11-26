@@ -11,8 +11,8 @@ setting better:
   network input, its engine resident, swapped between two frames (a size change needs another engine and a few
   seconds without tracking, as a manual change does: a better input size is always a suggestion).  It needs two
   verdicts in a row, on disjoint frames, naming the same setting with a gain of ``definite_gain`` or more; a
-  winner no slower than ``slower`` x the live setting's measured time; the dwell since the last switch; and never
-  back to the setting just left before ``back_s``.
+  winner no slower than ``slower`` x the live setting's measured time, the two times measured alike
+  (``alike_ms``); the dwell since the last switch; and never back to the setting just left before ``back_s``.
 
 When it looks (``due``), in frames, not seconds:
 
@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, replace
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from core.input_shape import target_hw
 from core.swipe import Candidate, FrameScore, SwipeFrame, SwipeParams, SwipeResult
@@ -112,7 +112,8 @@ class AutoParams:
     wins: int = 2                 # ... on this many verdicts in a row naming the same setting, on disjoint frames
     dwell_s: float = 300.0        # after any switch nothing switches by itself for this long
     back_s: float = 900.0         # ... and never back to the setting just left before this long
-    slower: float = 1.15          # never by itself to a setting this many times the live one's inference time
+    slower: float = 1.15          # never by itself to a setting this many times the live one's inference time ...
+    speed_q: float = 10.0         # ... both times this low percentile of their inferences over the run (``alike_ms``)
     keep_wait_s: float = 300.0    # after a « keep » verdict, no run for this long ...
     keep_wait_max_s: float = 1800.0   # ... doubled at each keep in a row, up to this
     wake_lost: float = 0.10       # ... unless the live setting's share of fresh frames with a dancer bare rose
@@ -120,6 +121,31 @@ class AutoParams:
     window_s: float = 0.0         # unused since 26/11 (freshness is in frames: ``run_frames``); kept for callers
     min_lost: int = 0             # unused since 26/11 (the pre-filter ``headroom`` replaces it); kept for callers
     definite_z: float = 0.0       # unused since 26/11 (the referee does the test); kept for callers
+
+
+def alike_ms(cand_times: Sequence[float], live_times: Sequence[float],
+             q: float = 10.0) -> Tuple[Optional[float], Optional[float]]:
+    """(the candidate's inference time, the live model's) for the « slower » rule, measured alike: the ``q``-th
+    percentile of each one's times over the same background run -- the candidate's inferences there, the live
+    model's network passes that the run sampled (None where there is none).
+
+    The two are not measured alike: the candidate runs on the looker's thread beside the live loop (the same GPU,
+    the same interpreter, no CUDA graph), the live model in the loop.  The candidate's median read 1.3 to 2 times
+    its time once live (mgr-ran, 26/11: l @ 1280 18.8-24.4 ms in the background, 13.2-13.9 live; x @ 1920 x 1056
+    32.1 against 20.7), by how much depending on the machine and its load -- the rule called l slower than x when it
+    is about 20 % faster.  The low end of each is the time nobody got in the way: on mgr-ran, a second copy of the
+    LIVE engine run in the background beside the candidate read at its 10th percentile 0.98-1.14 times the live
+    model's own 10th percentile, at its median 1.5-1.9 times (tmp_analysis/swipe-1126/live/p6h/tools/bgtime.py,
+    x and l at 1280 and 1920 x 1056, back to back and in real time)."""
+    def pct(values: Sequence[float]) -> Optional[float]:
+        v = sorted(float(x) for x in values if x is not None and x > 0)
+        if not v:
+            return None
+        k = (len(v) - 1) * min(100.0, max(0.0, float(q))) / 100.0
+        i = int(k)
+        j = min(i + 1, len(v) - 1)
+        return v[i] + (v[j] - v[i]) * (k - i)
+    return pct(cand_times), pct(live_times)
 
 
 @dataclass

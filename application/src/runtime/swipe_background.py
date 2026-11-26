@@ -47,8 +47,8 @@ from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 from core.swipe import Candidate, SwipeParams
 from core.swipe import score_frame
-from core.swipe_auto import (MODE_AUTO, MODE_OFF, AutoParams, SwipeAuto, bar_for, headroom,  # noqa: F401 - PolicyPort
-                             parse_mode, referee_params)
+from core.swipe_auto import (MODE_AUTO, MODE_OFF, AutoParams, SwipeAuto, alike_ms, bar_for,  # noqa: F401 - PolicyPort
+                             headroom, parse_mode, referee_params)
 from core.swipe_runner import (SWIPE_MODELS, CandidateRunner, ExclusionCells, install_capture_guards,
                                live_run_from_boxes, no_graph_capture, result_dict, score_runs)
 from runtime.seamless_switch import Prepared, SeamlessSwitch, _runner_factory
@@ -133,6 +133,10 @@ class PolicyPort:
 
     def ran(self, now: float, probe: bool = False) -> None:
         self.policy.ran(now, probe=probe)
+
+    def speed(self, cand_times: List[float], live_times: List[float]) -> Tuple[Optional[float], Optional[float]]:
+        """(the candidate's ms, the live model's ms) for ``advise``'s « slower » rule, measured alike."""
+        return alike_ms(cand_times, live_times, self.policy.params.speed_q)
 
     def advise(self, now: float, result, newest_frame_t: Optional[float], ms: Dict[Candidate, float]):
         return self.policy.advise(now, result, newest_frame_t=newest_frame_t, ms=ms)
@@ -402,6 +406,7 @@ class BackgroundSwipe:
         t_wall0 = time.perf_counter()
         run = None
         live_ms: List[float] = []
+        speed: Tuple[Optional[float], Optional[float]] = (None, None)
         outcome = ""
         try:
             install_capture_guards()
@@ -451,9 +456,9 @@ class BackgroundSwipe:
             if self.referee is not None:             # refused / used the plate: told to the plate watch
                 self.referee.note(result, frames, plate_ok=live.plate_ok)
             now = proc.loop_clock()
-            ms = {other: run.ms_p50}
-            if live_ms:
-                ms[live.candidate] = sorted(live_ms)[len(live_ms) // 2]
+            # the « slower » rule: the candidate's times here and the live model's sampled over the same run, alike
+            speed = self.auto.speed(run.ms, live_ms)
+            ms = {c: v for c, v in ((other, speed[0]), (live.candidate, speed[1])) if v is not None}
             self.auto.ran(now, probe=(kind == "probe"))          # the policy's order: ran, then advise
             ran = True
             adv = self.auto.advise(now, result, newest_frame_t=max(float(f.t) for f in frames), ms=ms)
@@ -472,7 +477,9 @@ class BackgroundSwipe:
             self.last_look = self._record(
                 "look", look=kind, t=now0, frames=len(frames), seconds=round(seconds, 2),
                 inferences=len(run.ms) if run is not None else 0, outcome=outcome,
-                ms_p50=round(run.ms_p50, 1) if run is not None and run.ms_p50 else None)
+                ms_p50=round(run.ms_p50, 1) if run is not None and run.ms_p50 else None,
+                ms_cand=round(speed[0], 1) if speed[0] is not None else None,     # what the « slower » rule
+                ms_live=round(speed[1], 1) if speed[1] is not None else None)     # compared
 
     # ------------------------------------------------------------------ the advice
     def _act(self, adv, result, live: LiveSetting) -> None:
