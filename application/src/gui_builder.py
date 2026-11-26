@@ -346,6 +346,7 @@ def build_ui(gui: Any):
             dpg.add_spacer(width=scaled(6))  # Right padding
         dpg.add_spacer(height=scaled(2))
         with dpg.group(tag="alerts_strip_wrapper"):
+            build_health_line(gui)          # H2: the one health line, above the alerts
             build_alerts_strip(gui)
         with dpg.group(tag="drawer_bar_wrapper"):
             build_drawer_bar(gui)   # Recordings controls inline, on one line
@@ -1240,6 +1241,29 @@ def build_identity_slot_controls(gui: Any):
 # --------------------------------------------------------------------------- #
 # Drawer bar + floating drawers (Advanced / Recordings)
 # --------------------------------------------------------------------------- #
+HEALTH_LINE_WAITING = "NOT CHECKED - the health line starts with the app's first second"
+
+
+def build_health_line(gui: Any):
+    """H2 (#t-040 ①): the one health line, a band the width of the window in its state's colour -- green OK,
+    blue-grey NOT CHECKED, orange WARN, red FAIL (readiness' STATUS_COLORS) -- to be read from across the room;
+    its text names the worst source and its one instruction (core/ops_monitor.py health_line).  Painted by
+    gui.show_health_line from the runtime's api.HealthLine, once a second."""
+    from core.ops_monitor import STATUS_COLORS
+    with dpg.child_window(tag="health_line_window", autosize_x=True, height=scaled(30), border=False,
+                          no_scrollbar=True):
+        dpg.add_text(HEALTH_LINE_WAITING, tag="health_line_text", color=(0, 0, 0))
+    gui._health_themes = {}
+    for state, bg in STATUS_COLORS.items():
+        with dpg.theme() as theme:
+            with dpg.theme_component(dpg.mvAll):
+                dpg.add_theme_color(dpg.mvThemeCol_ChildBg, bg)
+                dpg.add_theme_color(dpg.mvThemeCol_Text, (0, 0, 0))
+        gui._health_themes[state] = theme
+    dpg.bind_item_theme("health_line_window", gui._health_themes["skip"])
+    gui._health_state = "skip"
+
+
 def build_alerts_strip(gui: Any):
     """One-line alerts strip (OPERATOR_V2 §2.3c) — warnings surface here:
     GPU temp, TRT fallback, OSC down, config-vs-scene mismatch, height-stale.

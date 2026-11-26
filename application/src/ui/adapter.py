@@ -369,6 +369,7 @@ class DpgUiAdapter:
                 # a condition that lasts until the operator acts stays in the alerts strip
                 self.gui.push_alert(e.kind, e.message) if e.kind in STRIP_ALERTS else None),
             api.AlertCleared: lambda e: self.gui.clear_alert(e.kind),
+            api.HealthLine: lambda e: self.gui.show_health_line(e.state, e.text),   # H2: the one health line
             # Calibration events route through the wizard first; when it is
             # closed (or mid-intro) they fall back to the classic dialogs, so
             # the plain CALIBRATE / DANCERS buttons behave exactly as before.

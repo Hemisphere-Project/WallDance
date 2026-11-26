@@ -63,7 +63,9 @@ def test_check_tensorrt_states():
     assert degraded.status == "warn"
 
 
-def test_check_osc_uses_injected_probe_and_skips_when_disabled():
+def test_check_osc_uses_injected_probe_and_warns_when_disabled():
+    # H2 (orchestrator's decision, 26/11): OSC disabled was « skip » (not checked); a show with no output to the
+    # visuals is orange, with the instruction to enable it -- in readiness and in the health line alike.
     calls = []
 
     def fake_probe(ip, port, timeout_s):
@@ -76,7 +78,8 @@ def test_check_osc_uses_injected_probe_and_skips_when_disabled():
 
     off = check_osc(enabled=False, ip="10.0.0.9", port=9000, timeout_s=0.1,
                     probe=fake_probe)
-    assert off.status == "skip" and len(calls) == 1  # probe not called
+    assert off.status == "warn" and len(calls) == 1  # probe not called
+    assert "disabled" in off.detail and off.detail.endswith("Advanced > OSC > Enable OSC")
 
 
 def test_check_calibration_age():

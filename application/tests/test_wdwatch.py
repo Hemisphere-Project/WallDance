@@ -67,6 +67,7 @@ class FakeApp:
         self.hit = {"rate": 0.9, "groups": 50, "covered": 45, "frames": 60, "skipped": 0, "window_s": 60.0,
                     "age_s": 0.4, "total": {"frames": 600, "groups": 500, "covered": 450, "skipped": 0}}
         self.fit = True                    # this build shrinks snapshots
+        self.health = None                 # H2: the app's health line, /status["health"] (None: an older build)
         self.jpeg = _jpeg()
         self.events: list = []
         self.seq = 0
@@ -108,6 +109,8 @@ class FakeApp:
             st["hit_rate"] = self.hit
         if self.fit:
             st["snapshot_fit"] = True
+        if self.health is not None:
+            st["health"] = self.health
         return st
 
     def _handler(self):
@@ -657,6 +660,35 @@ def test_summary_without_a_referee_or_a_poll(fake, tmp_path):
     w = _watcher(fake, tmp_path)
     w.poll_once()
     assert "HIT    absent" in w.summary_text()
+
+
+def test_summary_shows_the_apps_health_line_and_cues_it_red(fake, tmp_path):
+    """H2: /status["health"] (the app's one health line) in the per-poll line, the summary's HEALTH row with how
+    long it has held and its state at each poll, and a cue once it is red at two polls in a row."""
+    sink = _Sink()
+    w = _watcher(fake, tmp_path, out=sink)
+    w.poll_once()
+    assert "HEALTH (no health line in this build)" in w.summary_text()
+    fake.health = {"state": "ok", "word": "OK", "line": "OK - all 7 checks fine (camera, output, points)",
+                   "for_s": 125.0}
+    w.poll_once()
+    red = {"state": "fail", "word": "FAIL", "for_s": 4.0, "source": "points",
+           "line": "FAIL - points: a body on the wall has had no point for 4 s (top left) - if it is a dancer: "
+                   "check Max dancers (3 Live)"}
+    fake.health = red
+    w.poll_once()
+    assert not [r for r in w.records if r.get("kind") == "cue" and r.get("name") == "health"]
+    w.poll_once()
+    cues = [r for r in w.records if r.get("kind") == "cue" and r.get("name") == "health"]
+    assert len(cues) == 1 and cues[0]["on"] and "health line red: FAIL - points" in cues[0]["text"]
+    fake.health = dict(red, state="ok", word="OK", line="OK - all 7 checks fine", for_s=1.0)
+    w.poll_once()
+    assert [r["on"] for r in w.records if r.get("kind") == "cue" and r.get("name") == "health"] == [True, False]
+    screen = w.summary_text()
+    assert "HEALTH OK - all 7 checks fine" in screen
+    assert "this state 0m01, 15 min: red at 2 poll(s) | -GRRG" in screen
+    assert all(len(x) <= 100 for x in screen.splitlines()) and screen.isascii()
+    assert "health FAIL" in sink.text and "health OK" in sink.text
 
 
 def test_summary_reads_a_log_cut_by_a_crash(tmp_path):

@@ -1290,6 +1290,7 @@ class MainLoop:
         """
         app = self.app
         app._watchdog.beat()
+        self._health_line_frame()             # H2: signal (a), on each newly processed frame
         now = time.time()
         if now - self._last_ops_tick < 1.0:
             return
@@ -1342,6 +1343,7 @@ class MainLoop:
             self._emit_ops_alert(alert)
         for kind in app._health.pop_cleared():
             app.bus.publish(api.AlertCleared(kind))
+        self._health_line_tick(in_run)        # H2: the one health line, once a second
 
     def _latest_raw_frame(self):
         """The newest raw frame on the CPU: the camera's (the IDS GPU path keeps a CPU copy), else
@@ -1441,6 +1443,117 @@ class MainLoop:
             app.tracker.logger.log("OPS_ALERT", {"kind": alert.kind, **alert.data})
         except Exception:
             pass
+
+    # ------------------------------------------------------------------
+    # H2 (#t-040 ①): the one health line (core/ops_monitor.py HealthLine)
+    # ------------------------------------------------------------------
+    def _health_line_obj(self):
+        from core.ops_monitor import HealthLine
+        hl = getattr(self.app, "_health_line", None)
+        if hl is None:
+            hl = self.app._health_line = HealthLine()
+        return hl
+
+    def _h2_once(self, what: str, e: Exception) -> None:
+        failed = getattr(self, "_h2_failed", None)
+        if failed is None:
+            failed = self._h2_failed = set()
+        if what not in failed:
+            failed.add(what)
+            print(f"[Health] {what} failed ({type(e).__name__}: {e}); the line goes on without it")
+
+    def _health_line_frame(self) -> None:
+        """Every tick: a newly processed frame feeds signal (a) -- its foreground's dancer groups (as the live
+        hit rate's referee reads them, without the excluded cells) and the points OSC sends.  Never raises."""
+        proc = getattr(self.app, "processor", None)
+        fg = getattr(proc, "last_fg", None)
+        if fg is None or fg is getattr(self, "_h2_fg", None):
+            return
+        self._h2_fg = fg
+        try:
+            from core.ops_monitor import foreground_groups
+            det = getattr(proc, "_fg_detector", None)
+            zone_ok = None
+            if det is not None and hasattr(proc, "_zone_ok_fn"):
+                fw, fh = (int(v) for v in det.plate.frame_size)   # a valid foreground is on the plate's frame
+                zone_ok = proc._zone_ok_fn(fw, fh)
+            groups, why = foreground_groups(fg, zone_ok)
+            pts = []
+            for tr in getattr(proc, "last_emitted", None) or ():
+                x, y = proc.sent_xy(tr)
+                pts.append((x, y, float(tr.bbox[3])))
+            measured = getattr(proc, "dancer_height", None)
+            body_h = float(measured[0]) if measured else float(self.app.settings.person_height_px)
+            bounds = None
+            if getattr(fg, "mask", None) is not None:
+                hm, wm = fg.mask.shape[:2]
+                bounds = (float(fg.x0), float(fg.y0), float(fg.x0) + wm * fg.ds, float(fg.y0) + hm * fg.ds)
+            self._health_line_obj().bare.update(time.monotonic(), groups, pts, body_h=body_h, bounds=bounds,
+                                                why=why)
+        except Exception as e:  # noqa: BLE001 - (a) then reads « not checked: no new frame », never green
+            self._h2_once("signal (a)", e)
+
+    def _health_line_tick(self, in_run: bool) -> None:
+        """Once a second: the line from every source (core/ops_monitor.py: the camera, the output, the points,
+        the empty wall, the frames, the engine, the stall rate, the alerts' conditions, the setup rows that
+        fail), published as api.HealthLine (the GUI's band, /status).  Never raises."""
+        app = self.app
+        try:
+            from core.ops_monitor import (health_alert_rows, health_camera_row, health_engine_row,
+                                          health_frames_row, health_output_row, health_plate_row)
+            hl = self._health_line_obj()
+            mono, wall = time.monotonic(), time.time()
+            proc, cam = app.processor, app.camera.state
+            playing = bool(app.recorder.is_playing)
+            reconnecting = bool(app.cameras._camera_reconnecting)
+            stall = getattr(proc, "stall", None)
+            hl.stalls.update(mono, int(getattr(stall, "stalls", 0) or 0),
+                             bool(cam.is_open and not reconnecting and not playing))
+            status = str(getattr(proc, "plate_status", "") or "")
+            if not in_run:
+                hl.bare.not_checked(mono, "STANDBY: no frame is processed")
+            elif status != "ready":
+                hl.bare.not_checked(mono, f"the empty wall is {status or 'unknown'}")
+            last = getattr(proc, "last_fg", None)
+            reason = str(getattr(proc, "_plate_invalid", None) or getattr(proc, "plate_refusal", None)
+                         or (getattr(last, "reason", "") if last is not None and not last.valid else ""))
+            det = getattr(proc, "_fg_detector", None)
+            down = getattr(app._health, "_cam_down_since", None)
+            osc = getattr(proc, "osc", None)
+            errs = int(getattr(osc, "send_errors", 0) or 0)
+            hist = getattr(self, "_h2_osc", None)
+            if hist is None:
+                hist = self._h2_osc = deque()
+            hist.append((mono, errs))
+            while hist and mono - hist[0][0] > 5.0:
+                hist.popleft()
+            try:
+                trt_active = (bool(app.models.model_manager.is_using_tensorrt())
+                              if app.models._model_loaded else None)
+            except Exception:  # noqa: BLE001
+                trt_active = None
+            rows = [
+                health_camera_row(is_open=bool(cam.is_open), reconnecting=reconnecting, playing=playing,
+                                  source=str(cam.source or ""), fps=float(app.fps or 0.0),
+                                  down_s=(wall - down) if down is not None else None),
+                health_output_row(enabled=bool(app.osc_enabled), target=f"{app.osc_ip}:{app.osc_port}",
+                                  errors=errs - hist[0][1]),
+                health_plate_row(status=status, reason=reason,
+                                 stale_since=str(getattr(det, "stale_since", "") or "")),   # F2's latch, if any
+                health_frames_row(fail_streak=int(self._proc_fail_streak)),
+                health_engine_row(trt_requested=bool(app.models._trt_requested), trt_active=trt_active),
+            ]
+            rows += health_alert_rows(app._health, wall)
+            setup = getattr(app, "_readiness_setup_rows", None)
+            if setup is not None:     # enhancement, ROI, plate exposure: in the line when they fail
+                try:
+                    rows += [r for r in setup() if r.status == "fail"]
+                except Exception as e:  # noqa: BLE001 - those rows go, the line stays
+                    self._h2_once("the setup rows", e)
+            line = hl.compose(mono, rows)
+            app.bus.publish(api.HealthLine(line.state, line.text, dict(hl.to_dict(mono), t=round(wall, 3))))
+        except Exception as e:  # noqa: BLE001 - the line must never disturb the show
+            self._h2_once("the health line", e)
 
     def _log_timing_spikes_if_any(self, timing: Optional[Dict[str, float]]):
         """Diagnosis-only: print timing spikes with per-stage breakdown (throttled)."""

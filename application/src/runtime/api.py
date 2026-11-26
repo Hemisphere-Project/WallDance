@@ -1073,6 +1073,16 @@ class AlertCleared(Event):
 
 
 @dataclass(frozen=True)
+class HealthLine(Event):
+    """H2 (#t-040 ①): the one health line, once a second -- ``state`` in readiness' words (ok | skip = not
+    checked | warn | fail), the ``text`` the band shows, and ``data`` for /status
+    (core/ops_monitor.py ``HealthLine.to_dict``)."""
+    state: str
+    text: str
+    data: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class IssueReportContext(Event):
     context: Dict[str, Any]
 

@@ -206,6 +206,8 @@ EVENT_SAMPLES = {
     api.DialBVisible: dict(visible=False),
     api.Alert: dict(kind="fps_low", message="FPS 9.8", data={"fps": 9.8}),
     api.AlertCleared: dict(kind="light_changed"),
+    api.HealthLine: dict(state="fail", text="FAIL - points: a body on the wall has had no point for 4 s",
+                         data={"state": "fail", "points": {"groups": 2, "points": 1}}),
     api.IssueReportContext: dict(context={"frame": 12, "slot": 3}),
     api.QrDialog: dict(url="http://x", matrix=[[True, False]]),
     api.PreviewResize: dict(width=960, height=540),

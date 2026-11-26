@@ -238,11 +238,14 @@ def probe_osc_udp(ip: str, port: int, timeout_s: float) -> Tuple[str, str]:
         return "fail", f"{ip}:{port} unreachable ({e})"
 
 
+OSC_ON_HOW = "Advanced > OSC > Enable OSC"
+
+
 def check_osc(*, enabled: bool, ip: str, port: int, timeout_s: float,
               probe: Callable[[str, int, float], Tuple[str, str]] = probe_osc_udp
               ) -> CheckResult:
-    if not enabled:
-        return CheckResult("osc", "skip", "disabled")
+    if not enabled:   # H2: no output to the visuals is a warning, in readiness and in the health line
+        return CheckResult("osc", "warn", "disabled: the visuals get no point - " + OSC_ON_HOW)
     status, detail = probe(ip, port, timeout_s)
     return CheckResult("osc", status, detail)
 
@@ -928,3 +931,425 @@ class LoopWatchdog:
         if self._thread is not None:
             self._thread.join(timeout=2.0)
             self._thread = None
+
+
+# --------------------------------------------------------------------------
+# H2 (#t-040 ①): one health line during RUN -- the worst state wins
+# --------------------------------------------------------------------------
+# Every source is a CheckResult in readiness' vocabulary (ok < not checked < warn < fail: ``worst_status``,
+# STATUS_WORDS, STATUS_COLORS), so the line is the worst row, with its one instruction (the detail's text after
+# its last « - », else its last « : »).  Two signals of its own:
+#   (a) ``BareGroupWatch``: a foreground group (a body against the empty-wall plate, as the live hit rate's
+#       referee reads the foreground) that no output point sits on for more than 3 s -- the show's worst
+#       failure, a dancer the audience sees and the visuals do not follow.  Red, never green while it holds;
+#       « not checked » when the foreground cannot say (off, no plate, refused, no new frame).
+#   (b) ``StallRate``: the camera's stalls a minute (core/camera_stall.py counts them), over a rolling window.
+
+from collections import deque  # noqa: E402 - H2's own imports, kept in its section
+from typing import Deque  # noqa: E402
+
+BARE_GROUP_S = 3.0        # a group without a point for longer than this turns the line red
+BARE_GAP_S = 1.0          # a group not seen bare (a point passed over it, it flickered under the size) for less
+                          # than this keeps its count running; longer, its episode ends
+BARE_REACH_H = 0.75       # a point sits on a group within this x the point's box height of the group's centre
+                          # (the radius of the M1 scorer's « a point on her », tests/truth_score.py ``on``)
+BARE_FOLLOW_H = 0.75      # a bare group this close (x the dancers' height) to one seen bare is that same group
+BARE_STALE_S = 2.0        # no new processed frame for this long: (a) is not checked
+STALL_WINDOW_S = 300.0    # the stall rate's window ...
+STALL_MIN_SPAN_S = 60.0   # ... never divided by less than a minute of live camera (one stall is 1 a minute)
+STALL_WARN_PER_MIN = 2.0  # each stall freezes the picture ~1.7 s: 2 a minute is ~6 % of the show without one
+STALL_FAIL_PER_MIN = 6.0  # (08/10's field laptop: 0.7-2.9 a minute at the landscape crops); 6 is ~17 %
+POINTS_ROW = "points"
+MAX_DANCERS_HOW = "check Max dancers (3 Live)"
+CAMERA_HOW = "check the camera's USB3 cable and power"
+EMPTY_WALL_HOW = "when the wall is empty: CALIBRATE (2 Calibrate), then Save to project"
+RESTART_HOW = "restart the app"
+# The order of the rows when two share the worst state: the first one names the line.
+HEALTH_PRIORITY = ("camera", "output", POINTS_ROW, "empty wall", "frames", "engine", "camera stalls",
+                   "enhancement", "ROI", "plate exposure", "fps", "gpu", "light", "no dancer", "over cap",
+                   "height")
+
+
+def foreground_groups(fg, zone_ok: Optional[Callable[[float, float], bool]] = None):
+    """(groups, why): this frame's dancer groups [(x, y, area)] in original px, read as the live hit rate's
+    referee reads them (``core.swipe.Observation.from_fg`` then ``dancer_groups``: the swipe's one finder, its
+    ``group_min_area``), minus the groups whose centre lies in an excluded cell (``zone_ok``: the pipeline drops
+    every detection there, so they can never get a point).  (None, why) when the frame cannot say."""
+    if fg is None:
+        return None, "no foreground on this frame"
+    if not getattr(fg, "valid", False):
+        return None, f"the foreground is not valid ({getattr(fg, 'reason', '') or 'invalid'})"
+    try:
+        from core.swipe import Observation, SwipeParams
+    except Exception:  # noqa: BLE001 - no referee in this build: (a) is not checked, never green
+        return None, "no foreground referee in this build (core/swipe.py)"
+    obs = Observation.from_fg(fg)
+    if obs is None:
+        return None, "the foreground is not valid"
+    groups = obs.dancer_groups(SwipeParams())
+    if zone_ok is not None:
+        groups = [g for g in groups if zone_ok(float(g[0]), float(g[1]))]
+    return groups, ""
+
+
+def place_text(x: float, y: float, bounds: Optional[Tuple[float, float, float, float]]) -> str:
+    """Where a point lies in the watched zone (x0, y0, x1, y1), in thirds: « top left », « centre »."""
+    if not bounds or bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
+        return ""
+    fx = (x - bounds[0]) / (bounds[2] - bounds[0])
+    fy = (y - bounds[1]) / (bounds[3] - bounds[1])
+    row = "top" if fy < 1 / 3 else ("bottom" if fy > 2 / 3 else "middle")
+    col = "left" if fx < 1 / 3 else ("right" if fx > 2 / 3 else "")
+    return "centre" if (row, col) == ("middle", "") else f"{row} {col}".strip()
+
+
+@dataclass
+class _Bare:
+    x: float
+    y: float
+    since: float              # the frame it was first seen without a point
+    seen: float               # the last frame it was seen without a point
+    where: str = ""
+    counted: bool = False     # already counted in ``episodes``
+
+
+class BareGroupWatch:
+    """Signal (a): a foreground group no output point sits on, for more than ``sustain_s``.
+
+    ``update`` once per processed frame: the frame's dancer groups (``foreground_groups``; None = the frame
+    cannot say, with why) and its output points [(x, y, h)] -- what OSC sends (``FrameProcessor.sent_xy``) and
+    the height of the point's box.  A point sits on a group when it lies within ``reach_h`` x its height of
+    the group's centre.  A group with no point is followed from frame to frame (within ``follow_h`` x the
+    dancers' height ``body_h``); a short gap (``gap_s``: a frame under the size, a point passing over it) does
+    not restart its count, and a bare group on every frame counts too, wherever it is (a group that splits or
+    jumps).  The signal ends ``gap_s`` after the group gets a point or disappears.  Times in one clock."""
+
+    def __init__(self, sustain_s: float = BARE_GROUP_S, gap_s: float = BARE_GAP_S,
+                 reach_h: float = BARE_REACH_H, follow_h: float = BARE_FOLLOW_H,
+                 stale_s: float = BARE_STALE_S):
+        self.sustain_s, self.gap_s, self.stale_s = float(sustain_s), float(gap_s), float(stale_s)
+        self.reach_h, self.follow_h = float(reach_h), float(follow_h)
+        self._open: List[_Bare] = []
+        self._any_since: Optional[float] = None    # a bare group on every frame since (any group)
+        self._any_where = ""
+        self._last_t: Optional[float] = None
+        self._why = "no frame yet"                  # why (a) is not checked ("" = checked)
+        self.groups = self.points = self.bare = 0   # the last frame's counts
+        self.episodes = 0                           # groups that went past sustain_s, since start
+
+    def not_checked(self, now: float, why: str) -> None:
+        """The frame (or the app's state) cannot say: (a) reads « not checked » until a frame can; a group seen
+        bare keeps its count across a gap of up to ``gap_s`` (one invalid frame does not restart it)."""
+        self._open = [b for b in self._open if now - b.seen <= self.gap_s]
+        self._any_since, self._why, self._last_t = None, str(why or "not checked"), now
+        self.groups = self.points = self.bare = 0
+
+    def update(self, now: float, groups, points, body_h: float = 0.0,
+               bounds: Optional[Tuple[float, float, float, float]] = None, why: str = "") -> None:
+        if groups is None:
+            self.not_checked(now, why or "no foreground on this frame")
+            return
+        pts = []
+        for p in points or ():
+            h = float(p[2]) if len(p) > 2 and p[2] else float(body_h or 0.0)
+            pts.append((float(p[0]), float(p[1]), h))
+        bare = [g for g in groups
+                if not any((px - g[0]) ** 2 + (py - g[1]) ** 2 <= (self.reach_h * ph) ** 2 for px, py, ph in pts)]
+        self._why, self._last_t = "", now
+        self.groups, self.points, self.bare = len(groups), len(pts), len(bare)
+        if bare:
+            if self._any_since is None:
+                self._any_since = now
+            self._any_where = place_text(float(bare[0][0]), float(bare[0][1]), bounds)
+        else:
+            self._any_since = None
+        h_ref = float(body_h or 0.0) or max([ph for _x, _y, ph in pts] + [100.0])
+        radius2 = (self.follow_h * h_ref) ** 2
+        pairs = sorted(((b.x - g[0]) ** 2 + (b.y - g[1]) ** 2, i, j)
+                       for i, b in enumerate(self._open) for j, g in enumerate(bare))
+        used_i, used_j = set(), set()
+        for d2, i, j in pairs:
+            if d2 > radius2 or i in used_i or j in used_j:
+                continue
+            used_i.add(i)
+            used_j.add(j)
+            b, g = self._open[i], bare[j]
+            b.x, b.y, b.seen = float(g[0]), float(g[1]), now
+            b.where = place_text(b.x, b.y, bounds)
+        for j, g in enumerate(bare):
+            if j not in used_j:
+                self._open.append(_Bare(float(g[0]), float(g[1]), now, now,
+                                        place_text(float(g[0]), float(g[1]), bounds)))
+        self._open = [b for b in self._open if now - b.seen <= self.gap_s]
+        for b in self._open:
+            if not b.counted and now - b.since > self.sustain_s:
+                b.counted = True
+                self.episodes += 1
+
+    def worst_s(self, now: float) -> float:
+        """How long the longest-running group has gone without a point (0: none)."""
+        ages = [now - b.since for b in self._open if now - b.seen <= self.gap_s]
+        if self._any_since is not None:
+            ages.append(now - self._any_since)
+        return max(ages + [0.0])
+
+    def state(self, now: float) -> CheckResult:
+        if self._why:
+            return CheckResult(POINTS_ROW, "skip", f"not checked: {self._why}")
+        if self._last_t is None or now - self._last_t > self.stale_s:
+            return CheckResult(POINTS_ROW, "skip", "not checked: no new frame processed")
+        age = self.worst_s(now)
+        if age > self.sustain_s:
+            long = [b for b in self._open if now - b.seen <= self.gap_s and now - b.since > self.sustain_s]
+            places = [b.where for b in long if b.where] or ([self._any_where] if self._any_where else [])
+            n = max(1, len(long))
+            who = "a body on the wall has" if n == 1 else f"{n} bodies on the wall have"
+            where = f" ({', '.join(dict.fromkeys(places))})" if places else ""
+            return CheckResult(POINTS_ROW, "fail", f"{who} had no point for {age:.0f} s{where} - if it is a "
+                                                   f"dancer: {MAX_DANCERS_HOW}")
+        g, p = self.groups, self.points
+        return CheckResult(POINTS_ROW, "ok", f"{g} bod{'y' if g == 1 else 'ies'} on the wall, {p} point"
+                                             f"{'' if p == 1 else 's'}: none without a point for more than "
+                                             f"{self.sustain_s:.0f} s")
+
+    def snapshot(self, now: float) -> Dict[str, object]:
+        return {"groups": self.groups, "points": self.points, "bare": self.bare,
+                "worst_s": round(self.worst_s(now), 1), "episodes": self.episodes,
+                "not_checked": self._why or None}
+
+
+class StallRate:
+    """Signal (b): the camera's stalls a minute (``CameraStallClock.stalls``, a running count) over the last
+    ``window_s`` of live camera, never divided by less than ``min_span_s``.  ``update`` about once a second with
+    the count and whether the camera is live (open, not reconnecting, no take playing)."""
+
+    def __init__(self, window_s: float = STALL_WINDOW_S, min_span_s: float = STALL_MIN_SPAN_S,
+                 warn_per_min: float = STALL_WARN_PER_MIN, fail_per_min: float = STALL_FAIL_PER_MIN,
+                 stale_s: float = 5.0):
+        self.window_s, self.min_span_s = float(window_s), float(min_span_s)
+        self.warn_per_min, self.fail_per_min, self.stale_s = float(warn_per_min), float(fail_per_min), stale_s
+        self._rows: Deque[Tuple[float, float, int]] = deque()   # (t, live seconds so far, stalls so far)
+        self._live_s = 0.0
+        self._t: Optional[float] = None
+        self._live = False
+        self._count: Optional[int] = None
+
+    def update(self, now: float, stalls: int, live: bool) -> None:
+        stalls = int(stalls)
+        if self._count is not None and stalls < self._count:      # a new stall clock: start again
+            self._rows.clear()
+        if self._t is not None and self._live and live:
+            self._live_s += max(0.0, now - self._t)
+        self._t, self._live, self._count = now, bool(live), stalls
+        if live:
+            self._rows.append((now, self._live_s, stalls))
+        while self._rows and now - self._rows[0][0] > self.window_s:
+            self._rows.popleft()
+
+    def rate(self) -> Optional[Tuple[float, int, float]]:
+        """(stalls a minute, stalls, live seconds) over the window; None before any live sample."""
+        if not self._rows:
+            return None
+        _t0, l0, c0 = self._rows[0]
+        _t1, l1, c1 = self._rows[-1]
+        n, span = max(0, c1 - c0), max(0.0, l1 - l0)
+        return 60.0 * n / max(span, self.min_span_s), n, span
+
+    def state(self, now: float) -> CheckResult:
+        name = "camera stalls"
+        r = self.rate()
+        if not self._live or self._t is None or now - self._t > self.stale_s or r is None:
+            return CheckResult(name, "skip", "not checked: the camera is not live")
+        per_min, n, span = r
+        fact = f"{per_min:.1f} a minute ({n} in the last {max(span, 1.0) / 60:.1f} min of camera)"
+        if per_min >= self.fail_per_min:
+            return CheckResult(name, "fail", f"{fact}: the picture freezes often - {CAMERA_HOW}, on another "
+                                             "USB3 port at the next break")
+        if per_min >= self.warn_per_min:
+            return CheckResult(name, "warn", f"{fact} - at the next break: {CAMERA_HOW}, try another USB3 port")
+        return CheckResult(name, "ok", fact)
+
+    def snapshot(self) -> Optional[Dict[str, object]]:
+        r = self.rate()
+        if r is None:
+            return None
+        return {"per_min": round(r[0], 2), "stalls": r[1], "live_s": round(r[2], 1), "window_s": self.window_s}
+
+
+def health_camera_row(*, is_open: bool, reconnecting: bool, playing: bool = False, source: str = "",
+                      fps: float = 0.0, down_s: Optional[float] = None) -> CheckResult:
+    """The camera, now: a recording playing in its place is orange (the visuals follow the take, not the
+    dancers), the camera closed or reconnecting is red."""
+    if playing:
+        return CheckResult("camera", "warn", "a recording is playing, not the camera - LIVE (Recordings bar)")
+    if not is_open or reconnecting:
+        for_s = f" for {down_s:.0f} s" if down_s else ""
+        return CheckResult("camera", "fail", f"{source + ': ' if source else ''}"
+                                             f"{'reconnecting' if reconnecting else 'not open'}{for_s} - {CAMERA_HOW}")
+    return CheckResult("camera", "ok", f"{source} @ {float(fps):.1f} FPS" if source else f"{float(fps):.1f} FPS")
+
+
+def health_output_row(*, enabled: bool, target: str = "", errors: int = 0) -> CheckResult:
+    """The output to the visuals: OSC off is orange (H2: readiness says the same, ``check_osc``); sends that
+    fail now (``errors``: dropped in the last seconds -- nothing listens there) are red."""
+    if not enabled:
+        return CheckResult("output", "warn", "OSC is off: the visuals get no point - " + OSC_ON_HOW)
+    if errors > 0:
+        return CheckResult("output", "fail", f"OSC sends to {target} fail ({errors} dropped) - start "
+                                             "TouchDesigner and its patch")
+    return CheckResult("output", "ok", f"OSC to {target}" if target else "OSC on")
+
+
+def health_plate_row(*, status: str, reason: str = "", stale_since: str = "") -> CheckResult:
+    """The empty-wall snapshot in use (FrameProcessor.plate_status): a stale or refused one is red (the
+    foreground then sees nothing right).  ``stale_since``: F2's latched « plate stale » (when it latched),
+    "" when none or not in this build."""
+    why = f" ({reason})" if reason else ""
+    if stale_since:
+        return CheckResult("empty wall", "fail", f"stale since {stale_since}{why} - {EMPTY_WALL_HOW}")
+    if status == "ready":
+        return CheckResult("empty wall", "ok", "ready")
+    if status == "capturing":
+        return CheckResult("empty wall", "skip", "being captured")
+    if status == "off":
+        return CheckResult("empty wall", "warn", "off: the dancers' points are not checked - 3 Live > Use "
+                                                 "empty wall")
+    if status == "none":
+        return CheckResult("empty wall", "warn", f"none - {EMPTY_WALL_HOW}")
+    if status == "size":
+        return CheckResult("empty wall", "fail", f"from another camera crop - {EMPTY_WALL_HOW}")
+    if status == "stale":
+        return CheckResult("empty wall", "fail", f"no longer matches the wall{why} - {EMPTY_WALL_HOW}")
+    return CheckResult("empty wall", "skip", f"not checked ({status})")
+
+
+def health_frames_row(*, fail_streak: int) -> CheckResult:
+    if fail_streak > 0:
+        return CheckResult("frames", "fail", f"{fail_streak} frame(s) in a row failed to process - "
+                                             + RESTART_HOW)
+    return CheckResult("frames", "ok", "processed")
+
+
+def health_engine_row(*, trt_requested: bool, trt_active: Optional[bool]) -> CheckResult:
+    if trt_active is None:
+        return CheckResult("engine", "skip", "not checked: no model loaded")
+    if trt_requested and not trt_active:
+        return CheckResult("engine", "fail", "running PyTorch, not the TensorRT engine - " + RESTART_HOW)
+    return CheckResult("engine", "ok", "TensorRT" if trt_active else "PyTorch (as asked)")
+
+
+def health_alert_rows(mon: HealthMonitor, now: float) -> List[CheckResult]:
+    """The HealthMonitor's conditions that hold now, past the alerts' own sustain windows (the alerts the
+    strip and the toasts show, kept here for as long as they last, not for one toast): orange each."""
+    out: List[CheckResult] = []
+
+    def held(since: Optional[float], need: float) -> Optional[float]:
+        return now - since if since is not None and now - since >= need else None
+
+    s = held(mon._fps_low_since, mon.fps_sustain_s)
+    if s is not None:
+        base = mon._baseline()
+        out.append(CheckResult("fps", "warn", f"FPS under half its baseline{f' {base:.1f}' if base else ''} for "
+                                              f"{s:.0f} s - mains plugged in, close everything but WallDance and "
+                                              "TouchDesigner"))
+    s = held(mon._gpu_hot_since, mon.gpu_temp_sustain_s)
+    if s is not None:
+        temp = (mon._last_gpu_stats or {}).get("temp", "?")
+        out.append(CheckResult("gpu", "warn", f"GPU at {temp} C for {s:.0f} s - raise the laptop's back, clear "
+                                              "its vents"))
+    if mon._light_alerted:
+        out.append(CheckResult("light", "warn", "the light is not the empty-wall snapshot's - " + LIGHT_REMEDY))
+    s = held(mon._no_det_since, mon.no_detection_s)
+    if s is not None:
+        out.append(CheckResult("no dancer", "warn", f"no dancer tracked for {s:.0f} s - if dancers are on the "
+                                                    "wall: check the IR and the picture"))
+    s = held(mon._over_cap_since, mon.over_cap_s)
+    if s is not None:
+        out.append(CheckResult("over cap", "warn", f"more people than max_persons for {s:.0f} s - "
+                                                   + MAX_DANCERS_HOW))
+    s = held(mon._height_stale_since, mon.height_stale_s)
+    if s is not None:
+        out.append(CheckResult("height", "warn", "the dancers' height looks stale - a dancer standing 10 s at "
+                                                 "the far wall"))
+    return out
+
+
+@dataclass
+class HealthLineState:
+    """The line: its state (ok | skip | warn | fail), the text shown, the row that names it and its one
+    instruction, and every row it was folded from."""
+    state: str
+    text: str
+    source: str = ""
+    instruction: str = ""
+    rows: List[CheckResult] = field(default_factory=list)
+
+    @property
+    def word(self) -> str:
+        return STATUS_WORDS.get(self.state, "FAIL")
+
+    @property
+    def color(self) -> Tuple[int, int, int]:
+        return STATUS_COLORS.get(self.state, STATUS_COLORS["fail"])
+
+    def to_dict(self) -> Dict[str, object]:
+        """For /status: small (a slow 4G link) -- the rows that are not ok, the others by name."""
+        return {"state": self.state, "word": self.word, "line": self.text, "source": self.source,
+                "instruction": self.instruction,
+                "rows": [{"name": r.name, "status": r.status, "detail": r.detail}
+                         for r in self.rows if r.status != "ok"],
+                "ok": [r.name for r in self.rows if r.status == "ok"]}
+
+
+def _rank(name: str) -> int:
+    return HEALTH_PRIORITY.index(name) if name in HEALTH_PRIORITY else len(HEALTH_PRIORITY)
+
+
+def health_line(rows) -> HealthLineState:
+    """The worst row wins (``worst_status``); between rows of that state, ``HEALTH_PRIORITY`` picks.  Green
+    only when every row is ok: a row not checked is never green, no rows is not checked."""
+    rows = list(rows)
+    state = worst_status(r.status for r in rows)
+    if not rows:
+        return HealthLineState("skip", f"{STATUS_WORDS['skip']} - nothing to check")
+    if state == "ok":
+        names = [r.name for r in sorted(rows, key=lambda r: _rank(r.name))]
+        shown = ", ".join(names[:6]) + (", ..." if len(names) > 6 else "")
+        return HealthLineState("ok", f"OK - all {len(rows)} checks fine ({shown})", rows=rows)
+    worst = [r for r in rows if r.status == state] or [r for r in rows if r.status not in _STATUS_ORDER]
+    top = min(worst, key=lambda r: _rank(r.name))
+    others = [r.name for r in sorted(rows, key=lambda r: (-_STATUS_ORDER.get(r.status, 3), _rank(r.name)))
+              if r is not top and r.status != "ok"]
+    more = f"   (+{len(others)}: {', '.join(others[:3])}{', ...' if len(others) > 3 else ''})" if others else ""
+    instruction = next((top.detail.rsplit(sep, 1)[1] for sep in (" - ", ": ") if sep in top.detail), "")
+    return HealthLineState(state, f"{STATUS_WORDS.get(state, 'FAIL')} - {top.name}: {top.detail}{more}",
+                           source=top.name, instruction=instruction, rows=rows)
+
+
+class HealthLine:
+    """The line between ticks (the main loop owns one): signals (a) and (b), the last line, and since when its
+    state is what it is."""
+
+    def __init__(self, bare: Optional[BareGroupWatch] = None, stalls: Optional[StallRate] = None):
+        self.bare = bare or BareGroupWatch()
+        self.stalls = stalls or StallRate()
+        self.last: Optional[HealthLineState] = None
+        self.since: Optional[float] = None
+
+    def compose(self, now: float, rows) -> HealthLineState:
+        """``rows``: the other sources' CheckResults; (a) and (b) are added here (times in the clock the two
+        signals were fed with)."""
+        line = health_line(list(rows) + [self.bare.state(now), self.stalls.state(now)])
+        if self.last is None or line.state != self.last.state:
+            self.since = now
+        self.last = line
+        return line
+
+    def to_dict(self, now: float) -> Dict[str, object]:
+        if self.last is None:
+            return {}
+        d = self.last.to_dict()
+        d["for_s"] = round(now - self.since, 1) if self.since is not None else None
+        d["points"] = self.bare.snapshot(now)
+        d["stall_rate"] = self.stalls.snapshot()
+        return d

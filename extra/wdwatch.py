@@ -26,7 +26,8 @@ is noticed (its start time, its event counter) and its events are read from its 
 
 **Two modes.**
 * ``watch`` -- supervision (7-8/12): cues (link down, app down or restarted, the app's alerts, a low hit rate,
-  low fps, the camera closed in RUN) are printed and, with ``--notify CMD``, given to that command on stdin.
+  low fps, the camera closed in RUN, the app's health line red) are printed and, with ``--notify CMD``, given
+  to that command on stdin.
 * ``watch --record-only`` -- the show (12/12): it only reads and logs, for the post-mortem.  It never sends a
   command and never contacts anyone: ``--notify`` is refused and the cues only go to the log.
 
@@ -530,6 +531,9 @@ class Watcher:
         cam = st.get("camera") or {}
         if run and cam.get("open") is False:
             c["camera"] = f"the camera is closed in RUN ({cam.get('source')})"
+        line = (rec.get("health") or {}).get("line")       # H2: the app's one health line, red
+        c["health"] = (f"health line red: {_health_line(line)}"
+                       if isinstance(line, dict) and line.get("state") == "fail" else None)
         return c
 
     def _cue_check(self, rec: Dict[str, Any]) -> None:
@@ -569,6 +573,8 @@ class Watcher:
         hs = "hit n/a" if not hit else ("hit --" if rate is None else f"hit {100 * rate:.0f} %")
         snap = rec.get("snapshot") or {}
         ss = f"snapshot {snap['bytes'] / 1024:.1f} KB" if "file" in snap else "no snapshot"
+        hl = h.get("line") if isinstance(h.get("line"), dict) else {}
+        hs += f" health {hl.get('word') or str(hl.get('state') or '-').upper()}" if hl else ""
         return (f"{_hms(rec['t'])} {str(st.get('state', '?')).upper()} fps {h.get('fps')} {hs} | {ss} | "
                 f"poll {rec.get('bytes', 0) / 1024:.1f} KB in {rec.get('dur_s')} s | next "
                 f"{rec['interval_s']:.0f} s")
@@ -644,6 +650,21 @@ def _health_line(line: Any) -> str:
     return str(line)
 
 
+# H2: one character a poll for the app's health line -- G ok, n not checked, o warn, R fail, - none, ! no answer
+_HEALTH_MARK = {"ok": "G", "skip": "n", "warn": "o", "fail": "R"}
+
+
+def _health_spark(polls: List[Dict[str, Any]], since: float) -> str:
+    out = []
+    for p in polls:
+        if p["t"] < since:
+            continue
+        line = (p.get("health") or {}).get("line") if p.get("ok") else None
+        out.append("!" if not p.get("ok") else
+                   (_HEALTH_MARK.get(line.get("state"), "?") if isinstance(line, dict) else "-"))
+    return "".join(out)
+
+
 def render_summary(records: List[Dict[str, Any]], now: float, minutes: float = 15.0,
                    width: int = 100) -> str:
     """One screen (<= 24 lines of <= ``width`` ASCII characters) from a run's log records."""
@@ -682,6 +703,14 @@ def render_summary(records: List[Dict[str, Any]], now: float, minutes: float = 1
                    f" | OSC {'on' if osc.get('enabled') else 'off'} {osc.get('target', '')}"
                    f"{' | GPU fallback: ' + str(h['gpu_fallback']) if h.get('gpu_fallback') else ''}")
         out.append("HEALTH " + (_health_line(h["line"]) if "line" in h else "(no health line in this build)"))
+        if "line" in h:                     # H2: its state at each poll of the window
+            spark = _health_spark(polls, since)
+            red = sum(1 for p in polls if p["t"] >= since and p.get("ok")
+                      and ((p.get("health") or {}).get("line") or {}).get("state") == "fail")
+            for_s = h["line"].get("for_s") if isinstance(h["line"], dict) else None
+            held = f"this state {_dur(for_s)}, " if isinstance(for_s, (int, float)) else ""
+            out.append(f"       {held}{minutes:.0f} min: red at {red} poll(s) | {spark[-40:]}  (G ok, n not "
+                       "checked, o warn, R red, ! no answer)")
         hit = lo.get("hit_rate")
         if not hit:
             out.append("HIT    absent (this build has no referee, core/swipe.py)")

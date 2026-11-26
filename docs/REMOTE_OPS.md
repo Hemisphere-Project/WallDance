@@ -149,6 +149,12 @@ kill -USR1 <pid>                                        # the same screen in the
   settings swipe's referee (`core/swipe.py`), so there is one referee; a build without that module has no
   `hit_rate` key (absent, never 0). `rate` is null while no dancer group is seen (foreground off, no plate,
   an empty wall); `skipped` counts frames whose foreground was invalid.
+- **The health line** (`health` in `/status`, H2): the band the technician sees under the picture, once a
+  second -- `state` (`ok`, `skip` = not checked, `warn`, `fail`), `line` (its text: the worst source and its
+  one instruction), `source`, `instruction`, `for_s` (how long it has been in this state), the `rows` that are
+  not ok, `points` (signal (a): dancer groups, points, groups without a point, the longest wait) and
+  `stall_rate` (signal (b): camera stalls a minute). The summary shows it with its state at each poll; a line
+  red at two polls in a row is a cue.
 - **A slow link**: each poll has a byte budget (`--budget-kb`, 40 KB). The app shrinks the snapshot
   (`/snapshot.jpg?w=320&q=50&max_bytes=N`, a few KB) to what status and events left; an answer larger than its
   room is not read. A poll slower than `--slow-s` (10 s) doubles the interval and shrinks the next snapshots;

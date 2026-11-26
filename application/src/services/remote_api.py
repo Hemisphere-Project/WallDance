@@ -108,7 +108,8 @@ POLICY: Dict[str, str] = {
 # High-rate / non-JSON events stay out of the ring buffer; the latest value of
 # the periodic ones is folded into /status instead.
 _SKIP_EVENTS = {"PreviewFrame", "PreviewResize"}
-_LATEST_ONLY = {"StatsTick", "GpuStats", "OutputLatency", "ModelLoadProgress"}
+_LATEST_ONLY = {"StatsTick", "GpuStats", "OutputLatency", "ModelLoadProgress",
+                "HealthLine"}   # H2: once a second, served as /status["health"]
 
 TEXT_SUFFIXES = (".json", ".jsonl", ".log", ".txt", ".csv", ".meta", ".md")
 VIDEO_SUFFIXES = (".avi", ".mp4", ".mov", ".mkv")
@@ -257,6 +258,10 @@ class RemoteApi:
         if hit is not None:
             out["hit_rate"] = hit
         out["snapshot_fit"] = True
+        # H2: the one health line (core/ops_monitor.py), the band's state and text, and why
+        line = out["latest"].pop("HealthLine", None)
+        if line:
+            out["health"] = dict(line.get("data") or {}, state=line.get("state"), line=line.get("text"))
         if self.support is not None:   # S1b: on/off, the message on screen, the waiting and the read ones
             out["support_line"] = self.support.status()
         return out

@@ -606,6 +606,19 @@ class WallDanceGUI:
             dpg.set_value("alerts_text", "(none)")
             dpg.configure_item("alerts_text", color=TEXT_HINT)
 
+    def show_health_line(self, state: str, text: str):
+        """H2 (#t-040 ①): paint the health band (gui_builder.build_health_line) -- its colour from the line's
+        state (readiness' colours), its text the worst source and its one instruction."""
+        if not dpg.does_item_exist("health_line_text"):
+            return
+        dpg.set_value("health_line_text", text)
+        if state != getattr(self, "_health_state", None):
+            themes = getattr(self, "_health_themes", None) or {}
+            theme = themes.get(state, themes.get("fail"))
+            if theme is not None and dpg.does_item_exist("health_line_window"):
+                dpg.bind_item_theme("health_line_window", theme)
+            self._health_state = state
+
     def _update_preview_row_state(self, enabled: bool):
         """Grey out PREVIEW row controls when disabled."""
         if dpg.does_item_exist("preview_tex_text"):
