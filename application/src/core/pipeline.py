@@ -7,6 +7,7 @@ Supports full GPU pipeline for zero-copy processing (see gpu_pipeline.py).
 from __future__ import annotations
 
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
@@ -76,6 +77,7 @@ from core.camera_stall import CameraStallClock, stall_states
 from core.identity_slots import (IdentitySlots, SlotParams, STATE_BELT, STATE_LIVE,
                                  candidate_from_track)
 from core.tracker import DancerTrack, DancerTracker
+from core.swipe import FrameCollector, Observation, SwipeParams, bare_groups
 from core.yolo_runner import PoseRunner
 
 # Import GPU pipeline (optional, for zero-copy GPU path)
@@ -173,6 +175,10 @@ class ProcessingSettings:
     roi_y: int = 0
     roi_w: int = 0
     roi_h: int = 0
+    # P5 settings swipe: keep the frames a swipe will run on (FrameProcessor._swipe_tap).  Off here, so the
+    # offline tools that build a processor (replay.py) pay nothing; the app sets it from the project key
+    # ``swipe_collect`` (default core.config.SWIPE_COLLECT).
+    swipe_collect: bool = False
 
 
 @dataclass
@@ -524,6 +530,21 @@ class FrameProcessor:
         # height-staleness alarm must see what the gate would reject (⑤d)
         self.last_raw_det_heights: List[float] = []
         self.last_raw_dets: List[Tuple[float, float, float, float]] = []
+        # P5 settings swipe: this frame's live boxes (x0, y0, x1, y1, box conf) in original px, before the
+        # size gate and the duplicate filter -- what the swipe's referee judges the live setting on.
+        self.last_raw_boxes: List[Tuple[float, float, float, float, float]] = []
+        self.swipe_params: Optional[SwipeParams] = None      # None = core.swipe's defaults
+        self._swipe_collector: Optional[FrameCollector] = None
+        self._swipe_lock = threading.Lock()                  # offer (loop thread) vs snapshot (swipe worker)
+        self._swipe_key: Optional[tuple] = None              # the live setting the kept frames were judged on
+        self._swipe_last_t: Optional[float] = None           # clock of the last kept frame
+        self._swipe_last_kind: Dict[bool, float] = {}        # ... per kind (lost / covered), as the collector
+        self._swipe_copy_always = False                      # the collector kept a frame the mirror ruled out
+        self._swipe_tap_failed = False
+        # Pacing (P5): set once the live YOLO pass of a frame is done (boxes on the CPU), so the swipe's
+        # worker runs its inferences in the loop's slack, one per live frame.
+        self.frame_done = threading.Event()
+        self.frame_done_t: float = 0.0
 
         # GPU pipeline (zero-copy path)
         self._gpu_pipeline: Optional[GpuPipeline] = None
@@ -634,7 +655,7 @@ class FrameProcessor:
         # 2-6. YOLO → Track → OSC
         scaled_tracks = self._run_yolo_and_track(
             yolo_tensor, gpu_timing, timing, original_w, original_h,
-            frame_number=frame_number, raw_frame=frame, motion=motion)
+            frame_number=frame_number, raw_frame=frame, motion=motion, mono_raw=False)
         
         latency_ms = (time.perf_counter() - frame_start) * 1000
         timing["total"] = latency_ms
@@ -692,7 +713,7 @@ class FrameProcessor:
         # 2-6. YOLO → Track → OSC
         scaled_tracks = self._run_yolo_and_track(
             yolo_tensor, gpu_timing, timing, original_w, original_h,
-            frame_number=frame_number, raw_frame=raw_frame, motion=motion)
+            frame_number=frame_number, raw_frame=raw_frame, motion=motion, mono_raw=True)
 
         latency_ms = (time.perf_counter() - frame_start) * 1000
         timing["total"] = latency_ms
@@ -710,6 +731,7 @@ class FrameProcessor:
         frame_number: int | None = None,
         raw_frame: np.ndarray | None = None,
         motion: Optional[Tuple[float, np.ndarray]] = None,
+        mono_raw: bool = False,
     ) -> List[ScaledTrack]:
         """Shared YOLO inference → extract → track → unscale → OSC pipeline.
 
@@ -752,6 +774,11 @@ class FrameProcessor:
              roi_x + (float(d[2][0]) + float(d[2][2]) / 2 - pad_x) * inv_lb,
              roi_y + (float(d[2][1]) + float(d[2][3]) / 2 - pad_y) * inv_lb,
              float(d[2][3]) * inv_lb) for d in detections]
+        self.last_raw_boxes = self._raw_boxes(detections, self._last_box_confs, inv_lb, pad_x, pad_y,
+                                              roi_x, roi_y)
+        # P5 pacing: this frame's network pass is done (its boxes are on the CPU)
+        self.frame_done_t = time.perf_counter()
+        self.frame_done.set()
         self.last_lb_scale = float(lb_scale) if lb_scale else self.last_lb_scale
         self._guard_person_height(detections, inv_lb)
         detections = self._filter_duplicate_detections(detections, effective_person_height=scaled_person_height)
@@ -807,9 +834,117 @@ class FrameProcessor:
         self._belt_gray = gray_for_motion
         self._belt_gray_offset = (roi_x, roi_y)
 
-        return self._post_yolo_chain(
+        fg_before = self.last_fg
+        tracks = self._post_yolo_chain(
             detections, space, lb_motion, finalize,
             original_w, original_h, frame_number, timing)
+        if self.settings.swipe_collect:
+            self._swipe_tap(raw_frame, fg_before, mono_raw, timing)
+        elif self._swipe_collector is not None:
+            with self._swipe_lock:            # switched off: free the kept frames
+                self._swipe_collector = None
+                self._swipe_key = None
+        return tracks
+
+    # ------------------------------------------------------------------
+    # P5 settings swipe: the tap (keeps the frames a swipe will run on)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _raw_boxes(detections, confs: Dict[tuple, float], inv_lb: float, pad_x: float, pad_y: float,
+                   roi_x: float, roi_y: float) -> List[Tuple[float, float, float, float, float]]:
+        """Letterbox-space (x, y, w, h) detections -> (x0, y0, x1, y1, box conf) in original px."""
+        out = []
+        for d in detections:
+            x, y, w, h = (float(v) for v in d[2][:4])
+            x0 = roi_x + (x - pad_x) * inv_lb
+            y0 = roi_y + (y - pad_y) * inv_lb
+            out.append((x0, y0, x0 + w * inv_lb, y0 + h * inv_lb,
+                        float(confs.get(FrameProcessor._bbox_conf_key(d[2]), 0.0))))
+        return out
+
+    @property
+    def swipe_collector(self) -> FrameCollector:
+        if self._swipe_collector is None:
+            with self._swipe_lock:
+                if self._swipe_collector is None:
+                    self._swipe_collector = FrameCollector(self.swipe_params or SwipeParams())
+        return self._swipe_collector
+
+    def swipe_snapshot(self) -> Tuple[list, int, float, bool]:
+        """(kept frames, lost frames, progress 0..1, ready) -- consistent, for the swipe's worker thread."""
+        with self._swipe_lock:
+            col = self._swipe_collector
+            if col is None:
+                return [], 0, 0.0, False
+            return list(col.frames), int(col.lost_frames), float(col.progress), bool(col.ready)
+
+    def swipe_lost_share(self) -> Optional[float]:
+        """How often the live setting leaves a dancer bare, if ``core.swipe``'s collector counts it."""
+        with self._swipe_lock:
+            col = self._swipe_collector
+            v = getattr(col, "lost_share", None) if col is not None else None
+        return float(v) if isinstance(v, (int, float)) else None
+
+    def reset_swipe_frames(self) -> None:
+        with self._swipe_lock:
+            if self._swipe_collector is not None:
+                self._swipe_collector.reset()
+            self._swipe_last_t = None
+            self._swipe_last_kind = {}
+
+    def _swipe_setting_key(self) -> tuple:
+        s = self.settings
+        return (id(self.model), int(s.imgsz), tuple(s.yolo_shape) if s.yolo_shape else None,
+                (bool(s.roi_enabled), int(s.roi_x), int(s.roi_y), int(s.roi_w), int(s.roi_h)),
+                str(s.fg_plate_path or ""), self._plate_invalid)
+
+    def _swipe_tap(self, raw_frame, fg_before, mono_raw: bool, timing: Dict[str, float]) -> None:
+        """Offer this frame to the swipe's collector: its foreground, the live boxes and the raw frame.
+        Collects whenever the foreground is valid, so a swipe asked for later starts from frames already
+        there.  Every frame with a dancer group is offered (the collector may count how often the live
+        setting loses one); the image is copied only when the collector may keep it -- not inside the
+        0.5 s gap since the last kept frame of the same kind (lost / covered), which the collector refuses.
+        Cost when nothing is kept: microseconds (``timing['swipe_tap']``, ms)."""
+        t0 = time.perf_counter()
+        try:
+            col = self.swipe_collector
+            key = self._swipe_setting_key()
+            if key != self._swipe_key:                # another model / input / ROI / plate: start over
+                with self._swipe_lock:
+                    col.reset()
+                self._swipe_key, self._swipe_last_t, self._swipe_last_kind = key, None, {}
+            fg = self.last_fg
+            # this frame's foreground only (the slot layer computes it; off = last_fg is not refreshed)
+            if raw_frame is None or fg is None or fg is fg_before or not getattr(fg, "valid", False):
+                return
+            p = col.params
+            obs = Observation.from_fg(fg)
+            if obs is None or not obs.dancer_groups(p):
+                return
+            t = float(self._output_clock())
+            boxes = list(self.last_raw_boxes)
+            lost = bool(bare_groups(obs, boxes, p))
+            last = self._swipe_last_kind.get(lost)
+            may_keep = self._swipe_copy_always or last is None or not (0.0 <= t - last < p.min_gap_s)
+            if may_keep:
+                # the IDS frame is mono expanded to BGR (R == G == B): one channel says it all, a third of the RAM
+                img = (cv2.extractChannel(raw_frame, 0) if mono_raw and raw_frame.ndim == 3
+                       else raw_frame.copy())
+            else:
+                img = raw_frame                       # refused by the gap: counted, never stored
+            with self._swipe_lock:
+                kept = col.offer(t, img, obs, boxes)
+            if kept:
+                self._swipe_last_t = self._swipe_last_kind[lost] = t
+                if not may_keep:                      # the collector's gap is not the one mirrored here
+                    self._swipe_copy_always = True
+                    print("[Swipe] the collector kept a frame inside its gap: copying every frame from now on")
+        except Exception as exc:  # noqa: BLE001 - the tap must never stop the show
+            if not self._swipe_tap_failed:
+                self._swipe_tap_failed = True
+                print(f"[Swipe] frame tap failed ({type(exc).__name__}: {exc}); the show goes on")
+        finally:
+            timing["swipe_tap"] = (time.perf_counter() - t0) * 1000.0
 
     def _run_yolo(self, yolo_tensor: 'torch.Tensor'):
         """``self.model(yolo_tensor, imgsz=, conf=, iou=, half=, verbose=False)``

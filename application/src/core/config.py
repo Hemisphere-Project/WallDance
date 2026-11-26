@@ -353,6 +353,15 @@ FOREGROUND_ENABLED = True
 # threshold gave 3-5 false blobs a frame and « plate stale » on 08/10).
 FOREGROUND_CLIP_AWARE = True
 PLATE_CAPTURE_FRAMES = 40               # 2 s at 20 fps
+# Settings swipe (Plan Cordée P5, core/swipe.py + core/swipe_runner.py): while the foreground is valid the
+# pipeline keeps up to ~30 frames where the live setting leaves a dancer without a box (and as many covered
+# ones), so a swipe asked for during the warmup starts from frames already there.  A copy every >= 0.5 s at
+# most; ~2.3 MB a frame for a mono IDS frame.  Project key swipe_collect; False = no tap, no frames kept.
+SWIPE_COLLECT = True
+# The swipe's candidate inferences run beside the live loop: back to back they doubled the live inference on the
+# show laptop (15 -> 38 ms p50, 26/11), so each starts right after a live network pass and at least this long
+# after the previous one (~one per live frame at 20 fps; 5 candidates x 30 frames then take ~8-10 s).
+SWIPE_PACE_S = 0.05
 # Light changed since the empty-wall snapshot (Thomas 2026-10-07: "luminosity change is a killer"): the
 # raw ROI brightness over the snapshot's (core/foreground.ForegroundDetector.light_ratio), sampled at 1 Hz
 # in standby and RUN alike; when its median over LIGHT_CHANGE_S leaves [1/RATIO, RATIO] the operator is
