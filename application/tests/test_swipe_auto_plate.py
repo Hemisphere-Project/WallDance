@@ -271,3 +271,46 @@ def test_a_plate_refused_for_its_camera_starts_the_tap_over_both_ways():
     clock["t"] = 4.0
     _tap(proc, frame, _fg((15, 20, 900)))
     assert [f.t for f in proc.swipe_snapshot()[0]] == [4.0]
+
+
+# ------------------------------------------------------------------ the back-off's wake, through the looker
+@pytest.mark.parametrize("startup", ["plate-waits-first", "plate-usable"])
+def test_after_a_keep_a_rising_lost_share_wakes_the_looker_before_the_back_off_ends(startup):
+    """The lost-share wake through ``BackgroundSwipe.tick`` (not only the policy object), with or without a start-up
+    scene change: the looker's first tick sees the plate not usable (none loaded yet), the next one usable --
+    ``reset`` and the pool cut at ``_fresh_after``.  A « keep » on a pool whose lost share is 0.20 starts the
+    back-off (300 s); within it a fresh pool at 0.293 stays idle, one at 0.30 (0.20 + ``wake_lost``) runs at once:
+    the baseline is the keep's, set after the start-up reset, the share read on the fresh frames only."""
+    bg, proc, events, loader, live = _looking_bg(mode="auto")
+    loader.infer_boxes = []                                              # the other model sees nobody: « keep »
+    proc.clock = 0.0
+    early = _look_frames(5, lost=5, t0=0.0) if startup == "plate-waits-first" else []     # kept on a plate
+    if startup == "plate-waits-first":                                   # that did not hold: never counted
+        _plate(live, False)
+        proc.frames = early
+        assert bg.tick() == "waiting"
+        _plate(live, True)
+        proc.clock = 5.0
+        assert bg.tick() == "idle" and bg._fresh_after == 5.0           # a scene change: the pool cut there
+    else:
+        proc.clock = 5.0
+        assert bg.tick() == "idle" and bg._fresh_after is None          # the first scene: nothing to start over
+    proc.frames = early + _look_frames(150, lost=30, t0=6.0)            # 6 .. 155 s, 30 left bare: 0.20
+    proc.clock = 156.0
+    assert bg.tick() == "run" and loader.infers == 150
+    assert bg.last_advice["advice"] == "none" and bg.last_advice["reason"].startswith("keep ")
+    pol = bg.auto.policy
+    assert pol._keeps == 1 and pol._keep_at == 156.0 and pol._keep_lost == pytest.approx(0.20)
+    assert pol.keep_wait() == 300.0
+    # 150 fresh frames inside the back-off (156 + 300 = 456), the dancing's own swing (0.293): settled
+    proc.frames = _look_frames(150, lost=44, t0=300.0)                   # 300 .. 449 s
+    proc.clock = 450.0
+    assert bg.tick() == "idle" and loader.infers == 150 and pol.woken == 0
+    assert bg.status()["counts"] == {"lost": 44, "covered": 106}
+    # the same moment, one more frame with a dancer bare (0.30): the live model loses more than at the keep
+    proc.frames = _look_frames(150, lost=45, t0=300.0)
+    assert bg.tick() == "run" and loader.infers == 300 and pol.woken == 1
+    assert bg.last_look["look"] == "run" and bg.last_look["t"] == 450.0
+    assert bg.last_advice["reason"].startswith("keep ")
+    assert pol._keeps == 1 and pol._keep_at == 450.0                     # after a woken run: from the start again
+    assert [h["outcome"] for h in bg.history if h["kind"] == "look"].count(WAIT) == (startup == "plate-waits-first")
