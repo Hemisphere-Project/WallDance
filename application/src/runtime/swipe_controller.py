@@ -160,7 +160,9 @@ class RefereeReport:
     """Every finished swipe goes through ``note`` with its verdict and the kept frames it was judged on: the
     plate refused -> ``reference_watch.note_referee_refusal(reason)``; the plate used (« keep », a switch) ->
     ``reference_watch.note_referee_accept()``; any other end (too few frames or dancers, cancelled, dropped, an
-    error) tells nothing.  A refusal is told only when its frames share none with the last refusal told (its
+    error) tells nothing, and so does any verdict judged on a plate that was not usable (``plate_ok`` False: found
+    stale, invalidated, refused for its camera -- the referee judged against a plate that does not hold, its
+    verdict is worth nothing: above all no accept).  A refusal is told only when its frames share none with the last refusal told (its
     oldest kept frame after that one's newest, or its newest before that one's oldest): the same pool pressed
     three times is one refusal.  The watch counts; nothing here does."""
 
@@ -168,8 +170,12 @@ class RefereeReport:
         self._last: Optional[Tuple[float, float]] = None    # (oldest, newest) frame time of the last refusal told
         self._lock = threading.Lock()
 
-    def note(self, result, frames: Sequence[Any] = ()) -> Optional[str]:
-        """Returns what the watch was told: "refusal", "accept", or None (nothing, or no watch in this build)."""
+    def note(self, result, frames: Sequence[Any] = (), plate_ok: bool = True) -> Optional[str]:
+        """Returns what the watch was told: "refusal", "accept", or None (nothing, or no watch in this build).
+        ``plate_ok``: the plate the verdict's frames were judged on was usable (the ``LiveSetting.plate_ok`` the
+        swipe ran on); False tells nothing."""
+        if not plate_ok:
+            return None
         if referee_refused(result):
             ts = [float(f.t) for f in frames or ()]
             span = (min(ts), max(ts)) if ts else None
@@ -441,7 +447,7 @@ class SwipeController:
             skipped = "; ".join(f"{c.label}: {w}" for c, w in outcome.skipped)
             if skipped:
                 say(f"[Swipe] not tried: {skipped}")
-            self.referee.note(res, frames)
+            self.referee.note(res, frames, plate_ok=live0.plate_ok)
             self._end(DONE, text, outcome)
         except Exception as exc:  # noqa: BLE001 - a swipe failure must not stop the show
             import traceback

@@ -213,7 +213,7 @@ def play(args):
         s = proc.settings
         return LiveSetting(args.project or "take", port.current, id(proc.model), True,
                            roi=(bool(s.roi_enabled), int(s.roi_x), int(s.roi_y), int(s.roi_w), int(s.roi_h)),
-                           plate=proc.plate_identity, plate_ok=not proc._plate_invalid, frame=tuple(frame_wh))
+                           plate=proc.plate_identity, plate_ok=bool(proc.plate_usable), frame=tuple(frame_wh))
     events = []
 
     def notify(kind, payload):

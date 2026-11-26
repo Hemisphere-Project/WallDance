@@ -939,11 +939,13 @@ class FrameProcessor:
         the same plates/latest.npz, and Calibrate holds it in memory until Save.  The plate found stale too
         (the foreground's ``stale_latched``, F2, where the build has it): frames kept before the latch were
         refereed against a plate that no longer fits, and a new plate lifts it -- either way the pool starts
-        over.  The confidence too: the live boxes kept with each frame (the swipe's live row) are cut at it."""
+        over.  The plate refused for its camera (X6, ``plate_refusal``) too: with the rest, every change of
+        ``plate_usable``, either way, starts the pool over.  The confidence too: the live boxes kept with each frame
+        (the swipe's live row) are cut at it."""
         s = self.settings
         return (id(self.model), int(s.imgsz), tuple(s.yolo_shape) if s.yolo_shape else None,
                 (bool(s.roi_enabled), int(s.roi_x), int(s.roi_y), int(s.roi_w), int(s.roi_h)),
-                self.plate_identity, self._plate_invalid,
+                self.plate_identity, self._plate_invalid, bool(self.plate_refusal),
                 bool(getattr(self._fg_detector, "stale_latched", False)), round(float(s.confidence or 0.0), 4))
 
     def loop_clock(self) -> float:
@@ -1084,7 +1086,8 @@ class FrameProcessor:
             col = self.swipe_collector
             key = self._swipe_setting_key()
             if key != self._swipe_key:                # another model / input / ROI / plate in memory /
-                                                      # plate found stale (F2) / confidence: start over
+                                                      # plate found stale (F2) or refused (X6) / confidence:
+                                                      # start over
                 with self._swipe_lock:
                     col.reset()
                     self._swipe_key = key

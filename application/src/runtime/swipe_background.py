@@ -18,6 +18,12 @@ and acts on its advice, on its own thread, without the operator:
 * **the advice** (``SwipeAuto.advise``): ``none`` (it keeps the live setting), ``suggest`` (a warning with
   « Apply now » that stays until applied, dismissed or stale), ``apply`` (mode auto, a definite seamless winner:
   the switch, with an alert);
+* **the plate**: the referee judges every setting against the empty-wall plate, so a verdict on a plate that is
+  not usable (``LiveSetting.plate_ok`` False: no foreground, invalidated, refused for its camera, found stale) is
+  worth nothing.  While it is not usable: ``waiting`` -- no run starts, no engine is loaded, no inference, no
+  suggestion, no switch; the look says so (``PLATE_WAIT``, in ``status``); a suggestion shown goes; a run in
+  progress stops at its next frame and its verdict is dropped.  Any change of the scene (the plate's state among
+  it, either way) starts the policy's verdicts over AND the pool: frames kept before are never scored;
 * **the switch** goes through ``runtime.seamless_switch`` (the operator's Apply's own path): the resident model
   becomes the live one between two frames and the old live model the resident one -- no camera close, no modal,
   the tracker and the slots untouched; never while a background inference is in flight on it (the switch's
@@ -47,6 +53,10 @@ from core.swipe_runner import (SWIPE_MODELS, CandidateRunner, ExclusionCells, in
                                live_run_from_boxes, no_graph_capture, result_dict, score_runs)
 from runtime.seamless_switch import Prepared, SeamlessSwitch, _runner_factory
 from runtime.swipe_controller import LiveSetting, make_pacer, say
+
+# the empty-wall plate is not usable (LiveSetting.plate_ok False): what the look says, and why a suggestion goes
+PLATE_NOT_VALID = "the empty-wall plate is not valid - Calibrate on the empty wall"
+PLATE_WAIT = f"the automatic swipe waits: {PLATE_NOT_VALID}"
 
 
 @dataclass
@@ -175,6 +185,7 @@ class BackgroundSwipe:
         self.resident: Optional[Resident] = None
         self._resident_lock = switch.guard         # held while the looker infers on the resident: the swap waits
         self._scene: Optional[Tuple] = None
+        self._fresh_after: Optional[float] = None  # loop clock of the last scene change: only frames kept after it
         self._last_live: Optional[Candidate] = None
         self._expect: Optional[Candidate] = None   # the setting a switch moved to (not a manual change)
         self.running = False                       # a background run is in progress
@@ -277,7 +288,8 @@ class BackgroundSwipe:
         return (live.project, int(c.imgsz), tuple(c.shape) if c.shape else None, bool(live.trt))
 
     def tick(self) -> str:
-        """One look.  Returns what it did: off | loading | idle | busy | run | probe | nothing-to-compare."""
+        """One look.  Returns what it did: off | loading | waiting (the plate is not usable) | idle | busy | run |
+        probe | nothing-to-compare."""
         t0 = time.perf_counter()
         try:
             return self._tick()
@@ -297,8 +309,13 @@ class BackgroundSwipe:
         scene = (live.project, live.roi, live.plate, live.plate_ok, live.frame)
         if scene != self._scene:
             if self._scene is not None:
+                # nothing learned so far describes this scene: the policy's verdicts start over, and so does the
+                # pool -- frames kept before now are never scored (those kept on a plate that was not usable, or
+                # that a run already used: the policy's memory of them is gone)
                 self.auto.reset()
-                self._clear_suggestion("the scene changed (project, ROI, empty-wall plate or camera)")
+                self._fresh_after = float(proc.loop_clock())
+                self._clear_suggestion(PLATE_NOT_VALID if not live.plate_ok else
+                                       "the scene changed (project, ROI, empty-wall plate or camera)")
             self._scene = scene
         if self._last_live is not None and live.candidate != self._last_live and live.candidate != self._expect:
             self.auto.switched(proc.loop_clock(), self._last_live, live.candidate)       # by hand: the dwell too
@@ -308,7 +325,15 @@ class BackgroundSwipe:
         self._last_live = live.candidate
         if self.suggestion is not None and self.suggestion.get("live_key") != live.key:
             self._clear_suggestion("the setting changed since the suggestion")
-        frames, now = proc.swipe_fresh()
+        if not live.plate_ok:
+            # a verdict on this plate is worth nothing: no frame read, no engine, no inference, nothing said
+            self.state = "waiting"
+            self.last_counts = (0, 0)
+            if self.last_look is None or self.last_look.get("outcome") != PLATE_WAIT:
+                self.last_look = self._record("look", look="none", t=float(proc.loop_clock()), frames=0,
+                                              seconds=0.0, outcome=PLATE_WAIT)
+            return "waiting"
+        frames, now = proc.swipe_fresh(self._fresh_after)
         fresh = self.auto.fresh(frames)
         self.last_counts = (len(fresh), sum(1 for f in fresh if f.lost))
         self.state = "watching"
@@ -417,8 +442,14 @@ class BackgroundSwipe:
             if result is None:
                 outcome = "no verdict: the live setting could not be scored"
                 return
+            after = self.live()
+            if after is None or after.key != live.key:
+                # the plate (or the setting) changed after the last frame was inferred: the verdict goes
+                gone = after is not None and not after.plate_ok
+                outcome = f"dropped: {PLATE_NOT_VALID if gone else 'the setting changed during the run'}"
+                return
             if self.referee is not None:             # refused / used the plate: told to the plate watch
-                self.referee.note(result, frames)
+                self.referee.note(result, frames, plate_ok=live.plate_ok)
             now = proc.loop_clock()
             ms = {other: run.ms_p50}
             if live_ms:
