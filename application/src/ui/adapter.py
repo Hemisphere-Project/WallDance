@@ -29,6 +29,7 @@ import dearpygui.dearpygui as dpg
 from gui import WallDanceGUI, get_display_scale
 from runtime import api
 from ui.calibrate_all_wizard import CalibrateAllWizard
+from ui.key_guard import typed_into_a_field
 
 # Ops alerts that also stay in the alerts strip until their api.AlertCleared (the others are toasts)
 STRIP_ALERTS = ("light_changed",)
@@ -52,6 +53,9 @@ class DpgUiAdapter:
         self.gui: Optional[WallDanceGUI] = None
         self.wizard: Optional[CalibrateAllWizard] = None
         self._warned_events = set()
+        # A4 ②: the runtime's RUN/STANDBY (the one source of truth), kept from its StateChanged even
+        # before the GUI exists, so the GUI starts on it.
+        self._runtime_state: Optional[str] = None
         self._event_handlers = self._build_event_handlers()
         bus.subscribe(self._on_event)
 
@@ -65,6 +69,8 @@ class DpgUiAdapter:
         # command/event vocabulary (desktop precursor of the Phase 5 tablet
         # wizard). Created with the GUI; opening it has no runtime effect.
         self.wizard = CalibrateAllWizard(self.gui, self.api.submit)
+        if self._runtime_state is not None:
+            self._show_state(self._runtime_state)
         self.bus.ui_ready = True
 
     def setup_viewport(self, roi) -> None:
@@ -271,6 +277,8 @@ class DpgUiAdapter:
             return
         ctrl_down = dpg.is_key_down(dpg.mvKey_LControl) or dpg.is_key_down(dpg.mvKey_RControl)
         shift_down = dpg.is_key_down(dpg.mvKey_LShift) or dpg.is_key_down(dpg.mvKey_RShift)
+        if typed_into_a_field(key, ctrl_down):
+            return  # A4 ①: typing into the rig sheet, a name or the OSC address fires no shortcut
         if key == dpg.mvKey_E and ctrl_down and shift_down:
             if gui:
                 gui.set_expert_mode(not gui.expert_mode)
@@ -300,6 +308,8 @@ class DpgUiAdapter:
     # events -> dpg
     # ------------------------------------------------------------------
     def _on_event(self, event: api.Event) -> None:
+        if isinstance(event, api.StateChanged):
+            self._runtime_state = event.state
         if self.gui is None:
             return  # pre-GUI events are dropped (old `if self.gui` guards)
         handler = self._event_handlers.get(type(event))
@@ -321,6 +331,11 @@ class DpgUiAdapter:
             gui.sync_combo(e.name, e.value)
         elif e.kind == "input":
             gui.sync_input(e.name, e.value)
+
+    def _show_state(self, state: str) -> None:
+        """A4 ②: the badge, the STANDBY/RUN buttons and the GUI's copy follow the runtime's state,
+        whoever changed it (a click, the remote API)."""
+        self.gui.show_system_state(api.SystemState[state.upper()])
 
     def _show_import_progress(self, e: api.ImportProgress) -> None:
         duration, color = _IMPORT_TOASTS.get(e.state, (4.0, (255, 200, 100)))
@@ -408,7 +423,7 @@ class DpgUiAdapter:
             api.QrDialog: lambda e: self.gui.show_qr_dialog(e.url, e.matrix),
             api.PreviewFrame: lambda e: self.gui.update_frame(e.frame),
             api.PreviewResize: lambda e: self.gui.resize_preview(e.width, e.height),
-            # The GUI flips its own STANDBY/RUN visuals on click; the runtime
-            # mirror publishes StateChanged for *other* clients (tablet later).
-            api.StateChanged: lambda e: None,
+            # A4 ②: the runtime holds RUN/STANDBY; a click only asks (SetState), and the GUI
+            # paints the state from here, so a remote change shows too.
+            api.StateChanged: lambda e: self._show_state(e.state),
         }

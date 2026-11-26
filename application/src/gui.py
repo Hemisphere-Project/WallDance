@@ -312,8 +312,10 @@ class WallDanceGUI:
         self._current_config_timestamp = ""
         self._save_indicator_time = 0  # For showing save success feedback
         
-        # System state (Phase 3 - simplified 2-state system)
+        # System state (Phase 3 - simplified 2-state system).  A4: a view of the runtime's state,
+        # written only by show_system_state (StateChanged); the runtime starts in RUN too.
         self._system_state = SystemState.RUN
+        self._playback_source = False   # A4 ③: the source is a recording, not the camera
         
         # DPI scaling for high-resolution displays (4K)
         self._dpi_scale = get_display_scale()
@@ -876,13 +878,25 @@ class WallDanceGUI:
         self.set_system_state(SystemState.RUN)
     
     def set_system_state(self, state: SystemState):
-        """Change system state and update UI.
+        """Ask for STANDBY or RUN (the operator's click).
+
+        A4 ②: the runtime holds the one RUN/STANDBY state.  A click only asks for it (SetState);
+        the badge, the buttons and the GUI's copy follow the runtime's StateChanged in
+        show_system_state, so a change made remotely shows the same way.  A bare GUI (no runtime
+        callback) shows the state at once.
+        """
+        if 'on_system_state_change' not in self.callbacks:
+            self.show_system_state(state)
+            return
+        self.callbacks['on_system_state_change'](state, self._system_state)
+
+    def show_system_state(self, state: SystemState):
+        """Show the runtime's state: badge, buttons, the GUI's copy and the playback banner.
         
         2-state system:
         - STANDBY: Preview + enhancement, no YOLO, no OSC (standby btn active, run btn greyed)
         - RUN: Full YOLO + OSC (run btn active, standby btn greyed)
         """
-        old_state = self._system_state
         self._system_state = state
         
         # Update state badge in top bar
@@ -900,14 +914,18 @@ class WallDanceGUI:
         if dpg.does_item_exist("state_run_btn"):
             theme = self._btn_run_active_theme if state == SystemState.RUN else self._btn_run_theme
             dpg.bind_item_theme("state_run_btn", theme)
-        
-        # Notify callback
-        if 'on_system_state_change' in self.callbacks:
-            self.callbacks['on_system_state_change'](state, old_state)
+        self._update_playback_banner()
     
     def get_system_state(self) -> SystemState:
         """Get current system state."""
         return self._system_state
+
+    def _update_playback_banner(self):
+        """A4 ③: the red « LECTURE - pas en direct » band over the preview whenever RUN plays a
+        recording instead of the camera (TouchDesigner then gets the take, not the wall)."""
+        if dpg.does_item_exist("playback_banner_window"):
+            dpg.configure_item("playback_banner_window",
+                               show=self._system_state == SystemState.RUN and self._playback_source)
 
     def _on_tracker_age_change(self, sender, value):
         if 'on_tracker_age_change' in self.callbacks:
@@ -1226,6 +1244,8 @@ class WallDanceGUI:
         
         # Update playback controls visibility (toggle between status and playback groups)
         is_playing = (state == "playing")
+        self._playback_source = is_playing
+        self._update_playback_banner()
         if dpg.does_item_exist("source_status_group"):
             dpg.configure_item("source_status_group", show=not is_playing)
         if dpg.does_item_exist("source_playback_group"):

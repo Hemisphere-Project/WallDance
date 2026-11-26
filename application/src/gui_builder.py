@@ -485,12 +485,34 @@ def build_video_panel(gui: Any):
             with dpg.theme_component(dpg.mvChildWindow):
                 dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (130, 25, 25))
         dpg.bind_item_theme("trt_banner_window", _trt_banner_theme)
+        build_playback_banner(gui)
         dpg.add_image(
             gui.frame_texture_tag,
             width=gui.video_width,
             height=gui.video_height,
             tag="video_image",
         )
+
+
+PLAYBACK_BANNER_TEXT = "LECTURE - pas en direct"
+
+
+def build_playback_banner(gui: Any):
+    """A4 ③: a red band over the preview, hidden; gui._update_playback_banner shows it whenever RUN
+    plays a recording instead of the camera (the audit's gui-operator#3: one slot click put a show
+    on a looping take while RUN and OSC stayed green).  ASCII text: the default font has no en dash."""
+    with dpg.child_window(tag="playback_banner_window", autosize_x=True, height=scaled(34),
+                          border=False, no_scrollbar=True, show=False):
+        with dpg.group(horizontal=True):
+            dpg.add_text(PLAYBACK_BANNER_TEXT, tag="playback_banner_text", color=(255, 240, 240))
+            dpg.add_text("- TouchDesigner recoit un enregistrement, pas la camera",
+                         color=(255, 200, 200))
+            dpg.add_button(label="LIVE (camera)", tag="playback_banner_live_btn",
+                           callback=gui._on_rec_live)
+    with dpg.theme() as _playback_banner_theme:
+        with dpg.theme_component(dpg.mvChildWindow):
+            dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (170, 20, 20))
+    dpg.bind_item_theme("playback_banner_window", _playback_banner_theme)
 
 
 def build_bottom_bar(gui: Any):

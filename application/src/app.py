@@ -519,8 +519,10 @@ class WallDanceApp:
         self.api = api.RuntimeAPI()
         self.ui = DpgUiAdapter(self.api, self.bus)
         # Runtime-owned mirrors of state the GUI used to be queried for.
-        # The GUI starts in RUN (gui.py __init__) -- mirror that.
+        # A4: RUN/STANDBY lives here only (set by _cmd_set_state); the GUI paints it from
+        # StateChanged, starting with this one (the adapter keeps it until the GUI exists).
         self.system_state = SystemState.RUN
+        self.bus.publish(api.StateChanged(self.system_state.name.lower()))
         self._ui_camera_type = ""
 
         # Model loading is deferred until after GUI is created
@@ -1058,8 +1060,8 @@ class WallDanceApp:
     # --- command handlers that fan out / carry key-shortcut semantics ---
 
     def _cmd_set_state(self, c: api.SetState):
-        """Runtime mirror of the GUI's STANDBY/RUN state (the GUI flips its
-        own visuals on click; the mirror gates processing + readiness)."""
+        """The one STANDBY/RUN state (A4): a GUI click and the remote API both land here; it gates
+        processing + readiness, and StateChanged turns the GUI's badge and buttons."""
         old_state = self.system_state
         self.system_state = SystemState[c.state.upper()]
         self.bus.publish(api.StateChanged(c.state))
