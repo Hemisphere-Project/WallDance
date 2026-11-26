@@ -322,8 +322,8 @@ def check_dancer_size(*, measured: Optional[Tuple[float, int, float]], lb_scale:
                        + "; ".join(tips))
 
 
-def check_swipe(*, fault: Optional[str] = None, result=None,
-                fault_recovered: bool = False) -> Optional[CheckResult]:
+def check_swipe(*, fault: Optional[str] = None, result=None, fault_recovered: bool = False,
+                seamless: bool = False) -> Optional[CheckResult]:
     """P5 (Plan Cordee): the settings swipe's readiness row -- or None, its usual answer.  The swipe is advice,
     not a readiness condition: no row when there is nothing to say (no swipe yet, collecting, no verdict, a
     stale or too old verdict, « keep », no plate; the swipe's own line beside its button says those), so READY
@@ -335,7 +335,12 @@ def check_swipe(*, fault: Optional[str] = None, result=None,
     * ``result``: a verdict from a swipe the operator ran that still recommends a switch (the caller passes it
       only then: not applied, dismissed, stale or too old) -- ``warn``, worded for STANDBY: Apply reloads the
       model (a few seconds without tracking), so nothing here says to press it during a show; it names the Apply
-      button by its label (pressing « Try other settings » again would start a new swipe and drop the advice)."""
+      button by its label (pressing « Try other settings » again would start a new swipe and drop the advice) --
+      unless ``seamless`` (P6: the winner's engine is built, Apply loads it beside the live model and switches
+      between two frames, the show runs on).
+
+    The background (automatic) swipe never adds a row of its own except a ``fault``: a failed automatic switch or
+    a failed seamless Apply (the caller passes it; the previous setting kept running: ``fault_recovered``)."""
     name = "swipe"
     if fault:
         # a failed Apply whose previous setting runs again on TensorRT is a notice to acknowledge, not a show that
@@ -344,9 +349,12 @@ def check_swipe(*, fault: Optional[str] = None, result=None,
     if result is not None and getattr(result, "winner", None) is not None and getattr(result, "switch", False):
         reason = str(getattr(result, "reason", "") or "")
         win = getattr(getattr(result, "winner", None), "label", "")
+        if seamless:
+            return CheckResult(name, "warn", f"{reason} - press 'Apply {win}' (under Try other settings): it "
+                                             f"switches between two frames, the show runs on")
         # the Apply button's label as the GUI shows it; « Try other settings » would start a NEW swipe
-        return CheckResult(name, "warn", f"{reason} - in STANDBY press 'Apply {win} (STANDBY)', under Try other "
-                                         f"settings")
+        return CheckResult(name, "warn", f"{reason} - in STANDBY press 'Apply {win} (STANDBY: a few seconds "
+                                         f"without tracking)', under Try other settings")
     return None
 
 

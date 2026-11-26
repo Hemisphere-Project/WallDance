@@ -3010,6 +3010,9 @@ class WallDanceGUI:
         """P5 swipe progress line + the button's label (Cancel while it runs).  Posted from the swipe's
         worker thread: set_value / configure_item only, like the dry-run result."""
         busy = state in ("collecting", "running")
+        if state.startswith("auto_"):                  # P6 the switch's own line, never the button's
+            _show_swipe_switch_line(state, text)
+            return
         self._swipe_busy = busy
         if dpg.does_item_exist("swipe_btn"):
             dpg.configure_item("swipe_btn", label="Cancel swipe" if busy else "Try other settings")
@@ -3062,7 +3065,13 @@ class WallDanceGUI:
         dpg.set_value(tag, "\n".join(lines))
         dpg.configure_item(tag, color=WARN_AMBER if r.get("switch") else TEXT_NORMAL)
         if r.get("switch") and r.get("winner") and dpg.does_item_exist("swipe_apply_btn"):
-            dpg.configure_item("swipe_apply_btn", label=f"Apply {r['winner']} (STANDBY)", show=True)
+            label = r.get("apply_label") or f"Apply {r['winner']} (STANDBY: a few seconds without tracking)"
+            standby = " (STANDBY" in label                    # the panel is narrow: the STANDBY note under it
+            shown = label.replace(" (STANDBY", "\n(STANDBY", 1).replace(" a few seconds ", " a few seconds\n", 1)
+            dpg.configure_item("swipe_apply_btn", label=shown, show=True,
+                               width=scaled(240), height=scaled(58 if standby else 26))
+            if r.get("apply_tip") and dpg.does_item_exist("swipe_apply_tip"):
+                dpg.set_value("swipe_apply_tip", r["apply_tip"])
             if dpg.does_item_exist("swipe_dismiss_btn"):
                 dpg.configure_item("swipe_dismiss_btn", show=True)
 
@@ -3264,3 +3273,16 @@ class WallDanceGUI:
     def is_running(self) -> bool:
         """Check if GUI is still running."""
         return dpg.is_dearpygui_running()
+
+
+def _show_swipe_switch_line(state, text):
+    """P6: the switch's line -- switching / switched / cleared, the seamless Apply's or the automatic swipe's
+    (a failure is ``apply_failed``)."""
+    if dpg.does_item_exist("swipe_apply_btn") and state in ("auto_switching", "auto_switched", "auto_cleared"):
+        dpg.configure_item("swipe_apply_btn", show=False)
+    if dpg.does_item_exist("swipe_dismiss_btn") and state in ("auto_switched", "auto_cleared"):
+        dpg.configure_item("swipe_dismiss_btn", show=False)
+    if dpg.does_item_exist("swipe_status_text"):
+        dpg.set_value("swipe_status_text", text)
+        dpg.configure_item("swipe_status_text",
+                           color={"auto_switching": WARN_AMBER, "auto_switched": OK_GREEN}.get(state, TEXT_MUTED))

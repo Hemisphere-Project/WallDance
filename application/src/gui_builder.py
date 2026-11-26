@@ -842,16 +842,17 @@ def build_phase_wall(gui: Any):
                              "at the largest input when the dancers are small in the network\n"
                              "(else the other model at the live input), and names the setting\n"
                              "that covers the dancers best.  The show runs on; nothing switches\n"
-                             "until you Apply, in STANDBY.  Press again to cancel.")
+                             "until you Apply.  Press again to cancel.")
         dpg.add_text("", tag="swipe_status_text", color=TEXT_MUTED, wrap=scaled(_PHASE_WRAP))
         with dpg.group(horizontal=True):
             swipe_apply = dpg.add_button(label="Apply", tag="swipe_apply_btn", show=False,
                                          width=scaled(240), height=scaled(26), callback=gui._on_swipe_apply)
             with dpg.tooltip(swipe_apply):
-                dpg.add_text("STANDBY only: switches the model / network input to the swipe's\n"
-                             "pick -- the engine reloads, a few seconds without tracking, as\n"
-                             "when you change the model by hand.  Not saved: Save the project\n"
-                             "to keep it.")
+                dpg.add_text("Switches to the swipe's pick.  When its engine is built: loaded\n"
+                             "beside the live model and switched between two frames, the show\n"
+                             "runs on.  Otherwise STANDBY only: the engine reloads, a few seconds\n"
+                             "without tracking.  Not saved: Save the project to keep it.",
+                             tag="swipe_apply_tip")
             swipe_dismiss = dpg.add_button(label="Dismiss", tag="swipe_dismiss_btn", show=False,
                                            width=scaled(80), height=scaled(26), callback=gui._on_swipe_dismiss)
             with dpg.tooltip(swipe_dismiss):

@@ -596,6 +596,14 @@ class MainLoop:
             time.sleep(0.016)  # ~60 FPS UI update
             return True
 
+        # P6: a seamless model switch (the operator's Apply or the automatic swipe's), between two frames: no
+        # camera close, no pause -- the tick goes on to the next frame with the new model
+        switch = getattr(app, "swipe_switch", None)
+        if switch is not None:
+            try:
+                switch.drain()
+            except Exception as e:  # noqa: BLE001 - the old model keeps running
+                print(f"[SwipeAuto] switch failed: {type(e).__name__}: {e}")
         return False
 
     def _tick_ui_input(self):

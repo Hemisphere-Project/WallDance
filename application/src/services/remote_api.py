@@ -84,13 +84,13 @@ POLICY: Dict[str, str] = {
     "LoadSafeDefaults": CONTROL, "SelectConfigVersion": CONTROL,
     "SetInputTransform": CONTROL,
     # P5 settings swipe: Run goes beside the show (paced, one engine at a time) during the warmup, in RUN by
-    # design (frames are kept while YOLO runs) -- so control.  Apply is the model reload LoadModel / SetImgsz
-    # run (camera closed, no OSC for seconds): heavy, STANDBY only.
-    "RunSettingsSwipe": CONTROL,
+    # design (frames are kept while YOLO runs) -- so control.  P6: Apply is the seamless switch whenever the
+    # winner's engine is built (loaded beside, swapped between two frames: no pause) -- control; the app itself
+    # refuses in RUN the one Apply that reloads (an engine to build), as it does for the operator.
+    "RunSettingsSwipe": CONTROL, "ApplySettingsSwipe": CONTROL,
     # heavy: STANDBY only
     "RunDryRunReplay": HEAVY, "RunCalibSweep": HEAVY, "RunKnownNTune": HEAVY,
     "RebuildTrt": HEAVY, "LoadModel": HEAVY, "SetImgsz": HEAVY, "ToggleTrt": HEAVY,
-    "ApplySettingsSwipe": HEAVY,
     "LaunchProject": HEAVY, "SelectProject": HEAVY, "LoadConfig": HEAVY,
     "ImportVideoToSlot": HEAVY,   # multi-GB disk copy / transcode
     # never: destructive, or a GUI dialog nobody is there to answer

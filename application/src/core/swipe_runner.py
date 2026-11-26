@@ -501,62 +501,85 @@ class CandidateRunner:
         with ENGINE_LOAD_LOCK, no_graph_capture():
             return self._run(images, cand, engine_path, cancelled=cancelled, pace=pace, on_frame=on_frame)
 
-    def _run(self, images, cand, engine_path, *, cancelled, pace, on_frame) -> CandidateRun:
+    def load(self, engine_path: str, cand: Candidate, model=None) -> Tuple[Any, Any, float]:
+        """(model, PoseRunner, seconds) for one engine, warmed at ``cand``'s input (``model``: the loader's
+        object already made).  The caller holds ENGINE_LOAD_LOCK and ``no_graph_capture`` (``run`` does; the
+        seamless switch's load and the background swipe's resident load too)."""
         from core.yolo_runner import PoseRunner
-        torch = self._torch
-        run = CandidateRun(cand)
-        imgsz = (int(cand.shape[0]), int(cand.shape[1])) if cand.shape else int(cand.imgsz)
+        imgsz = self.imgsz_arg(cand)
         th, tw = (imgsz if isinstance(imgsz, tuple) else (imgsz, imgsz))
+        t0 = self.clock()
+        if model is None:
+            model = self.loader(engine_path)
+        runner = PoseRunner(model)
+        z = self._torch.full((1, 3, th, tw), 0.5, device=self.device)
+        for _ in range(WARMUP_CALLS):
+            runner(z, imgsz=imgsz, conf=self.conf, iou=self.inp.iou, half=self.inp.half)
+        del z
+        self._sync()
+        return model, runner, self.clock() - t0
+
+    @staticmethod
+    def imgsz_arg(cand: Candidate):
+        return (int(cand.shape[0]), int(cand.shape[1])) if cand.shape else int(cand.imgsz)
+
+    def infer(self, images: Sequence[np.ndarray], cand: Candidate, runner, *,
+              cancelled: Optional[Callable[[], bool]] = None, pace: Optional[Callable[[], None]] = None,
+              on_frame: Optional[Callable[[int, int], None]] = None) -> CandidateRun:
+        """Every image through an already loaded model (``runner``: its PoseRunner), timed; no load, no
+        release.  ``pace()`` before each inference, ``cancelled()`` stops early."""
+        run = CandidateRun(cand)
+        imgsz = self.imgsz_arg(cand)
+        for i, image in enumerate(images):
+            if cancelled is not None and cancelled():
+                run.error = "cancelled"
+                break
+            try:
+                t1 = self.clock()
+                tensor, lb, (rx, ry) = self.prepare(image, cand)
+                self._sync()
+                t2 = self.clock()
+                if pace is not None:
+                    pace()
+                t3 = self.clock()
+                results = runner(tensor, imgsz=imgsz, conf=self.conf, iou=self.inp.iou, half=self.inp.half)
+                boxes = boxes_from_results(results, lb, rx, ry)       # .cpu(): waits for the GPU
+                t4 = self.clock()
+            except Exception as exc:  # noqa: BLE001 - this candidate is out, the swipe goes on
+                run.error = f"inference failed: {type(exc).__name__}: {str(exc)[:160]}"
+                break
+            run.prep_ms.append((t2 - t1) * 1000.0)
+            run.ms.append((t4 - t3) * 1000.0)
+            run.boxes.append(boxes)
+            if on_frame is not None:
+                on_frame(i + 1, len(images))
+        return run
+
+    def _run(self, images, cand, engine_path, *, cancelled, pace, on_frame) -> CandidateRun:
+        run = CandidateRun(cand)
         model = runner = None
         try:
             t0 = self.clock()
             try:
-                model = self.loader(engine_path)
                 # the engine deserialises at the warm-up: a live load, project switch or Apply waiting for
                 # ENGINE_LOAD_LOCK waits one engine load at most
+                model = self.loader(engine_path)
                 if cancelled is not None and cancelled():
                     run.error = "cancelled"
                     return run
-                runner = PoseRunner(model)
-                z = torch.full((1, 3, th, tw), 0.5, device=self.device)
-                for _ in range(WARMUP_CALLS):
-                    runner(z, imgsz=imgsz, conf=self.conf, iou=self.inp.iou, half=self.inp.half)
-                del z
-                self._sync()
+                model, runner, _ = self.load(engine_path, cand, model=model)
+                load_s = self.clock() - t0
             except Exception as exc:  # noqa: BLE001 - a candidate that cannot load is skipped, not fatal
                 run.error = f"load failed: {type(exc).__name__}: {str(exc)[:160]}"
                 return run
-            run.load_s = self.clock() - t0
-            for i, image in enumerate(images):
-                if cancelled is not None and cancelled():
-                    run.error = "cancelled"
-                    break
-                try:
-                    t1 = self.clock()
-                    tensor, lb, (rx, ry) = self.prepare(image, cand)
-                    self._sync()
-                    t2 = self.clock()
-                    if pace is not None:
-                        pace()
-                    t3 = self.clock()
-                    results = runner(tensor, imgsz=imgsz, conf=self.conf, iou=self.inp.iou,
-                                     half=self.inp.half)
-                    boxes = boxes_from_results(results, lb, rx, ry)       # .cpu(): waits for the GPU
-                    t4 = self.clock()
-                except Exception as exc:  # noqa: BLE001 - this candidate is out, the swipe goes on
-                    run.error = f"inference failed: {type(exc).__name__}: {str(exc)[:160]}"
-                    break
-                run.prep_ms.append((t2 - t1) * 1000.0)
-                run.ms.append((t4 - t3) * 1000.0)
-                run.boxes.append(boxes)
-                if on_frame is not None:
-                    on_frame(i + 1, len(images))
+            run = self.infer(images, cand, runner, cancelled=cancelled, pace=pace, on_frame=on_frame)
+            run.load_s = load_s
             return run
         finally:
             if pace is not None and model is not None and run.error != "cancelled":
                 pace()                                # the destructor's stall right after a live frame
             t5 = self.clock()
-            results = tensor = runner = model = None  # noqa: F841 - frees the engine (refcount)
+            runner = model = None                     # frees the engine (refcount)
             run.release_s = self.clock() - t5
 
     def _sync(self) -> None:

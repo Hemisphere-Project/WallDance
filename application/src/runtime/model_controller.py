@@ -261,6 +261,56 @@ class ModelController:
         self._model_loaded = False
         return None
 
+    def swap_live(self, model, runner, cand, on_fail=None, on_ok=None):
+        """P6 seamless switch, on the main loop between two frames: ``model`` (a TensorRT engine loaded beside
+        the live one, with its PoseRunner ``runner`` warmed at ``cand``'s input) becomes the live model without
+        a reload -- no camera close, no modal, the tracker and the slots untouched (after a size change the
+        tracker's space stays where it was: ``FrameProcessor.adopt_model``).  The bookkeeping follows: the
+        current model's name, the model manager's input (the combo, the badge, the « net input » row and what
+        Save writes).  Returns the previous ``(model, runner)``; on any error everything is put back and the
+        error raised."""
+        proc = self.processor()
+        mm = self.model_manager
+        back = (self.model, self.current_model_name, self.current_model, mm.imgsz, mm.shape,
+                getattr(mm, "_loaded_shape", None))
+        shape = tuple(int(v) for v in cand.shape) if cand.shape else None
+        old = proc.adopt_model(model, runner, net_input=(int(cand.imgsz), shape), on_fail=on_fail, on_ok=on_ok)
+        try:
+            self._swap_back = back
+            self.model = model
+            self.current_model_name = cand.model
+            self.current_model = f"{cand.model}.engine"
+            mm.set_imgsz(int(cand.imgsz))
+            mm.set_shape(shape)
+            mm._loaded_shape = shape
+            if self.ui.available:
+                self.ui.sync_model_combo(cand.model)
+                self.ui.update_engine_type_badge(True)
+        except Exception:
+            proc.revert_swap()
+            self._restore_bookkeeping(back)
+            raise
+        return old
+
+    def _restore_bookkeeping(self, back) -> None:
+        mm = self.model_manager
+        self.model, self.current_model_name, self.current_model, imgsz, shape, loaded = back
+        mm.set_imgsz(imgsz)
+        mm.set_shape(shape)
+        mm._loaded_shape = loaded
+
+    def restore_live(self, old_cand=None) -> None:
+        """The swapped-in model failed its first frames: the processor already runs the previous model (and
+        input) again; the bookkeeping follows it back."""
+        back = getattr(self, "_swap_back", None)
+        self._swap_back = None
+        if back is None:
+            return
+        self._restore_bookkeeping(back)
+        if self.ui.available:
+            self.ui.sync_model_combo(self.current_model_name)
+            self.ui.update_engine_type_badge(self.model_manager.is_using_tensorrt())
+
     def _prompt_trt_build_sync(self, model_name: str) -> bool:
         """Show TRT build prompt and block until user responds.
 

@@ -834,7 +834,8 @@ def test_the_controller_collects_runs_and_reports_a_switch():
     assert err == "" and res["switch"] and res["winner"].startswith("l @")
     row = c.readiness(plate_ready=True, live_now=live["v"])
     assert row.status == "warn" and "covers 100 % of the dancers, x @ 1280 0 %" in row.detail
-    assert row.detail.endswith("- in STANDBY press 'Apply l @ 1920 x 1056 (STANDBY)', under Try other settings")
+    assert row.detail.endswith("- in STANDBY press 'Apply l @ 1920 x 1056 (STANDBY: a few seconds without "
+                               "tracking)', under Try other settings")
     why, winner, conf = c.applicable(live["v"])
     assert why is None and winner.model == "yolo11l-pose"
     assert conf == getattr(c.outcome.result, "recommended_conf", None)
@@ -1187,7 +1188,12 @@ def test_readiness_row_only_for_advice_or_a_fault():
     # J2 (review of 0e7fbe5): the row names the Apply button by its label; « Try other settings » would start a
     # new swipe and drop the advice
     assert r.detail == ("l @ 1920 x 1056 covers 91 % of the dancers, x @ 1280 51 % - in STANDBY press "
-                        "'Apply l @ 1920 x 1056 (STANDBY)', under Try other settings")
+                        "'Apply l @ 1920 x 1056 (STANDBY: a few seconds without tracking)', under Try other settings")
+    # P6: the winner's engine is built -- Apply is the seamless switch, usable during the show
+    r = check_swipe(result=switch, seamless=True)
+    assert r.status == "warn" and r.detail == ("l @ 1920 x 1056 covers 91 % of the dancers, x @ 1280 51 % - press "
+                                               "'Apply l @ 1920 x 1056' (under Try other settings): it switches "
+                                               "between two frames, the show runs on")
     r = check_swipe(fault="Apply of l @ 1920 x 1056 failed: its engine did not load on TensorRT; x @ 1280 runs "
                           "again, as before - press Dismiss (rebuild yolo11l-pose_1920x1056.engine "
                           "(extra/build_engines) before applying it again)", result=switch)
@@ -1347,6 +1353,9 @@ def _apply_fixture(trt=True):
     fake = SimpleNamespace(
         swipe=c, _swipe_live_setting=lambda: live["v"], _swipe_pending_apply=None,
         system_state=SystemState.STANDBY,
+        # P6: no seamless switch here (the winner's engine is not built): Apply is the reload
+        swipe_switch=SimpleNamespace(can_switch=lambda w: f"its engine is not built ({w.engine_file})",
+                                     dismiss=lambda: None),
         configs=SimpleNamespace(_current_project="jeudi0809_mur2"), settings=SimpleNamespace(imgsz=1280),
         models=SimpleNamespace(request_setting=request, current_model_name="yolo11x-pose",
                                model_manager=SimpleNamespace(is_using_tensorrt=lambda: trt),
@@ -1427,19 +1436,44 @@ def test_a_good_apply_clears_a_failed_one():
     assert c.readiness(plate_ready=True, live_now=live["v"]) is None
 
 
-def test_apply_is_refused_during_a_show():
-    """Apply reloads the model (camera closed, no tracking for seconds): STANDBY only, like the dry-run."""
-    pytest.importorskip("dearpygui")
+def _run_apply_fake(seamless_why):
     import app as appmod
-    from runtime import api
     from runtime.api import SystemState
-    events = []
-    fake = SimpleNamespace(system_state=SystemState.RUN, bus=SimpleNamespace(publish=events.append),
-                           swipe=SimpleNamespace(applicable=lambda live: pytest.fail("must not get here")))
+    events, asked = [], []
+    winner = L1920
+    fake = SimpleNamespace(
+        system_state=SystemState.RUN, bus=SimpleNamespace(publish=events.append),
+        _swipe_live_setting=lambda: _live(),
+        swipe=SimpleNamespace(applicable=lambda live: (None, winner, None)),
+        swipe_switch=SimpleNamespace(can_switch=lambda w: seamless_why,
+                                     request=lambda w, text, on_done=None: asked.append((w, text)) or None),
+        models=SimpleNamespace(request_setting=lambda *a, **k: pytest.fail("no reload during a show")))
     appmod.WallDanceApp._cb_apply_settings_swipe(fake)
+    return events, asked, winner
+
+
+def test_apply_is_refused_during_a_show_when_it_reloads():
+    """An Apply that reloads the model (its engine must be built; camera closed, no tracking for seconds):
+    STANDBY only, like the dry-run."""
+    pytest.importorskip("dearpygui")
+    from runtime import api
+    events, asked, _ = _run_apply_fake("its engine is not built on this machine (yolo11l-pose_1920x1056.engine)")
     (toast,) = events
-    assert isinstance(toast, api.Toast)
-    assert toast.message == "Apply: stop the show first - Apply reloads the model, a few seconds without tracking"
+    assert isinstance(toast, api.Toast) and not asked
+    assert toast.message == ("Apply: stop the show first - this Apply reloads the model (its engine is not built "
+                             "on this machine (yolo11l-pose_1920x1056.engine)), a few seconds without tracking")
+
+
+def test_a_seamless_apply_runs_during_a_show():
+    """P6: the winner's engine is built: Apply loads it beside the live one and switches between two frames --
+    usable in RUN, no reload."""
+    pytest.importorskip("dearpygui")
+    from runtime import api
+    events, asked, winner = _run_apply_fake(None)
+    assert asked == [(winner, "switching to l @ 1920 x 1056 (Apply)")]
+    (prog,) = events
+    assert isinstance(prog, api.SettingsSwipeProgress) and prog.state == "applying"
+    assert prog.text == "switching to l @ 1920 x 1056 between two frames..."
 
 
 def test_a_recommended_confidence_becomes_the_dials_anchor():
@@ -1456,7 +1490,8 @@ def test_a_recommended_confidence_becomes_the_dials_anchor():
 
 def test_remote_apply_is_heavy_and_run_is_control():
     from services.remote_api import POLICY
-    assert POLICY["ApplySettingsSwipe"] == "heavy" and POLICY["LoadModel"] == "heavy"
+    # P6: Apply is the seamless switch when the engine is built (the app refuses the reload in RUN itself)
+    assert POLICY["ApplySettingsSwipe"] == "control" and POLICY["LoadModel"] == "heavy"
     assert POLICY["RunSettingsSwipe"] == "control" and POLICY["CancelSettingsSwipe"] == "safe"
     assert POLICY["DismissSwipeNotice"] == "safe"
 
@@ -1490,10 +1525,12 @@ def test_quit_cancels_and_joins_the_swipe():
     calls = []
     fake = SimpleNamespace(swipe=SimpleNamespace(cancel=lambda: calls.append("cancel"),
                                                  join=lambda t: calls.append(("join", t))),
+                           swipe_switch=SimpleNamespace(stop=lambda t: calls.append(("switch-stop", t))),
                            tracker=SimpleNamespace(logger=SimpleNamespace(close=lambda: None)),
                            recorder=SimpleNamespace(close=lambda: None), running=True)
     appmod.WallDanceApp._cb_quit(fake)
-    assert calls == ["cancel", ("join", 2.0)] and fake.running is False
+    assert calls[:2] == ["cancel", ("join", 2.0)] and ("switch-stop", 2.0) in calls
+    assert fake.running is False
 
 
 def test_the_live_setting_is_none_while_a_model_loads():

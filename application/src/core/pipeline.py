@@ -556,6 +556,17 @@ class FrameProcessor:
         # worker runs its inferences in the loop's slack, one per live frame.
         self.frame_done = threading.Event()
         self.frame_done_t: float = 0.0
+        # P6 seamless switch: the model just swapped in runs its first frames on probation -- if its call raises,
+        # the previous model is put back for that very frame (``adopt_model``).
+        self._swap_probation: Optional[dict] = None
+        # P6 seamless size switch: the (imgsz, shape) the TRACKER's space stays at when the network's input
+        # changes under it.  The tracker, the letterbox motion proxies, the cross-validation cells and the
+        # exclusion map all live in that space; the new network's detections are converted into it each frame
+        # (``_to_tracker_space``).  None = the tracker follows the network (no conversion: byte-identical).
+        self._tracker_input: Optional[Tuple[int, Optional[Tuple[int, int]]]] = None
+        # the tracker's input for THIS frame only: a size switch failed on its first frame, whose tensor was
+        # letterboxed at the new size (no detection then; the tracker, the motion and the blobs stay in its space)
+        self._frame_tracker_input: Optional[Tuple[int, Optional[Tuple[int, int]]]] = None
 
         # GPU pipeline (zero-copy path)
         self._gpu_pipeline: Optional[GpuPipeline] = None
@@ -766,7 +777,15 @@ class FrameProcessor:
         # Scale person_height_px from original-camera space to letterboxed
         # YOLO-tensor space.  Detections and the tracker both operate in
         # the letterboxed coordinate system in the GPU path.
-        letterbox = gpu_timing.get('letterbox', {})
+        net_letterbox = gpu_timing.get('letterbox', {})
+        # P6: after a seamless size switch the tracker keeps its own space (``_tracker_input``); the network's
+        # detections are converted into it.  Not pinned: the tracker space IS the network's letterbox.
+        forced, self._frame_tracker_input = self._frame_tracker_input, None
+        if forced is not None:
+            trk_letterbox = self._letterbox_for(forced, roi)
+        else:
+            trk_letterbox = self._tracker_letterbox(roi) if self._tracker_input is not None else None
+        letterbox = trk_letterbox or net_letterbox
         lb_scale = letterbox.get('scale', 1.0)
         pad_x = letterbox.get('pad_x', 0)
         pad_y = letterbox.get('pad_y', 0)
@@ -775,6 +794,8 @@ class FrameProcessor:
         # Extract detections
         t0 = time.perf_counter()
         detections = self._extract_detections(results)
+        if trk_letterbox is not None:
+            detections = self._to_tracker_space(detections, net_letterbox, trk_letterbox)
         # Raw det heights in ORIGINAL-space px, before the size gate — the
         # height-staleness alarm must see what the gate would reject (⑤d).
         inv_lb = 1.0 / lb_scale if lb_scale > 0 else 1.0
@@ -790,7 +811,9 @@ class FrameProcessor:
         # P5 pacing: this frame's network pass is done (its boxes are on the CPU)
         self.frame_done_t = time.perf_counter()
         self.frame_done.set()
-        self.last_lb_scale = float(lb_scale) if lb_scale else self.last_lb_scale
+        # the dancer's size AT THE NETWORK (readiness, the swipe's planner): the network's scale, pinned or not
+        net_scale = float(net_letterbox.get('scale', 1.0) or 0.0) if forced is None else 0.0
+        self.last_lb_scale = net_scale if net_scale else self.last_lb_scale
         self._guard_person_height(detections, inv_lb)
         detections = self._filter_duplicate_detections(detections, effective_person_height=scaled_person_height)
         timing["extract"] = (time.perf_counter() - t0) * 1000
@@ -923,6 +946,123 @@ class FrameProcessor:
                 self.plate_identity, self._plate_invalid,
                 bool(getattr(self._fg_detector, "stale_latched", False)), round(float(s.confidence or 0.0), 4))
 
+    def loop_clock(self) -> float:
+        """The loop's clock: the wall clock live, the take's frame clock in a replay (the swipe's time base)."""
+        return float(self._output_clock())
+
+    def live_infer_args(self) -> dict:
+        """The arguments the live network call takes (``_run_yolo``): a model warmed with them runs its first
+        live frame on PoseRunner's fast path."""
+        shape = self.settings.yolo_shape
+        return dict(imgsz=(int(shape[0]), int(shape[1])) if shape else int(self.settings.imgsz),
+                    conf=float(self.settings.confidence), iou=YOLO_IOU_THRESHOLD,
+                    half=bool(self.settings.use_fp16))
+
+    # ------------------------------------------------------------------
+    # P6 seamless switch: a model swapped between two frames, the tracker's space pinned across a size change
+    # ------------------------------------------------------------------
+    @property
+    def tracker_input(self) -> Optional[Tuple[int, Optional[Tuple[int, int]]]]:
+        """The (imgsz, shape) the tracker's space is pinned to, None when it follows the network."""
+        return self._tracker_input
+
+    def unpin_tracker_input(self) -> None:
+        """The tracker follows the network's letterbox again (call it with an empty tracker: a reset)."""
+        self._tracker_input = None
+
+    def _net_input(self) -> Tuple[int, Optional[Tuple[int, int]]]:
+        s = self.settings
+        return int(s.imgsz), (tuple(int(v) for v in s.yolo_shape) if s.yolo_shape else None)
+
+    def _tracker_letterbox(self, roi: Dict) -> Optional[Dict]:
+        """The letterbox of the pinned tracker input for this frame's ROI (``GpuPipeline._prepare_yolo_input``'s
+        arithmetic), or None when the network is back at that input (then the pin goes)."""
+        ti = self._tracker_input
+        if ti is None:
+            return None
+        trk = self.tracker
+        fresh = (trk is not None and int(getattr(trk, 'frame_count', 1)) == 0
+                 and not getattr(trk, 'tracks', None) and not getattr(trk, '_dormant', None))
+        if ti == self._net_input() or fresh:      # back at that input, or a reset tracker: nothing to carry
+            self._tracker_input = None
+            return None
+        return self._letterbox_for(ti, roi)
+
+    @staticmethod
+    def _letterbox_for(ti: Tuple[int, Optional[Tuple[int, int]]], roi: Dict) -> Optional[Dict]:
+        w, h = int(roi.get('w', 0) or 0), int(roi.get('h', 0) or 0)
+        if w <= 0 or h <= 0:
+            return None
+        imgsz, shape = ti
+        th, tw = (int(shape[0]), int(shape[1])) if shape else (int(imgsz), int(imgsz))
+        scale = min(tw / w, th / h)
+        new_w, new_h = int(w * scale), int(h * scale)
+        return {'scale': scale, 'pad_x': (tw - new_w) // 2, 'pad_y': (th - new_h) // 2, 'new_w': new_w,
+                'new_h': new_h, 'target_w': tw, 'target_h': th}
+
+    def _to_tracker_space(self, detections, net: Dict, trk: Dict):
+        """The network's detections (letterboxed at the network's input) in the pinned tracker space: the same
+        ROI-local point through the two letterboxes -- keypoints and boxes moved and scaled, box confidences
+        re-keyed (``_last_box_confs`` is keyed by the box's value)."""
+        r = float(trk['scale']) / float(net.get('scale', 1.0) or 1.0)
+        nx, ny = float(net.get('pad_x', 0)), float(net.get('pad_y', 0))
+        tx, ty = float(trk['pad_x']), float(trk['pad_y'])
+        off = np.array([tx - nx * r, ty - ny * r])
+        out, confs = [], {}
+        for kpts, conf, bbox in detections:
+            kpts, bbox = np.asarray(kpts), np.asarray(bbox)
+            k = (kpts.astype(np.float64) * r + off).astype(kpts.dtype)
+            b = np.array([float(bbox[0]) * r + off[0], float(bbox[1]) * r + off[1],
+                          float(bbox[2]) * r, float(bbox[3]) * r]).astype(bbox.dtype)
+            c = self._last_box_confs.get(self._bbox_conf_key(bbox))
+            if c is not None:
+                confs[self._bbox_conf_key(b)] = c
+            out.append((k, conf, b))
+        self._last_box_confs = confs
+        return out
+
+    def adopt_model(self, model, runner, *, net_input=None, on_fail=None, on_ok=None,
+                    probation_frames: int = 3) -> tuple:
+        """P6 seamless switch, on the loop thread between two frames: ``model`` (with its PoseRunner ``runner``,
+        warmed with the live call's arguments at ``net_input``) becomes the live model; returns the previous
+        ``(model, runner)``.  The tracker, its tracks and the slots are untouched.
+
+        ``net_input`` = (imgsz, shape) when the network's input changes too: the GPU pre-processing letterboxes
+        the next frame to it (it reads the settings per frame), and the tracker's space stays pinned to the
+        input it had (``_tracker_input``), so no track moves.
+
+        For the next ``probation_frames`` frames a failing call puts everything back -- the model, the input,
+        the pin -- and calls ``on_fail(exc, (failed model, its runner))`` (the caller frees them where it is
+        safe): at the same input the previous model takes that very frame; after a size change that frame
+        has no detection (its tensor is the new size) and the next one is the old input's.  After them,
+        ``on_ok()``."""
+        old = (self.model, self._yolo_runner)
+        old_input, old_pin = self._net_input(), self._tracker_input
+        size_change = False
+        if net_input is not None:
+            new_input = (int(net_input[0]), tuple(int(v) for v in net_input[1]) if net_input[1] else None)
+            if new_input != old_input:
+                size_change = True
+                if self._tracker_input is None:
+                    self._tracker_input = old_input
+                self.settings.imgsz, self.settings.yolo_shape = new_input
+        self.model, self._yolo_runner = model, runner
+        self._swap_probation = {"model": model, "old": old, "left": max(1, int(probation_frames)),
+                                "on_fail": on_fail, "on_ok": on_ok, "old_input": old_input if size_change else None,
+                                "old_pin": old_pin}
+        return old
+
+    def revert_swap(self) -> None:
+        """Undo the last ``adopt_model`` before its first frame (the caller's bookkeeping failed): the previous
+        model, runner, input and pin, without calling its handlers."""
+        pb, self._swap_probation = self._swap_probation, None
+        if pb is None:
+            return
+        self.model, self._yolo_runner = pb["old"]
+        if pb.get("old_input") is not None:
+            self.settings.imgsz, self.settings.yolo_shape = pb["old_input"]
+            self._tracker_input = pb.get("old_pin")
+
     def _swipe_tap(self, raw_frame, fg_before, mono_raw: bool, timing: Dict[str, float]) -> None:
         """Offer this frame to the swipe's collector: its foreground, the live boxes, and the raw frame as a
         callable the collector calls only when it keeps the frame (the copy is made then, never for a
@@ -992,13 +1132,41 @@ class FrameProcessor:
                 runner.enabled = False
                 runner.disabled_reason = "WD_POSE_RUNNER=0"
         shape = self.settings.yolo_shape
-        return runner(
-            yolo_tensor,
-            imgsz=(int(shape[0]), int(shape[1])) if shape else self.settings.imgsz,
-            conf=self.settings.confidence,
-            iou=YOLO_IOU_THRESHOLD,
-            half=self.settings.use_fp16,
-        )
+        kw = dict(imgsz=(int(shape[0]), int(shape[1])) if shape else self.settings.imgsz,
+                  conf=self.settings.confidence, iou=YOLO_IOU_THRESHOLD, half=self.settings.use_fp16)
+        pb = self._swap_probation
+        if pb is not None and pb["model"] is not self.model:
+            pb = self._swap_probation = None               # a reload replaced the switched-in model meanwhile
+        if pb is None:
+            return runner(yolo_tensor, **kw)
+        try:                                       # P6: a model swapped in a moment ago (adopt_model)
+            results = runner(yolo_tensor, **kw)
+        except Exception as exc:  # noqa: BLE001 - the previous model takes this frame and the show
+            self._swap_probation = None
+            failed = (self.model, self._yolo_runner)
+            self.model, self._yolo_runner = pb["old"]
+            if pb.get("old_input") is not None:          # a size change: the old input and the old pin back
+                self.settings.imgsz, self.settings.yolo_shape = pb["old_input"]
+                self._tracker_input = pb.get("old_pin")
+            if pb["on_fail"] is not None:
+                try:
+                    pb["on_fail"](exc, failed)
+                except Exception as cb_exc:  # noqa: BLE001
+                    print(f"[Swipe] switch-failure handler failed: {type(cb_exc).__name__}: {cb_exc}")
+            if pb.get("old_input") is not None:
+                # this frame's tensor is the new size: no detection, and the tracker stays in its own space
+                self._frame_tracker_input = pb.get("old_pin") or pb["old_input"]
+                return []
+            return self._yolo_runner(yolo_tensor, **kw)
+        pb["left"] -= 1
+        if pb["left"] <= 0:
+            self._swap_probation = None
+            if pb["on_ok"] is not None:
+                try:
+                    pb["on_ok"]()
+                except Exception as cb_exc:  # noqa: BLE001
+                    print(f"[Swipe] switch handler failed: {type(cb_exc).__name__}: {cb_exc}")
+        return results
 
     def replay_gpu_cached(self, dets, space_dict, gray, original_w, original_h,
                           frame_number, timing):
