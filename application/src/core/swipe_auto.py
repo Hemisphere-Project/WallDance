@@ -9,9 +9,10 @@ setting better:
   of settings compared, a higher bar for a costlier setting): no second threshold is stacked on it;
 * **an automatic switch** -- mode ``auto`` only, and only for the SEAMLESS pair: the other model at the same
   network input, its engine resident, swapped between two frames (a size change needs another engine and a few
-  seconds without tracking, as a manual change does: a better input size is always a suggestion).  It needs two verdicts in a row, on disjoint frames, naming the same setting with a
-  gain of ``definite_gain`` or more; a winner no slower than ``slower`` x the live setting's measured time; the
-  dwell since the last switch; and never back to the setting just left before ``back_s``.
+  seconds without tracking, as a manual change does: a better input size is always a suggestion).  It needs two
+  verdicts in a row, on disjoint frames, naming the same setting with a gain of ``definite_gain`` or more; a
+  winner no slower than ``slower`` x the live setting's measured time; the dwell since the last switch; and never
+  back to the setting just left before ``back_s``.
 
 When it looks (``due``), in frames, not seconds:
 
@@ -26,7 +27,14 @@ When it looks (``due``), in frames, not seconds:
   most any setting could gain over it (the dancers it leaves bare, its boxes on nobody).  When that cannot clear
   the referee's bar for the other model, no run;
 * the live setting has a box on almost none of the fresh frames (blind, or nobody there: a technician's shadow,
-  a light change): a rarer, shorter **probe** instead.
+  a light change): a rarer, shorter **probe** instead;
+* **a settled show backs off.**  After a « keep » verdict (the referee judged and named nothing) no run for
+  ``keep_wait_s``, doubled at each keep in a row up to ``keep_wait_max_s``; a verdict naming another setting, a
+  switch or a ``reset`` ends it.  While it waits, the one free signal wakes it: when the live setting leaves a
+  dancer bare on clearly more of the fresh frames than on the frames of any keep of the series (``wake_lost``
+  more, as a share), the next run comes at once -- the scene may have turned against the live model.  (The
+  highest, not the last: on one 150-frame window to the next the dancing alone moves that share by up to 30
+  points on the 08/10 takes.)
 
 This module is the policy only: no torch, no cv2, no threads, no clock of its own (every call takes ``now``).
 The controller (``runtime.swipe_controller``) feeds it and acts on its advice.  Operator sentences are ASCII.
@@ -105,6 +113,10 @@ class AutoParams:
     dwell_s: float = 300.0        # after any switch nothing switches by itself for this long
     back_s: float = 900.0         # ... and never back to the setting just left before this long
     slower: float = 1.15          # never by itself to a setting this many times the live one's inference time
+    keep_wait_s: float = 300.0    # after a « keep » verdict, no run for this long ...
+    keep_wait_max_s: float = 1800.0   # ... doubled at each keep in a row, up to this
+    wake_lost: float = 0.10       # ... unless the live setting's share of fresh frames with a dancer bare rose
+                                  # this much above the highest share of the keeps in a row (0.10 = 10 points)
     window_s: float = 0.0         # unused since 26/11 (freshness is in frames: ``run_frames``); kept for callers
     min_lost: int = 0             # unused since 26/11 (the pre-filter ``headroom`` replaces it); kept for callers
     definite_z: float = 0.0       # unused since 26/11 (the referee does the test); kept for callers
@@ -139,7 +151,13 @@ class SwipeAuto:
         self._switched_at: Optional[float] = None
         self._left: Optional[Candidate] = None       # the setting the last switch moved away from
         self._none_at: Optional[float] = None        # the last run the referee could not judge
+        self._keeps = 0                              # « keep » verdicts in a row
+        self._keep_at: Optional[float] = None        # the last of them
+        self._keep_lost: Optional[float] = None      # the highest lost share of those keeps
+        self._run_lost: Optional[float] = None       # the lost share of the fresh frames the last run was given
+        self._run_woken = False                      # ... and whether the lost share called it
         self.skipped = 0                             # runs the pre-filter saved
+        self.woken = 0                               # runs the lost share called during a back-off
 
     # -- when to look -------------------------------------------------------------------------------------
     def fresh(self, frames: Sequence[SwipeFrame]) -> List[SwipeFrame]:
@@ -165,6 +183,12 @@ class SwipeAuto:
             return "idle"                 # the referee said it cannot judge this scene: wait
         if lost_fresh + covered_fresh < p.run_frames:
             return "idle"                 # an empty wall keeps nothing: no run, no inference
+        share = lost_fresh / float(lost_fresh + covered_fresh)
+        woke = False
+        if self._keep_at is not None and now - self._keep_at < self.keep_wait():
+            if self._keep_lost is None or share < self._keep_lost + p.wake_lost - 1e-9:
+                return "idle"             # settled: the referee kept this setting a moment ago
+            woke = True                   # it loses clearly more dancers than then: look now
         if covered_fresh < p.min_covered and room is None:
             if self._last_probe is None or now - self._last_probe >= p.probe_every_s:
                 return "probe"
@@ -174,7 +198,16 @@ class SwipeAuto:
             if newest_frame_t is not None:
                 self._seen_until = max(self._seen_until or newest_frame_t, float(newest_frame_t))
             return "idle"
+        self._run_lost, self._run_woken = share, woke
+        self.woken += woke
         return "run"
+
+    def keep_wait(self) -> float:
+        """How long the back-off after the last « keep » verdict lasts (0: none)."""
+        p = self.params
+        if self._keeps <= 0:
+            return 0.0
+        return min(p.keep_wait_s * 2.0 ** (self._keeps - 1), max(p.keep_wait_max_s, p.keep_wait_s))
 
     def candidates(self, planned: Iterable[Candidate], live: Candidate) -> List[Candidate]:
         """What a background run tries, among the planner's candidates: the live setting and the settings at
@@ -201,6 +234,15 @@ class SwipeAuto:
             self._seen_until = max(self._seen_until or newest_frame_t, newest_frame_t)
         if result is not None and result.winner is None:
             self._none_at = float(now)    # no verdict: an untrusted plate or too few dancers
+        elif result is not None and not result.switch:
+            # « keep »: judged, nothing better -- back off; after a run the lost share called, from the start
+            # again (its frames may straddle the change: the next scheduled run, keep_wait_s on, sees it whole)
+            self._keeps = 1 if self._run_woken else self._keeps + 1
+            self._keep_at = float(now)
+            if self._run_lost is not None:   # the highest lost share the referee has kept in this series: the
+                self._keep_lost = max(self._keep_lost or 0.0, self._run_lost)   # dancing's own swing stays under it
+        elif result is not None:
+            self._keeps, self._keep_at, self._keep_lost = 0, None, None   # another setting named: look again now
         if self.mode == MODE_OFF or result is None or result.winner is None or not result.switch:
             self._streak_winner, self._streak = None, 0
             return AutoAdvice()
@@ -253,3 +295,4 @@ class SwipeAuto:
         self._streak_winner, self._streak = None, 0
         self._seen_until = None
         self._none_at = None
+        self._keeps, self._keep_at, self._keep_lost = 0, None, None

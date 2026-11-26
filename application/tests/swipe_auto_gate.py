@@ -16,11 +16,15 @@ frames offered with no foreground group):
   ``referee_params(project confidence)``; it lasts frames x (candidates - 1) x ``--pace-s`` (one candidate
   inference every 0.2 s), then ``ran`` and ``advise``; a probe looks at the newest ``probe_frames``;
 * on « apply » the live setting really changes: from then on the live boxes come from the winner's record, the
-  collector starts again and ``switched`` is called.
+  collector starts again and ``switched`` is called;
+* ``--splice-at-s`` (SYNTHETIC): from that second on, each model's records are swapped with the other model's at
+  the same input -- as if the light had turned against the live model -- for the back-off's wake-up, which no
+  recorded take exercises (on 08/10 the best setting never changes).
 
-Per stream it counts runs, skipped runs (the pre-filter), probes, suggestions (and whether each named a setting the
-truth says is worse than the live one), automatic switches (and whether each was to a worse setting), flip-flops
-(a switch back to a setting left earlier), the time of the first switch, and the truth recall per live setting.
+Per stream it counts runs, skipped runs (the pre-filter), probes, « keep » verdicts, runs the wake-up called,
+suggestions (and whether each named a setting the truth says is worse than the live one), automatic switches (and
+whether each was to a worse setting), flip-flops (a switch back to a setting left earlier), the time of the first
+switch, the truth recall per live setting, and after a splice the time to the first run, suggestion and switch.
 
 Gates (exit 1 when red):
 
@@ -118,7 +122,7 @@ class Stream:
 @dataclass
 class Event:
     t: float
-    kind: str                 # "run" | "probe" | "skip" | "suggest" | "apply"
+    kind: str                 # "run" | "probe" | "skip" | "keep" | "suggest" | "apply"
     live: str
     winner: str = ""
     level: str = ""
@@ -134,6 +138,8 @@ class StreamRun:
     det: Dict[str, List[float]] = field(default_factory=dict)
     seconds: float = 0.0
     gpu_s: float = 0.0
+    woken: int = 0
+    splice_s: Optional[float] = None
 
     def count(self, kind: str) -> int:
         return sum(e.kind == kind for e in self.events)
@@ -150,20 +156,29 @@ class StreamRun:
 def simulate(st: Stream, live0: Candidate, mode: str = MODE_AUTO, ap: Optional[AutoParams] = None,
              sp: Optional[SwipeParams] = None, start: int = 0, hours: float = 1.0, live_conf: float = 0.15,
              check_s: float = 2.0, pace_s: float = 0.2, ms: Optional[Dict[str, float]] = None,
-             gap_every_s: float = 0.0, gap_s: float = 0.0, prefilter: bool = True) -> StreamRun:
-    """One stream of ``hours`` from frame index ``start`` of the take (looped), ``live0`` live at the start."""
+             gap_every_s: float = 0.0, gap_s: float = 0.0, prefilter: bool = True,
+             splice_at_s: Optional[float] = None) -> StreamRun:
+    """One stream of ``hours`` from frame index ``start`` of the take (looped), ``live0`` live at the start;
+    ``splice_at_s``: SYNTHETIC -- from then on each model plays the other model's record at the same input."""
     ap = ap or AutoParams()
     sp = referee_params(live_conf, sp)
     scores = st.take.scores(sp)
     auto = SwipeAuto(mode, ap)
     live = live0
     col = FrameCollector(sp)
-    out = StreamRun()
+    out = StreamRun(splice_s=splice_at_s)
+    twin = {c: o for c in st.take.cands for o in st.take.cands
+            if o.model != c.model and o.imgsz == c.imgsz and o.shape == c.shape}
+
+    def rec(c: Candidate, at: float) -> Candidate:
+        """The record setting ``c`` plays at ``at``: its own, or after the splice its twin's."""
+        return twin.get(c, c) if splice_at_s is not None and at >= splice_at_s else c
+
     n = len(st.order)
     dt = 1.0 / st.fps
     total_s = hours * 3600.0
     ms_c = {c: ms[c.label] for c in st.take.cands if ms and c.label in ms} if ms else None
-    tr = {c: st.recall(c) for c in st.take.cands}
+    tr0 = {c: st.recall(c) for c in st.take.cands}
     t, k, next_check, pending = 0.0, 0, 0.0, None
     next_gap = gap_every_s if gap_every_s > 0 else None
     while t < total_s:
@@ -176,9 +191,9 @@ def simulate(st: Stream, live0: Candidate, mode: str = MODE_AUTO, ap: Optional[A
             continue
         f = st.order[(start + k) % n]
         k += 1
-        col.offer(t, f, st.obs_g[f], st.boxes(live, f, live_conf))
+        col.offer(t, f, st.obs_g[f], st.boxes(rec(live, t), f, live_conf))
         if st.truth is not None:
-            nb, nd = st.truth[live]
+            nb, nd = st.truth[rec(live, t)]
             acc = out.det.setdefault(live.label, [0.0, 0.0])
             acc[0] += nb[f]
             acc[1] += nd[f]
@@ -187,9 +202,12 @@ def simulate(st: Stream, live0: Candidate, mode: str = MODE_AUTO, ap: Optional[A
             auto.ran(t, probe=probe)
             if not probe:
                 adv = auto.advise(t, res, newest_frame_t=pending["newest"], ms=ms_c)
+                if res.winner is not None and not res.switch:
+                    out.events.append(Event(t, "keep", live.label))
                 if adv.kind != "none":
                     row = next((r for r in res.rows if r.candidate == adv.winner), None)
-                    worse = (tr[adv.winner] is not None and tr[live] is not None and tr[adv.winner] < tr[live])
+                    tw, tl = tr0[rec(adv.winner, t)], tr0[rec(live, t)]
+                    worse = tw is not None and tl is not None and tw < tl
                     out.events.append(Event(t, adv.kind, live.label, adv.winner.label, adv.level,
                                             row.gain if row else 0.0, worse, adv.why_not_auto))
                 if adv.kind == "apply":
@@ -206,20 +224,22 @@ def simulate(st: Stream, live0: Candidate, mode: str = MODE_AUTO, ap: Optional[A
                 lost = sum(1 for fr in fresh if fr.lost)
                 room = None
                 if prefilter and len(cands) > 1:
-                    hr = headroom([scores[fr.image][live] for fr in fresh], sp)
+                    hr = headroom([scores[fr.image][rec(live, fr.t)] for fr in fresh], sp)
                     if hr is not None:
                         room = hr - min(bar_for(live, c, sp) for c in cands[1:])
                 newest = max(fr.t for fr in fresh)
-                skipped0 = auto.skipped
+                skipped0, woken0 = auto.skipped, auto.woken
                 d = auto.due(t, lost, len(fresh) - lost, room=room, newest_frame_t=newest)
                 if auto.skipped > skipped0:
                     out.events.append(Event(t, "skip", live.label))
+                if auto.woken > woken0:
+                    out.events.append(Event(t, "wake", live.label))
                 if d in ("run", "probe") and len(cands) > 1:
                     use = sorted(fresh, key=lambda fr: fr.t)[-(ap.run_frames if d == "run" else ap.probe_frames):]
                     tallies = {c: Tally() for c in cands}
                     for fr in use:
                         for c in cands:
-                            tallies[c].add(scores[fr.image][c], lost=fr.lost)
+                            tallies[c].add(scores[fr.image][rec(c, fr.t)], lost=fr.lost)
                     res = decide(tallies, live, sp, lost_share=col.lost_share)
                     dur = len(use) * (len(cands) - 1) * pace_s
                     out.gpu_s += dur
@@ -236,8 +256,17 @@ def _row(st: Stream, live: Candidate, runs: List[StreamRun], expect: str = "") -
     sw = [s for r in runs for s in r.switches]
     sugg = [e for r in runs for e in r.events if e.kind == "suggest"]
     first = [r.switches[0][0] for r in runs if r.switches]
-    worse_sw = sum(1 for r in runs for t, a, b in r.switches
-                   if st.recall(st.by_label(b)) is not None and st.recall(st.by_label(b)) < st.recall(st.by_label(a)))
+    worse_sw = sum(1 for r in runs for e in r.events if e.kind == "apply" and e.worse)
+    after = {"run": [], "suggest": [], "switch": []}      # after a (synthetic) splice: seconds to each, per stream
+    for r in runs:
+        if r.splice_s is None:
+            continue
+        ev = [e for e in r.events if e.t >= r.splice_s]
+        for key, kinds in (("run", ("run",)), ("suggest", ("suggest", "apply"))):
+            x = next((e.t for e in ev if e.kind in kinds), None)
+            after[key].append(None if x is None else round(x - r.splice_s))
+        x = next((t for t, _, _ in r.switches if t >= r.splice_s), None)
+        after["switch"].append(None if x is None else round(x - r.splice_s))
     rec_after = {}
     for r in runs:
         for lab, (nb, nd) in r.det.items():
@@ -245,7 +274,10 @@ def _row(st: Stream, live: Candidate, runs: List[StreamRun], expect: str = "") -
             acc[0] += nb
             acc[1] += nd
     return {"take": st.label, "live": live.label, "streams": len(runs), "hours": round(hours, 1),
-            "runs": sum(r.count("run") for r in runs), "skipped": sum(r.count("skip") for r in runs),
+            "runs": sum(r.count("run") for r in runs),
+            "runs_per_h": round(sum(r.count("run") for r in runs) / hours, 2),
+            "keeps": sum(r.count("keep") for r in runs), "wakes": sum(r.count("wake") for r in runs),
+            "skipped": sum(r.count("skip") for r in runs),
             "probes": sum(r.count("probe") for r in runs), "gpu_s_per_h": round(sum(r.gpu_s for r in runs) / hours, 1),
             "suggestions": len(sugg), "suggest_worse": sum(e.worse for e in sugg),
             "suggest_named": sorted({e.winner for e in sugg}),
@@ -253,6 +285,7 @@ def _row(st: Stream, live: Candidate, runs: List[StreamRun], expect: str = "") -
             "per_stream_switches": [len(r.switches) for r in runs],
             "first_switch_s": [round(x) for x in first], "to": sorted({b for _, _, b in sw}),
             "expect_ok": (all(len(r.switches) == 1 and r.switches[0][2] == expect for r in runs) if expect else None),
+            "after_splice_s": after if any(r.splice_s is not None for r in runs) else None,
             "recall": {k: round(100 * v[1] / v[0], 1) for k, v in rec_after.items() if v[0]}}
 
 
@@ -272,6 +305,8 @@ def main(argv=None) -> int:
     a_.add_argument("--gap-s", type=float, default=0.0)
     a_.add_argument("--no-prefilter", action="store_true")
     a_.add_argument("--no-ms", action="store_true", help="no inference times: the « slower » rule off")
+    a_.add_argument("--splice-at-s", type=float, default=None,
+                    help="SYNTHETIC: from this second each model plays the other model's record at its input")
     a_.add_argument("--set", dest="sets", action="append", default=[], metavar="KEY=VALUE",
                     help="override an AutoParams field (exploration; the gate is the defaults)")
     a_.add_argument("--json", default=None)
@@ -294,7 +329,7 @@ def main(argv=None) -> int:
             rng = random.Random(a.seed)
             runs = [simulate(st, live, a.mode, ap, None, rng.randrange(len(st.order)), a.hours, a.live_conf,
                              ms=None if a.no_ms else LAPTOP_MS, gap_every_s=a.gap_every_s, gap_s=a.gap_s,
-                             prefilter=not a.no_prefilter)
+                             prefilter=not a.no_prefilter, splice_at_s=a.splice_at_s)
                     for _ in range(a.starts)]
             row = _row(st, live, runs, a.expect if a.gate == "switch" else "")
             if a.gate == "stay":
@@ -309,11 +344,13 @@ def main(argv=None) -> int:
                 row["green"] = True
             green &= row["green"]
             rows.append(row)
-            print(f"  {row['take']:10s} live {row['live']:16s} {row['hours']:6.1f} h: runs {row['runs']} skipped "
+            print(f"  {row['take']:10s} live {row['live']:16s} {row['hours']:6.1f} h: runs {row['runs']} "
+                  f"({row['runs_per_h']}/h; keeps {row['keeps']}, woken {row['wakes']}) skipped "
                   f"{row['skipped']} probes {row['probes']} gpu {row['gpu_s_per_h']} s/h | suggestions "
                   f"{row['suggestions']} (worse {row['suggest_worse']}) {row['suggest_named']} | switches "
                   f"{row['switches']} (worse {row['worse_switches']}, flip-flops {row['flip_flops']}) "
                   f"first at {row['first_switch_s']} s to {row['to']} | recall {row['recall']}"
+                  f"{'' if not row['after_splice_s'] else ' | SYNTHETIC splice, s to ' + str(row['after_splice_s'])}"
                   f"{'' if a.gate == 'none' else ('  GREEN' if row['green'] else '  RED')}", flush=True)
     if a.gate != "none":
         print("GATE GREEN" if green else "GATE RED")

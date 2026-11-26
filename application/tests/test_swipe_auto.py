@@ -121,8 +121,52 @@ def test_after_a_run_the_referee_could_not_judge_it_waits():
     assert a.due(0.0, 60, 90) == "run"                                          # a new plate: look again
 
 
+def _keep(live=X):
+    return SwipeResult(live, live, False, [SwipeRow(live, 0.5, 0.0, 15.0, net=0.5)], "keep")
+
+
+def test_a_settled_show_backs_off_after_each_keep():
+    a = SwipeAuto(MODE_AUTO, AutoParams(keep_wait_s=300, keep_wait_max_s=1800))
+    assert a.due(0.0, 45, 105) == "run"                                          # lost share 0.30
+    a.advise(30.0, _keep(), 30.0)
+    assert a.keep_wait() == 300 and a.due(200.0, 45, 105) == "idle" and a.due(331.0, 45, 105) == "run"
+    for n, wait in ((2, 600), (3, 1200), (4, 1800), (5, 1800)):                  # doubled, up to the cap
+        a.advise(1000.0 * n, _keep(), 1000.0 * n)
+        assert a.keep_wait() == wait
+    assert a.due(5000.0 + 1799, 45, 105) == "idle" and a.due(5000.0 + 1801, 45, 105) == "run"
+
+
+def test_a_verdict_naming_another_setting_a_switch_or_a_reset_ends_the_back_off():
+    a = SwipeAuto(MODE_SUGGEST)
+    a.due(0.0, 45, 105)
+    a.advise(30.0, _keep(), 30.0)
+    assert a.due(100.0, 45, 105) == "idle"
+    a.advise(110.0, _result(L, X, 0.04), 110.0)                                  # named: the next run at once
+    assert a.keep_wait() == 0 and a.due(120.0, 45, 105) == "run"
+    a.advise(150.0, _keep(), 150.0)
+    a.switched(160.0, X, L)
+    assert a.due(170.0, 45, 105) == "run"
+    a.advise(200.0, _keep(L), 200.0)
+    a.reset()
+    assert a.due(210.0, 45, 105) == "run"
+
+
+def test_a_rise_in_the_live_settings_lost_share_wakes_it():
+    a = SwipeAuto(MODE_AUTO, AutoParams(wake_lost=0.10))
+    a.due(0.0, 45, 105)                                                          # 0.30 on the first keep's frames
+    a.advise(30.0, _keep(), 30.0)
+    a.due(400.0, 60, 90)                                                         # 0.40 on the second's
+    a.advise(430.0, _keep(), 430.0)
+    assert a.keep_wait() == 600
+    assert a.due(500.0, 74, 76) == "idle"                                        # 0.49: the dancing's own swing
+    assert a.due(510.0, 75, 75) == "run" and a.woken == 1                         # 0.50: 10 points over 0.40
+    a.advise(540.0, _keep(), 540.0)                                              # judged again: nothing better
+    assert a.keep_wait() == 300 and a.due(600.0, 75, 75) == "idle"                # from the start; 0.50 the reference
+    assert a.due(841.0, 75, 75) == "run"
+
+
 @pytest.mark.parametrize("field", ["window_s", "min_lost", "definite_z", "every_s", "probe_every_s", "probe_frames",
                                    "definite_gain", "wins", "dwell_s", "back_s", "slower", "min_covered",
-                                   "none_wait_s", "run_frames"])
+                                   "none_wait_s", "run_frames", "keep_wait_s", "keep_wait_max_s", "wake_lost"])
 def test_the_parameters_the_live_code_may_pass_still_exist(field):
     assert hasattr(AutoParams(), field)
