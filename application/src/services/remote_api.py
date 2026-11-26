@@ -19,6 +19,7 @@ Endpoints (JSON unless noted; all but ``/ping`` need ``Authorization: Bearer``):
     GET  /api/v1/file?path=REL              download (HTTP Range; gzip for text)
     GET  /api/v1/logs?tail=N                tail of the current app log
     GET  /api/v1/snapshot.jpg               current preview (phone-monitor JPEG)
+         ?w=320&q=50&max_bytes=30000        ... shrunk for a slow link (S1a, extra/wdwatch.py)
     POST /api/v1/clip {path,start,frames,scale,codec}   cut a small excerpt (job)
     GET  /api/v1/jobs/<id>                  job status
 
@@ -50,6 +51,7 @@ from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
 from runtime import api
+from services.live_watch import HitRate, snapshot_fitted
 
 SAFE, CONTROL, HEAVY, NEVER = "safe", "control", "heavy", "never"
 
@@ -199,6 +201,8 @@ class RemoteApi:
         self._last_client: Tuple[float, str] = (0.0, "")
         self._jobs: Dict[str, Dict] = {}
         self._server: Optional[ThreadingHTTPServer] = None
+        # S1a: the live hit rate the watch tool reads (fed by MainLoop._tick_remote; services/live_watch.py)
+        self.hit_rate = HitRate()
         bus.subscribe(self._on_event)
 
     # -- runtime side -------------------------------------------------------
@@ -234,6 +238,11 @@ class RemoteApi:
             out["event_seq"] = self._seq
         out["remote"] = {"control_enabled": self.control_enabled,
                          "bind": f"{self.host}:{self.port}"}
+        # S1a: foreground groups with a box (absent, not 0, without core.swipe); small snapshots on request
+        hit = self.hit_rate.snapshot()
+        if hit is not None:
+            out["hit_rate"] = hit
+        out["snapshot_fit"] = True
         return out
 
     def events_since(self, since: int, wait: float, types: Optional[set]) -> Dict:
@@ -505,6 +514,9 @@ def _make_handler(remote: RemoteApi):
                 jpg = remote.snapshot_fn()
                 if not jpg:
                     return self._json(404, {"error": "no preview (phone monitor off?)"})
+                code, jpg = snapshot_fitted(jpg, q)     # S1a: ?w=&q=&max_bytes= for a slow link
+                if code != 200:
+                    return self._json(code, jpg)
                 self.send_response(200)
                 self.send_header("Content-Type", "image/jpeg")
                 self.send_header("Content-Length", str(len(jpg)))

@@ -752,6 +752,8 @@ class FrameProcessor:
              roi_x + (float(d[2][0]) + float(d[2][2]) / 2 - pad_x) * inv_lb,
              roi_y + (float(d[2][1]) + float(d[2][3]) / 2 - pad_y) * inv_lb,
              float(d[2][3]) * inv_lb) for d in detections]
+        self.last_raw_boxes = self._raw_boxes(detections, self._last_box_confs, inv_lb, pad_x, pad_y,
+                                              roi_x, roi_y)
         self.last_lb_scale = float(lb_scale) if lb_scale else self.last_lb_scale
         self._guard_person_height(detections, inv_lb)
         detections = self._filter_duplicate_detections(detections, effective_person_height=scaled_person_height)
@@ -810,6 +812,19 @@ class FrameProcessor:
         return self._post_yolo_chain(
             detections, space, lb_motion, finalize,
             original_w, original_h, frame_number, timing)
+
+    @staticmethod
+    def _raw_boxes(detections, confs: Dict[tuple, float], inv_lb: float, pad_x: float, pad_y: float,
+                   roi_x: float, roi_y: float) -> List[Tuple[float, float, float, float, float]]:
+        """Letterbox-space (x, y, w, h) detections -> (x0, y0, x1, y1, box conf) in original px."""
+        out = []
+        for d in detections:
+            x, y, w, h = (float(v) for v in d[2][:4])
+            x0 = roi_x + (x - pad_x) * inv_lb
+            y0 = roi_y + (y - pad_y) * inv_lb
+            out.append((x0, y0, x0 + w * inv_lb, y0 + h * inv_lb,
+                        float(confs.get(FrameProcessor._bbox_conf_key(d[2]), 0.0))))
+        return out
 
     def _run_yolo(self, yolo_tensor: 'torch.Tensor'):
         """``self.model(yolo_tensor, imgsz=, conf=, iou=, half=, verbose=False)``

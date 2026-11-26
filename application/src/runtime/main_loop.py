@@ -547,6 +547,9 @@ class MainLoop:
                 app.bus.publish(api.RemoteStatus(active, remote.control_enabled, who))
         except Exception as e:  # noqa: BLE001 - observation must not stop the show
             print(f"[RemoteApi] status snapshot failed: {e}")
+        hit = getattr(remote, "hit_rate", None)      # S1a: the live hit rate (services/live_watch.py)
+        if hit is not None:
+            hit.feed_from(getattr(app, "processor", None))
 
     def _tick_pumps(self) -> bool:
         """Deferred-work pumps (project switch, playback event, camera

@@ -127,6 +127,39 @@ python extra/wdremote.py clip projects/<p>/recordings/slot_3_x.avi --start 900 -
 A **REMOTE** chip shows in the top bar while a client is active (**REMOTE\*** when control in RUN is allowed).
 Every command and refusal is in the app log.
 
+## 5b. Watching the app over a slow link (`wdwatch`, S1a)
+
+`extra/wdwatch.py` reads the live app every ~30 s through `wdremote`'s tunnel and token and logs it on the
+dev box. It only reads: four GET endpoints (`ping`, `status`, `events`, `snapshot.jpg`), never a command.
+
+```bash
+python extra/wdwatch.py watch                           # supervision (7–8/12): cues printed
+python extra/wdwatch.py watch --notify "<cmd>"          # ... and each cue given to <cmd> on stdin
+python extra/wdwatch.py watch --record-only --hours 10  # the show (12/12): logs only, contacts no one
+python extra/wdwatch.py summary                         # the one-screen summary of the latest run
+kill -USR1 <pid>                                        # the same screen in the watcher's terminal
+```
+
+- **A poll**: `/status` (state, project, engine, fps, camera, recorder; the last StatsTick's health figures and
+  the build's health line when it has one; the live hit rate), the events since the last poll (alerts, toasts,
+  readiness, state and camera changes), one snapshot.
+- **The live hit rate** (`hit_rate` in `/status`): the share of the foreground's dancer groups with a detection
+  box on them, pooled over the last 60 s, sampled at the status cadence (2 Hz). The app scores it with the
+  settings swipe's referee (`core/swipe.py`), so there is one referee; a build without that module has no
+  `hit_rate` key (absent, never 0). `rate` is null while no dancer group is seen (foreground off, no plate,
+  an empty wall); `skipped` counts frames whose foreground was invalid.
+- **A slow link**: each poll has a byte budget (`--budget-kb`, 40 KB). The app shrinks the snapshot
+  (`/snapshot.jpg?w=320&q=50&max_bytes=N`, a few KB) to what status and events left; an answer larger than its
+  room is not read. A poll slower than `--slow-s` (10 s) doubles the interval and shrinks the next snapshots;
+  fast polls undo it. Never the video stream. A build without `snapshot_fit` in its status gets no snapshot
+  unless `--full-snapshots` (still within the budget).
+- **Unattended**: a dropped link, a laptop asleep or an app restart is a line in the log. The tunnel is
+  reopened with a back-off (60, 120, 240 s, then every 300 s) and the watch resumes by itself; a restarted app
+  is noticed and its events are read from its start.
+- **The log**: `tmp_analysis/watch/<YYYY-MM-DD_HHMMSS>/`: `polls.jsonl` (each poll with the full status, plus
+  `link`, `restart`, `cue`, `start` and `stop` lines), `snapshots/`, `summary.txt` (rewritten after each poll).
+- **Record-only**: `--notify` is refused and cues go to the log only. In both modes the client has no POST.
+
 ## 6. What every recording now carries (MRK-0)
 
 Each `slot_N_<stamp>.avi.meta` holds:
