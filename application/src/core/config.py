@@ -354,14 +354,23 @@ FOREGROUND_ENABLED = True
 FOREGROUND_CLIP_AWARE = True
 PLATE_CAPTURE_FRAMES = 40               # 2 s at 20 fps
 # Settings swipe (Plan Cordée P5, core/swipe.py + core/swipe_runner.py): while the foreground is valid the
-# pipeline keeps up to ~30 frames where the live setting leaves a dancer without a box (and as many covered
-# ones), so a swipe asked for during the warmup starts from frames already there.  A copy every >= 0.5 s at
-# most; ~2.3 MB a frame for a mono IDS frame.  Project key swipe_collect; False = no tap, no frames kept.
+# pipeline keeps the frames a swipe runs on -- the newest frames where the live setting leaves a dancer without a
+# box, and a smaller set of frames where it covers every dancer, one of each kind per SwipeParams.min_gap_s at most
+# (their counts and spacing are core.swipe.SwipeParams' frames / covered_frames / min_gap_s; the tap copies a frame
+# only when it keeps it: ~2.3 MB for a mono IDS frame) -- so a swipe asked for during the warmup starts from frames
+# already there.  Project key swipe_collect; False = no tap, no frames kept.
 SWIPE_COLLECT = True
 # The swipe's candidate inferences run beside the live loop: back to back they doubled the live inference on the
 # show laptop (15 -> 38 ms p50, 26/11), so each starts right after a live network pass and at least this long
-# after the previous one (~one per live frame at 20 fps; 5 candidates x 30 frames then take ~8-10 s).
+# after the previous one: about one per live frame at 20 fps (the laptop's run phase: ~12 s for three settings).
 SWIPE_PACE_S = 0.05
+# A ceiling on a swipe's run phase (after the frames are collected): past it the swipe stops with « no verdict »
+# rather than running on beside the show.  The run phase took 12-18 s on the laptop and mgr-ran (26/11).
+SWIPE_RUN_MAX_S = 60.0
+# A verdict older than this is no longer offered (no Apply, no readiness row): the light, the wall and the
+# dancers move on.  A warmup's verdict is applied in STANDBY in the minutes after it; an afternoon rehearsal's
+# verdict must not be offered at night.
+SWIPE_VERDICT_MAX_AGE_S = 1800.0
 # Light changed since the empty-wall snapshot (Thomas 2026-10-07: "luminosity change is a killer"): the
 # raw ROI brightness over the snapshot's (core/foreground.ForegroundDetector.light_ratio), sampled at 1 Hz
 # in standby and RUN alike; when its median over LIGHT_CHANGE_S leaves [1/RATIO, RATIO] the operator is

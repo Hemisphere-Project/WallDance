@@ -887,6 +887,7 @@ class WallDanceApp:
         reg(api.RunSettingsSwipe, lambda c: self._cb_run_settings_swipe())
         reg(api.CancelSettingsSwipe, lambda c: self.swipe.cancel())
         reg(api.ApplySettingsSwipe, lambda c: self._cb_apply_settings_swipe())
+        reg(api.DismissSwipeNotice, lambda c: self._cb_dismiss_swipe())
         # detection / sensitivity
         reg(api.SetSensitivity, lambda c: self._cb_sensitivity_change(c.value))
         reg(api.SetConfidence, lambda c: self._cb_confidence_change(c.value))
@@ -2349,8 +2350,10 @@ class WallDanceApp:
                                          imgsz=int(self.settings.imgsz),
                                          shape=self.settings.yolo_shape, roi_w=_roi_w, roi_h=_roi_h))
         try:
-            results.append(self.swipe.readiness(plate_ready=self.processor.plate_status == "ready",
-                                                live_now=self._swipe_live_setting()))
+            row = self.swipe.readiness(plate_ready=self.processor.plate_status == "ready",
+                                       live_now=self._swipe_live_setting())
+            if row is not None:                 # advice, not a condition: usually no row at all
+                results.append(row)
         except Exception as e:  # noqa: BLE001 - one row must not sink the report
             print(f"[Readiness] swipe row failed: {e}")
         results.append(check_disk(
@@ -2647,13 +2650,24 @@ class WallDanceApp:
             frame = tuple(int(v) for v in self.roi.state.source_size)
         except Exception:  # noqa: BLE001
             frame = ()
+        enhance = (bool(s.enhance_enabled), bool(s.enhance_lite), bool(s.enhance_force),
+                   round(float(self.enhancer.clahe_clip), 3), round(float(self.enhancer.gamma), 3),
+                   bool(getattr(s, "greyscale", False)), bool(s.bg_subtract_enabled), int(s.bg_subtract_sensitivity),
+                   round(float(s.brightness_threshold), 1), round(float(s.denoise_strength), 3))
+        try:
+            grid, cells = self.processor.get_exclusion()
+            exclusion = (tuple(int(v) for v in grid), tuple(sorted((int(c[0]), int(c[1])) for c in cells)))
+        except Exception:  # noqa: BLE001
+            exclusion = ()
         return LiveSetting(project=self.configs._current_project,
                            candidate=Candidate(self.models.current_model_name, int(s.imgsz),
                                                tuple(shape) if shape else None),
                            model_id=id(self.models.model), trt=trt,
                            roi=(bool(s.roi_enabled), int(s.roi_x), int(s.roi_y), int(s.roi_w), int(s.roi_h)),
-                           plate=str(s.fg_plate_path or ""),
-                           plate_ok=bool(getattr(self.processor, "plate_usable", True)), frame=frame)
+                           # the plate the pipeline holds in memory (captured again = another scene)
+                           plate=getattr(self.processor, "plate_identity", None),
+                           plate_ok=bool(getattr(self.processor, "plate_usable", True)), frame=frame,
+                           enhance=enhance, exclusion=exclusion)
 
     def _cb_run_settings_swipe(self):
         """Start the swipe (worker thread; the show runs on at the live setting)."""
@@ -2672,15 +2686,24 @@ class WallDanceApp:
         ``_attach_model``.  Only once that switch has run the winner on TensorRT (``_swipe_apply_done``) is
         the recommended confidence applied and the result marked applied; a failed load keeps the old model,
         its input and its confidence.  Like a manual change it is not saved: the operator's Save keeps it
-        (model, yolo_imgsz, yolo_shape, confidence, the dial's seed)."""
-        why, winner, conf = self.swipe.applicable(self._swipe_live_setting())
+        (model, yolo_imgsz, yolo_shape, confidence, the dial's seed).
+
+        STANDBY only, like the dry-run, the calibration sweep and known-N (and the remote API's HEAVY class):
+        the reload closes the camera and stops tracking and OSC for a few seconds."""
+        if self.system_state == SystemState.RUN:
+            self.bus.publish(api.Toast("Apply: stop the show first - Apply reloads the model, a few seconds "
+                                       "without tracking", 5.0, (255, 200, 100)))
+            return
+        live = self._swipe_live_setting()
+        why, winner, conf = self.swipe.applicable(live)
         if why is None:
             why = self.models.request_setting(winner.model, winner.imgsz, winner.shape,
                                               on_done=self._swipe_apply_done)
         if why:
             self.bus.publish(api.Toast(f"Swipe Apply: {why}", 5.0, (255, 200, 100)))
             return
-        self._swipe_pending_apply = (winner, conf, self.configs._current_project, time.monotonic())
+        self._swipe_pending_apply = (winner, conf, self.configs._current_project, time.monotonic(),
+                                     live.candidate if live is not None else None)
         self.models.ui.sync_model_combo(winner.model)
         self._sync("combo", "imgsz", str(int(winner.imgsz)))
         say(f"[Swipe] applying {winner.label}")
@@ -2691,21 +2714,32 @@ class WallDanceApp:
         pend, self._swipe_pending_apply = self._swipe_pending_apply, None
         if pend is None:
             return
-        winner, conf, project, t0 = pend
+        winner, conf, project, t0, prev = pend
         live = self._swipe_live_setting()
         trt = bool(self.models.model_manager.is_using_tensorrt())
         runs = (ok and trt and live is not None and live.candidate == winner
                 and project == self.configs._current_project and time.monotonic() - t0 < 600.0)
         if not runs:
             now = live.candidate.label if live is not None else "no model"
-            why = ("the engine did not load: running PyTorch" if ok and not trt
-                   else f"{now} runs" if ok else "the model did not load: the previous one is kept")
+            rebuild = f"rebuild {winner.engine_file} (extra/build_engines) before trying it again"
+            if ok and not trt and prev is not None:
+                # the TensorRT engine did not load and PyTorch would run the winner far over the frame budget:
+                # back to the setting that ran, through the same switch
+                back = self.models.request_setting(prev.model, prev.imgsz, prev.shape,
+                                                   on_done=lambda ok2: self._swipe_restore_done(ok2, winner, prev))
+                text = (f"Apply of {winner.label} failed: its engine did not load; going back to {prev.label} - "
+                        f"{rebuild}" if back is None else
+                        f"Apply of {winner.label} failed: its engine did not load and {now} runs on PyTorch, far "
+                        f"over the frame budget - load {prev.label} by hand ({back})")
+            elif ok:
+                text = f"Apply of {winner.label} did not complete: {now} runs - run 'Try other settings' again"
+            else:
+                text = f"Apply of {winner.label} failed: the model did not load, {now} still runs - {rebuild}"
+            self.swipe.set_fault(text)
             self.models.ui.sync_model_combo(self.models.current_model_name)
             self._sync("combo", "imgsz", str(int(self.settings.imgsz)))
-            say(f"[Swipe] apply of {winner.label} did not complete: {why}")
-            self.bus.publish(api.SettingsSwipeProgress(
-                "apply_failed", f"Apply of {winner.label} did not complete: {why}; the confidence is "
-                                "unchanged", 0.0))
+            say(f"[Swipe] {text}")
+            self.bus.publish(api.SettingsSwipeProgress("apply_failed", f"{text}; the confidence is unchanged", 0.0))
             return
         if conf is not None:
             self._swipe_set_confidence(float(conf))
@@ -2715,6 +2749,28 @@ class WallDanceApp:
             "applied", f"running {winner.label}, the swipe's pick - Save the project to keep it", 1.0))
         self.bus.publish(api.Toast(f"Running {winner.label} (the swipe's pick) - Save the project to keep it",
                                    6.0, (120, 220, 140)))
+
+    def _swipe_restore_done(self, ok: bool, winner, prev) -> None:
+        """The way back after an Apply that fell back to PyTorch."""
+        live = self._swipe_live_setting()
+        trt = bool(self.models.model_manager.is_using_tensorrt())
+        now = live.candidate.label if live is not None else "no model"
+        if ok and trt and live is not None and live.candidate == prev:
+            text = (f"Apply of {winner.label} failed: its engine did not load; {prev.label} runs again - rebuild "
+                    f"{winner.engine_file} (extra/build_engines) before trying it again")
+        else:
+            text = (f"Apply of {winner.label} failed and going back to {prev.label} failed too: {now} runs"
+                    f"{' on PyTorch' if not trt else ''} - reload the project")
+        self.swipe.set_fault(text)
+        self.models.ui.sync_model_combo(self.models.current_model_name)
+        self._sync("combo", "imgsz", str(int(self.settings.imgsz)))
+        say(f"[Swipe] {text}")
+        self.bus.publish(api.SettingsSwipeProgress("apply_failed", text, 0.0))
+
+    def _cb_dismiss_swipe(self) -> None:
+        """Dismiss: the swipe's advice goes (its readiness row too), a failed Apply is acknowledged."""
+        self.swipe.dismiss()
+        self.bus.publish(api.SettingsSwipeProgress("dismissed", "dismissed", 0.0))
 
     def _swipe_set_confidence(self, conf: float) -> None:
         """The recommended confidence is the winner model's own calibrated seed: it becomes the Drops/Ghosts

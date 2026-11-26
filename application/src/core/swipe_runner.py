@@ -50,7 +50,7 @@ from core.swipe import Box, Candidate, SwipeParams, SwipeResult, Tally, decide, 
 SWIPE_MODELS: Tuple[str, ...] = ("yolo11x-pose", "yolo11l-pose")
 LOW_CONF = 0.02              # boxes kept down to this confidence (the scoring picks its threshold)
 # Thomas's band for the dancer's height in the network (the readiness « dancer size » row), not tuned here:
-SMALL_NET_PX = 110.0         # under this she is small at the live input: only the largest inputs are worth trying
+SMALL_NET_PX = 110.0         # under this she is « small » at the live input (only the « not tried » line says so)
 LARGE_NET_PX = 200.0         # over this the input size no longer matters: only the model is in question
 PRUNE_NET_PX = LARGE_NET_PX  # (the first draft's name)
 WARMUP_CALLS = 2
@@ -98,10 +98,11 @@ def plan_candidates(current: Candidate, roi_w: int, roi_h: int,
 
     * >= LARGE_NET_PX (200): sizes no longer matter -- the live setting and the other model at the live input;
     * otherwise both models at the LARGEST suitable input that has an engine (the one showing her tallest:
-      the project's square or a rectangle ``pick_shape`` accepts for this ROI); intermediate inputs are not
-      tried (a 60-frame window cannot separate neighbouring sizes: on the 08/10 truth one swipe in four then
-      named a size 2-4.5 points under the best);
-    * and when SMALL_NET_PX (110) <= height < 200, also the other model at the live input.
+      the project's square or a rectangle ``pick_shape`` accepts for this ROI); intermediate inputs and the
+      other model at the live input are not tried (a 60-frame window cannot separate neighbouring sizes: on
+      the 08/10 truth one swipe in four then named a size 2-4.5 points under the best; the 110-200 px band,
+      where the other model at the live input was also tried, is out until a take covers it -- the review of
+      26/11 measured it naming a size 2-5 points under the best on a quarter to half of the swipes).
 
     The live setting is first and always run.  A missing engine is never built: the next smaller input of
     that model is taken, and the result says so.  ``only`` (the driver's --candidates) and ``all_sizes``
@@ -152,15 +153,15 @@ def plan_candidates(current: Candidate, roi_w: int, roi_h: int,
                         wanted.append(c)
                         break
                     reasons[c] = engine_text(c)
-            if h is not None and h >= SMALL_NET_PX:
-                wanted += others
             for c in every + others:
                 if c != current and c not in wanted and c not in reasons:
                     hc = h_at(c)
                     if hc is None:
                         reasons[c] = "the dancer's height is not measured: only the largest inputs are tried"
                     elif (c.imgsz, c.shape) == (current.imgsz, current.shape):
-                        reasons[c] = f"the dancer is only {hc:.0f} px tall there"
+                        reasons[c] = (f"the dancer is only {hc:.0f} px tall there" if hc < SMALL_NET_PX else
+                                      f"the dancer is ~{hc:.0f} px tall there, under {LARGE_NET_PX:.0f}: "
+                                      "the largest input is tried")
                     else:
                         reasons[c] = f"an intermediate input (the dancer ~{hc:.0f} px there): the largest is tried"
         for c in wanted:
@@ -258,7 +259,7 @@ class SwipeInput:
     @classmethod
     def from_processor(cls, proc) -> "SwipeInput":
         """The settings ``FrameProcessor._sync_gpu_settings`` hands the live GPU pipeline (temporal denoise
-        aside: kept frames are 0.5 s apart, there is no stream to smooth)."""
+        aside: kept frames are SwipeParams.min_gap_s apart at least, there is no stream to smooth)."""
         from core.config import YOLO_IOU_THRESHOLD
         s, enh = proc.settings, proc.enhancer
         bg = getattr(proc, "bg_subtractor", None)
@@ -451,7 +452,7 @@ class CandidateRunner:
             clahe_clip=inp.clahe_clip, clahe_grid=inp.clahe_grid, gamma=inp.gamma, greyscale=inp.greyscale,
             denoise_enabled=False, roi_enabled=inp.roi_enabled, roi_x=inp.roi_x, roi_y=inp.roi_y,
             roi_w=inp.roi_w, roi_h=inp.roi_h))
-        # the live enhancer measures the brightness every 10th frame of a stream; kept frames are 0.5 s
+        # the live enhancer measures the brightness every 10th frame of a stream; kept frames are seconds
         # apart, so each frame is measured on its own (same gate, no stale value)
         self.pipe._enhancer._brightness_interval = 1
 
@@ -596,6 +597,7 @@ class SwipeOutcome:
     timing: Dict[str, float] = field(default_factory=dict)   # collect_s, load_s, infer_s, prep_s, total_s
     cancelled: bool = False
     live_error: str = ""            # the live setting's own re-run failed: no verdict (nothing to compare with)
+    timed_out: bool = False         # the run phase reached its ceiling (``run_swipe(max_s=)``): no verdict
 
     def run_for(self, cand: Candidate) -> Optional[CandidateRun]:
         return next((r for r in self.runs if r.candidate == cand), None)
@@ -622,7 +624,7 @@ class SwipeOutcome:
                              "load_s": round(run.load_s, 2), "frames_run": run.frames,
                              "ms_p50": run.ms_p50})
         out = {"current": self.current.label, "frames": self.frames, "lost_frames": self.lost_frames,
-               "live_error": self.live_error,
+               "live_error": self.live_error, "timed_out": self.timed_out,
                "rows": rows,
                "skipped": [{"label": c.label, "why": w, "text": f"{c.label} not tried: {w}"}
                            for c, w in self.skipped],
@@ -688,29 +690,39 @@ def run_swipe(images: Sequence[np.ndarray], observations: Sequence[Any], plan: C
               cancelled: Optional[Callable[[], bool]] = None, pace: Optional[Callable[[], None]] = None,
               lost_frames: int = 0, lost: Optional[Sequence[bool]] = None,
               lost_share: Optional[float] = None, exclusion: Optional[ExclusionCells] = None,
+              max_s: Optional[float] = None,
               clock: Callable[[], float] = time.perf_counter) -> SwipeOutcome:
     """Every planned candidate on the same frames, one engine at a time; the tallies; ``decide``.
 
     ``lost`` (per frame: the live setting left a dancer bare) and ``lost_share`` (the collector's estimate of
     how often it does) go to ``Tally.add`` / ``decide`` when ``core.swipe`` takes them (its frame weighting).
-    ``exclusion``: boxes in the operator's excluded cells are dropped before scoring (``ExclusionCells``)."""
+    ``exclusion``: boxes in the operator's excluded cells are dropped before scoring (``ExclusionCells``).
+    ``max_s``: a ceiling on the whole run (``core.config.SWIPE_RUN_MAX_S`` in the app): past it the run stops at
+    the next frame and gives no verdict (``timed_out``) rather than running on."""
     p = params or SwipeParams()
     out = SwipeOutcome(current, None, skipped=list(plan.skipped), frames=len(images), lost_frames=lost_frames)
     tallies: Dict[Candidate, Tally] = {}
     t0 = clock()
+    outer = cancelled
+
+    def cancelled() -> bool:                    # noqa: F811 - the caller's, and the ceiling
+        if max_s is not None and clock() - t0 > float(max_s):
+            out.timed_out = True
+            return True
+        return outer is not None and outer()
     n = len(plan.candidates)
     fin: Dict[str, float] = {}
     try:
         for k, cand in enumerate(plan.candidates):
-            if cancelled is not None and cancelled():
-                out.cancelled = True
+            if cancelled():
+                out.cancelled = not out.timed_out
                 break
             if progress is not None:
                 progress(f"trying {cand.label} ({k + 1}/{n})", k / max(1, n))
             run = runner.run(images, cand, engine_path(cand), cancelled=cancelled, pace=pace)
             out.runs.append(run)
             if run.error == "cancelled":
-                out.cancelled = True
+                out.cancelled = not out.timed_out
                 break
             if run.error:
                 if cand == current:          # nothing to compare the others with: stop here
@@ -735,9 +747,9 @@ def run_swipe(images: Sequence[np.ndarray], observations: Sequence[Any], plan: C
                   "prep_s": sum(sum(r.prep_ms) for r in out.runs) / 1000.0,
                   "release_s": sum(r.release_s for r in out.runs) + sum(fin.values()),
                   "run_s": clock() - t0}
-    if current not in tallies and not out.cancelled and not out.live_error:
+    if current not in tallies and not out.cancelled and not out.live_error and not out.timed_out:
         out.live_error = "not run"
-    if not out.cancelled and not out.live_error and tallies:
+    if not out.cancelled and not out.live_error and not out.timed_out and tallies:
         kw = {"lost_share": lost_share} if lost_share is not None and _accepts(decide, "lost_share") else {}
         out.result = decide(tallies, current, p, **kw)
     return out

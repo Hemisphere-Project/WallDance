@@ -922,6 +922,10 @@ class FrameProcessor:
             # this frame's foreground only (the slot layer computes it; off = last_fg is not refreshed)
             if raw_frame is None or fg is None or fg is fg_before or not getattr(fg, "valid", False):
                 return
+            # the referee's box threshold is the show's: « lost » means bare at the confidence the show runs
+            conf = float(self.settings.confidence or 0.0) or 0.15
+            if col.params.conf != conf:
+                col.params.conf = conf
             obs = Observation.from_fg(fg)
             if obs is None or not obs.dancer_groups(col.params):
                 return
@@ -1534,6 +1538,14 @@ class FrameProcessor:
         if x1 <= x0 or y1 <= y0:
             return None
         return det.light_ratio(frame[y0:y1, x0:x1], x0, y0, (w, h))
+
+    @property
+    def plate_identity(self) -> Optional[tuple]:
+        """The plate the foreground holds in memory (object identity, its ``created`` stamp), None without one:
+        a plate captured again -- written to disk or not -- is another scene for the swipe."""
+        det = self._fg_detector
+        plate = getattr(det, "plate", None) if det is not None else None
+        return (id(plate), str(getattr(plate, "created", "") or "")) if plate is not None else None
 
     @property
     def plate_usable(self) -> bool:

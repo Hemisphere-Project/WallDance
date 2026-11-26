@@ -29,6 +29,7 @@ def test_phase_wall_builds_and_renders_readiness_rows():
             _on_dryrun=noop,
             _on_swipe=noop,
             _on_swipe_apply=noop,
+            _on_swipe_dismiss=noop,
             _btn_standby_theme=th,
         )
         with dpg.window(label="smoke"):
@@ -62,7 +63,7 @@ def test_phase_wall_builds_and_renders_readiness_rows():
         assert children is not None and len(children) == 2
 
         # P5 settings swipe: the button, its progress line and Apply (shown on a switch verdict)
-        for tag in ("swipe_btn", "swipe_status_text", "swipe_apply_btn"):
+        for tag in ("swipe_btn", "swipe_status_text", "swipe_apply_btn", "swipe_dismiss_btn"):
             assert dpg.does_item_exist(tag), tag
         g = SimpleNamespace()
         WallDanceGUI.show_swipe_progress(g, "running", "trying l @ 1920 x 1056 (3/6)", 0.6)
@@ -77,6 +78,8 @@ def test_phase_wall_builds_and_renders_readiness_rows():
             "skipped": [{"text": "x @ 1920 x 1056 not tried: its engine is not built on this machine"}]})
         assert not g._swipe_busy
         assert dpg.get_item_configuration("swipe_apply_btn")["show"]
+        assert dpg.get_item_configuration("swipe_dismiss_btn")["show"]
+        assert dpg.get_item_configuration("swipe_apply_btn")["label"] == "Apply l @ 1920 x 1056 (STANDBY)"
         assert "91 %" in dpg.get_value("swipe_status_text")
         assert "not built on this machine" in dpg.get_value("swipe_status_text")
         WallDanceGUI.show_swipe_result(g, {}, "swipe cancelled: cancelled")

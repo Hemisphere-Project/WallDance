@@ -312,6 +312,12 @@ class ApplySettingsSwipe(Command):
 
 
 @dataclass(frozen=True)
+class DismissSwipeNotice(Command):
+    """P5: dismiss the swipe's advice (its readiness row goes) and acknowledge a failed Apply."""
+    pass
+
+
+@dataclass(frozen=True)
 class SetPersonHeight(Command):
     value: int
 

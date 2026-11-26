@@ -57,6 +57,7 @@ POLICY: Dict[str, str] = {
     # safe: observation / metadata only
     "CheckReadiness": SAFE, "SetRigSheet": SAFE, "ToggleOverlay": SAFE,
     "CancelSettingsSwipe": SAFE,       # P5: stopping a swipe only gives the GPU back
+    "DismissSwipeNotice": SAFE,        # P5: dismisses advice / acknowledges a failed Apply, changes nothing live
     "SetPreviewScale": SAFE, "TogglePreviewCap": SAFE,
     # control: changes what the show does -- free in STANDBY, gated in RUN
     "SetState": CONTROL, "StartRecordingSlot": CONTROL, "StopRecording": CONTROL,

@@ -2,11 +2,13 @@
 
 The operator asks for it during the dancers' warmup (« Try other settings »).  The controller
 
-1. waits until the pipeline's tap (``FrameProcessor._swipe_tap``) holds ~30 frames where the live setting
-   leaves a dancer without a box (« collecting 12 / 30 »);
+1. waits until the pipeline's tap (``FrameProcessor._swipe_tap``) holds enough frames where the live setting
+   leaves a dancer without a box (« collecting 12 / 40 »);
 2. runs those frames through each candidate setting, one engine at a time (``core.swipe_runner``:
-   « trying l @ 1920 x 1056 (3/6) »), its inferences paced one per live frame, in the loop's slack;
-3. ends with a ``core.swipe.SwipeResult`` (``on_result``), which readiness reads and Apply acts on.
+   « trying l @ 1920 x 1056 (2/3) »), its inferences paced one per live frame, in the loop's slack, the run
+   phase bounded by ``core.config.SWIPE_RUN_MAX_S``;
+3. ends with a ``core.swipe.SwipeResult`` (``on_result``): advice -- the swipe's own line beside its button,
+   a readiness row only while it recommends a switch (``readiness``) -- which Apply acts on, in STANDBY.
 
 Nothing switches by itself.  The main loop keeps running at the live setting throughout.
 
@@ -26,6 +28,7 @@ background thread, but with the loop paused; here the loop runs on):
 """
 from __future__ import annotations
 
+import dataclasses
 import os
 import threading
 import time
@@ -50,13 +53,17 @@ class LiveSetting:
     model_id: int
     trt: bool = True
     roi: Tuple = ()                 # (enabled, x, y, w, h)
-    plate: str = ""                 # the empty-wall plate file
+    plate: Any = ""                 # the empty-wall plate the foreground holds
     plate_ok: bool = True           # loaded, not invalidated by hand (X5), not refused for its camera (X6)
     frame: Tuple = ()               # the camera frame (width, height)
+    enhance: Tuple = ()             # what the network sees: enhancement on / lite / forced, CLAHE, gamma,
+                                    # greyscale, background subtraction and its sensitivity
+    exclusion: Tuple = ()           # the operator's excluded cells (grid, cells): boxes the referee drops
 
     @property
     def key(self) -> Tuple:
-        return (self.project, self.candidate, self.model_id, self.roi, self.plate, self.plate_ok, self.frame)
+        return (self.project, self.candidate, self.model_id, self.roi, self.plate, self.plate_ok, self.frame,
+                self.enhance, self.exclusion)
 
 
 def what_changed(old: "LiveSetting", new: Optional["LiveSetting"]) -> Optional[str]:
@@ -73,6 +80,10 @@ def what_changed(old: "LiveSetting", new: Optional["LiveSetting"]) -> Optional[s
         return "the empty-wall plate changed"
     if new.frame != old.frame:
         return "the camera frame size changed"
+    if new.enhance != old.enhance:
+        return "the enhancement changed"
+    if new.exclusion != old.exclusion:
+        return "the excluded cells changed"
     return None
 
 
@@ -118,6 +129,7 @@ class SwipeController:
                  runner_factory: Callable[[SwipeInput, Any], Any] = default_runner_factory,
                  params: Optional[SwipeParams] = None, models: Sequence[str] = SWIPE_MODELS,
                  collect_timeout_s: float = 120.0, pace: bool = True, pace_s: Optional[float] = None,
+                 run_max_s: Optional[float] = None, verdict_max_age_s: Optional[float] = None,
                  poll_s: float = 0.25,
                  engine_exists: Callable[[str], bool] = os.path.exists,
                  clock: Callable[[], float] = time.monotonic):
@@ -136,6 +148,11 @@ class SwipeController:
             from core.config import SWIPE_PACE_S
             pace_s = SWIPE_PACE_S
         self.pace_s = max(0.0, float(pace_s))
+        from core.config import SWIPE_RUN_MAX_S, SWIPE_VERDICT_MAX_AGE_S
+        self.run_max_s = float(SWIPE_RUN_MAX_S if run_max_s is None else run_max_s)
+        self.verdict_max_age_s = float(SWIPE_VERDICT_MAX_AGE_S if verdict_max_age_s is None else verdict_max_age_s)
+        self.fault: Optional[str] = None        # a failed Apply: the readiness row's one ``fail``
+        self.dismissed = False                  # the operator dismissed the verdict's advice
         self.poll_s = float(poll_s)
         self.engine_exists = engine_exists
         self.clock = clock
@@ -158,10 +175,14 @@ class SwipeController:
         return self.state in (COLLECTING, RUNNING)
 
     def _params(self, proc) -> SwipeParams:
-        if self.params is not None:
-            return self.params
-        col = getattr(proc, "swipe_collector", None)
-        return getattr(col, "params", None) or SwipeParams()
+        """The referee's parameters, frozen for this swipe, its box threshold the show's confidence (the
+        candidates are judged at the threshold the show runs; 0.15 without one)."""
+        base = self.params
+        if base is None:
+            col = getattr(proc, "swipe_collector", None)
+            base = getattr(col, "params", None) or SwipeParams()
+        conf = float(getattr(getattr(proc, "settings", None), "confidence", 0.0) or 0.0) or 0.15
+        return dataclasses.replace(base, conf=conf)
 
     def start(self) -> Optional[str]:
         """Start a swipe; None when started, else why not (also reported through ``on_result``)."""
@@ -186,6 +207,7 @@ class SwipeController:
                 return why
             self._cancel.clear()
             self.outcome, self.outcome_live, self.applied = None, live, None
+            self.fault, self.dismissed = None, False
             self.state, self.text, self.progress = COLLECTING, "collecting frames", 0.0
             self._thread = threading.Thread(target=self._work, args=(live,), name="SettingsSwipe",
                                             daemon=True)
@@ -285,7 +307,7 @@ class SwipeController:
             outcome = run_swipe(images, observations, plan, live0.candidate, runner, self.engine_path, p,
                                 progress=progress, cancelled=cancelled, pace=self._pacer(proc),
                                 lost_frames=lost, lost=[bool(f.lost) for f in frames], lost_share=share,
-                                exclusion=exclusion)
+                                exclusion=exclusion, max_s=self.run_max_s)
             outcome.timing["collect_s"] = collect_s
             outcome.timing["total_s"] = collect_s + outcome.timing.get("run_s", 0.0)
             if self._cancel.is_set():
@@ -295,6 +317,9 @@ class SwipeController:
                 return self._end(DROPPED, why)
             if outcome.live_error:
                 return self._end(ERROR, f"the live setting could not be re-run: {outcome.live_error}")
+            if outcome.timed_out:
+                return self._end(ERROR, f"no verdict: the swipe ran over {self.run_max_s:.0f} s (the live loop "
+                                        "left it little room) - run it again")
             if outcome.result is None:
                 errs = "; ".join(f"{r.candidate.label}: {r.error}" for r in outcome.runs if r.error)
                 return self._end(ERROR, f"no setting could be scored ({errs or 'nothing ran'})")
@@ -325,17 +350,28 @@ class SwipeController:
         o = self.outcome_live
         return o is not None and (live_now is None or live_now.key != o.key)
 
-    def readiness(self, *, plate_ready: bool, live_now: Optional[LiveSetting]):
-        from core.ops_monitor import check_swipe
+    def age_s(self) -> Optional[float]:
+        return None if self.finished_at is None else max(0.0, time.time() - self.finished_at)
+
+    def _advice_live(self, live_now: Optional[LiveSetting]) -> bool:
+        """The verdict still advises a switch: done, names another setting, not applied, not dismissed, not
+        stale, not too old."""
         res = self.outcome.result if self.outcome is not None else None
-        applied = (res is not None and self.applied is not None and live_now is not None
-                   and live_now.candidate == self.applied)
-        stale_why = ""
-        if res is not None and not applied and self._stale(live_now) and self.outcome_live is not None:
-            stale_why = what_changed(self.outcome_live, live_now) or "the setting changed"
-        return check_swipe(plate_ready=plate_ready, state=self.state, text=self.text, result=res,
-                           live_label=live_now.candidate.label if live_now else "",
-                           stale=bool(stale_why), stale_why=stale_why, applied=applied)
+        if res is None or res.winner is None or not res.switch or self.dismissed:
+            return False
+        if self.applied is not None or self._stale(live_now):
+            return False
+        age = self.age_s()
+        return age is not None and age <= self.verdict_max_age_s
+
+    def readiness(self, *, plate_ready: bool, live_now: Optional[LiveSetting]):
+        """The swipe's readiness row, or None: the swipe is advice, not a readiness condition.  A ``warn`` row
+        only while a swipe the operator ran recommends a switch (worded for STANDBY), a ``fail`` row only for a
+        failed Apply; no row otherwise (no swipe yet, collecting, no verdict, stale, too old, « keep », no
+        plate) -- the swipe's own line beside its button says those."""
+        from core.ops_monitor import check_swipe
+        return check_swipe(fault=self.fault,
+                           result=self.outcome.result if self._advice_live(live_now) else None)
 
     def applicable(self, live_now: Optional[LiveSetting]) -> Tuple[Optional[str], Optional[Candidate],
                                                                     Optional[float]]:
@@ -349,17 +385,33 @@ class SwipeController:
             return f"the swipe gave no verdict ({res.reason})", None, None
         if not res.switch:
             return f"the swipe says keep {res.current.label}: nothing to apply", None, None
+        if self.dismissed:
+            return "dismissed - run 'Try other settings' again", None, None
         if self._stale(live_now):
             why = what_changed(self.outcome_live, live_now) if self.outcome_live is not None else None
             return f"{why or 'the setting changed'} since the swipe: run it again", None, None
+        age = self.age_s()
+        if age is not None and age > self.verdict_max_age_s:
+            return f"the swipe is {age / 60.0:.0f} min old: run it again", None, None
         return None, res.winner, recommended_conf(res)
+
+    def dismiss(self) -> None:
+        """The operator's Dismiss: the advice goes, a failed Apply is acknowledged."""
+        self.dismissed = True
+        self.fault = None
+
+    def set_fault(self, text: Optional[str]) -> None:
+        self.fault = text
 
     def mark_applied(self, winner: Candidate) -> None:
         self.applied = winner
+        self.fault = None
 
     def status_dict(self) -> Dict[str, Any]:
         res = self.outcome.result if self.outcome is not None else None
         return {"state": self.state, "text": self.text, "progress": round(self.progress, 2),
                 "winner": res.winner.label if res is not None and res.winner is not None else None,
                 "switch": bool(res.switch) if res is not None else False,
-                "applied": self.applied.label if self.applied is not None else None}
+                "applied": self.applied.label if self.applied is not None else None,
+                "dismissed": self.dismissed, "fault": self.fault,
+                "age_s": round(self.age_s(), 1) if self.age_s() is not None else None}

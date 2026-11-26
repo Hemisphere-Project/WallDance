@@ -3,7 +3,8 @@
 Plays a take through the real ``FrameProcessor`` on the GPU/TensorRT show path, at the setting the take was
 recorded with (its ``.meta`` config; ``--config latest`` = the project's newest saved config) and the
 empty-wall plate the app had loaded then, feeding the swipe's collector exactly as the app does (the tap in
-``FrameProcessor``), until ~30 frames where the live setting leaves a dancer without a box are kept.  Then it
+``FrameProcessor``), until enough frames where the live setting leaves a dancer without a box are kept
+(``SwipeParams.frames``).  Then it
 runs the same candidate runner and ``core.swipe.decide`` the app runs, prints the table and writes JSON.
 
     python tests/swipe_replay.py --project jeudi0809_mur2 --slot 8 --engine-dir models --out swipe.json

@@ -45,9 +45,12 @@ def test_plan_mur2_small_dancer_both_models_at_the_largest_input():
     assert all(t.isascii() for t in texts)
 
 
-def test_plan_mid_height_adds_the_other_model_at_the_live_input():
+def test_plan_mid_height_is_the_small_rule_until_a_take_covers_it():
+    """110-200 px: no take covers the band, so no « other model at the live input » (review 26/11, I6)."""
     plan = plan_candidates(X1280, 965, 1771, lambda c: True, dancer_net_px=150.0)
-    assert plan.candidates == [X1280, X1920, L1920, L1280]
+    assert plan.candidates == [X1280, X1920, L1920]
+    assert "l @ 1280 not tried: the dancer is ~150 px tall there, under 200: the largest input is tried" \
+        in plan.skipped_text()
 
 
 def test_plan_tall_dancer_only_the_model_is_in_question():
@@ -330,6 +333,34 @@ def test_the_runner_reproduces_the_live_gpu_pipeline_input(monkeypatch):
         assert lb == timing["letterbox"] and roi == (x, y)
 
 
+def test_the_runner_reproduces_the_live_ids_input_from_the_kept_mono_frame(monkeypatch):
+    """The IDS path: the camera hands the pipeline a (1, 3, H, W) float tensor made from the mono frame
+    (``IdsCamera._mono_to_gpu_bgr``: ``.float().mul_(1/255).clamp_(0, 1)``, expanded to 3 channels) and the tap
+    keeps the frame's one channel (``cv2.extractChannel``): the runner's network input from that channel is the
+    live ``GpuPipeline.process_gpu_tensor`` input, bit for bit, enhancement on."""
+    torch = pytest.importorskip("torch")
+    pytest.importorskip("kornia")
+    import cv2
+    import core.gpu_pipeline as gp
+    from core.swipe_runner import CandidateRunner
+    monkeypatch.setattr(gp, "DEVICE", torch.device("cpu"))
+    x, y, w, h = FACADE_ROI
+    inp = SwipeInput(roi_enabled=True, roi_x=x, roi_y=y, roi_w=w, roi_h=h, enhance_enabled=True,
+                     enhance_force=True, clahe_clip=2.5, gamma=1.2, half=False)
+    runner = CandidateRunner(inp, device="cpu", loader=lambda p: None)
+    bgr = _facade_frame()                                            # mono expanded to BGR (R == G == B)
+    kept = cv2.extractChannel(bgr, 0)                                # what the tap keeps on the IDS path
+    mono = torch.from_numpy(kept).float().mul_(1.0 / 255.0).clamp_(0.0, 1.0)   # _mono_to_gpu_bgr, on the CPU
+    camera = mono.unsqueeze(0).unsqueeze(0).expand(1, 3, -1, -1).contiguous()
+    for cand in (X1280, L1920):
+        live = gp.GpuPipeline(gp.GpuPipelineSettings(
+            enhance_enabled=True, enhance_force=True, clahe_clip=2.5, gamma=1.2, roi_enabled=True,
+            roi_x=x, roi_y=y, roi_w=w, roi_h=h, yolo_imgsz=cand.imgsz, yolo_shape=cand.shape))
+        want, _prev, timing = live.process_gpu_tensor(camera, preview_enabled=False)
+        got, lb, roi = runner.prepare(kept, cand)
+        assert torch.equal(got, want) and lb == timing["letterbox"]
+
+
 def test_a_candidate_that_cannot_load_is_skipped_and_cancel_stops_early():
     from core.swipe_runner import CandidateRunner
     pytest.importorskip("kornia")
@@ -429,8 +460,13 @@ def test_the_swipe_thread_captures_no_cuda_graph_and_holds_the_engine_lock():
     from core.swipe_runner import CandidateRunner, _NoCapture, install_capture_guards, no_graph_capture
     assert install_capture_guards() and install_capture_guards()          # idempotent
     assert getattr(torch.cuda.graph, "_wd_guarded", False)
-    from ultralytics.nn.backends.tensorrt import TensorRTBackend
-    assert getattr(TensorRTBackend.load_model, "_wd_wrapped", False)
+    try:                                   # 8.4.1xx captures graphs; 8.4.63 (the laptop) has no such module
+        import importlib
+        trt_backend = importlib.import_module("ultralytics.nn.backends.tensorrt")
+    except ImportError:
+        trt_backend = None
+    if trt_backend is not None:
+        assert getattr(trt_backend.TensorRTBackend.load_model, "_wd_wrapped", False)
     with no_graph_capture():
         assert isinstance(torch.cuda.graph(object()), _NoCapture)
         seen = {}
@@ -631,9 +667,11 @@ def _controller(proc, live, runner, **kw):
 
 
 def _live(cand=X1280, project="jeudi0809_mur2", model_id=1, trt=True, roi=(True, 135, 3, 965, 1771),
-          plate="plates/plate_20261008_213618.npz", plate_ok=True, frame=(1260, 1824)):
+          plate=(1, "2026-10-08T21:36:18"), plate_ok=True, frame=(1260, 1824),
+          enhance=(False, False, True, 2.5, 1.2), exclusion=((10, 16), ())):
     from runtime.swipe_controller import LiveSetting
-    return LiveSetting(project, cand, model_id, trt, roi=roi, plate=plate, plate_ok=plate_ok, frame=frame)
+    return LiveSetting(project, cand, model_id, trt, roi=roi, plate=plate, plate_ok=plate_ok, frame=frame,
+                       enhance=enhance, exclusion=exclusion)
 
 
 def test_the_controller_collects_runs_and_reports_a_switch():
@@ -650,7 +688,7 @@ def test_the_controller_collects_runs_and_reports_a_switch():
     assert err == "" and res["switch"] and res["winner"].startswith("l @")
     row = c.readiness(plate_ready=True, live_now=live["v"])
     assert row.status == "warn" and "covers 100 % of the dancers, x @ 1280 0 %" in row.detail
-    assert "Apply" in row.detail
+    assert row.detail.endswith("- in STANDBY: Try other settings, then Apply")
     why, winner, conf = c.applicable(live["v"])
     assert why is None and winner.model == "yolo11l-pose"
     assert conf == getattr(c.outcome.result, "recommended_conf", None)
@@ -669,7 +707,7 @@ def test_the_controller_waits_for_lost_frames_and_can_be_cancelled():
     c.join(5)
     assert c.state == "cancelled" and c.outcome is None
     assert ev["result"][-1][1].startswith("swipe cancelled")
-    assert "no swipe yet (last one cancelled" in c.readiness(plate_ready=True, live_now=live["v"]).detail
+    assert c.readiness(plate_ready=True, live_now=live["v"]) is None      # nothing to say: no row
 
 
 def test_a_project_switch_mid_swipe_drops_the_result():
@@ -714,12 +752,13 @@ def test_a_scene_change_mid_swipe_drops_it_and_stales_a_verdict():
     c.start()
     c.join(5)
     assert c.state == "done"
-    for change, words in ((dict(plate="plates/latest.npz"), "the empty-wall plate changed"),
+    for change, words in ((dict(plate=("another plate", "2026-11-26T21:00")), "the empty-wall plate changed"),
                           (dict(plate_ok=False), "the empty-wall plate changed"),
-                          (dict(frame=(1920, 1080)), "the camera frame size changed")):
+                          (dict(frame=(1920, 1080)), "the camera frame size changed"),
+                          (dict(enhance=(True, False, True, 3.0, 1.2)), "the enhancement changed"),
+                          (dict(exclusion=((16, 10), ((3, 4),))), "the excluded cells changed")):
         now = _live(**change)
-        row = c.readiness(plate_ready=True, live_now=now)
-        assert row.status == "skip" and row.detail.startswith(words + " since the last swipe")
+        assert c.readiness(plate_ready=True, live_now=now) is None           # stale: no row
         assert c.applicable(now)[0].startswith(words)
 
 
@@ -807,29 +846,92 @@ def _result(cur, cov_cur, best, cov_best):
     return decide(tallies, cur, SwipeParams())
 
 
-def test_readiness_row_in_plain_words():
-    r = check_swipe(plate_ready=False)
-    assert r.status == "skip" and r.detail.startswith("no empty-wall plate")
-    r = check_swipe(plate_ready=True)
-    assert r.status == "skip" and r.detail.startswith("no swipe yet")
-    r = check_swipe(plate_ready=True, state="collecting", text="collecting 12 / 30 frames where a dancer has no box")
-    assert r.status == "skip" and "12 / 30" in r.detail
-    switch = _result(X1280, 0.51, L1920, 0.91)
-    r = check_swipe(plate_ready=True, state="done", result=switch)
-    assert r.status == "warn"
-    assert r.detail.startswith("l @ 1920 x 1056 covers 91 % of the dancers, x @ 1280 51 %")
-    assert "press Apply" in r.detail and "Save the project" in r.detail
+def test_readiness_row_only_for_advice_or_a_fault():
+    """Advice, not a readiness condition: no row when there is nothing to say (READY reachable without a swipe,
+    never claiming one ran); warn only for an operator's verdict recommending a switch, worded for STANDBY;
+    fail only for a failed Apply."""
+    assert check_swipe() is None
     keep = _result(X1280, 0.85, L1920, 0.86)
-    r = check_swipe(plate_ready=True, state="done", result=keep)
-    assert r.status == "ok" and r.detail.startswith("keep x @ 1280: it covers 85 %")
-    r = check_swipe(plate_ready=True, state="done", result=switch, applied=True)
-    assert r.status == "ok" and r.detail.startswith("running l @ 1920 x 1056, the swipe's pick")
-    r = check_swipe(plate_ready=True, state="done", result=switch, stale=True, live_label="l @ 1280")
-    assert r.status == "skip" and "changed since the last swipe" in r.detail and "l @ 1280 now" in r.detail
+    assert check_swipe(result=keep) is None                             # « keep »: nothing to say
     none = _result(X1280, 0.5, None, 0)
     none.winner, none.reason = None, "no verdict: 12 dancer groups seen, 20 needed"
-    r = check_swipe(plate_ready=True, state="done", result=none)
-    assert r.status == "skip" and r.detail.startswith("no verdict")
+    assert check_swipe(result=none) is None
+    switch = _result(X1280, 0.51, L1920, 0.91)
+    r = check_swipe(result=switch)
+    assert r.status == "warn"
+    assert r.detail == ("l @ 1920 x 1056 covers 91 % of the dancers, x @ 1280 51 % - in STANDBY: "
+                        "Try other settings, then Apply")
+    r = check_swipe(fault="Apply of l @ 1920 x 1056 failed: its engine did not load; x @ 1280 runs again - "
+                          "rebuild yolo11l-pose_1920x1056.engine (extra/build_engines) before trying it again",
+                    result=switch)
+    assert r.status == "fail" and "x @ 1280 runs again" in r.detail and r.detail.isascii()
+
+
+def test_the_advice_goes_when_applied_dismissed_stale_or_too_old():
+    proc = _FakeProc(_frames(), 30)
+    live = {"v": _live()}
+    c, ev = _controller(proc, live, _FakeRunner(), verdict_max_age_s=1800.0)
+    c.start()
+    c.join(5)
+    assert c.readiness(plate_ready=True, live_now=live["v"]).status == "warn"
+    c.finished_at -= 1801.0                                            # an afternoon verdict, at night
+    assert c.readiness(plate_ready=True, live_now=live["v"]) is None
+    assert c.applicable(live["v"])[0] == "the swipe is 30 min old: run it again"
+    c.finished_at += 1801.0
+    c.dismiss()
+    assert c.readiness(plate_ready=True, live_now=live["v"]) is None
+    assert c.applicable(live["v"])[0].startswith("dismissed")
+    c.dismissed = False
+    c.mark_applied(c.outcome.result.winner)
+    assert c.readiness(plate_ready=True, live_now=_live(cand=c.outcome.result.winner, model_id=7)) is None
+    c.set_fault("Apply of x failed")
+    assert c.readiness(plate_ready=True, live_now=live["v"]).status == "fail"
+    c.dismiss()
+    assert c.fault is None
+
+
+def test_the_verdict_stays_applicable_from_run_to_standby():
+    """RUN -> STANDBY changes nothing the verdict was measured on (Apply is STANDBY only)."""
+    proc = _FakeProc(_frames(), 30)
+    live = {"v": _live()}
+    c, ev = _controller(proc, live, _FakeRunner())
+    c.start()
+    c.join(5)
+    proc.frames, proc.lost, proc.ready = [], 0, False                  # STANDBY: no frame processed, kept or not
+    assert c.applicable(_live())[0] is None
+
+
+def test_the_run_phase_has_a_ceiling():
+    """Past ``run_max_s`` the swipe stops with « no verdict » rather than running on beside the show."""
+    import time as _t
+
+    class _Slow(_FakeRunner):
+        def run(self, images, cand, engine_path, *, cancelled=None, **kw):
+            _t.sleep(0.05)
+            out = super().run(images, cand, engine_path, cancelled=cancelled, **kw)
+            return out
+    proc = _FakeProc(_frames(), 30)
+    c, ev = _controller(proc, {"v": _live()}, _Slow(), run_max_s=0.06)
+    c.start()
+    c.join(5)
+    assert c.state == "error" and c.text.startswith("no verdict: the swipe ran over 0 s") and c.outcome is None
+
+
+def test_the_referee_judges_at_the_shows_confidence():
+    """The swipe's params take the project's live confidence (0.15 without one); the tap's « lost » too."""
+    from runtime.swipe_controller import SwipeController
+    proc = _FakeProc(_frames(), 30)
+    proc.settings.confidence = 0.30
+    c, ev = _controller(proc, {"v": _live()}, _FakeRunner())
+    assert c._params(proc).conf == 0.30
+    proc.settings.confidence = 0.0
+    assert c._params(proc).conf == 0.15
+    tap, clock = _proc()
+    tap.settings.confidence = 0.4
+    frame = np.zeros((40, 30, 3), np.uint8)
+    _tap(tap, frame, _fg((15, 20, 900)), boxes=[(5, 5, 25, 35, 0.35)])   # a box under the show's 0.4
+    frames, lost, _p, _r = tap.swipe_snapshot()
+    assert tap.swipe_collector.params.conf == 0.4 and lost == 1
 
 
 def test_only_the_recommended_confidence_is_read():
@@ -911,8 +1013,10 @@ def _apply_fixture(trt=True):
     def request(m, i, s, on_done=None):
         calls.append(("switch", m, i, s))
         pending["done"] = on_done
+    from runtime.api import SystemState
     fake = SimpleNamespace(
         swipe=c, _swipe_live_setting=lambda: live["v"], _swipe_pending_apply=None,
+        system_state=SystemState.STANDBY,
         configs=SimpleNamespace(_current_project="jeudi0809_mur2"), settings=SimpleNamespace(imgsz=1280),
         models=SimpleNamespace(request_setting=request, current_model_name="yolo11x-pose",
                                model_manager=SimpleNamespace(is_using_tensorrt=lambda: trt),
@@ -921,6 +1025,7 @@ def _apply_fixture(trt=True):
         _swipe_set_confidence=lambda v: calls.append(("conf", v)),
         bus=SimpleNamespace(publish=lambda e: calls.append(e)))
     fake._swipe_apply_done = lambda ok: appmod.WallDanceApp._swipe_apply_done(fake, ok)
+    fake._swipe_restore_done = lambda ok, w, p: appmod.WallDanceApp._swipe_restore_done(fake, ok, w, p)
     appmod.WallDanceApp._cb_apply_settings_swipe(fake)
     return appmod, c, live, calls, pending, fake
 
@@ -939,19 +1044,51 @@ def test_apply_switches_then_applies_the_confidence_once_the_winner_runs_on_tens
     assert ("conf", 0.21) in calls and c.applied == winner
     last = [e for e in calls if isinstance(e, api.SettingsSwipeProgress)][-1]
     assert last.state == "applied" and "Save the project" in last.text
-    assert c.readiness(plate_ready=True, live_now=live["v"]).detail.startswith("running l @")
+    assert c.readiness(plate_ready=True, live_now=live["v"]) is None      # applied: nothing left to say
 
 
-def test_a_pytorch_fallback_or_a_failed_load_is_not_the_swipes_pick():
+def test_a_failed_load_is_a_fault_with_what_runs_and_what_to_do():
     from runtime import api
-    for trt, ok, words in ((False, True, "running PyTorch"), (True, False, "previous one is kept")):
-        appmod, c, live, calls, pending, fake = _apply_fixture(trt=trt)
-        if ok:
-            live["v"] = _live(cand=c.outcome.result.winner, model_id=3)
-        pending["done"](ok)
-        assert not any(isinstance(e, tuple) and e[0] == "conf" for e in calls) and c.applied is None
-        last = [e for e in calls if isinstance(e, api.SettingsSwipeProgress)][-1]
-        assert last.state == "apply_failed" and words in last.text and "confidence is unchanged" in last.text
+    appmod, c, live, calls, pending, fake = _apply_fixture(trt=True)
+    pending["done"](False)                                         # the model did not load: the old one stays
+    assert not any(isinstance(e, tuple) and e[0] == "conf" for e in calls) and c.applied is None
+    last = [e for e in calls if isinstance(e, api.SettingsSwipeProgress)][-1]
+    assert last.state == "apply_failed" and "confidence is unchanged" in last.text
+    row = c.readiness(plate_ready=True, live_now=live["v"])
+    assert row.status == "fail" and "x @ 1280 still runs" in row.detail and "rebuild" in row.detail
+
+
+def test_a_pytorch_fallback_goes_back_to_the_previous_setting():
+    """The engine did not load and PyTorch would run the winner far over the frame budget (review N2): the
+    previous model and input come back through the same switch, and the row says so."""
+    from runtime import api
+    appmod, c, live, calls, pending, fake = _apply_fixture(trt=False)
+    winner = c.outcome.result.winner
+    live["v"] = _live(cand=winner, model_id=3)                     # the winner, on PyTorch
+    pending["done"](True)
+    assert ("switch", "yolo11x-pose", 1280, None) in calls          # back to x @ 1280, queued
+    assert c.readiness(plate_ready=True, live_now=live["v"]).detail.startswith(
+        f"Apply of {winner.label} failed: its engine did not load; going back to x @ 1280")
+    fake.models.model_manager.is_using_tensorrt = lambda: True
+    live["v"] = _live(model_id=4)                                  # x @ 1280 runs again
+    pending["done"](True)
+    row = c.readiness(plate_ready=True, live_now=live["v"])
+    assert row.status == "fail" and "x @ 1280 runs again" in row.detail and winner.engine_file in row.detail
+
+
+def test_apply_is_refused_during_a_show():
+    """Apply reloads the model (camera closed, no tracking for seconds): STANDBY only, like the dry-run."""
+    pytest.importorskip("dearpygui")
+    import app as appmod
+    from runtime import api
+    from runtime.api import SystemState
+    events = []
+    fake = SimpleNamespace(system_state=SystemState.RUN, bus=SimpleNamespace(publish=events.append),
+                           swipe=SimpleNamespace(applicable=lambda live: pytest.fail("must not get here")))
+    appmod.WallDanceApp._cb_apply_settings_swipe(fake)
+    (toast,) = events
+    assert isinstance(toast, api.Toast)
+    assert toast.message == "Apply: stop the show first - Apply reloads the model, a few seconds without tracking"
 
 
 def test_a_recommended_confidence_becomes_the_dials_anchor():
@@ -970,6 +1107,7 @@ def test_remote_apply_is_heavy_and_run_is_control():
     from services.remote_api import POLICY
     assert POLICY["ApplySettingsSwipe"] == "heavy" and POLICY["LoadModel"] == "heavy"
     assert POLICY["RunSettingsSwipe"] == "control" and POLICY["CancelSettingsSwipe"] == "safe"
+    assert POLICY["DismissSwipeNotice"] == "safe"
 
 
 def test_readiness_rows_are_published_even_when_the_console_cannot_print_them(monkeypatch):
@@ -1015,14 +1153,22 @@ def test_the_live_setting_is_none_while_a_model_loads():
                              current_model_name="yolo11l-pose",
                              model_manager=SimpleNamespace(is_using_tensorrt=lambda: True))
     settings = SimpleNamespace(imgsz=1280, yolo_shape=(1920, 1056), roi_enabled=True, roi_x=135, roi_y=3,
-                               roi_w=965, roi_h=1771, fg_plate_path="plates/latest.npz")
+                               roi_w=965, roi_h=1771, fg_plate_path="plates/latest.npz", enhance_enabled=True,
+                               enhance_lite=False, enhance_force=True, greyscale=False, bg_subtract_enabled=False,
+                               bg_subtract_sensitivity=30, brightness_threshold=60, denoise_strength=0.0)
+    plate = (140, "2026-10-08T21:36:18")
     fake = SimpleNamespace(models=models, settings=settings,
                            configs=SimpleNamespace(_current_project="jeudi0809_mur2"),
                            roi=SimpleNamespace(state=SimpleNamespace(source_size=(1260, 1824))),
-                           processor=SimpleNamespace(plate_usable=True))
+                           enhancer=SimpleNamespace(clahe_clip=2.5, gamma=1.2),
+                           processor=SimpleNamespace(plate_usable=True, plate_identity=plate,
+                                                     get_exclusion=lambda: ((10, 16), {(0, 1), (0, 2)})))
     assert appmod.WallDanceApp._swipe_live_setting(fake) is None
     models._model_loading = False
     live = appmod.WallDanceApp._swipe_live_setting(fake)
     assert live.candidate == L1920 and live.trt and live.model_id == id(models.model)
-    assert live.roi == (True, 135, 3, 965, 1771) and live.plate == "plates/latest.npz" and live.plate_ok
-    assert live.frame == (1260, 1824)
+    assert live.roi == (True, 135, 3, 965, 1771) and live.plate == plate and live.plate_ok
+    assert live.frame == (1260, 1824) and live.enhance[:5] == (True, False, True, 2.5, 1.2)
+    assert live.exclusion == ((10, 16), ((0, 1), (0, 2)))
+    fake.enhancer.clahe_clip = 3.0                                 # Calibrate moved CLAHE: another scene
+    assert appmod.WallDanceApp._swipe_live_setting(fake).key != live.key

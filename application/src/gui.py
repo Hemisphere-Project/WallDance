@@ -720,6 +720,10 @@ class WallDanceGUI:
         if 'on_swipe_apply' in self.callbacks:
             self.callbacks['on_swipe_apply']()
 
+    def _on_swipe_dismiss(self, *args):
+        if 'on_swipe_dismiss' in self.callbacks:
+            self.callbacks['on_swipe_dismiss']()
+
     def _on_calib_sweep(self, *args):
         if 'on_calib_sweep' in self.callbacks:
             n = dpg.get_value("calib_sweep_n") if dpg.does_item_exist("calib_sweep_n") else 1
@@ -3011,14 +3015,16 @@ class WallDanceGUI:
             dpg.configure_item("swipe_btn", label="Cancel swipe" if busy else "Try other settings")
         if state != "done" and dpg.does_item_exist("swipe_apply_btn"):
             dpg.configure_item("swipe_apply_btn", show=False)      # pressed, or a new swipe: nothing to apply
+        if dpg.does_item_exist("swipe_dismiss_btn"):                 # a failed Apply waits for its acknowledgement
+            dpg.configure_item("swipe_dismiss_btn", show=(state == "apply_failed"))
         if dpg.does_item_exist("swipe_status_text"):
             if busy:
                 dpg.set_value("swipe_status_text", f"{text} ({100 * float(progress):.0f} %)")
                 dpg.configure_item("swipe_status_text", color=TEXT_MUTED)
-            elif state in ("applying", "applied", "apply_failed"):    # Apply: the model switch and its outcome
-                dpg.set_value("swipe_status_text", text)
+            elif state in ("applying", "applied", "apply_failed", "dismissed"):   # Apply / Dismiss and outcome
+                dpg.set_value("swipe_status_text", "" if state == "dismissed" else text)
                 dpg.configure_item("swipe_status_text",
-                                   color={"applied": OK_GREEN, "apply_failed": WARN_AMBER}.get(state, TEXT_MUTED))
+                                   color={"applied": OK_GREEN, "apply_failed": ALERT_RED}.get(state, TEXT_MUTED))
 
     def show_swipe_result(self, result, error=""):
         """P5 swipe verdict: the reason, one line per setting (best first), what was not tried, how long it
@@ -3027,8 +3033,9 @@ class WallDanceGUI:
         self._swipe_busy = False
         if dpg.does_item_exist("swipe_btn"):
             dpg.configure_item("swipe_btn", label="Try other settings")
-        if dpg.does_item_exist("swipe_apply_btn"):
-            dpg.configure_item("swipe_apply_btn", show=False)
+        for b in ("swipe_apply_btn", "swipe_dismiss_btn"):
+            if dpg.does_item_exist(b):
+                dpg.configure_item(b, show=False)
         if not dpg.does_item_exist(tag):
             return
         if error:
@@ -3055,7 +3062,9 @@ class WallDanceGUI:
         dpg.set_value(tag, "\n".join(lines))
         dpg.configure_item(tag, color=WARN_AMBER if r.get("switch") else TEXT_NORMAL)
         if r.get("switch") and r.get("winner") and dpg.does_item_exist("swipe_apply_btn"):
-            dpg.configure_item("swipe_apply_btn", label=f"Apply {r['winner']}", show=True)
+            dpg.configure_item("swipe_apply_btn", label=f"Apply {r['winner']} (STANDBY)", show=True)
+            if dpg.does_item_exist("swipe_dismiss_btn"):
+                dpg.configure_item("swipe_dismiss_btn", show=True)
 
     def show_dryrun_result(self, summary, error=""):
         """Render the phase-⑤ dry-run replay summary into a single text widget.

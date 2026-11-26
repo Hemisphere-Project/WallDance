@@ -177,6 +177,7 @@ class DpgUiAdapter:
             "on_swipe": lambda busy=False: submit(
                 api.CancelSettingsSwipe() if busy else api.RunSettingsSwipe()),
             "on_swipe_apply": lambda: submit(api.ApplySettingsSwipe()),
+            "on_swipe_dismiss": lambda: submit(api.DismissSwipeNotice()),
             "on_model_change": lambda name: submit(api.LoadModel(name)),
             "on_trt_toggle": lambda v: submit(api.ToggleTrt(bool(v))),
             "on_trt_rebuild": lambda: submit(api.RebuildTrt()),
