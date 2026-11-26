@@ -25,17 +25,37 @@ TABLE_PATH = MODELS_DIR / "fps_table.json"
 WARMUP = 5
 RUNS = 30
 _ENGINE_RE = re.compile(r"^(?P<model>.+-pose)_(?P<imgsz>\d+)\.engine$")
+# P1 (Plan Cordée rev 2): rectangles <model>_<height>x<width>.engine.  Kept under the table's "_rect" key
+# ({model: {"HxW": fps}}): calib2.load_fps_table reads {model: {int imgsz: fps}} and skips "_" keys, so a
+# rectangle can never cost a model its square entries.
+_RECT_RE = re.compile(r"^(?P<model>.+-pose)_(?P<h>\d+)x(?P<w>\d+)\.engine$")
 
 
-def measure_engine(path: Path, imgsz: int) -> float:
+def parse_engine_name(name: str):
+    """(model, table key, (height, width)) for a square or a rectangle engine file name, or None."""
+    m = _ENGINE_RE.match(name)
+    if m:
+        sz = int(m.group("imgsz"))
+        return m.group("model"), str(sz), (sz, sz)
+    m = _RECT_RE.match(name)
+    if m:
+        h, w = int(m.group("h")), int(m.group("w"))
+        return m.group("model"), f"{h}x{w}", (h, w)
+    return None
+
+
+def measure_engine(path: Path, imgsz) -> float:
+    """``imgsz``: a square size or (height, width)."""
     from ultralytics import YOLO
+    h, w = (imgsz, imgsz) if isinstance(imgsz, int) else (int(imgsz[0]), int(imgsz[1]))
     model = YOLO(str(path), task="pose")
-    img = np.zeros((imgsz, imgsz, 3), dtype=np.uint8)
+    img = np.zeros((h, w, 3), dtype=np.uint8)
+    arg = imgsz if isinstance(imgsz, int) else [h, w]
     for _ in range(WARMUP):
-        model(img, imgsz=imgsz, verbose=False)
+        model(img, imgsz=arg, verbose=False)
     t0 = time.perf_counter()
     for _ in range(RUNS):
-        model(img, imgsz=imgsz, verbose=False)
+        model(img, imgsz=arg, verbose=False)
     dt = (time.perf_counter() - t0) / RUNS
     return 1.0 / dt if dt > 0 else 0.0
 
@@ -59,20 +79,22 @@ def main():
         return
     measured = 0
     for eng in engines:
-        m = _ENGINE_RE.match(eng.name)
-        if not m:
+        parsed = parse_engine_name(eng.name)
+        if parsed is None:
             continue
-        model, imgsz = m.group("model"), int(m.group("imgsz"))
-        if not args.force and str(imgsz) in table.get(model, {}):
+        model, key, hw = parsed
+        rect = hw[0] != hw[1] or "x" in key
+        row = table.setdefault("_rect", {}).setdefault(model, {}) if rect else table.setdefault(model, {})
+        if not args.force and key in row:
             continue
         try:
-            fps = measure_engine(eng, imgsz)
+            fps = measure_engine(eng, hw if rect else hw[0])
         except Exception as e:  # one broken engine must not kill the table
             print(f"  {eng.name}: FAILED ({type(e).__name__}: {e})")
             continue
-        table.setdefault(model, {})[str(imgsz)] = round(fps, 1)
+        row[key] = round(fps, 1)
         measured += 1
-        print(f"  {model}@{imgsz}: {fps:.1f} fps")
+        print(f"  {model}@{key}: {fps:.1f} fps")
         # Persist incrementally so an interrupt keeps prior measurements.
         table["_meta"] = {
             "measured_at": time.strftime("%Y-%m-%d %H:%M:%S"),

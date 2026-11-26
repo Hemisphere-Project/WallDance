@@ -499,7 +499,7 @@ Rev 2 (release in the last column):
 | M2 | A live session can be scored | bench ⚙ | – | 0.5d | #t-023 ④ | todo | 1 |
 | M3 | Playback on a frame clock | bench ⚙ | – | in B1 | #t-030 ④ | todo | – |
 | P1 | Rectangular input | bench GPU | – | 1.5d | #t-047 | todo | 1 |
-| P2 | Engines and timing | laptop | P1 | window | #t-048 | todo | 1 |
+| P2 | Engines and timing | laptop | P1 | window | #t-048 | done 26/11 (§5) | 1 |
 | P3 | Model by the ratchet | bench GPU | P1, F3 | 0.5d | #t-049 | todo | 1 |
 | P4 | Dancer height at the network | bench ⚙ | P1 | 0.5d | #t-050 | todo | 1 |
 | X1 | Servo on the highlights | bench ⚙ | – | 1d | #t-027 ④ | todo | 2 |
@@ -531,8 +531,21 @@ Filled by the step named. Until then the cell says so.
 - **M1 — the repo's scorer against the counter-analysis tables:** not measured yet.
 - **P1 — the 08/10 truth through the real pipeline at the rectangle (yolo11x):** not measured yet. Reference,
   one frame a second, PyTorch: 61 % as shipped (x@1280 square), 81 % at 1760, 86 % at 1920.
-- **P2 — the loop on the laptop with TouchDesigner (p50 / p95 of `process_wall`, `yolo`, `mog2_feed`; GPU
-  temperature):** not measured yet.
+- **P2 — the loop on the laptop with TouchDesigner** (2026-11-26, night session; `extra/measure_loop.py` from a
+  scratch folder, the laptop's own `jeudi0809_mur2` take 7, frames 1500–2730 with both dancers on the wall, its
+  plate, F1 on; TouchDesigner 2025.32820 open on a copy of `ByNight_scenes_NOVEMBRE.314.toe`, 25 % GPU alone):
+
+  | Engine | `process_wall` p50 / p95, with TD | without TD | `yolo` p50 / p95 (TD) | `mog2_feed` p50 / p95 (TD) | engine only p50 | GPU max |
+  |---|---|---|---|---|---|---|
+  | x @ 1280 (shipped) | 30.6 / 35.9 ms | 32.0 / 36.4 | 18.6 / 22.5 | 20.5 / 24.6 | 22.3 ms | 66 °C |
+  | x @ 1760 × 960 | 34.0 / 39.6 | 39.8 / 43.7 | 20.9 / 25.5 | 23.7 / 28.4 | 23.6 | 67 °C |
+  | l @ 1760 × 960 | 25.4 / 30.9 | 26.1 / 30.9 | 11.5 / 15.1 | 14.8 / 18.4 | 15.5 | 67 °C |
+  | l @ 1920 × 1056 | 28.6 / 35.1 | 28.8 / 34.9 | 14.2 / 17.6 | 17.5 / 21.1 | 18.8 | 67 °C |
+  | x @ 1920 × 1056 | 40.7 / 51.5 | 44.1 / 48.6 | 26.6 / 36.6 | 29.6 / 39.9 | 29.1 | 67 °C |
+
+  Gate (`process_wall` ≤ 55 ms at p95 with TouchDesigner, GPU < 83 °C): **met by all five**. F1's foreground
+  costs 4.3–4.7 ms a frame there. `mog2_feed` overlaps enhance + YOLO (it is not added to them). The
+  TouchDesigner load is the patch cooking with no OSC input in a locked session: the show's may be higher.
 - **P3 — yolo11x against yolo11l, 08/10 truth and hangar corpus, after F3:** not measured yet.
 - **F1, F3 — foreground under the boxes, false groups and false boxes per frame:** not measured yet.
 
