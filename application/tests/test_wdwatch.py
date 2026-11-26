@@ -340,6 +340,8 @@ def test_poll_cycle_through_wdremote_api_session_local(fake, tmp_path, monkeypat
     w.close()
 
 
+@pytest.mark.skipif(not hasattr(__import__("signal"), "SIGUSR1"),
+                    reason="the watch tool runs on the dev machine (POSIX): Windows has no SIGUSR1")
 def test_poll_cycle_cli_process_usr1_summary_and_clean_stop(fake, tmp_path):
     """The real command, as Thomas starts it: polls, prints the screen on SIGUSR1, stops on SIGTERM."""
     import os
