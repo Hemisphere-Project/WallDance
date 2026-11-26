@@ -6,6 +6,7 @@
 * the looks: nothing while the wall is empty or the app is busy; mode off releases the resident;
 * the project key ``swipe_auto``: absent from a project file while off, absent = off.
 """
+import dataclasses
 import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -177,6 +178,17 @@ def test_a_run_needs_a_full_pool_of_frames_the_last_run_did_not_use():
     assert bg.tick() == "idle" and loader.infers == 150
     proc.frames = _look_frames(150, t0=150.0)            # a whole new pool
     assert bg.tick() == "run" and loader.infers == 300
+
+
+def test_the_status_counts_say_what_they_hold():
+    """/status's ``counts``: ``lost`` the fresh frames the live setting left a dancer bare on, ``covered`` the
+    others (they once carried the fresh total and the lost ones under each other's name)."""
+    bg, proc, events, loader, live = _looking_bg()
+    proc.frames = _look_frames(120, lost=30)             # under a full pool: counted, nothing run
+    assert bg.tick() == "idle"
+    assert bg.status()["counts"] == {"lost": 30, "covered": 90}
+    live["v"] = dataclasses.replace(live["v"], plate_ok=False)    # a plate that does not hold: nothing counted
+    assert bg.tick() == "waiting" and bg.status()["counts"] == {"lost": 0, "covered": 0}
 
 
 def test_a_run_without_a_verdict_says_nothing():

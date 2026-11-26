@@ -596,12 +596,14 @@ class BackgroundSwipe:
             self.notify("cleared", {"text": "dismissed"})
 
     def status(self) -> Dict[str, Any]:
-        """For /status and the readiness row (JSON-ready)."""
+        """For /status and the readiness row (JSON-ready).  ``counts``: of the fresh frames with dancers, ``lost``
+        the ones the live setting left a dancer bare on, ``covered`` the others."""
         sug = self.suggestion
+        fresh, lost = self.last_counts
         return {"mode": self.mode, "state": self.state, "running": self.running,
                 "resident": self.resident.candidate.label if self.resident is not None else None,
                 "last_look": self.last_look, "last_advice": self.last_advice,
                 "suggestion": ({k: v for k, v in sug.items() if k not in ("winner_c", "live_key", "result")}
                                if sug is not None else None),
                 "inferences": self.inferences, "auto_banned": sorted(self._banned.values()),
-                "counts": {"lost": self.last_counts[0], "covered": self.last_counts[1]}}
+                "counts": {"lost": lost, "covered": fresh - lost}}
