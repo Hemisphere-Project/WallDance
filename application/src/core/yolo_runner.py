@@ -58,18 +58,21 @@ class PoseRunner:
                 out = self._fast(tensor)
             except Exception as exc:  # noqa: BLE001 - the regular call decides
                 out = None
-                fast_exc = exc
+                # its words only: the exception's traceback holds this frame, so
+                # keeping the exception in it is a cycle that keeps this runner,
+                # its model and the engine's GPU memory until a full collection
+                fast_err = f"{type(exc).__name__}: {exc}"
             else:
-                fast_exc = None
+                fast_err = None
             if out is not None:
                 self.fast_calls += 1
                 return out
             results = self._regular(tensor, key, imgsz, conf, iou, half)
-            if fast_exc is not None:
+            if fast_err is not None:
                 # The regular call worked where the fast path raised: an
                 # ultralytics drift we do not understand -- stop trying.
                 self.enabled = False
-                self.disabled_reason = f"{type(fast_exc).__name__}: {fast_exc}"
+                self.disabled_reason = fast_err
                 print(f"[YOLO] fast path disabled ({self.disabled_reason}); "
                       "using the regular ultralytics call")
             return results

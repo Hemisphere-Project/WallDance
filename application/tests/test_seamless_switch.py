@@ -375,6 +375,72 @@ def test_a_switch_that_raises_on_its_first_frame_is_the_fault_and_the_old_model_
     assert p._run_yolo(None) == ["results of x1280"]
 
 
+class _Engine:
+    """Stands for an engine's GPU memory: freed when this object goes."""
+
+
+class _TrtModel:
+    """An ultralytics model as PoseRunner sees it (its predictor's fast path, the regular call), whose engine
+    raises once ``fail`` is set -- in the fast path, then in the regular call, as a TensorRT failure does."""
+
+    def __init__(self):
+        flag = self.flag = SimpleNamespace(fail=False)
+        self.engine = _Engine()
+
+        def inference(x):
+            if flag.fail:
+                raise RuntimeError("TensorRT inference execution failed")
+            return x
+        self.predictor = SimpleNamespace(
+            args=SimpleNamespace(conf=None, iou=None, visualize=False, augment=False, embed=None, save=False,
+                                 save_txt=False, save_crop=False, show=False),
+            source_type=SimpleNamespace(tensor=True), batch=(["t"],), done_warmup=True, _lock=threading.Lock(),
+            model=SimpleNamespace(format="engine"), preprocess=lambda x: x, inference=inference,
+            postprocess=lambda preds, x, orig: ["results"])
+
+    def __call__(self, tensor, *, imgsz, conf, iou, half, verbose):
+        self.predictor.args.conf, self.predictor.args.iou = conf, iou
+        if self.flag.fail:
+            raise RuntimeError("TensorRT inference execution failed")
+        return ["results"]
+
+
+def test_an_engine_dropped_after_a_rollback_goes_without_the_cyclic_collector():
+    """The rehearsal build holds the full collections during a show: an engine the switch drops must go by
+    reference counting alone, or its GPU memory stays held and the next load stacks a second one.  The real
+    PoseRunner, warmed by the switch with the live call's arguments (its first live frame on the fast path); its
+    engine raises there, then in the regular call; the rollback; the worker frees it after a live frame."""
+    import gc
+    import weakref
+    torch = pytest.importorskip("torch")
+    from core.yolo_runner import PoseRunner
+    p = _proc(runner=_Runner("x1280"))
+    made = []
+
+    class _PoseLoader(_Loader):
+        def load(self, path, cand, model=None):
+            m = _TrtModel()
+            made.append(weakref.ref(m.engine))
+            return m, PoseRunner(m), 0.4
+    live = {"v": _live()}
+    sw, bgproc, _ = _sw(live, loader=_PoseLoader(), port=_controller(p))
+    bgproc.live_infer_args = p.live_infer_args            # the processor's own: the fast path's key
+    gc.collect()
+    gc.disable()
+    try:
+        sw.request(L1280, "Apply")
+        sw.service()                                       # loaded beside, warmed (the regular call)
+        sw._request["prepared"].model.flag.fail = True
+        assert sw.drain()
+        assert p._run_yolo(torch.full((1, 3, 64, 64), 0.5)) == ["results of x1280"]    # rolled back
+        assert sw.fault and len(sw._drop) == 1 and made[0]() is not None
+        sw.service()                                       # freed by the worker, right after a live frame
+        assert not sw._drop
+        assert made[0]() is None, "the dropped engine waits for the cyclic collector"
+    finally:
+        gc.enable()
+
+
 def test_the_switch_waits_for_a_background_inference_in_flight():
     live = {"v": _live()}
     port = _Port()
