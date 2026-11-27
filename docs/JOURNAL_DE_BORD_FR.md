@@ -23,9 +23,9 @@ Ce journal raconte, séance de travail après séance de travail, ce qu'on a vu 
 
 Il est écrit pour la compagnie, pour Nico, le technicien, et pour Thomas quand il le relira dans quelques mois. Ce n'est pas un mode d'emploi : celui de Nico est un document à part. La séance la plus récente est en haut ; chacune suit les cinq mêmes rubriques. Les mots anglais de l'écran sont expliqués dans le glossaire, à la fin.
 
-## Séance des 25 et 26 novembre 2026 (en cours) <!-- src: hub log 2026-11-25 ; hub log 2026-11-26 -->
+## Séance du 25 au 27 novembre 2026 (en cours) <!-- src: hub log 2026-11-25 ; hub log 2026-11-26 ; hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
 
-En bref : on a relu de près la répétition sur façade du 8 octobre. Le détecteur n'y voyait les danseurs qu'environ une fois sur deux, d'abord parce que l'image qu'on lui donnait était trop petite. On a corrigé cela dans la nuit. Puis on a commencé le « montage de répétition » : la version que Nico fera tourner à la répétition, puis seul au premier spectacle. <!-- src: hub log 2026-11-25 ; hub log 2026-11-26 -->
+En bref : on a relu de près la répétition sur façade du 8 octobre. Le détecteur n'y voyait les danseurs qu'environ une fois sur deux, d'abord parce que l'image qu'on lui donnait était trop petite. On a corrigé cela dans la nuit. Puis on a commencé le « montage de répétition » : la version que Nico fera tourner à la répétition, puis seul au premier spectacle. Dans la nuit du 26 au 27, on a enfin trouvé d'où viennent les arrêts de la caméra. <!-- src: hub log 2026-11-25 ; hub log 2026-11-26 ; hub note 2026-11-27-camera-stalls-addendum.md -->
 
 ### Où on en était
 
@@ -117,9 +117,9 @@ Une session de travail a tourné seule, la nuit, sur la machine d'analyse. Chaqu
 **Encore en chantier :**
 
 - **Un point maintenu qui suit un vrai corps.** Quand le détecteur perd un danseur, le suivi garde son point un moment. Ce point devra rester posé sur une forme réelle, et lâcher s'il n'y en a plus. <!-- src: hub note 2026-11-25-setup-and-detection-roadmap.md -->
-- Sur une prise du 8 octobre rejouée, un point est resté 21 secondes sur le bord du toit, un autre 43 secondes au-dessus du duo. Cette pièce est construite et relue ; ses corrections sont en cours. <!-- src: hub note 2026-11-25-rehearsal-0810-counter-analysis.md ; hub note 2026-11-26-rehearsal-build-status.md@e577566b9 -->
+- Sur une prise du 8 octobre rejouée, un point est resté 21 secondes sur le bord du toit, un autre 43 secondes au-dessus du duo. Cette pièce est construite et relue ; ses corrections sont en cours. Dans la nuit, elle attendait une décision de Thomas (plus bas). <!-- src: hub note 2026-11-25-rehearsal-0810-counter-analysis.md ; hub note 2026-11-26-rehearsal-build-status.md@e577566b9 -->
 - **L'étape « un danseur, 10 secondes ».** Un danseur reste 10 secondes sur le mur. L'app mesure sa taille et choisit le renforcement de contraste sur lui, et non sur le mur vide. <!-- src: hub note 2026-11-25-setup-and-detection-roadmap.md -->
-- Elle attend la forme finale de l'essai de réglages décrit plus bas, pour n'avoir qu'un seul moment de réglage. <!-- src: hub note 2026-11-26-rehearsal-build-brief.md ; hub note 2026-11-26-rehearsal-build-status.md@e577566b9 -->
+- Elle attend la forme finale de l'essai de réglages décrit plus bas, pour n'avoir qu'un seul moment de réglage. Dans la nuit, construite et relue, elle attendait elle aussi une décision de Thomas. <!-- src: hub note 2026-11-26-rehearsal-build-brief.md ; hub note 2026-11-26-rehearsal-build-status.md@e577566b9 -->
 - **Les arrêts de caméra ne videront plus les maintiens.** Le temps de maintien d'un point comptera en images, et non plus à l'horloge : un arrêt de 1,7 seconde ne l'épuisera plus. Elle viendra juste après le point maintenu, qui touche la même partie du logiciel. <!-- src: hub log 2026-11-25 ; hub note 2026-11-26-rehearsal-build-status.md@e577566b9 -->
 - Le 8 octobre, 17 des 97 pertes de danseur tombaient juste après un arrêt. <!-- src: hub note 2026-11-25-rehearsal-0810-counter-analysis.md -->
 
@@ -127,8 +127,71 @@ Une session de travail a tourné seule, la nuit, sur la machine d'analyse. Chaqu
 
 - **Ce que c'est.** Pendant l'échauffement, avec une vraie image du mur vide, l'app garde des images où elle rate un danseur. Le bouton « Try other settings » les repasse avec d'autres réglages de détection, arbitrés par la comparaison au mur vide. L'app affiche le meilleur, le technicien décide ; rien ne change tout seul. Sur le portable, un essai prend de 12,0 à 12,4 secondes. <!-- src: hub log 2026-11-26 -->
 - **Pourquoi il n'est pas encore dans le montage.** Une relecture indépendante a conclu : « pas en l'état ». Le bouton « Apply » rechargeait le modèle en plein RUN : caméra coupée, plus aucun point envoyé pendant quelques secondes. Et sur une prise où le réglage en cours est déjà bon, l'essai désigne un réglage moins bon sur 13,9 % des essais. <!-- src: hub log 2026-11-26 -->
-- **La suite.** Il a été renvoyé à sa session ; « Apply » est déjà refusé en RUN. Il n'entrera que si ses tests et une nouvelle relecture sont verts d'ici le 3 décembre. Sa version automatique, voulue par Thomas pour la répétition, attend derrière. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@e577566b9 ; hub log 2026-11-26 -->
+- **La suite.** Il a été renvoyé à sa session ; « Apply » est déjà refusé en RUN. Il n'entrera que si ses tests et une nouvelle relecture sont verts d'ici le 3 décembre. Sa version automatique, voulue par Thomas pour la répétition, attend derrière. Il est entré le soir même, comme conseil : voir plus bas. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@e577566b9 ; hub log 2026-11-26 -->
 - La session de montage recommande de s'en tenir à des suggestions le 7 décembre ; c'est à Thomas de trancher. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@e577566b9 -->
+
+#### Le soir du 26 et la nuit du 26 au 27 <!-- src: hub note 2026-11-26-rehearsal-build-status.md@05f992706 ; hub note 2026-11-27-camera-stalls-addendum.md -->
+
+Ce qui a rejoint le montage, puis ce qui attend Thomas. Pour chaque pièce, dans le même ordre : ce qu'on a vu, ce qu'on a fait, ce que ça apporte, ses limites.
+
+**L'essai de réglages, à la main (« Try other settings »).**
+
+- *Vu :* le 8 octobre, le détecteur tournait avec un réglage qui voyait un danseur sur deux, alors qu'un autre en voyait neuf sur dix. <!-- src: hub note 2026-11-26-night-session-wrap.md ; hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
+- *Fait :* le bouton est entré dans le montage le soir du 26, après deux relectures indépendantes et 8 défauts corrigés. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
+- Il faut une vraie image du mur vide et des danseurs sur le mur. L'app repasse alors les images qu'elle vient de voir avec les autres modèles et tailles d'image, et en conseille un.
+- *Apporte :* un essai prend environ 19 secondes sur le portable du spectacle, TouchDesigner ouvert. Un mauvais réglage peut se repérer dès l'échauffement. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
+- *Limites :* c'est un conseil. Le nouveau réglage ne s'applique qu'en STANDBY, donc à une pause. Pendant l'essai, un tiers à la moitié des images du direct prennent plus de 50 millisecondes. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
+- Si l'image du mur vide n'est plus valable, le conseil est retiré : refaire Calibrate, puis relancer l'essai. Sa version automatique n'est pas dans le montage ; si elle y entre, son usage reste à décider par Thomas.
+
+**L'image du mur vide sous surveillance.**
+
+- *Vu :* une mauvaise image du mur vide ne se voyait qu'à ses effets, jamais comme cause. Le 26, Thomas a fixé la règle : l'app ne doit pas faire confiance à ce qu'apporte un spectacle chargé. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
+- *Fait :* au chargement et en RUN, l'app compare cette image à ce que voit la caméra, sans avoir besoin d'un danseur. Elle dit si les deux concordent, si la caméra a bougé, ou si c'est un autre mur.
+- Quand le mur est vide et que l'image ne va pas, elle demande un Calibrate. Une ligne, au chargement, dit d'où viennent l'image du mur vide, le dernier Calibrate et le modèle.
+- *Apporte :* la ligne de santé et la vérification nomment l'image comme cause. Le test indépendant écrit par l'autre session : 55 cas justes sur 55 ; une vérification prend 12,7 millisecondes. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
+- *Limites :* l'app alerte et donne une seule consigne ; elle ne reprend jamais l'image elle-même. Une reprise automatique pourrait avaler un danseur immobile : elle ne sera pas construite sans l'accord de Thomas.
+
+**Les arrêts de la caméra : la découverte de la nuit.**
+
+- *Vu :* à chaque arrêt, le transfert d'une image par le câble USB casse, et le pilote de la caméra met 1,65 à 1,72 seconde à le réparer. Sur la façade, le 8 octobre, l'app en comptait 3 à 4 par minute. <!-- src: hub note 2026-11-27-camera-stalls-addendum.md -->
+- *D'abord une fausse piste.* L'après-midi du 26, une enquête sur la caméra seule a conclu que le lieu fixait le niveau des arrêts : sur un bureau, presque rien, 0,11 par minute. <!-- src: hub note 2026-11-27-camera-stalls-addendum.md ; hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
+- Le soir même, les journaux de l'app disaient l'inverse : sur un bureau, l'app se figeait plusieurs fois par minute. La conclusion de l'après-midi se trompait donc sur l'essentiel : ce n'est pas d'abord le câble ni le lieu.
+- *Mesuré côte à côte, la nuit,* sur le bureau, aux réglages exacts de l'app, 6 minutes chaque fois. La caméra seule : 0 arrêt. L'app en RUN : 39. La même app en STANDBY, qui lit la caméra sans traiter les images : 0. <!-- src: hub note 2026-11-27-camera-stalls-addendum.md -->
+- Ni l'aperçu de l'image, ni le détecteur, ni la carte graphique ne sont en cause. L'étage qui repère ce qui bouge y est mêlé : réduit au quart de l'image, on passe de 35 arrêts à 1. <!-- src: hub note 2026-11-27-camera-stalls-addendum.md -->
+- *Ce qui les supprime :* ralentir le lien de la caméra de 162 à 124 Mo/s. En alternant, 0 arrêt contre 46 ; puis 0 en 15 minutes de plus, avec ses 20 images par seconde. <!-- src: hub note 2026-11-27-camera-stalls-addendum.md -->
+- *Fait aussi :* l'image déchirée de chaque arrêt n'est plus transmise comme une image entière. Quand les arrêts deviennent fréquents, la consigne est maintenant : à la prochaine pause, rebrancher à fond le câble USB aux deux bouts, puis essayer l'autre câble. <!-- src: commit fix(camera): a torn picture is no longer published; the link's throughput limit as a project key; the stall instruction [U2] -->
+- *Apporte :* on sait enfin d'où viennent les arrêts : de l'app, et non de la caméra ou du câble seuls. Un réglage les supprime sur le bureau ; les essais de câble ne sont plus qu'une confirmation.
+- *Limites :* tout est mesuré sur un bureau, pas sur la façade, et sans TouchDesigner à côté. On ne sait pas pourquoi l'étage du mouvement provoque ces arrêts. Le réduire n'est pas conseillé : son effet sur le suivi n'est pas mesuré.
+- Le lien à 124 Mo/s est un réglage du projet, éteint par défaut. Le mettre pour la répétition est une décision de Thomas, pas encore prise. <!-- src: hub note 2026-11-27-camera-stalls-addendum.md ; hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
+
+**Une ligne de santé qui dit sa consigne en entier.**
+
+- *Vu :* le soir du 26, sur l'écran du portable, la ligne de santé était coupée au bord de la fenêtre, consigne comprise. Sur une image noire, la ligne de lumière disait de reculer le projecteur, alors qu'il n'y avait aucune lumière. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
+- *Fait :* la consigne n'est plus jamais coupée : c'est le détail du constat qui s'abrège. Sur une image noire, l'app dit qu'aucune lumière infrarouge n'arrive à la caméra : allumer le projecteur, vérifier son alimentation, ôter le bouchon de l'objectif.
+- *Apporte :* la consigne est entière dans 230 cas dessinés sur 230, contre 155 sur 210 avant. On l'a vue ainsi sur l'écran du portable, le 26 au soir. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
+- *Limites :* un projecteur éteint en STANDBY fait passer la ligne au rouge au bout de 10 secondes. Et la ligne « mur vide » de la vérification ajoute encore sa propre phrase. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
+
+**Le renforcement léger (« enhance lite ») aveuglait le détecteur sur le portable.**
+
+- *Vu :* sur le portable, avec ce réglage, le détecteur ne voyait plus personne dans un enregistrement rejoué. La caméra en direct n'a jamais été touchée.
+- *Fait :* une correction d'une ligne, là où l'image est passée au détecteur. Prouvée sur le portable lui-même : 2,0 détections par image au lieu de 0,0, sur les mêmes 60 images. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
+- *Apporte :* les prises rejouées avec ce réglage redonnent des détections.
+- *Limites :* la machine d'analyse ne montrait pas le défaut ; un test passé là seulement ne prouvait rien pour le portable. Le test de la correction lit désormais la mémoire comme le portable.
+
+**Petit, mais réel.**
+
+- *Le fichier « dernier projet ».* L'autre session a vu que la batterie de tests, lancée sur le portable, réécrivait le fichier qui dit à l'app quel projet proposer au démarrage. Le 26 au soir, il a désigné quelques minutes un projet d'essai. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
+- Il a été remis aussitôt. Un garde-fou fait maintenant échouer tout test qui toucherait le vrai fichier. Prouvé sur le portable dans la nuit : toute la batterie y passe, le fichier intact.
+- *Une pause de la boucle d'images.* Toutes les quelques minutes, une image prend 100 à 170 millisecondes : le nettoyage de la mémoire. L'autre session l'a trouvé ; la correction est en cours. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
+- Ce nettoyage se fera en STANDBY, aux chargements et au démarrage, et plus pendant le spectacle.
+
+**En attente d'une décision de Thomas** (état au 27 novembre, 1 h 23) : <!-- src: hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
+
+- **Le point maintenu sur un vrai corps.** Il réduit presque de moitié les points envoyés sur personne : 3,14 % au lieu de 5,82 sur la machine d'analyse, 3,5 % au lieu de 6,2 sur le portable. L'objectif était 2 %. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
+- La session de montage recommande de l'accepter avec un objectif reformulé. En attendant, il reste hors du montage.
+- **L'étape « un danseur ».** Elle échoue à la lettre sur sa fenêtre de taille : 4 cas sur 6. Mais cette fenêtre reprend la taille des danseurs sur l'image d'origine ; lue ainsi, 5 sur 6, le sixième à 1 pixel près. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
+- Recommandé : l'accepter, lue en pixels de l'image d'origine.
+- **Le lien de la caméra à 124 Mo/s pour le projet de répétition.** Recommandé : une ligne dans la configuration du projet, qui s'enlève de la même façon. Mesuré sur un bureau seulement. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@05f992706 ; hub note 2026-11-27-camera-stalls-addendum.md -->
 
 ### Ce que ça apporte
 
@@ -137,6 +200,8 @@ Une session de travail a tourné seule, la nuit, sur la machine d'analyse. Chaqu
 - Une relance remet le spectacle comme il était. Rien de « non vérifié » ne s'affiche en vert, et une seule ligne résume l'état pendant le spectacle.
 - On peut taper du texte sans risque, et on voit toujours si l'image est en direct.
 - Pendant la répétition, Thomas peut suivre le portable à distance et écrire à Nico sur l'écran.
+- On sait d'où viennent les arrêts de la caméra, et un réglage les supprime sur un bureau. L'app vérifie l'image du mur vide qu'elle charge, et le dit.
+- Pendant l'échauffement, un bouton conseille un meilleur réglage du détecteur ; rien ne change sans le technicien. La consigne de la ligne de santé n'est plus jamais coupée.
 
 ### Limites et ce qui reste
 
@@ -145,10 +210,10 @@ Une session de travail a tourné seule, la nuit, sur la machine d'analyse. Chaqu
 - La veille à distance n'a pas encore été essayée sur une vraie 4G lente. <!-- src: commit fix(wdremote): run and pytest pass through only as the subcommand [S1] -->
 - **Un choix ouvert sur l'exposition.** Protéger l'ovale assombrit le reste du mur : avec la lumière du 8 octobre, la luminosité médiane du mur passerait de 65 à 36–41. L'autre option garde l'exposition d'alors et demande de reculer le projecteur. Une mesure est en cours. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@e577566b9 -->
 - **La ligne de santé rougit trop souvent.** Sur trois prises, 58 des 88 secondes de rouge tombent alors que chaque danseur a son point : une ombre, des corps au bord du toit. Elle sera mesurée à nouveau avec les pièces suivantes. <!-- src: commit feat(health): one health line during RUN, the worst state wins [H2] -->
-- **Les arrêts de caméra.** Leur cause reste inconnue. Le montage en limite les dégâts sans les supprimer ; l'essai de câble et de port est repoussé après le 12 décembre. <!-- src: hub note 2026-11-25-setup-and-detection-roadmap.md -->
+- **Les arrêts de caméra.** Ils viennent de l'app elle-même ; le lien ralenti à 124 Mo/s les supprime sur un bureau. Reste à le vérifier sur la façade et à côté de TouchDesigner, si Thomas retient ce réglage. <!-- src: hub note 2026-11-27-camera-stalls-addendum.md ; hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
 - **Le capot.** Fermer le capot avec l'app ouverte met l'ordinateur en veille, et l'app s'arrête avec lui. À éviter pendant un spectacle. <!-- src: hub log 2026-11-25 -->
 - **Un message attendu.** Le 26 novembre à 13 h 02, la version de spectacle a été fermée de force, avec l'accord de Thomas, pour libérer la caméra. À sa prochaine ouverture, elle affichera une fois « Previous session crashed » : c'est normal. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@e577566b9 -->
-- **Reste à faire avant la répétition.** Finir le point maintenu, l'étape « un danseur » et la correction des arrêts de caméra. Compléter la fiche de Nico, installer le montage sur le portable, choisir le modèle de chaque projet. Et Thomas doit vérifier à l'œil que la comparaison au mur vide voit bien les danseurs que le détecteur rate. <!-- src: hub note 2026-11-26-night-session-wrap.md ; hub project.md -->
+- **Reste à faire avant la répétition.** Trancher le point maintenu et l'étape « un danseur ». Finir la tenue des maintiens pendant les arrêts de caméra, et la pause de la boucle d'images. Compléter la fiche de Nico, installer le montage sur le portable, choisir le modèle de chaque projet. Et Thomas doit vérifier à l'œil que la comparaison au mur vide voit bien les danseurs que le détecteur rate. <!-- src: hub note 2026-11-26-night-session-wrap.md ; hub project.md ; hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
 - **Repoussé après le 12 décembre.** L'assistant de réglage pas à pas, le filtre des fausses détections et la refonte du suivi du Plan Cordée. <!-- src: hub note 2026-11-25-setup-and-detection-roadmap.md -->
 
 ## Séance du 18 novembre 2026 — l'audit et le « Plan Cordée » <!-- src: hub log 2026-11-18 -->
@@ -257,6 +322,8 @@ En bref : le portable devient joignable à distance, son contenu est copié, un 
 - **DEV** — l'emplacement de test du portable, où l'on essaie les nouvelles versions à côté de celle du spectacle.
 - **Release** — une version du logiciel. La « release 1 » est la première étape de la feuille de route de novembre ; le portable du spectacle tourne encore la version du 8 octobre. <!-- src: hub log 2026-11-26 ; hub log 2026-11-25 -->
 - **Swipe** (« Try other settings ») — l'essai d'autres réglages de détection sur quelques images.
+- **Ligne de santé** — la bande sous l'image, pendant le spectacle : le pire souci du moment et sa consigne.
+- **Enhance lite** — une version légère du renforcement de contraste appliqué à l'image avant le détecteur.
 - **Point, maintien** — le point est la position envoyée aux visuels pour un danseur. Il est « maintenu » quand l'app le garde sans voir le danseur.
 - **Détecteur, modèle « x » ou « l »** — le réseau de neurones qui repère une silhouette humaine. « x » est le plus gros, « l » un cran plus léger.
 - **TouchDesigner** — le logiciel qui fabrique les visuels du spectacle à partir des positions envoyées.
