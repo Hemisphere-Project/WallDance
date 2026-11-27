@@ -185,13 +185,26 @@ RIG_INHERIT_KEYS = (
 # per scene: not inherited.
 RIG_SHEET_INHERIT_FIELDS = ("lens", "focal_mm", "f_number", "filter", "illuminator",
                             "illuminator_offset_cm")
+# A2 (the owner, 27/11): the VENUE's set-up -- where this machine stands, not what a project is --
+# carried as the rig is, from the last used project (a new project made at the venue, at launch too).
+VENUE_INHERIT_KEYS = (
+    "osc_ip",                     # where the visuals listen: a new project at the venue keeps sending to that machine
+    "osc_port",                   # ... on that port (the visuals' machine is the venue's, not the project's)
+    "ids_throughput_limit_mbps",  # the camera link's limit (venue cable/desk: 124 for the rehearsal, the default stalled 7x/min)
+)
+# A2 (#t-023 follow-up, two reviews 27/11): the keys a new project ("New project" / "Start
+# blank") CARRIES ON PURPOSE -- the rig and the venue above, from the last used project (the GUI:
+# « default settings, last camera setup »).  EVERY other project key starts from its code default (the
+# app's startup state, ConfigManager.capture_code_defaults), never from the previous project's
+# session: a key added to the project later starts at its default with no change here.
+NEW_PROJECT_CARRIED_KEYS = (*RIG_INHERIT_KEYS, "rig", *VENUE_INHERIT_KEYS)
 
 
 def inherited_rig(flat: Dict) -> Dict:
     """The camera-rig subset of a (validated, flat) project config for a new
-    project: ``RIG_INHERIT_KEYS`` present in it + the on-camera rig-sheet fields
-    (as ``"rig"``, only when the project has a rig sheet)."""
-    out = {k: flat[k] for k in RIG_INHERIT_KEYS if flat.get(k) is not None}
+    project: ``RIG_INHERIT_KEYS`` and ``VENUE_INHERIT_KEYS`` present in it + the
+    on-camera rig-sheet fields (as ``"rig"``, only when the project has a rig sheet)."""
+    out = {k: flat[k] for k in (*RIG_INHERIT_KEYS, *VENUE_INHERIT_KEYS) if flat.get(k) is not None}
     rig = flat.get("rig")
     if isinstance(rig, dict):
         out["rig"] = {k: rig[k] for k in RIG_SHEET_INHERIT_FIELDS if k in rig}

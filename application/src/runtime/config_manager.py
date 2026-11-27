@@ -114,6 +114,8 @@ class ConfigManager:
         # Provenance (MRK-0 / remote status): the config file last loaded or saved.
         self.current_config_path: Optional[str] = None
         self._pending_project_switch: Optional[str] = None  # Config filepath to switch to
+        # A2 (#t-023 follow-up): the app's startup state, a new project's code defaults
+        self._code_defaults: Optional[Dict] = None
 
     # ------------------------------------------------------------------
     # Top bar / project bookkeeping
@@ -165,6 +167,7 @@ class ConfigManager:
         Args:
             config_filepath: Path to the config file to load
         """
+        self.capture_code_defaults()   # A2: a start that loads a project keeps the state before it
         self.current_config_path = config_filepath
         print(f"\n{'='*60}")
         print(f"[Project Switch] Starting switch to: {os.path.basename(config_filepath)}")
@@ -467,6 +470,7 @@ class ConfigManager:
     # ------------------------------------------------------------------
     def _show_startup_project_picker(self):
         """Populate and show the launch-time project picker."""
+        self.capture_code_defaults()   # A2: nothing has loaded yet -- the code defaults
         if not self.ui.available:
             return
         infos = self.config_store.list_projects_by_date()
@@ -528,12 +532,17 @@ class ConfigManager:
 
         The new project keeps the CAMERA RIG of the most recently used project
         (crop, exposure/gain, mirror/rotation, camera source, on-camera rig
-        sheet): a blank start used to reopen the IDS at the code's crop 1.0
+        sheet) and the venue's set-up (OSC target, camera link limit; the owner,
+        27/11): a blank start used to reopen the IDS at the code's crop 1.0
         while every project ran 1.37.  The scene (ROI, mask, calibration,
-        empty-wall plate) starts from the code defaults."""
+        empty-wall plate) starts from the code defaults -- and so does EVERY project key off
+        that rig (A2: _start_from_code_defaults), never the previous project's session value."""
         print("[Picker] Starting blank (default model)")
+        defaults = self._start_from_code_defaults()
         source = self._inherit_camera_rig()
         ok = self.models._load_default_model_startup()
+        if ok and defaults:
+            self._apply_code_defaults(defaults)   # A2: a failed load keeps what was there
         # A2 (#t-023 follow-up): a new project starts clean as a switch does (no track, no slot,
         # no stall bridged over its model load); a failed load keeps what was there, not live.
         if ok and self.start_clean is not None:
@@ -581,7 +590,7 @@ class ConfigManager:
             return None
         name, path, flat, warnings = found
         rig = config_schema.inherited_rig(flat)
-        rig_keys = (*config_schema.RIG_INHERIT_KEYS, "rig")
+        rig_keys = config_schema.NEW_PROJECT_CARRIED_KEYS
         for w in warnings:
             if w.split(":", 1)[0].split(".", 1)[0] in rig_keys:
                 print(f"[New project] {name}: {w}")
@@ -602,6 +611,11 @@ class ConfigManager:
         if "input_mirror" in rig or "input_rotation" in rig:
             parts.append(f"mirror {'on' if rig.get('input_mirror') else 'off'}"
                          f" / rotation {int(rig.get('input_rotation') or 0)}")
+        if "osc_ip" in rig or "osc_port" in rig:              # A2: the venue's set-up
+            parts.append(f"OSC to {rig.get('osc_ip', '(kept)')}:{rig.get('osc_port', '(kept)')}")
+        if "ids_throughput_limit_mbps" in rig:
+            mbps = float(rig["ids_throughput_limit_mbps"] or 0)
+            parts.append("link limit " + (f"{mbps:g} MB/s" if mbps > 0 else "the camera's own"))
         sheet = rig.get("rig") or {}
         parts.append("rig sheet " + (", ".join(f"{k}={v}" for k, v in sheet.items())
                                      if sheet else "empty"))
@@ -616,6 +630,52 @@ class ConfigManager:
                                + ", ".join(short or ["rig sheet"]) + ")",
                                duration=6.0, color=(150, 200, 255))
         return source
+
+    # ------------------------------------------------------------------
+    # A2 (#t-023 follow-up, two reviews 27/11): a new project starts from the code defaults
+    # ------------------------------------------------------------------
+    def capture_code_defaults(self) -> None:
+        """Keep the app's startup state -- what a fresh launch saves: the code default of every
+        project key -- for New project / Start blank.  Called at the startup doors (the picker,
+        a project switch) before any project applies; the first capture is kept."""
+        if self._code_defaults is None:
+            self._code_defaults = dict(self.saveable_config())
+
+    def _start_from_code_defaults(self) -> Dict:
+        """New project / Start blank: every project key OFF the rig a new project carries
+        (config_schema.NEW_PROJECT_CARRIED_KEYS) goes back to its code default, so the new
+        project's first Save never writes the previous project's session value.  The rig keys
+        are not touched here (_inherit_camera_rig applies them: one camera open).  The model
+        keys are set now, for the default model load that follows (as a switch's step 6); the
+        others are returned, for _apply_code_defaults once that load succeeded."""
+        if self._code_defaults is None:
+            print("[New project] No startup state kept: the session stands for the code defaults")
+            self.capture_code_defaults()
+        defaults = {k: v for k, v in self._code_defaults.items()
+                    if k not in config_schema.NEW_PROJECT_CARRIED_KEYS}
+        model = {k: defaults.pop(k) for k in ("model", "use_tensorrt", "yolo_shape", "fp16")
+                 if k in defaults}
+        if "yolo_imgsz" in defaults:
+            self.settings.imgsz = int(defaults["yolo_imgsz"])
+            self.models.model_manager.set_imgsz(self.settings.imgsz)
+        if "yolo_shape" in model:
+            from core.input_shape import parse_shape
+            shape = parse_shape(model["yolo_shape"])
+            self.models.model_manager.set_shape(shape)
+            self.settings.yolo_shape = shape
+        if "use_tensorrt" in model:
+            self.models._trt_requested = bool(model["use_tensorrt"])
+        if "fp16" in model:
+            self.settings.use_fp16 = bool(model["fp16"])
+        return defaults
+
+    def _apply_code_defaults(self, defaults: Dict) -> None:
+        """A PARTIAL apply (no model / camera_source key): each default given explicitly, the rig
+        keys absent, so the full-config resets (mirror, rig sheet, plate) stay off."""
+        self.apply_config(defaults)
+        print(f"[New project] {len(defaults)} project keys at their code defaults (+ the model "
+              "keys); carried from the last project: "
+              + ", ".join(config_schema.NEW_PROJECT_CARRIED_KEYS))
 
     # ------------------------------------------------------------------
     # Safe defaults / validation warnings
