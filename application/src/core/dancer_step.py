@@ -661,3 +661,74 @@ class DancerBand:
         if h > self.note_px:
             return BandState("note", h, n, f"dancer ~{h:.0f} px{at}: large - a smaller input would do")
         return BandState("ok", h, n, f"dancer ~{h:.0f} px{at}")
+
+
+# --- X4h (#t-055, seen on the laptop 27/11): never measured against an empty-wall picture that is the cause -----
+# The step and the band read her foreground group against the empty-wall picture.  A picture that is not of this
+# view (the reference watch: not this wall, moved, refused by the swipe's referee, too dark for the foreground, the
+# foreground blind) or no longer fits the camera (X5: exposure, gain or crop changed by hand; X6: taken at another
+# exposure or gain, the rule RUN applies) gives groups that are edges, not her: on the laptop on 27/11, with the
+# picture « not this wall », the band read ~637 px and the step « someone moves on the wall » with nobody there.
+# No judgement of its own: the watch's verdict (``ReferenceVerdict.alert``, worded by
+# ``reference_watch.plate_problem``) and the camera rule (``CleanPlate.camera_mismatch``, X5's reason).
+PLATE_THEN = "CALIBRATE on the empty wall (2 Calibrate) first, then A DANCER, 10 s"
+PLATE_THEN_MOVED = ("check the zone and the mask (1 Rig), then CALIBRATE on the empty wall (2 Calibrate), then "
+                    "A DANCER, 10 s")
+PLATE_THEN_DARK = ("light the wall as for the show, then CALIBRATE on the empty wall (2 Calibrate), then "
+                   "A DANCER, 10 s")
+
+
+@dataclass
+class PlateCause:
+    """Why the dancer is not measured against the empty-wall picture in use: ``why`` the fact (the watch's words),
+    ``then`` the one instruction, ``status`` the watch's status (« camera »: X5 / X6)."""
+    why: str
+    then: str
+    status: str
+
+    def refused(self) -> str:
+        """The step not started (toast and the Calibrate page's status line; the remote's event)."""
+        return f"A dancer, 10 s: not started, {self.why} - {self.then}"
+
+    def stopped(self) -> str:
+        """The step ended by it while it measured (everything put back)."""
+        return f"A dancer, 10 s: stopped, {self.why}; everything put back - {self.then}"
+
+    def not_kept(self) -> str:
+        """Keep pressed on its card once it is the cause (the watch confirmed it after the step): nothing saved."""
+        return f"A dancer, 10 s: not kept, {self.why}; everything put back - {self.then}"
+
+    def band(self) -> str:
+        """The band's text in place of a height."""
+        return f"dancer at the network: not measured ({self.why})"
+
+
+def plate_cause(processor, watch=None) -> Optional[PlateCause]:
+    """The empty-wall picture in use is the cause (``PlateCause``), or None.  ``processor``: the FrameProcessor
+    (its plate, X5's ``_plate_invalid``, X6's camera provider); ``watch``: the reference watch (None: the
+    module's).  None with no picture loaded (the step and the band measure on the boxes alone, as before X4h) and
+    with the foreground off (nothing is measured against the picture).  Never raises (an error reads as None)."""
+    try:
+        plate = getattr(getattr(processor, "_fg_detector", None), "plate", None)
+        if plate is None:
+            return None
+        s = getattr(processor, "settings", None)
+        if s is not None and not getattr(s, "fg_enabled", True):
+            return None
+        from core import reference_watch as rw
+        w = watch if watch is not None else rw.WATCH
+        v = w.current(plate)
+        if v is not None and v.alert:
+            then = {rw.MOVED: PLATE_THEN_MOVED, rw.DARK_PLATE: PLATE_THEN_DARK, rw.BLIND: PLATE_THEN_DARK}
+            why = rw.plate_problem(status="", verdict=v) or str(v.instruction).split(" - ")[0]
+            return PlateCause(why, then.get(v.status, PLATE_THEN), str(v.status))
+        why = getattr(processor, "_plate_invalid", None)
+        if not why:
+            state = getattr(processor, "_camera_state", None)
+            why = plate.camera_mismatch(*state()) if callable(state) else None
+        if why:
+            return PlateCause(f"the empty-wall picture no longer fits the camera ({str(why).split(' - ')[0]})",
+                              PLATE_THEN, "camera")
+    except Exception:  # noqa: BLE001 - the step and the band go on as before
+        return None
+    return None

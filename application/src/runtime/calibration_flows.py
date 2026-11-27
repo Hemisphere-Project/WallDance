@@ -881,6 +881,10 @@ class CalibrationFlows:
                 self.ui.show_toast("The empty-wall picture is being taken (2 s): keep the wall empty, then "
                                    "A DANCER, 10 s", duration=3.0, color=(255, 180, 80))
             return
+        cause = self._dancer_plate_cause()         # X4h: the empty-wall picture is not this view: nothing changes
+        if cause is not None:
+            self._dancer_plate_say(cause.refused())
+            return
         if self._dancer_pending is not None:       # a card left open: the new step starts from before it
             self._cb_dancer_decision(False)
         if not self.models._model_loaded or self.models.model is None:
@@ -1120,6 +1124,11 @@ class CalibrationFlows:
             self._dancer_drop("the project changed")
             return
         r, line = pending
+        cause = self._dancer_plate_cause() if keep else None     # X4h: confirmed since the step: never saved
+        if cause is not None:
+            self._dancer_restore()
+            self._dancer_plate_say(cause.not_kept())
+            return
         if keep:
             self._dancer_pending = None
             self._dancer_snap = None
@@ -1180,6 +1189,10 @@ class CalibrationFlows:
         st = self._dancer
         if st is None:
             return
+        cause = self._dancer_plate_cause()         # X4h: the picture turned out to be the cause: ended, put back
+        if cause is not None:
+            self._dancer_plate_end(cause)
+            return
         from core.dancer_step import STEP_MIN_FRAMES, STEP_STALL_S
         t = time.monotonic() if now is None else float(now)
         if t - float(getattr(self, "_dancer_fed_at", t)) < STEP_STALL_S:
@@ -1209,6 +1222,31 @@ class CalibrationFlows:
                 self.ui.show_toast(f"A dancer, 10 s: {why} - put back as before", duration=6.0,
                                    color=(255, 180, 80))
             print(f"[Dancer] {why}: the card's values put back")
+
+    # X4h (#t-055, laptop 27/11): never measured against an empty-wall picture that is not this view
+    def _dancer_plate_cause(self):
+        """The empty-wall picture in use is the cause (core/dancer_step.py ``plate_cause``: the reference watch's
+        verdict, X5 / X6's camera rule), or None -- with no picture at all, None: the step runs as before."""
+        from core import reference_watch as rw
+        from core.dancer_step import plate_cause
+        return plate_cause(self.processor, rw.watch_of(self))
+
+    def _dancer_plate_say(self, line: str) -> None:
+        """One toast and the Calibrate page's status line, the same line (a remote client reads both events).  The
+        line is a note, not progress: the Calibrate button stays CALIBRATE (``set_calibrate_note``)."""
+        print(f"[Dancer] {line}")
+        if self.ui.available:
+            note = getattr(self.ui, "set_calibrate_note", None)
+            (note if callable(note) else self.ui.set_calibrate_status)(line)
+            self.ui.show_toast(line, duration=8.0, color=(255, 180, 80))
+
+    def _dancer_plate_end(self, cause) -> None:
+        """The step that measures meets the cause (``dancer_watch``): ended as a cancel -- everything put back,
+        nothing set -- with one line saying why."""
+        self._dancer = None
+        self._calibrating = False
+        self._dancer_restore()
+        self._dancer_plate_say(cause.stopped())
 
     def _dancer_keep(self, current):
         """What Calibrate's empty-wall check tries first, and keeps when it is clean (``_pre_enhancement``).  When

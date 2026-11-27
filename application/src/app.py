@@ -215,6 +215,10 @@ class _CalibrationUiAdapter:
             self._card_waiting = None
         self._app.bus.publish(api.CalibProgress(text))
 
+    def set_calibrate_note(self, text):
+        """X4h: the status line says a refusal or a stop (no flow runs): the Calibrate button stays CALIBRATE."""
+        self._app.bus.publish(api.CalibProgress(text, note=True))
+
     def show_toast(self, message: str, duration: float, color):
         self._app.bus.publish(api.Toast(message, duration, color))
 
@@ -2714,16 +2718,21 @@ class WallDanceApp:
         anything, and never raises."""
         try:
             from core.dancer_step import DancerBand, larger_input, observe
+            from core.dancer_step import BandState, plate_cause      # X4h
+            from core import reference_watch as rw
             proc, s = self.processor, self.settings
             band = getattr(self, "_dancer_band", None)
             if band is None:
                 band = self._dancer_band = DancerBand()
             t = time.monotonic() if now is None else float(now)
+            cause = plate_cause(proc, rw.watch_of(self))   # X4h: the empty-wall picture is not this view: no height
             boxes = getattr(proc, "last_raw_boxes", None)
             if boxes is not None and boxes is not getattr(self, "_dancer_band_boxes", None):
                 self._dancer_band_boxes = boxes
                 band.feed(t, observe(list(boxes), getattr(proc, "last_fg", None), conf=float(s.confidence),
                                      lb_scale=float(getattr(proc, "last_lb_scale", 0.0) or 0.0)))
+            if cause is not None:                          # X4h: nothing measured against it is kept
+                band.reset()
             if t - float(getattr(self, "_dancer_band_at", -1e9)) < 1.0:
                 return
             self._dancer_band_at = t
@@ -2735,6 +2744,8 @@ class WallDanceApp:
                 roi_w = roi_h = 0
             med = band.median()
             st = band.state(now=t, where=where, larger=larger_input(roi_w, roi_h, int(s.imgsz), shape, med))
+            if cause is not None:
+                st = BandState("skip", None, 0, cause.band())
             if (st.state, st.text) != getattr(self, "_dancer_band_last", None):
                 self._dancer_band_last = (st.state, st.text)
                 self.bus.publish(api.DancerBand(st.state, st.text, st.net_px))

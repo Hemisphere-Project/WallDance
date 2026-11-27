@@ -1659,15 +1659,20 @@ class MainLoop:
                 app.bus.publish(api.Toast(f"{dark.text[:1].upper()}{dark.text[1:]}", 10.0, (255, 200, 100)))
             busy = (bool(getattr(app.calibration, "_calibrating", False))
                     or getattr(proc, "_plate_capture", None) is not None)
+            # X4h: the dancer step (``_calibrating``) changes neither the light nor the plate: checked through it
+            # as in RUN (her boxes left out), so a picture that is not this wall ends it (``dancer_watch``)
+            step = (busy and getattr(app.calibration, "_dancer", None) is not None
+                    and getattr(proc, "_plate_capture", None) is None)
             flowing = bool(app.camera.state.is_open or app.recorder.is_playing)
             frame = self._latest_raw_frame() if flowing else None
             s = app.settings
             roi = rw.zone_of(s)
             now = time.monotonic()
-            why = watch.due(now, plate, in_run=in_run, busy=busy) if frame is not None else None
+            why = (watch.due(now, plate, in_run=in_run or step, busy=busy and not step)
+                   if frame is not None else None)
             if why:
                 exclude = None
-                if in_run:
+                if in_run or step:
                     measured = getattr(proc, "dancer_height", None)
                     body_h = float(measured[0]) if measured else float(s.person_height_px)
                     h, w = frame.shape[:2]

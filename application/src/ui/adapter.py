@@ -423,7 +423,8 @@ class DpgUiAdapter:
             # the plain CALIBRATE / DANCERS buttons behave exactly as before.
             api.CalibProgress: lambda e: (
                 self.wizard.on_progress(e.text),
-                self.gui.set_calibrate_status(e.text)),
+                self.gui.set_calibrate_note(e.text) if getattr(e, "note", False)     # X4h: no CANCEL label
+                else self.gui.set_calibrate_status(e.text)),
             api.CalibReportCard: lambda e: (
                 None if self.wizard.on_report_card(e.summary)
                 else self.gui.show_calibration_result_dialog(

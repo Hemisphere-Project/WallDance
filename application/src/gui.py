@@ -1002,6 +1002,13 @@ class WallDanceGUI:
             dpg.configure_item("calibrate_btn",
                                label="CANCEL" if text else "CALIBRATE")
 
+    def set_calibrate_note(self, text: Optional[str]):
+        """X4h: a line on the status line that is no progress (the dancer step refused or stopped): nothing runs,
+        so the button stays CALIBRATE (a press starts Calibrate, as its label says)."""
+        self.set_calibrate_status(text)
+        if dpg.does_item_exist("calibrate_btn"):
+            dpg.configure_item("calibrate_btn", label="CALIBRATE")
+
     def _on_vis_toggle(self, name, value):
         if 'on_visualization_toggle' in self.callbacks:
             self.callbacks['on_visualization_toggle'](name, value)

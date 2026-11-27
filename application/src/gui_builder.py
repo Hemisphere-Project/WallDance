@@ -866,7 +866,8 @@ def build_phase_wall(gui: Any):
                          "and the clean plate.  ~20 s.  Press again to cancel.")
         dpg.add_spacer(height=scaled(6))
         # Shared calibration status line (Calibrate + the expert dancers pass).
-        dpg.add_text("", tag="calibrate_status", color=(160, 200, 255), show=False)
+        dpg.add_text("", tag="calibrate_status", color=(160, 200, 255), show=False,
+                     wrap=scaled(_PHASE_WRAP))         # X4h: a refusal line is read whole
         dpg.add_text("Last calibrated: --", tag="aim_last_calib_text", color=TEXT_HINT)
         dpg.add_text("Sets: exposure / gain -> gamma / CLAHE -> MOG2 -> YOLO check on the "
                      "empty wall -> clean plate.", color=TEXT_DIM, wrap=scaled(_PHASE_WRAP))

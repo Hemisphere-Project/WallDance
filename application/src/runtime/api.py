@@ -1006,6 +1006,7 @@ class ModelLoadModalHide(Event):
 @dataclass(frozen=True)
 class CalibProgress(Event):
     text: Optional[str]  # None = idle (clears the status line)
+    note: bool = False   # X4h: a line that is no progress (a refusal): the Calibrate button stays CALIBRATE
 
 
 @dataclass(frozen=True)
