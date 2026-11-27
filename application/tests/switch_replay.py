@@ -225,11 +225,15 @@ def play(args):
     sw = SeamlessSwitch(processor=lambda: proc, live=live, engine_path=engine_path, port=port, notify=notify,
                         period_s=0.5, size_change=args.size_change)
     bg = None
+    show = {"run": False, "tracked": []}                # STANDBY until the take plays, as the app before the show
     if args.auto:                                       # the automatic swipe beside the take
         from runtime.swipe_background import BackgroundSwipe
         bg = BackgroundSwipe(processor=lambda: proc, live=live, engine_path=engine_path, busy=lambda: None,
                              switch=sw, notify=notify, mode=args.auto,
-                             look_s=args.look_s if args.look_s else (5.0 if args.realtime else 2.5))
+                             look_s=args.look_s if args.look_s else (5.0 if args.realtime else 2.5),
+                             in_run=lambda: show["run"],  # the wall test of core.gc_policy (never imported here)
+                             wall_empty=lambda: not show["tracked"] and all(
+                                 s[1] == "lost" for s in (proc.slot_states() or [])))
         bg.start()
     target = parse_candidate(args.swap_to, current.imgsz) if args.swap_to else None
 
@@ -309,6 +313,19 @@ def play(args):
         t0 = time.perf_counter()
         tracked, _disp, timing, _lat = proc.process(frame, need_preview=False, frame_number=i)
         ms = (time.perf_counter() - t0) * 1000.0
+        show["tracked"] = tracked
+        if not show["run"]:
+            # the first frame loaded the live engine and the plate: a look in STANDBY now (the second engine loads
+            # there, as in the app before the show), then RUN
+            n0, t_end = (bg.ticks, time.perf_counter() + 60.0) if bg is not None else (0, 0.0)
+            if bg is not None:
+                bg._wake.set()
+            while bg is not None and bg.resident is None and bg.ticks < n0 + 2 and time.perf_counter() < t_end:
+                time.sleep(0.05)
+            show["run"] = True
+            if bg is not None:
+                say(f"[p6] after the first frame, in STANDBY: second engine {bg.status()['resident']} "
+                    f"({bg.status()['resident_mb']} MB); RUN from frame 1")
         emitted = list(proc.last_emitted or [])
         xy = {int(t.track_id): [round(v, 2) for v in FrameProcessor.sent_xy(t)] for t in emitted}
         hh = {int(t.track_id): round(float(t.bbox[3]), 1) for t in emitted if getattr(t, "bbox", None) is not None}

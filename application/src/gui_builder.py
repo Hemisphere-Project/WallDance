@@ -927,7 +927,8 @@ def build_phase_wall(gui: Any):
                              "           says so here when it does better (Apply now, or Dismiss)\n"
                              "  switch   the same, and when the other model is clearly better it\n"
                              "           switches between two frames, with an alert\n"
-                             "An empty wall costs nothing.  Saved with the project when not off.")
+                             "An empty wall costs no inference; the other model stays loaded\n"
+                             "while it is not off.  Saved with the project when not off.")
         dpg.add_text("", tag="swipe_status_text", color=TEXT_MUTED, wrap=scaled(_PHASE_WRAP))
         with dpg.group(horizontal=True):
             swipe_apply = dpg.add_button(label="Apply", tag="swipe_apply_btn", show=False,

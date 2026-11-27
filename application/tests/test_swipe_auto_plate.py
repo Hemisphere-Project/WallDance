@@ -239,10 +239,12 @@ def test_mode_off_and_an_empty_wall_cost_nothing_on_an_unusable_plate_too():
     bg.set_mode("suggest")
     for _ in range(3):
         assert bg.tick() == "waiting"
+    assert loader.loads == [] and bg.resident is None                    # no engine while the plate does not hold
     _plate(live, True)
     for _ in range(3):
         assert bg.tick() == "idle"                                       # an empty wall: nothing kept, nothing run
-    assert loader.loads == [] and bg.inferences == 0 and bg.resident is None and events == []
+    # ... and no inference: the second engine loads once there (out of RUN here), nothing said
+    assert loader.loads == [L1280.engine_file] and bg.inferences == 0 and events == []
 
 
 # ------------------------------------------------------------------ the tap: a plate refusal starts the pool over

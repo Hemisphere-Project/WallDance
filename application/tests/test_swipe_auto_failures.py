@@ -67,7 +67,7 @@ def _ticks(bg, proc, n):
 @pytest.mark.parametrize("mode", ["auto", "suggest"])
 def test_a_resident_that_cannot_be_loaded_is_tried_once_and_said_once(mode, capsys):
     bg, proc, events, loader = _broken_bg(mode)
-    assert bg.tick() == "run"
+    assert bg.tick() == "banned"                 # loaded before any look now (STANDBY here): it fails there
     assert loader.loads == [L1280.engine_file] and loader.infers == 0 and bg.inferences == 0
     assert _faults(events) == [SAID], "said once, as the switch's fault (the visible path of a failed switch)"
     assert bg.switch.fault == SAID and bg.switch.health() == SAID
@@ -86,11 +86,11 @@ def test_a_resident_that_cannot_be_loaded_is_tried_once_and_said_once(mode, caps
 @pytest.mark.parametrize("lift", ["dismiss", "clear_bans"])
 def test_dismiss_or_a_project_load_lets_it_try_once_more(lift):
     bg, proc, events, loader = _broken_bg("auto")
-    assert bg.tick() == "run" and len(loader.loads) == 1
+    assert bg.tick() == "banned" and len(loader.loads) == 1
     assert set(_ticks(bg, proc, 5)) == {"banned"} and len(loader.loads) == 1
     bg.switch.dismiss()
     getattr(bg, lift)()
-    assert _ticks(bg, proc, 1) == ["run"] and len(loader.loads) == 2       # ONE new attempt
+    assert _ticks(bg, proc, 1) == ["banned"] and len(loader.loads) == 2       # ONE new attempt
     assert set(_ticks(bg, proc, 10)) == {"banned"} and len(loader.loads) == 2 and loader.infers == 0
     assert _faults(events) == [SAID, SAID]                           # said again for the new attempt only
 
@@ -99,7 +99,7 @@ def test_a_load_that_fails_for_another_reason_says_it_and_what_to_do(monkeypatch
     import runtime.seamless_switch as ss
     monkeypatch.setattr(ss, "gpu_free_mb", lambda: 312.4, raising=False)   # out of memory: no room, its MB
     bg, proc, events, loader = _broken_bg("suggest", RuntimeError(OOM))
-    assert bg.tick() == "run"
+    assert bg.tick() == "banned"
     assert _faults(events) == [SAID_OOM]
     assert bg.status()["last_look"]["outcome"] == (
         "the automatic swipe waits: it could not load l @ 1280 (no room on the GPU: 312 MB free) - close what else "
@@ -151,12 +151,13 @@ def test_once_the_ban_is_lifted_the_look_no_longer_says_it_waits_for_it(lift):
     """Dismiss (or a project load) lifts the ban: /status stops saying the automatic swipe waits because it could
     not load l @ 1280 at once -- not at the next look that runs (a whole pool of fresh frames first)."""
     bg, proc, events, loader = _broken_bg("auto")
-    assert bg.tick() == "run" and bg.status()["last_look"]["outcome"] == WAITS
+    assert bg.tick() == "banned" and bg.status()["last_look"]["outcome"] == WAITS
     assert _ticks(bg, proc, 2) == ["banned", "banned"]
     bg.switch.dismiss()
     getattr(bg, lift)()
     assert bg.status()["last_look"] is None, "it still says it waits for a setting no longer banned"
     proc.clock += 60.0
     proc.frames = _look_frames(20, t0=proc.clock - 30.0)                 # not a pool: no look runs
+    bg.in_run, bg.wall_empty = (lambda: True), (lambda: False)           # (and a dancer on: no load tried now)
     assert bg.tick() == "idle" and len(loader.loads) == 1
     assert bg.status()["last_look"] is None

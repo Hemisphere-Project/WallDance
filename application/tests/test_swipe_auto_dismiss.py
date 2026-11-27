@@ -102,7 +102,7 @@ def test_a_ban_is_held_until_dismiss_and_said_by_the_readiness_row():
     """The broken resident: held (Dismiss has something to lift) and the row says the fault; Dismiss lifts both."""
     from core.ops_monitor import check_swipe
     bg, proc, events, loader = _broken_bg("auto")
-    assert bg.tick() == "run"
+    assert bg.tick() == "banned"                 # the load comes first now, at a quiet moment
     health = getattr(bg, "health", lambda: None)
     assert getattr(bg, "held", lambda: False)() and health() == WAITS
     row = check_swipe(fault=bg.switch.health() or health(), fault_recovered=True)

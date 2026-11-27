@@ -838,12 +838,14 @@ class WallDanceApp:
         _engine_path = lambda c: self.models.model_manager.get_engine_path(c.model, c.imgsz, c.shape)  # noqa: E731
         self.swipe_switch = SeamlessSwitch(processor=lambda: self.processor, live=self._swipe_live_setting,
                                            engine_path=_engine_path, port=self.models, notify=self._swipe_notify)
-        # P6 the autonomous swipe (runtime/swipe_background.py): a looker thread, started with the first mode
-        # that is not off; it switches through the seamless switch.
+        # P6 the autonomous swipe (runtime/swipe_background.py): a looker thread, started with a mode that is not
+        # off and ended by off; it switches through the seamless switch.  Its second engine loads and goes only
+        # where a pause does not show: out of RUN, or on an empty wall in RUN.
         self.swipe_bg = BackgroundSwipe(
             processor=lambda: self.processor, live=self._swipe_live_setting, engine_path=_engine_path,
             busy=self._swipe_bg_busy, switch=self.swipe_switch, notify=self._swipe_notify, mode=SWIPE_AUTO,
-            referee=self.swipe.referee)     # fix6: one plate-watch report for the operator's swipe and ours
+            referee=self.swipe.referee,     # fix6: one plate-watch report for the operator's swipe and ours
+            in_run=lambda: self.system_state == SystemState.RUN, wall_empty=self._swipe_wall_empty)
         self._swipe_shown = ""          # which verdict the swipe line shows: "operator" | "background"
         # the automatic swipe turned off: a switch asked before (the operator's seamless Apply, an automatic one)
         # and not yet swapped in does not happen -- the key-off build runs none
@@ -2571,6 +2573,9 @@ class WallDanceApp:
             row = self._swipe_readiness_row()
             if row is not None:                 # advice, not a condition: usually no row at all
                 results.append(row)
+            row = self._swipe_resident_row()
+            if row is not None:                 # information: what the automatic swipe holds on the GPU
+                results.append(row)
         except Exception as e:  # noqa: BLE001 - one row must not sink the report
             print(f"[Readiness] swipe row failed: {e}")
         results.append(check_disk(
@@ -3035,6 +3040,20 @@ class WallDanceApp:
                                     seamless=self._swipe_seamless_winner() is not None,
                                     swipe_auto=self.swipe_bg.mode)
 
+    def _swipe_resident_row(self):
+        """P6: one information row while the automatic swipe keeps its second model loaded (what it holds on the
+        GPU); None with the key off or nothing loaded."""
+        from core.ops_monitor import check_swipe_resident
+        r = self.swipe_bg.resident
+        return check_swipe_resident(swipe_auto=self.swipe_bg.mode, resident=r.candidate.label if r else None,
+                                    mb=r.mb if r else None)
+
+    def _swipe_wall_empty(self) -> bool:
+        """No track on screen and no identity slot held -- the collector's own test (``core.gc_policy``), on the
+        loop's last tracked dancers: in RUN the automatic swipe loads or frees its second engine only then."""
+        from core.gc_policy import wall_empty
+        return wall_empty(self.last_tracked, self.processor)
+
     def _swipe_live_setting(self) -> Optional[LiveSetting]:
         """What the live loop runs now (model, the input it really runs, the loaded model object); None while
         a model loads (a running swipe stops: no CUDA work beside the load's graph capture)."""
@@ -3304,8 +3323,8 @@ class WallDanceApp:
     _SWIPE_AUTO_LABELS = {"off": "Auto: off", "suggest": "Auto: suggest", "auto": "Auto: switch"}
 
     def _cb_swipe_auto(self, mode, quiet: bool = False) -> None:
-        """The operator's (or the project's) mode.  The looker thread starts with the first mode that is not
-        off and stays (it releases the resident model when the mode goes off).  Locked off in this build
+        """The operator's (or the project's) mode.  The looker thread starts with a mode that is not off; off
+        ends it once it has freed its second model (at once out of RUN).  Locked off in this build
         (``core.config.SWIPE_AUTO_UNLOCKED`` False): any other mode is refused, whoever asks -- the combo, the
         remote SetSwipeAuto -- and nothing of P6 starts; off is always accepted."""
         if parse_swipe_mode(mode) != "off" and not core_config.SWIPE_AUTO_UNLOCKED:

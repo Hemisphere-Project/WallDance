@@ -97,7 +97,7 @@ def test_the_old_live_model_goes_right_after_the_next_frames_end():
 def test_the_resident_goes_right_after_the_next_frames_end_when_the_mode_goes_off():
     from runtime.swipe_background import Resident
     live = {"v": _live()}
-    bg, proc, _ = _bg(live, mode="suggest")
+    bg, proc, _ = _bg(live, mode="suggest", in_run=lambda: True)      # in RUN (out of RUN it goes at once)
     freed = []
     bg.resident = Resident(L1280, _Engine(freed), "r-l1280", bg._resident_key(live["v"]), 0.4)
     bg.set_mode("off")

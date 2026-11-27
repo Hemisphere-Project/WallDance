@@ -102,7 +102,7 @@ def test_an_engine_file_shown_bad_keeps_the_rebuild_sentence_even_on_a_full_gpu(
     """As today (pinned): a file shown bad is the one case told to rebuild -- whatever the GPU's room."""
     _here["mb"] = 100.0
     bg, proc, events, loader = _bg_on("auto", _bad_file(tmp_path, how))
-    assert bg.tick() == "run"
+    assert bg.tick() == "banned"                 # loaded before any look now (STANDBY here): it fails there
     assert _faults(events) == [SAID] and bg.status()["last_look"]["outcome"] == WAITS
 
 
@@ -110,7 +110,7 @@ def test_an_engine_file_shown_bad_keeps_the_rebuild_sentence_even_on_a_full_gpu(
 def test_a_sound_engine_file_on_a_gpu_without_room_is_said_as_no_room(mode, tmp_path, _here, capsys):
     _here["mb"] = 312.4
     bg, proc, events, loader = _bg_on(mode, _engine(tmp_path / "yolo11l-pose_1280.engine"))
-    assert bg.tick() == "run"
+    assert bg.tick() == "banned"
     assert _faults(events) == [NO_ROOM_SAID], "the GPU's room and what to do -- not a rebuild"
     assert bg.switch.health() == NO_ROOM_SAID and "rebuild" not in NO_ROOM_SAID
     assert bg.status()["last_look"]["outcome"] == NO_ROOM_WAITS and bg.health() == NO_ROOM_WAITS
@@ -120,7 +120,7 @@ def test_a_sound_engine_file_on_a_gpu_without_room_is_said_as_no_room(mode, tmp_
     assert _faults(events) == [NO_ROOM_SAID]
     bg.switch.dismiss()
     bg.dismiss()                                                                            # Dismiss: once more
-    assert _looks(bg, proc, 1) == ["run"] and len(loader.loads) == 2
+    assert _looks(bg, proc, 1) == ["banned"] and len(loader.loads) == 2
 
 
 @pytest.mark.parametrize("free, said", [(5000.0, UNSURE_SAID), (None, UNSURE_UNREAD)])
@@ -129,7 +129,7 @@ def test_when_file_and_room_cannot_be_told_apart_it_names_both_and_no_rebuild_fi
     held it then), or no reading: both named; the GPU first, a rebuild only if it fails again."""
     _here["mb"] = free
     bg, proc, events, loader = _bg_on("auto", _engine(tmp_path / "yolo11l-pose_1280.engine"))
-    assert bg.tick() == "run"
+    assert bg.tick() == "banned"
     assert _faults(events) == [said]
     assert said.index("close what else uses the GPU") < said.index("rebuild")
     assert "could not be read" not in said

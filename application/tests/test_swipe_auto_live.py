@@ -37,7 +37,9 @@ class _BgProc(_SwitchProc):
         return [f for f in self.frames if after_t is None or float(f.t) > after_t], self.clock
 
 
-def _bg(live, *, loader=None, port=None, busy=lambda: None, mode="off", engine_exists=lambda p: True, idle_s=None):
+def _bg(live, *, loader=None, port=None, busy=lambda: None, mode="off", engine_exists=lambda p: True, **kw):
+    """``kw``: more of BackgroundSwipe's arguments (``in_run``, ``wall_empty``, ``gpu_used``); without them the app
+    reads as out of RUN (STANDBY): the second engine loads at the first look."""
     pytest.importorskip("torch")
     from runtime.seamless_switch import SeamlessSwitch
     from runtime.swipe_background import BackgroundSwipe
@@ -52,7 +54,7 @@ def _bg(live, *, loader=None, port=None, busy=lambda: None, mode="off", engine_e
     bg = BackgroundSwipe(processor=lambda: proc, live=lambda: live["v"], engine_path=lambda c: c.engine_file,
                          busy=busy, switch=sw, notify=lambda k, p: events.append((k, p)),
                          mode=mode, look_s=999.0, runner_factory=loader or _Loader(),
-                         engine_exists=engine_exists, engine_lock=lock, idle_s=idle_s)
+                         engine_exists=engine_exists, engine_lock=lock, **kw)
     bg.start = lambda: None                              # the test drives the looker by hand (``tick``)
     return bg, proc, events
 
@@ -178,7 +180,8 @@ def test_a_look_loads_the_other_model_once_and_suggests_it():
 def test_a_run_needs_a_full_pool_of_frames_the_last_run_did_not_use():
     bg, proc, events, loader, live = _looking_bg()
     proc.frames = _look_frames(149)
-    assert bg.tick() == "idle" and loader.loads == [] and loader.infers == 0           # 149: not yet, nothing loaded
+    assert bg.tick() == "idle" and loader.infers == 0                                  # 149: not yet, nothing run
+    assert len(loader.loads) == 1             # (the second engine: loaded at the mode's first quiet look, kept)
     proc.frames = _look_frames(150)
     assert bg.tick() == "run" and loader.infers == 150
     proc.clock = 1000.0                                  # long after: the policy would look again ...
@@ -216,20 +219,6 @@ def test_a_run_without_a_verdict_says_nothing():
     assert events[n:] == [] and bg.suggestion["text"] == "earlier"
 
 
-def test_the_second_engine_goes_after_an_idle_time():
-    bg, proc, events, loader, live = _looking_bg(idle_s=600.0)
-    proc.frames = _look_frames()
-    bg.tick()
-    assert bg.resident is not None
-    proc.frames = []                                     # the dancers leave: an empty wall
-    proc.clock = 200.0 + 599.0
-    bg.tick()
-    assert bg.resident is not None                       # kept between runs ...
-    proc.clock = 200.0 + 601.0
-    bg.tick()
-    assert bg.resident is None and bg.history[-1]["kind"] == "release"    # ... released after 600 s without a run
-
-
 def test_the_run_judges_at_the_shows_confidence():
     bg, proc, events, loader, live = _looking_bg()
     proc.settings.confidence = 0.27
@@ -239,13 +228,14 @@ def test_the_run_judges_at_the_shows_confidence():
 # ----------------------------------------------------------------------------------------------------------
 # The looks: an empty wall, a busy app
 # ----------------------------------------------------------------------------------------------------------
-def test_an_empty_wall_costs_no_inference_and_no_engine():
+def test_an_empty_wall_costs_no_inference_and_one_load():
+    """No inference on an empty wall; the second engine loads there once (here out of RUN), and stays."""
     live = {"v": _live()}
     loader = _Loader()
     bg, proc, _ = _bg(live, loader=loader, mode="suggest")
     for _ in range(5):
         assert bg.tick() == "idle"
-    assert loader.loads == [] and bg.resident is None and bg.inferences == 0
+    assert loader.loads == [L1280.engine_file] and bg.resident.candidate == L1280 and bg.inferences == 0
 
 
 def test_a_busy_app_is_never_looked_at():
@@ -330,14 +320,15 @@ def test_a_change_by_hand_starts_the_dwell_and_a_switch_does_not_count_as_one():
     assert [h["kind"] for h in bg.history].count("manual-change") == 1 and bg._expect is None
 
 
-def test_no_room_for_a_gain_means_no_run_no_engine():
+def test_no_room_for_a_gain_means_no_run_no_inference():
     """The policy's free pre-filter: the live setting's own stored boxes already cover every dancer -- no run, no
-    engine loaded, no inference, and those frames count as looked at."""
+    inference (the second engine was loaded at the mode's quiet moment, not for this look), and those frames count
+    as looked at."""
     bg, proc, events, loader, live = _looking_bg()
     proc.frames = _look_frames(150, lost=0)              # a box on the dancer on every frame
     skipped = bg.auto.skipped
     assert bg.tick() == "idle" and bg.auto.skipped == skipped + 1
-    assert loader.loads == [] and loader.infers == 0 and bg.resident is None
+    assert len(loader.loads) == 1 and loader.infers == 0
     assert bg.last_look["look"] == "skipped"
     assert bg.tick() == "idle" and bg.auto.skipped == skipped + 1          # its frames are no longer fresh
 
