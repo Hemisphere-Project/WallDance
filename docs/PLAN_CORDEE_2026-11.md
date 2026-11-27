@@ -542,7 +542,7 @@ Rev 2 (release in the last column):
 | P3 | Model by the ratchet | bench GPU | P1, F3 | 0.5d | #t-049 | measured 26/11, choice open (§5) | 1 |
 | P4 | Dancer height at the network | bench ⚙ | P1 | 0.5d | #t-050 | landed 26/11; the live band open | 1 |
 | P5 | Warmup swipe | bench GPU + laptop | P1, F1 | 2d | #t-058 | built 26/11 on `cordee-swipe`; the review's findings answered, per-swipe gate in §5; re-review pending | – |
-| P6 | Autonomous swipe | bench GPU + laptop | P5 | 3d | #t-059 | built 26–27/11 on `cordee-swipe`, behind `swipe_auto` (off); gate in §5: green on the show's setting, 2 ms over during the looks from x @ 1920 × 1056, no switch on mur2 8; blind review 27/11: 14 findings in three groups, the first fixed (`dbeaa96`), key off until the second is | – |
+| P6 | Autonomous swipe | bench GPU + laptop | P5 | 3d | #t-059 | built 26–27/11 on `cordee-swipe`, behind `swipe_auto` (off); gate in §5: green on the show's setting, 2 ms over during the looks from x @ 1920 × 1056, no switch on mur2 8; blind review 27/11: 14 findings in three groups, the first fixed (`dbeaa96`), the key locked off (`d5fe629`) until the second is | – |
 | X1 | Servo on the highlights | bench ⚙ | – | 1d | #t-027 ④ | todo | 2 |
 | X2 | Light verdict | bench ⚙ | – | 0.5d | #t-054 | todo | 2 |
 | X3 | Emptiness first | bench ⚙ | – | 1d | #t-027 ⑤ | todo | 2 |
@@ -882,6 +882,19 @@ Filled by the step named. Until then the cell says so.
     6–8, the gate's own takes, and the first look sits on it (the reviewer's re-run of the simulator: a first
     switch at 347 s or at 4,220 s on take 7, by where the pool starts); the speed rule lets a switch through
     when a time is missing. Until the second group is fixed and read again: key off.
+  - *Key off, and the lock.* In this build the key cannot be turned on: `core.config.SWIPE_AUTO_UNLOCKED` is
+    False (`d5fe629`) — the « Auto: » list is not on screen, the app and the remote API refuse any mode but off
+    (« Automatic swipe: not released in this build - it stays off »), and a project file that asks for a mode
+    loads off and says so. It is set to True in the commit that closes the review's second group, once that
+    group is read again: that commit is the reviewed act that opens `suggest`. With the key off, Apply and every
+    word around it are P5's and no thread, engine or inference of P6 exists; the frame path pays a few attribute
+    reads. Key off is still not byte for byte the build before P6, in two places. P5's own swipe: its pool of
+    kept frames starts again when the plate's refusal for this camera changes; the referee tells the reference
+    watch nothing while the plate is not usable; « Try other settings » is refused on a plate that is ready but
+    not usable; the end of a swipe asks the collector policy for its collection instead of running it. Remote
+    clients: the schema gains the command SetSwipeAuto and the event SettingsSwipeHold (sent on every full
+    project load and on Dismiss), the `swipe` part of /status gains `switch` and `auto`, SettingsSwipeResult
+    gains its `apply_*` keys, and one line of DismissSwipeNotice's description changed.
   - *Open.* From x @ 1920 × 1056 the looks put the laptop at 57 ms: starting each background inference right
     after a live frame, instead of every 0.2 s, is the next thing to try. On mur2 8 the gain from x to l at 1920
     × 1056 sits at the bar and no switch comes: l is also the faster model there, and a lower bar for a setting
