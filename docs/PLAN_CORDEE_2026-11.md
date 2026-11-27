@@ -920,11 +920,17 @@ Filled by the step named. Until then the cell says so.
     such failure now ends in one instruction he can follow, « set Auto to off », the cause in parentheses and
     the detail in the log and in /status; the line is no longer redrawn over a failed Apply or over the
     operator's own swipe; Dismiss on a failed Apply's line also says « not now » to that suggestion; a look that
-    raises backs off and, at the third in a row, puts the setting aside. *Before `auto`*, open: the 5-point bar
-    was tuned on mur2 6–8, the gate's own takes, and the first look sits on it (the reviewer's re-run of the
-    simulator: a first switch at 347 s or at 4,220 s on take 7, by where the pool starts; and the bench row
-    below); « twice in a row » and the speed rule's missing time, first listed here, went into the second round
-    because `suggest` uses them.
+    raises backs off and, at the third in a row, puts the setting aside. *The third pass checked*
+    (`CHECK_B3_c983cfa.md`, run on the real classes): it holds — the line stops inviting at the first look that
+    does not confirm and the next look withdraws the suggestion 150 s later, four times of four; ten failures of
+    the background of ten end in « set Auto to off », twelve of the operator's Apply of twelve in « keep the
+    current setting » — with a leftover closed in `18f2e89`: a look that raises counts as one that does not
+    confirm; setting Auto to off acknowledges the background's own fault (the red line and the readiness row go,
+    the cause stays in the log and in /status); the two times are shown to a tenth of a ms. *Before `auto`*,
+    open: the 5-point bar was tuned on mur2 6–8, the gate's own takes, and the first look sits on it (the
+    reviewer's re-run of the simulator: a first switch at 347 s or at 4,220 s on take 7, by where the pool
+    starts; and the bench row below); « twice in a row » and the speed rule's missing time, first listed here,
+    went into the second round because `suggest` uses them.
   - *After the second group, bench* (mgr-ran, 27/11; `tmp_analysis/swipe-1126/live/d2/`, `d3/`, `f1/`). The
     earlier no-switch references no longer fit: the rehearsal build's own live-path commits change the stream
     from frame 144 on, so a fresh reference was recorded. The first four rows are on `0310ad8`, the next three
@@ -968,15 +974,18 @@ Filled by the step named. Until then the cell says so.
     a show: the laptop has measured none of the commits after `48fdec1` — one hold on the final merged build
     beside TouchDesigner, with a load on an empty wall, a look and a release in it, is owed; a switch at 1920 ×
     1056 is not timed there either. Before `auto`: the bar and a held-out check for it (the dusk take of the
-    rehearsal is the first). Left by the last reader, not blocking the rehearsal: the late-frames stand-down
-    sees nothing under 20 frames in 3 s (frames of 150 ms or more) nor right after a stall; quit waits at most 8
-    s for a cold load. From x @ 1920 × 1056 the looks put the laptop at 57 ms: the looker now stands down there
-    by itself, and starting each background inference right after a live frame, instead of every 0.2 s, is the
-    next thing to try. A look that falls due with no second engine while a dancer is tracked waits for an empty
-    wall. A suggestion behind the operator's own verdict stays hidden until he dismisses it. The probation's
-    callbacks still run inside the third probation frame of an operator's Apply. The toast, the line and Dismiss
-    have been driven by tests on the real app object and by the driver, not yet seen on the real screen. Three
-    takes, one evening, one wall, played from disk.
+    rehearsal is the first). Covered at the rehearsal by « no Apply »: after a shown suggestion the looks back
+    off 300, 600, 1,200 s, so the invitation can stand up to about 20 minutes with no look at all before the
+    first that could un-confirm it; with a gain hovering around the bar the Apply button can appear and
+    disappear silently a few times an evening. Left by the last reader, not blocking the rehearsal: the
+    late-frames stand-down sees nothing under 20 frames in 3 s (frames of 150 ms or more) nor right after a
+    stall; quit waits at most 8 s for a cold load. From x @ 1920 × 1056 the looks put the laptop at 57 ms: the
+    looker now stands down there by itself, and starting each background inference right after a live frame,
+    instead of every 0.2 s, is the next thing to try. A look that falls due with no second engine while a dancer
+    is tracked waits for an empty wall. A suggestion behind the operator's own verdict stays hidden until he
+    dismisses it. The probation's callbacks still run inside the third probation frame of an operator's Apply.
+    The toast, the line and Dismiss have been driven by tests on the real app object and by the driver, not yet
+    seen on the real screen. Three takes, one evening, one wall, played from disk.
 - **F1 — foreground** (2026-11-26, `tests/fg_eval.py`, mur2 with the 21:36 plate, every 3rd frame):
   foreground under 6,263 of 6,263 boxes a network gives at conf ≥ 0.5; a group on the dancer 94.7–100 % of
   dancer-frames; groups on nobody inside the wall 0.000–0.201 per frame; take 2 (empty) 0.0 and no stale frame (the
