@@ -20,10 +20,17 @@ from test_seamless_switch import _BgProc as _SwitchProc
 
 @pytest.fixture
 def swipe_auto_unlocked(monkeypatch):
-    """The automatic swipe released (``core.config.SWIPE_AUTO_UNLOCKED``), for a test that turns it on through the
-    app's doors (the combo's callback, a project load).  The build ships it locked: never autouse."""
+    """Every mode of the automatic swipe released (``core.config.SWIPE_AUTO_RELEASED``), for a test that turns it on
+    through the app's doors (the combo's callback, a project load).  The build ships off only: never autouse."""
     import core.config
-    monkeypatch.setattr(core.config, "SWIPE_AUTO_UNLOCKED", True)
+    monkeypatch.setattr(core.config, "SWIPE_AUTO_RELEASED", ("off", "suggest", "auto"))
+
+
+@pytest.fixture
+def swipe_auto_suggest_only(monkeypatch):
+    """Off and suggest released, not auto: the build once the review's second group is closed."""
+    import core.config
+    monkeypatch.setattr(core.config, "SWIPE_AUTO_RELEASED", ("off", "suggest"))
 
 
 class _BgProc(_SwitchProc):

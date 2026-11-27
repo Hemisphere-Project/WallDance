@@ -385,12 +385,13 @@ SWIPE_VERDICT_MAX_AGE_S = 1800.0
 # looks every SWIPE_AUTO_LOOK_S at the kept frames (an empty wall costs no inference); a background run's candidate
 # inferences are SWIPE_AUTO_PACE_S apart (at most one every four live frames at 20 fps), right after a live pass.
 SWIPE_AUTO = "off"
-# The automatic swipe is locked off in this build: no combo on screen, the mode stays off whoever asks (the
-# GUI, the remote SetSwipeAuto), a project's key that is not off is read as off.  False until the blind
-# review's second group of findings is fixed and read again; flipping it is the reviewed act that opens
-# "suggest".  Read when needed (core.config.SWIPE_AUTO_UNLOCKED), never copied at import: a test or a gate
-# driver sets it.
-SWIPE_AUTO_UNLOCKED = False
+# The modes of the automatic swipe this build lets anyone set (mode keys): the combo shows only these (its row is
+# hidden while off is the only one), any other mode is refused whoever asks (the GUI, the remote SetSwipeAuto)
+# and the mode stays what it was, a project's key that is not among them is read as off.  "off" always;
+# "suggest" is added by the commit that closes the blind review's second group of findings after its re-read;
+# "auto" by the one that closes the third.  Read when needed (core.swipe_auto.released_modes), never copied at
+# import: a test or a gate driver sets it.
+SWIPE_AUTO_RELEASED = ("off",)
 SWIPE_AUTO_LOOK_S = 5.0
 SWIPE_AUTO_PACE_S = 0.2
 # The operator's Dismiss on a background suggestion means « not now »: that setting is neither suggested nor

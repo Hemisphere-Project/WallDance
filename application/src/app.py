@@ -110,13 +110,14 @@ from core.ops_monitor import (
 from core.enhancer import ImageEnhancer
 from core.input_shape import shape_str
 from core.swipe import Candidate
+from core.swipe_auto import LABELS as SWIPE_AUTO_LABELS, mode_word as swipe_auto_word
 from core.swipe_auto import parse_mode as parse_swipe_mode
+from core.swipe_auto import released_modes as swipe_auto_released   # core.config.SWIPE_AUTO_RELEASED, at each call
 from core.tracker import DancerTracker
 from core.tracking_logger import _json_default
 from core.video_recorder import VideoRecorder
 from core.version import app_version
 from core.input_transform import IDENTITY, InputTransform, remap_exclusion_bundle
-import core.config as core_config      # SWIPE_AUTO_UNLOCKED, read when needed (a test or a driver sets it)
 import core.config_schema as config_schema
 from runtime import api
 from runtime.api import SystemState
@@ -1654,20 +1655,20 @@ class WallDanceApp:
         if "swipe_auto" in config or full_config:            # P6: absent = off
             asked = config.get("swipe_auto", SWIPE_AUTO)
             asked_mode = parse_swipe_mode(asked)
-            if asked_mode != "off" and not core_config.SWIPE_AUTO_UNLOCKED:
-                # locked off in this build: the project's key is read as off, said once at this load
+            if asked_mode not in swipe_auto_released():
+                # not released in this build: the project's key is read as off, said once at this load
                 self._cb_swipe_auto("off", quiet=True)
                 say(f"[SwipeAuto] mode off - this project asks for {asked_mode}, "
                     "which is not released in this build")
-                word = self._SWIPE_AUTO_LABELS[asked_mode].removeprefix("Auto: ")
-                self.bus.publish(api.Toast(f"Automatic swipe: off - this project asks for {word}, which is not "
-                                           "released in this build", 6.0, (255, 200, 100)))
+                self.bus.publish(api.Toast(f"Automatic swipe: off - this project asks for "
+                                           f"{swipe_auto_word(asked_mode)}, which is not released in this build",
+                                           6.0, (255, 200, 100)))
             else:
                 self._cb_swipe_auto(asked, quiet=True)
             if self.swipe_bg.mode != "off":                  # the project turns it on: said once, never silent
                 say(f"[SwipeAuto] mode {self.swipe_bg.mode} (from the project)")
-                word = self._SWIPE_AUTO_LABELS[self.swipe_bg.mode].removeprefix("Auto: ")
-                self.bus.publish(api.Toast(f"Automatic swipe: {word} (from the project)", 6.0, (150, 200, 255)))
+                self.bus.publish(api.Toast(f"Automatic swipe: {swipe_auto_word(self.swipe_bg.mode)} (from the "
+                                           "project)", 6.0, (150, 200, 255)))
         if full_config:
             self.swipe_bg.clear_bans()                       # a project load: failed automatic switches may retry
             self.bus.publish(api.SettingsSwipeHold(bool(self.swipe_switch.fault)))
@@ -3374,18 +3375,20 @@ class WallDanceApp:
         self.bus.publish(api.SettingsSwipeHold(False))       # nothing waits for Dismiss any more
 
     # -- P6 the autonomous swipe ------------------------------------------------------------------------------
-    _SWIPE_AUTO_LABELS = {"off": "Auto: off", "suggest": "Auto: suggest", "auto": "Auto: switch"}
+    _SWIPE_AUTO_LABELS = SWIPE_AUTO_LABELS
 
     def _cb_swipe_auto(self, mode, quiet: bool = False) -> None:
         """The operator's (or the project's) mode.  The looker thread starts with a mode that is not off; off
-        ends it once it has freed its second model (at once out of RUN).  Locked off in this build
-        (``core.config.SWIPE_AUTO_UNLOCKED`` False): any other mode is refused, whoever asks -- the combo, the
-        remote SetSwipeAuto -- and nothing of P6 starts; off is always accepted."""
-        if parse_swipe_mode(mode) != "off" and not core_config.SWIPE_AUTO_UNLOCKED:
-            self._sync("combo", "swipe_auto", self._SWIPE_AUTO_LABELS[self.swipe_bg.mode])
-            say(f"[SwipeAuto] {parse_swipe_mode(mode)} refused: not released in this build, it stays off")
-            self.bus.publish(api.Toast("Automatic swipe: not released in this build - it stays off",
-                                       5.0, (255, 200, 100)))
+        ends it once it has freed its second model (at once out of RUN).  Only the modes this build releases
+        (``core.config.SWIPE_AUTO_RELEASED``) are accepted: any other is refused, whoever asks -- the combo, the
+        remote SetSwipeAuto --, the mode stays what it was and nothing more of P6 starts; off is always accepted."""
+        asked = parse_swipe_mode(mode)
+        if asked not in swipe_auto_released():
+            now = self.swipe_bg.mode
+            self._sync("combo", "swipe_auto", self._SWIPE_AUTO_LABELS[now])
+            say(f"[SwipeAuto] {asked} refused: not released in this build, it stays {now}")
+            self.bus.publish(api.Toast(f"Automatic swipe: {swipe_auto_word(asked)} is not released in this build "
+                                       f"- it stays {swipe_auto_word(now)}", 5.0, (255, 200, 100)))
             return
         before = self.swipe_bg.mode
         m = self.swipe_bg.set_mode(mode)

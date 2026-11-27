@@ -18,6 +18,7 @@ from gui_builder import rotation_from_label, rotation_label
 from core.config import RECORDING_SLOTS
 from core.config import SUPPORT_ACK_GUARD_S
 from core.video_import import IMPORTABLE_EXTS
+from core.swipe_auto import LABELS as SWIPE_AUTO_LABELS
 from gui_constants import (
     TEXT_NORMAL, TEXT_MUTED, TEXT_DIM, TEXT_HINT, TEXT_FAINT,
     HEADING_GREEN, OK_GREEN, BRIGHT_GREEN, WARN_AMBER, WARN_ORANGE,
@@ -816,7 +817,7 @@ class WallDanceGUI:
         if 'on_swipe' in self.callbacks:
             self.callbacks['on_swipe'](bool(getattr(self, "_swipe_busy", False)))
 
-    _SWIPE_AUTO_MODES = {"Auto: off": "off", "Auto: suggest": "suggest", "Auto: switch": "auto"}
+    _SWIPE_AUTO_MODES = {label: mode for mode, label in SWIPE_AUTO_LABELS.items()}   # the combo's words -> modes
 
     def _on_swipe_auto(self, sender=None, app_data=None, *args):
         """P6: the automatic swipe's mode (the combo beside 'Try other settings')."""
@@ -2165,7 +2166,7 @@ class WallDanceGUI:
                     dpg.set_value(tag, value)
         if name == 'swipe_auto' and dpg.does_item_exist("swipe_btn_tip"):   # P5's words while it is off
             from gui_builder import SWIPE_BTN_TIP_OFF, SWIPE_BTN_TIP_ON
-            dpg.set_value("swipe_btn_tip", SWIPE_BTN_TIP_OFF if value == "Auto: off" else SWIPE_BTN_TIP_ON)
+            dpg.set_value("swipe_btn_tip", SWIPE_BTN_TIP_OFF if value == SWIPE_AUTO_LABELS["off"] else SWIPE_BTN_TIP_ON)
     
     def update_model_dropdown(self, model_name: str):
         """Update model dropdown to show current model."""

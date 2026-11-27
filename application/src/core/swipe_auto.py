@@ -47,17 +47,32 @@ import math
 from dataclasses import dataclass, replace
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
+import core.config as core_config      # SWIPE_AUTO_RELEASED, read when needed (a test or a gate driver sets it)
 from core.input_shape import target_hw
 from core.swipe import Candidate, FrameScore, SwipeFrame, SwipeParams, SwipeResult
 
 MODE_OFF, MODE_SUGGEST, MODE_AUTO = "off", "suggest", "auto"
 MODES = (MODE_OFF, MODE_SUGGEST, MODE_AUTO)
+# the combo's words for each mode (the GUI's items, the app's syncs, the word of a toast without "Auto: ")
+LABELS = {MODE_OFF: "Auto: off", MODE_SUGGEST: "Auto: suggest", MODE_AUTO: "Auto: switch"}
 
 
 def parse_mode(value) -> str:
     """A project's ``swipe_auto`` value -> one of ``MODES`` (anything else: off)."""
     v = str(value or "").strip().lower()
     return v if v in MODES else MODE_OFF
+
+
+def released_modes() -> Tuple[str, ...]:
+    """The modes this build lets anyone set (``core.config.SWIPE_AUTO_RELEASED``, read at each call), in the order
+    of ``MODES``; off always.  The one source of the combo's items and of what the app accepts."""
+    released = core_config.SWIPE_AUTO_RELEASED
+    return tuple(m for m in MODES if m == MODE_OFF or m in released)
+
+
+def mode_word(mode) -> str:
+    """The combo's word for ``mode``: off, suggest, switch."""
+    return LABELS[parse_mode(mode)].removeprefix("Auto: ")
 
 
 def seamless(a: Candidate, b: Candidate) -> bool:
