@@ -32,8 +32,8 @@ and acts on its advice, on its own thread, without the operator:
   switch that fails is the switch's fault, the one thing of the swipe that belongs to the health line;
 * **a resident that cannot be loaded** (a broken engine file, no GPU memory left beside TouchDesigner) is tried
   once: that setting is banned like a failed automatic switch -- and more: no load, no inference, no look run for
-  it -- until Dismiss or a project load; it is said once, as the switch's fault, in plain words (the raw error
-  goes to the log), and while it holds, the look says why the swipe waits.
+  it -- until Dismiss, a project load or a switch to it that works; it is said once, as the switch's fault, in
+  plain words (the raw error goes to the log), and while it holds, the look says why the swipe waits.
 
 Threading: the looker thread owns the resident model and its inferences; the loop thread owns the live model and
 the swap.  Every CUDA call here happens under ENGINE_LOAD_LOCK (a live load waits, and a running look stops at its
@@ -178,6 +178,7 @@ class BackgroundSwipe:
         switch.on_switched = self._on_switched
         switch.on_confirmed = self._on_switch_confirmed
         switch.on_failed = self._on_switch_failed
+        switch.on_superseded = self._on_switch_superseded
         self.notify = notify
         self.auto = PolicyPort(mode, auto_params)
         self.params = params
@@ -195,7 +196,8 @@ class BackgroundSwipe:
         self.engine_lock = engine_lock
         self.wall = wall
         self.referee = referee      # the plate watch's word (RefereeReport, fix6): the operator's swipe's, shared
-        # settings an automatic switch failed to: no automatic attempt again until Dismiss or a project load
+        # settings an automatic switch failed to: no automatic attempt again until Dismiss, a project load or a
+        # switch to it that works (the operator's Apply, confirmed)
         self._banned: Dict[str, str] = {}
         # ... of them, those whose resident could not be loaded: no look at all for them, and what the look says
         self._unloadable: Dict[str, str] = {}
@@ -354,6 +356,8 @@ class BackgroundSwipe:
                 self.last_look = self._record("look", look="none", t=float(proc.loop_clock()), frames=0,
                                               seconds=0.0, outcome=PLATE_WAIT)
             return "waiting"
+        if self.last_look is not None and self.last_look.get("outcome") == PLATE_WAIT:
+            self.last_look = None             # the plate is usable again: the wait is over, no look since
         frames, now = proc.swipe_fresh(self._fresh_after)
         fresh = self.auto.fresh(frames)
         self.last_counts = (len(fresh), sum(1 for f in fresh if f.lost))
@@ -591,8 +595,16 @@ class BackgroundSwipe:
 
     def _on_switch_confirmed(self, req) -> None:
         """The switched-in model ran its first frames: now the setting changed -- the dwell starts at the swap, the
-        streak is over, the pool starts again."""
+        streak is over, the pool starts again.  A ban on that setting goes: it runs, and runs well."""
+        self._lift(req["new"].key)
         self.auto.switched(req["take_t"], req["old"], req["new"])
+
+    def _on_switch_superseded(self, req) -> None:
+        """A model load replaced the switched-in model during its first frames: the switch did not last.  The
+        setting it moved to is no longer expected (a change by hand to it later is one); the old live model kept as
+        the resident goes once it no longer fits the live setting (``_free_pending``).  The policy never heard of
+        the switch."""
+        self._expect = None
 
     def _on_switch_failed(self, req) -> None:
         """A switch that did not happen (it failed before it began, or its first frames raised): the old live model
@@ -641,17 +653,28 @@ class BackgroundSwipe:
         if why:
             self.notify("cleared", {"text": f"suggestion withdrawn: {why}"})
 
+    def _lift(self, key: Optional[str] = None) -> None:
+        """The ban on one setting (``key``), or on all, goes; so does the look's row that waits for one of them
+        (/status no longer says it)."""
+        waits = list(self._unloadable.values()) if key is None else [self._unloadable.get(key)]
+        if self.last_look is not None and self.last_look.get("outcome") in [w for w in waits if w]:
+            self.last_look = None
+        if key is None:
+            self._banned.clear()
+            self._unloadable.clear()
+        else:
+            self._banned.pop(key, None)
+            self._unloadable.pop(key, None)
+
     def clear_bans(self) -> None:
         """A project load: the settings an automatic switch failed to (or whose resident did not load) may be tried
         again."""
-        self._banned.clear()
-        self._unloadable.clear()
+        self._lift()
 
     def dismiss(self) -> None:
         """The operator's Dismiss: the suggestion goes (a failed switch is the switch's to acknowledge) and the
         settings an automatic switch failed to (or whose resident did not load) may be tried again."""
-        self._banned.clear()
-        self._unloadable.clear()
+        self._lift()
         if self.suggestion is not None:
             self.suggestion = None
             self.notify("cleared", {"text": "dismissed"})

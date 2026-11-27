@@ -2,7 +2,7 @@
 automatic swipe leaves alone (a ban) -- whatever else the swipe panel shows, and the readiness row keeps saying why.
 
 Dismiss (``swipe_dismiss_btn`` -> ``DismissSwipeNotice`` -> ``_cb_dismiss_swipe``) is the one control that lifts a
-ban.  It used to show only with the fault's own panel state or with a suggestion: any later state hid it (the
+ban (a switch to the banned setting that works lifts it too: it is live and fine).  It used to show only with the fault's own panel state or with a suggestion: any later state hid it (the
 operator's own « Try other settings », an Apply under way, a withdrawn suggestion), and only a later suggestion
 brought it back -- which a banned setting no longer makes.  The panel now has one rule (``_show_swipe_dismiss``):
 shown when its state asks for it OR while the app says something waits (``SettingsSwipeHold``).  Headless
@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 from test_seamless_switch import L1280
+from test_seamless_switch_superseded import M1280
 from test_swipe_auto_failures import SAID, WAITS, _broken_bg
 from test_swipe_auto_rollback import _first_frame_raises, _setup, _two_looks_ask_the_switch
 
@@ -113,14 +114,15 @@ def test_a_ban_is_held_until_dismiss_and_said_by_the_readiness_row():
 
 
 def test_the_row_keeps_saying_the_ban_once_a_later_switch_cleared_the_fault():
-    """A failed automatic switch to l @ 1280 (the fault, the ban), then the operator's Apply of it succeeds: the
-    fault goes, the ban stays until Dismiss -- the readiness row says so instead of nothing."""
+    """A failed automatic switch to l @ 1280 (the fault, the ban), then the operator's Apply of another setting
+    (m @ 1280) succeeds: the fault goes, the ban on l @ 1280 stays until Dismiss -- the readiness row says so
+    instead of nothing."""
     from core.ops_monitor import check_swipe
     bg, proc, loader, live, port, tap = _setup()
     _two_looks_ask_the_switch(bg, proc, tap)
     _first_frame_raises(port)
     assert bg.switch.fault and bg.status()["auto_banned"] == [L1280.engine_file]
-    assert bg.request_switch(L1280, "Apply now") is None
+    assert bg.request_switch(M1280, "Apply now") is None
     bg.switch.service()
     assert bg.switch.drain()
     port.hooks[1]()                                      # its first frames ran well
@@ -128,3 +130,41 @@ def test_the_row_keeps_saying_the_ban_once_a_later_switch_cleared_the_fault():
     row = check_swipe(fault=bg.switch.health() or getattr(bg, "health", lambda: None)(), fault_recovered=True)
     assert row is not None and row.status == "warn" and row.detail == UNBAN
     assert bg.held()
+
+
+def _banned_then_applied(out=None):
+    """A failed automatic switch to l @ 1280 (the fault, the ban), then the operator's Apply of l @ 1280 itself,
+    its first frames run well.  ``out``: the app's words to the panel from the switch on (the app's own handler)."""
+    bg, proc, loader, live, port, tap = _setup()
+    _two_looks_ask_the_switch(bg, proc, tap)
+    _first_frame_raises(port)
+    assert bg.switch.fault and bg.held() and bg.status()["auto_banned"] == [L1280.engine_file]
+    if out is not None:
+        import app as appmod
+        fake = SimpleNamespace(bus=SimpleNamespace(publish=out.append), _swipe_shown="background",
+                               swipe_switch=bg.switch, swipe_bg=bg)
+        bg.switch.notify = lambda kind, payload: appmod.WallDanceApp._swipe_notify(fake, kind, payload)
+    assert bg.request_switch(L1280, "Apply now") is None
+    bg.switch.service()
+    assert bg.switch.drain()
+    port.hooks[1]()                                      # its first frames ran well
+    return bg
+
+
+def test_a_ban_goes_once_a_switch_to_that_setting_is_confirmed():
+    """The banned setting is live and fine: no ban left, nothing for Dismiss to lift, no readiness row."""
+    from core.ops_monitor import check_swipe
+    bg = _banned_then_applied()
+    assert bg.switch.fault is None
+    assert bg.status()["auto_banned"] == [], "a setting that runs well is still banned"
+    assert not bg.held() and bg.health() is None
+    assert check_swipe(fault=bg.switch.health() or bg.health(), fault_recovered=True) is None
+
+
+def test_the_app_lets_dismiss_go_at_the_switch_that_lifts_the_ban():
+    """The app's word to the panel at that switch (``SettingsSwipeHold``, after the confirmation) already says
+    nothing waits for Dismiss."""
+    pytest.importorskip("dearpygui")
+    out = []
+    _banned_then_applied(out)
+    assert _holds(out) == [False], "Dismiss stays on screen for a setting that is live and fine"

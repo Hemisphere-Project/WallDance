@@ -314,3 +314,19 @@ def test_after_a_keep_a_rising_lost_share_wakes_the_looker_before_the_back_off_e
     assert bg.last_advice["reason"].startswith("keep ")
     assert pol._keeps == 1 and pol._keep_at == 450.0                     # after a woken run: from the start again
     assert [h["outcome"] for h in bg.history if h["kind"] == "look"].count(WAIT) == (startup == "plate-waits-first")
+
+
+def test_the_wait_is_no_longer_said_from_the_first_tick_with_a_usable_plate():
+    """/status is read remotely during the show: once the operator calibrated on the empty wall, the look no longer
+    says the automatic swipe waits for the plate -- from the next tick, not from the next look that runs (minutes
+    later: a whole new pool first).  The row goes (no look since); the history keeps it."""
+    bg, proc, events, loader, live = _looking_bg(mode="auto")
+    _plate(live, False)
+    proc.frames = _look_frames(150)
+    assert bg.tick() == "waiting" and bg.status()["last_look"]["outcome"] == WAIT
+    proc.clock = 300.0
+    _plate(live, True)                                                   # Calibrate on the empty wall
+    assert bg.tick() == "idle" and loader.infers == 0                    # the old pool: no look yet
+    st = bg.status()
+    assert st["state"] == "watching" and st["last_look"] is None, "it still says it waits for the plate"
+    assert [h["outcome"] for h in bg.history if h["kind"] == "look"] == [WAIT]

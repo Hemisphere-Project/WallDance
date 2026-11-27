@@ -142,3 +142,19 @@ def test_after_a_failed_automatic_switch_and_a_project_load_it_says_what_lifts_t
     (_, adv), = _next_runs(bg, proc, tap, 300)
     assert adv["advice"] == "suggest" and adv["why_not_auto"] == AUTO_FAILED
     assert adv["text"] == f"{SAYS}: clearly better - Apply now ({AUTO_FAILED})"
+
+
+@pytest.mark.parametrize("lift", ["dismiss", "clear_bans"])
+def test_once_the_ban_is_lifted_the_look_no_longer_says_it_waits_for_it(lift):
+    """Dismiss (or a project load) lifts the ban: /status stops saying the automatic swipe waits because it could
+    not load l @ 1280 at once -- not at the next look that runs (a whole pool of fresh frames first)."""
+    bg, proc, events, loader = _broken_bg("auto")
+    assert bg.tick() == "run" and bg.status()["last_look"]["outcome"] == WAITS
+    assert _ticks(bg, proc, 2) == ["banned", "banned"]
+    bg.switch.dismiss()
+    getattr(bg, lift)()
+    assert bg.status()["last_look"] is None, "it still says it waits for a setting no longer banned"
+    proc.clock += 60.0
+    proc.frames = _look_frames(20, t0=proc.clock - 30.0)                 # not a pool: no look runs
+    assert bg.tick() == "idle" and len(loader.loads) == 1
+    assert bg.status()["last_look"] is None

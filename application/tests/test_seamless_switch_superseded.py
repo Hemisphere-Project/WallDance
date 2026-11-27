@@ -166,3 +166,37 @@ def test_after_a_superseded_automatic_switch_the_looker_sees_a_change_by_hand():
     assert bg.switch.fault is None and bg.status()["auto_banned"] == []
     assert bg.resident is None and "release" in kinds and bg.switch._drop == []
     assert "switched" not in [k for k, _ in events]
+
+
+def test_after_a_superseded_automatic_switch_a_change_by_hand_to_its_setting_is_one_too():
+    """The same switch to l @ 1280, overtaken by the operator's m @ 1280 before the looker saw l live.  Later the
+    operator picks l @ 1280 by hand: that is a change by hand too (its row, the dwell from then) -- the switch that
+    did not last no longer makes l @ 1280 the setting the looker expects."""
+    from test_swipe_auto_live import _bg
+    from runtime.swipe_background import Resident
+    live = {"v": _live()}
+    port = _LivePort()
+    bg, proc, events = _bg(live, port=port, mode="auto")
+    port.proc = proc
+    assert bg.tick() == "idle"
+    m, r = SimpleNamespace(name="l1280"), _Runner("l1280")
+    bg.resident = Resident(L1280, m, r, bg._resident_key(live["v"]), 0.4)
+    adv = SimpleNamespace(kind="apply", level="definite", winner=L1280, seamless=True, streak=2,
+                          text="switching to l @ 1280 (it covers 20 % more of the dancers)", why_not_auto=None)
+    bg._act(adv, SimpleNamespace(reason="l @ 1280 covers 90 %", winner=L1280, current=X1280), live["v"])
+    bg.switch.service()
+    assert bg.switch.drain() and proc.model is m
+    proc.model = SimpleNamespace(name="m1280")           # the operator's reload, before the first frames ran
+    live["v"] = _live(cand=M1280, model_id=3)
+    bg.switch.drain()                                    # the loop's next pass: superseded
+    bg.tick()                                            # x @ 1280 -> m @ 1280: by hand
+    proc.clock += 30.0
+    proc.model = SimpleNamespace(name="l1280-by-hand")   # later, the operator's own l @ 1280
+    live["v"] = _live(cand=L1280, model_id=4)
+    bg.tick()
+    pol = bg.auto.policy
+    by_hand = [(h["old"], h["new"]) for h in bg.history if h["kind"] == "manual-change"]
+    assert by_hand == [(X1280.label, M1280.label), (M1280.label, L1280.label)], \
+        "the operator's l @ 1280 is taken for the end of the switch that was overtaken"
+    assert (pol._switched_at, pol._left) == (proc.clock, M1280)          # the dwell starts at it
+    assert bg._expect is None and bg.switch.fault is None and bg.status()["auto_banned"] == []

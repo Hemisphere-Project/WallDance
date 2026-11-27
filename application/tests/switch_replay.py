@@ -259,6 +259,9 @@ def play(args):
     again, dismissed, seams, rows = [], [], [], []
     resident_seen = False
     n_max = int(round(args.max_s * fps))
+
+    def health():                                       # the app's readiness row: the switch's fault, else a ban
+        return sw.health() or (bg.health() if bg is not None else None)
     while i < n_max:
         ok, frame = cap.read()
         if not ok and len(seams) + 1 < args.loops:       # --loops: from the start frame again, the clock runs on
@@ -279,11 +282,11 @@ def play(args):
             say(f"[p6] {clock['t']:7.1f} s  Apply {target.label} again: " + (why or "under way")
                 + f"; fault before: {fault_before!r}")
         if args.dismiss_at_s is not None and not dismissed and i >= int(round(args.dismiss_at_s * fps)):
-            dismissed.append((sw.health(), i))
+            dismissed.append((health(), i))
             sw.dismiss()                                # the app's Dismiss: the switch's fault and the swipe's bans
             if bg is not None:
                 bg.dismiss()
-            say(f"[p6] {clock['t']:7.1f} s  Dismiss: fault {dismissed[0][0]!r} -> {sw.health()!r}")
+            say(f"[p6] {clock['t']:7.1f} s  Dismiss: fault {dismissed[0][0]!r} -> {health()!r}")
         if target is not None and requested_at is None and i >= int(round(args.swap_at_s * fps)):
             why = (bg.request_switch if bg is not None else sw.request)(
                 target, f"switching to {target.label} (Apply)", on_done=lambda ok_, text: done.append((ok_, text, i)))
@@ -310,11 +313,11 @@ def play(args):
         xy = {int(t.track_id): [round(v, 2) for v in FrameProcessor.sent_xy(t)] for t in emitted}
         hh = {int(t.track_id): round(float(t.bbox[3]), 1) for t in emitted if getattr(t, "bbox", None) is not None}
         pool = len(proc.swipe_snapshot()[0])
-        if sw.health() != (rows[-1]["fault"] if rows else None):   # the readiness row the app builds from it
-            row = check_swipe(fault=sw.health(), fault_recovered=True)
-            rows.append({"f": i, "t": round(clock["t"], 2), "fault": sw.health(), "live": port.current.label,
+        if health() != (rows[-1]["fault"] if rows else None):   # the readiness row the app builds from it
+            row = check_swipe(fault=health(), fault_recovered=True)
+            rows.append({"f": i, "t": round(clock["t"], 2), "fault": health(), "live": port.current.label,
                          "row": row.status if row else None})
-            say(f"[p6] {clock['t']:7.1f} s  readiness row: {rows[-1]['row']} ({sw.health()!r}), live "
+            say(f"[p6] {clock['t']:7.1f} s  readiness row: {rows[-1]['row']} ({health()!r}), live "
                 f"{port.current.label}")
         if first_dancer is None and (pool or xy):
             first_dancer = i
