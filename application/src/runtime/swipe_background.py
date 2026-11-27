@@ -146,8 +146,8 @@ class PolicyPort:
     each look ``fresh`` -> the live setting's own scores on them -> ``room`` -> ``due``; on "run" the candidates
     scored on the newest ``run_frames`` fresh frames -> ``ran`` -> ``advise``; ``switched`` once a swap's first
     frames ran (or a change by hand); ``reset`` on a new scene; ``dismissed`` at the operator's Dismiss of a
-    suggestion, ``snoozed`` at each look, ``end_snooze`` at a project load.  A rename or a new argument costs one
-    edit in this class."""
+    suggestion, ``snoozed`` at each look, ``end_snooze`` at a project load, ``turned_off`` when the mode goes off.
+    A rename or a new argument costs one edit in this class."""
 
     def __init__(self, mode: str, params: Optional[AutoParams] = None):
         self.policy = SwipeAuto(parse_mode(mode), params)
@@ -223,6 +223,10 @@ class PolicyPort:
     def end_snooze(self) -> None:
         self.policy.end_snooze()
 
+    def turned_off(self) -> None:
+        """The mode went off: the snooze and the streak end (a mode set again starts fresh)."""
+        self.policy.turned_off()
+
 
 class BackgroundSwipe:
     def __init__(self, *, processor: Callable[[], Any], live: Callable[[], Optional[LiveSetting]],
@@ -295,6 +299,7 @@ class BackgroundSwipe:
         self.last_counts: Tuple[int, int] = (0, 0)      # fresh frames with dancers, of which lost
         self._quiet = True                              # this look's moment: a load or a release would not show
         self._mode_set = False                          # the mode was just set (not off): the next look's moment
+        self._click_look = False                        # this look is that one: a load moment whatever else is true
         self._quiet_since: Optional[float] = None       # loop clock since when the wall is seen empty in RUN
         self._was_run = False                           # RUN at the last look (entering RUN starts the count again)
         self._next_s: Optional[float] = None            # the next look sooner than look_s (an empty wall counted)
@@ -318,12 +323,16 @@ class BackgroundSwipe:
         """Off ends the automatic swipe for the session: the looker frees its engine (at once out of RUN, right
         after a live frame in RUN) and its thread ends.  Another mode wakes the looker -- ``start`` starts it
         again -- and the engine loads at that next look, whatever is on the wall: the operator's click (or a
-        project load) is the moment, once.  Later, only where a pause does not show."""
+        project load) is the moment, once, a snooze or not.  Later, only where a pause does not show.  Off ends
+        what the operator said to this mode and what it saw: the suggestion, a Dismiss's snooze, the streak -- a
+        mode set again starts fresh."""
         m = parse_mode(mode)
         self.auto.mode = m
         self._mode_set = m != MODE_OFF    # the next look may load: the operator chose this pause
         if m == MODE_OFF:
             self._clear_suggestion("the automatic swipe is off")
+            self.auto.turned_off()
+            self._end_snooze_row()
             self.state = "off"
             self._end_wall_wait()
         elif self.state == "off":
@@ -431,6 +440,7 @@ class BackgroundSwipe:
         wall: the operator's own click, used by that look only."""
         self._next_s = None
         mode_set, self._mode_set = self._mode_set, False
+        self._click_look = mode_set
         run = bool(self.in_run())
         entered, self._was_run = run and not self._was_run, run
         if not run:
@@ -592,8 +602,14 @@ class BackgroundSwipe:
             return "busy"
         other = other_model(live.candidate, self.models)
         wait, did = self._stands_down(other, now)
+        if wait and did == "snoozed" and self._click_look:
+            # the operator's click is a load moment whatever else is true: the setting put aside loads now, so the
+            # look after the snooze does not wait for an empty wall; no look, no inference for it until then
+            got = self._load_when_quiet(proc, live, other, now)
+            if got:
+                return got
         if wait:
-            # banned or dismissed a moment ago: no load, no inference, no look -- the look's row says why
+            # banned or dismissed a moment ago: no inference, no look, no load but the click's -- the row says why
             if self.last_look is None or self.last_look.get("outcome") != wait:
                 self.last_look = self._record("look", look="none", t=now, frames=0, seconds=0.0, outcome=wait)
             return did

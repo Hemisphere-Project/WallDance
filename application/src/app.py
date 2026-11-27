@@ -3447,8 +3447,9 @@ class WallDanceApp:
             self.bus.publish(api.Toast("A better model may be available - see 'Try other settings' "
                                        "(Apply now)", 6.0, (255, 200, 100)))
         elif kind == "switching":
-            # an automatic switch: information, in a toast's ordinary colour -- only a failure is an alert (red)
-            self.bus.publish(api.Toast(text, 6.0, (255, 200, 100)))
+            # an automatic switch: information, in the green of the operator's own Apply -- only a failure is an
+            # alert (red)
+            self.bus.publish(api.Toast(text, 6.0, (120, 220, 140)))
             self.bus.publish(api.SettingsSwipeProgress("auto_switching", text, 0.5))
         elif kind == "switched":
             if payload.get("auto"):                       # the operator's Apply has its own line (_swipe_switch_done)

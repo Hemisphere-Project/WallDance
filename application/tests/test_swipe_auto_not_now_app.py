@@ -6,7 +6,7 @@ mode set through the app's own door with the ``swipe_auto_unlocked`` fixture: th
   acknowledges no fault, and Dismiss stays on screen for them; with none on the line it acknowledges the fault and
   lifts the bans (as before);
 * Apply on a suggestion judged on another project (or too old) switches nothing: it is withdrawn, one toast;
-* a successful automatic switch is a toast in the ordinary colour, a failure an alert (red)."""
+* a successful automatic switch is a toast in the green of the operator's own Apply, a failure an alert (red)."""
 import pytest
 
 from test_seamless_switch import L1280, L1920, _live
@@ -103,7 +103,8 @@ def test_a_successful_automatic_switch_is_a_toast_and_a_failure_an_alert(real_ap
     app._swipe_notify("switching", {"text": text, "to": "l @ 1280", "from": "x @ 1280"})
     shown = [e for e in events if type(e).__name__ in ("Alert", "Toast")]
     assert [type(e).__name__ for e in shown] == ["Toast"], "a successful automatic switch is shown as an alert"
-    assert shown[0].message == text and tuple(shown[0].color) == (255, 200, 100)    # the ordinary toast's colour
+    assert shown[0].message == text
+    assert tuple(shown[0].color) == (120, 220, 140), "not the green of the operator's own Apply success toast"
     del events[:]
     app._swipe_notify("fault", {"text": FAULT})            # regression guard: a failure stays an alert
     assert [type(e).__name__ for e in events if type(e).__name__ in ("Alert", "Toast")] == ["Alert"]

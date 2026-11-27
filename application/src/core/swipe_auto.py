@@ -185,8 +185,8 @@ class SwipeAuto:
         self.reset()
 
     def reset(self) -> None:
-        """Another project, ROI, plate or camera: nothing learned so far describes this scene (a Dismiss's snooze
-        ends too)."""
+        """Another project, ROI, plate, camera or picture enhancement, or the reference watch's alert said or gone:
+        nothing learned so far describes this scene (a Dismiss's snooze ends too)."""
         self._last_end: Optional[float] = None       # end of the last background run or probe
         self._last_probe: Optional[float] = None
         self._streak_winner: Optional[Candidate] = None
@@ -340,8 +340,8 @@ class SwipeAuto:
     # -- the operator's Dismiss ----------------------------------------------------------------------------
     def dismissed(self, now: float, winner: Candidate, for_s: float) -> None:
         """The operator dismissed the suggestion of ``winner``: not now.  The streak is over, and that setting is
-        neither suggested nor switched to by itself for ``for_s`` (``snoozed``), or until ``reset`` (a new scene)
-        or ``end_snooze``; after it, a new streak."""
+        neither suggested nor switched to by itself for ``for_s`` (``snoozed``), or until ``reset`` (a new scene),
+        ``end_snooze`` or ``turned_off``; after it, a new streak."""
         self._streak_winner, self._streak = None, 0
         self._snoozed, self._snoozed_until = winner, float(now) + max(0.0, float(for_s))
 
@@ -354,6 +354,14 @@ class SwipeAuto:
     def end_snooze(self) -> None:
         """A project load: a setting put aside by a Dismiss may be suggested again."""
         self._snoozed, self._snoozed_until = None, None
+
+    def turned_off(self) -> None:
+        """The mode went off: what this session's mode was told and saw ends with it, so a mode set again starts
+        fresh -- the snooze of a Dismiss ends, and so does the streak (a verdict seen before off never counts
+        towards a switch after it).  The dwell after a switch, the way back and the back-offs stay: they keep the
+        show from a switch too soon, whatever the mode did meanwhile."""
+        self._streak_winner, self._streak = None, 0
+        self.end_snooze()
 
     def switched(self, now: float, old: Candidate, new: Candidate) -> None:
         """The live setting changed, by the app or by the operator: the dwell starts, the streak is over (the
