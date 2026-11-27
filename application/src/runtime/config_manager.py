@@ -85,6 +85,7 @@ class ConfigManager:
         saveable_config: Callable[[], Dict],
         request_reprocess: Callable[[], None],
         start_clean: Optional[Callable[[], None]] = None,
+        camera_not_live: Optional[Callable[[], None]] = None,
     ) -> None:
         self.models = models
         self.cameras = cameras
@@ -101,6 +102,8 @@ class ConfigManager:
         self.request_reprocess = request_reprocess
         # A2 (#t-023 follow-up): the app's clean start of a new project (tracker, slots, stall clock)
         self.start_clean = start_clean
+        # ... and its camera-not-live step alone (D34), for a failed switch that keeps the old project
+        self.camera_not_live = camera_not_live
 
         self.config_store = ConfigStore()
         self._current_project = "default"
@@ -195,6 +198,7 @@ class ConfigManager:
                     "(unreadable) - pick another save", duration=6.0,
                     color=(255, 80, 80))
             self.models._model_loading = False
+            self._failed_switch_not_live()
             if camera_was_open:
                 self.cameras._open_camera(self.camera.state.source)
             return False
@@ -267,6 +271,7 @@ class ConfigManager:
             if not self.models._load_model_with_progress(model_name, force_pt=force_pt):
                 print(f"[Project Switch] ERROR: Failed to load model")
                 self.models._model_loading = False
+                self._failed_switch_not_live()
                 if camera_was_open:
                     self.cameras._open_camera(self.camera.state.source)
                 return False
@@ -349,6 +354,13 @@ class ConfigManager:
         print(f"[Project Switch] Complete: {self._current_project}")
         print(f"{'='*60}\n")
         return True
+
+    def _failed_switch_not_live(self):
+        """A2 (#t-023 follow-up): a switch that fails keeps the old project -- same wall, same
+        dancers: its tracks and slots stay -- but the camera it closed was not live meanwhile
+        (D34): that silence is not a camera stall, no keep-alive re-sends the old frame."""
+        if self.camera_not_live is not None:
+            self.camera_not_live()
 
     # ------------------------------------------------------------------
     # Save / load / profile callbacks
@@ -522,6 +534,12 @@ class ConfigManager:
         print("[Picker] Starting blank (default model)")
         source = self._inherit_camera_rig()
         ok = self.models._load_default_model_startup()
+        # A2 (#t-023 follow-up): a new project starts clean as a switch does (no track, no slot,
+        # no stall bridged over its model load); a failed load keeps what was there, not live.
+        if ok and self.start_clean is not None:
+            self.start_clean()
+        elif not ok:
+            self._failed_switch_not_live()
         # After the model load (it pauses/reopens the current camera): one open
         # of the inherited camera, already at the inherited crop.
         if ok and source is not None:

@@ -210,10 +210,13 @@ def _session(tmp_path, monkeypatch):
                               width=W, height=H),
         cap=None, close=lambda: None, set_input_transform=lambda t: None,
         has_capture_error=lambda: False)
+    cam_kw = {}
+    if "start_clean" in inspect.signature(CameraController.__init__).parameters:
+        cam_kw["start_clean"] = lambda: app._cb_project_start_clean()      # as app.py wires it
     cams = CameraController(camera=legacy, unified_camera=cam, use_unified=True,
                             ui=SimpleNamespace(available=False),
                             preview_geometry=lambda w, h: None, repush_preview_size=lambda: None,
-                            is_running=lambda: True)
+                            is_running=lambda: True, **cam_kw)
     models = _Models(clock)
     recording = SimpleNamespace(_drain_pending_playback_event=lambda: None,
                                 source_transitioning=False, _update_recording_ui=lambda: None)
@@ -239,6 +242,8 @@ def _session(tmp_path, monkeypatch):
               apply_config=applied.append, saveable_config=lambda: {}, request_reprocess=lambda: None)
     if "start_clean" in inspect.signature(ConfigManager.__init__).parameters:
         kw["start_clean"] = app._cb_project_start_clean      # as app.py wires it
+    if "camera_not_live" in inspect.signature(ConfigManager.__init__).parameters:
+        kw["camera_not_live"] = lambda: app.processor.camera_not_live()    # as app.py wires it
     mgr = ConfigManager(**kw)
     mgr.config_store = ConfigStore(config_dir=str(tmp_path / "projects"),
                                    last_project_file=str(tmp_path / "projects" / "last_project.txt"))

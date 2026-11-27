@@ -649,6 +649,7 @@ class WallDanceApp:
             preview_geometry=self._camera_preview_geometry,
             repush_preview_size=self._repush_preview_size,
             is_running=lambda: self.running,
+            start_clean=self._cb_project_start_clean,   # A2: a camera source switch starts clean
         )
         
         self.osc: Optional[OSCSender] = None
@@ -780,6 +781,7 @@ class WallDanceApp:
             saveable_config=self._get_saveable_config,
             request_reprocess=self._request_reprocess,
             start_clean=self._cb_project_start_clean,
+            camera_not_live=lambda: self.processor.camera_not_live(),   # A2: a failed switch
         )
         # CALIBRATE / DANCERS orchestration (DECOMPOSITION_PLAN Phase 2
         # (5)): owns the calibration state machines stepped by the main
@@ -2182,7 +2184,8 @@ class WallDanceApp:
     def _cb_project_start_clean(self):
         """A project switch (A2, #t-023 follow-up): the new project starts as a restart does --
         the tracker and the identity slots reset (the Reset button's path, OSC clear included)
-        and the camera is not live (D34): the switch's silence is never bridged as a stall."""
+        and the camera is not live (D34): the switch's silence is never bridged as a stall.
+        The same step starts a camera source switch (another view) and Start blank / New project."""
         self._cb_tracker_reset()
         self.processor.camera_not_live()
 

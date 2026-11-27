@@ -59,6 +59,7 @@ class CameraController:
         preview_geometry: Callable[[int, int], None],
         repush_preview_size: Callable[[], None],
         is_running: Callable[[], bool],
+        start_clean: Optional[Callable[[], None]] = None,
     ) -> None:
         self.camera = camera
         self.unified_camera = unified_camera
@@ -67,6 +68,8 @@ class CameraController:
         self.preview_geometry = preview_geometry
         self.repush_preview_size = repush_preview_size
         self.is_running = is_running
+        # A2 (#t-023 follow-up): the app's clean start (tracker, slots, stall clock), for a change of view
+        self.start_clean = start_clean
 
         self.ids_ratio: float = IDS_RATIO  # Current IDS crop ratio (W/H)
         self.ids_gain_db: float = 0.0        # Current IDS gain (dB), 0 = default
@@ -167,6 +170,12 @@ class CameraController:
         if source == self.camera.state.source and self.camera.state.is_open:
             return
         print(f"Selecting camera source: {source}")
+        # A2 (#t-023 follow-up): another camera is another view -- the old tracks' coordinates mean
+        # nothing there -- so it starts clean as a project switch does (tracker, slots, OSC clear),
+        # and its close/open/warm-up silence is never a camera stall (D34).  Re-opening the same,
+        # closed source is a reconnect of the same view: nothing to reset.
+        if self.start_clean is not None and source != self._normalize_camera_source(self.camera.state.source):
+            self.start_clean()
         try:
             self._attempt_camera_connect(source)
         except Exception as e:
