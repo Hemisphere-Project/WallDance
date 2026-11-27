@@ -269,7 +269,9 @@ an existing row.
   doubling of its cost per frame; then the best of those is named. The swipe picks the **model**; the dancer's
   height picks the **size** (her height at the live input ≥ 200 px: the other model at the live input; under
   200: both models at the largest input that has an engine). Readiness shows a row only when the verdict
-  recommends a change; Apply works in STANDBY only (it reloads the model); nothing switches by itself. Where:
+  recommends a change; Apply swaps the model between two frames when the winner runs at the live input (P6's
+  switch) and works in STANDBY only when the input size changes (it reloads the model); nothing switches by
+  itself unless P6's key says so. Where:
   `core/swipe.py` (referee, collector, verdict), `core/swipe_runner.py` (planner, candidate runner),
   `runtime/swipe_controller.py`, `core/pipeline.py` `_swipe_tap`, `core/ops_monitor.py` `check_swipe`; gates
   `tests/swipe_gate.py` (records; `tests/test_swipe_records.py` when `WD_SWIPE_RECORDS` is set) and
@@ -279,12 +281,23 @@ an existing row.
 - **P6 · Autonomous swipe.** After: P5. (Thomas, 26/11: the swipe runs by itself.) Project key `swipe_auto` =
   off | suggest | auto, off by default and absent from existing projects. In RUN, once 150 fresh frames with
   dancers are kept and the live setting's own boxes leave room for a gain, the pair {live, the other model at
-  the live input} runs in the background at a gentle pace. `suggest`: a line and a toast with « Apply now ».
-  `auto`: the switch itself, between two frames at the same network input, only after two verdicts in a row on
-  different frames, a large gain, a dwell, never back, never slower, with an alert toast. An empty wall costs
-  nothing: no frame with a dancer, no inference. Gate: frame time ≤ 55 ms at p95 with TouchDesigner; no switch
-  on mur2 6–8 at l @ 1920 × 1056; from x at the same input one switch with the ids unchanged; zero candidate
-  inference on an empty take. — @est(3d) laptop — hub #t-059
+  the live input} is compared in the background: the other model is loaded beside the live one (two engines at
+  most, the second released after 10 minutes without a look) and runs the kept frames at a gentle pace (one
+  inference every 0.2 s, 30 s a look); P5's referee gives the verdict. `suggest`: a line and a toast with «
+  Apply now ». `auto`: the switch itself, between two frames at the same network input (no camera close, the
+  tracker and the ids untouched, three frames of probation, the old model back if they raise), only after two
+  definite verdicts in a row on different frames (a gain of 5 points or more), a dwell of 5 minutes, never back
+  within 15, never to a slower model, with an alert toast. After a « keep » the next look waits 5 minutes,
+  doubling up to 30, unless the live setting loses 10 points more of its dancers. An empty wall costs nothing:
+  no frame with a dancer, no inference. While the empty-wall plate is not valid the swipe stands down (no frame
+  read, no engine, no inference) and its status says so; a setting whose switch or load failed is not tried
+  again until Dismiss or a project load. The operator's Apply uses the same switch when the input size does not
+  change. Where: `core/swipe_auto.py` (the policy), `runtime/swipe_background.py` (the looker, the second
+  engine), `runtime/seamless_switch.py` (the swap, its probation and rollback), `runtime/model_controller.py`
+  `swap_live`, `core/pipeline.py` (the swap point); driver `tests/switch_replay.py` (a take through the app's
+  loop in real time). Gate: frame time ≤ 55 ms at p95 with TouchDesigner; no switch on mur2 6–8 at l @ 1920 ×
+  1056; from x at the same input one switch with the ids unchanged; zero candidate inference on an empty take.
+  What is measured, and where the gate is not met, in §5. — @est(3d) laptop — hub #t-059
 
 Engine-only estimates on the laptop (pixel count against its measured 21.3 ms for x@1280 and 13.5 ms for
 l@1280): x at 1760 × 960 about 22 ms, l at 1760 × 960 about 14 ms, l at 1920 × 1056 about 17 ms, x at
@@ -529,7 +542,7 @@ Rev 2 (release in the last column):
 | P3 | Model by the ratchet | bench GPU | P1, F3 | 0.5d | #t-049 | measured 26/11, choice open (§5) | 1 |
 | P4 | Dancer height at the network | bench ⚙ | P1 | 0.5d | #t-050 | landed 26/11; the live band open | 1 |
 | P5 | Warmup swipe | bench GPU + laptop | P1, F1 | 2d | #t-058 | built 26/11 on `cordee-swipe`; the review's findings answered, per-swipe gate in §5; re-review pending | – |
-| P6 | Autonomous swipe | bench GPU + laptop | P5 | 3d | #t-059 | in work 26/11, behind `swipe_auto` (off) | – |
+| P6 | Autonomous swipe | bench GPU + laptop | P5 | 3d | #t-059 | built 26–27/11 on `cordee-swipe`, behind `swipe_auto` (off); gate in §5: green on the show's setting, 2 ms over during the looks from x @ 1920 × 1056, no switch on mur2 8; review pending | – |
 | X1 | Servo on the highlights | bench ⚙ | – | 1d | #t-027 ④ | todo | 2 |
 | X2 | Light verdict | bench ⚙ | – | 0.5d | #t-054 | todo | 2 |
 | X3 | Emptiness first | bench ⚙ | – | 1d | #t-027 ⑤ | todo | 2 |
@@ -761,6 +774,105 @@ Filled by the step named. Until then the cell says so.
     and now needs 6.1 points to be named.
     Three takes, one evening, one wall: the first take with a real plate on another wall is to be put through
     `tests/swipe_gate.py`.
+- **P6 — the autonomous swipe** (2026-11-26/27; `tests/switch_replay.py` plays a take through the app's loop in
+  real time, with the background swipe, the switch and the OSC sender's hook; outputs, summaries and the agents'
+  hand-overs in `tmp_analysis/swipe-1126/live/` and `laptop/` on mgr-ran). The gate runs below are on `48fdec1`.
+  The ten commits after it (`a38418c` to `236a343`) change what happens when something fails, what the status
+  says and what is kept in memory, not the pacing, the referee or the policy's thresholds; each has its tests,
+  and the two gate lines that cross the changed code ran again on the final tree (`236a343`): from x @ 1280 the
+  same switch at the second look (342.0 s, ids [1, 2] → [1, 2], 5,793 of 5,793 frames identical before it), and
+  the switch forced to fail (rolled back, 8,809 of 8,809 frames identical to the run without a switch).
+  - *The policy* (`core/swipe_auto.py`, tuned by simulation on the per-frame records of mur2 6–8, then run
+    live). A look needs 150 fresh frames with dancers (P5's pool) and room for a gain in the live setting's own
+    boxes. A marginal verdict (a gain under 5 points) is a suggestion in both modes. `auto` switches at the
+    second definite verdict in a row on other frames, unless the setting changed less than 5 minutes ago, the
+    winner is the setting left less than 15 minutes ago, or the winner is slower (over 1.15 × the live model's
+    time). Speed compares like with like: the 10th percentile of each model's inference times over the same
+    background run. The candidate's median there is 1.5–1.9 × its live time, because it shares the GPU with the
+    live loop (a copy of the live engine run in the background reads 0.98–1.14 × at the 10th percentile); the
+    first rule compared that median with the live model's and would have held 6 of the 9 looks from x @ 1920 ×
+    1056 below, both switches among them, although l is the faster model there (0.64–0.72 × x). After a « keep »
+    the next look waits 300 s, doubling to 1,800, and wakes early when the live setting's lost share rises by 10
+    points.
+  - *Gate, bench* (mgr-ran, a GPU shared with other jobs: decisions, ids and sentences are exact, frame times
+    are not the laptop's).
+
+    | Run (mur2, real time, `48fdec1`) | Looks: take time, dancers covered by l / x | Result |
+    |---|---|---|
+    | l @ 1920 × 1056 live, auto, takes 6 / 7 / 8, 345 s | 1 / 2 / 2 looks (153–154 and 304–305 s), all « keep » at 97–99 % | no suggestion, no switch |
+    | x @ 1920 × 1056 live, auto, take 6, 560 s | 154 s 97 / 92 % marginal · 304 s 97 / 88 % · 455 s 98 / 91 % | **one switch at 479.5 s**, ids [1, 2] → [1, 2] |
+    | x @ 1920 × 1056 live, auto, take 7, 560 s | 152 s 99 / 94 % marginal · 303 s 98 / 91 % · 454 s 98 / 93 % | **one switch at 482.9 s**, ids [1, 2] → [1, 2] |
+    | x @ 1920 × 1056 live, auto, take 8, 560 s | 154 s 98 / 93 % marginal · 305 s 97 / 81 % · 457 s 98 / 93 % marginal | three suggestions, **no switch** |
+    | x @ 1280 live, auto, take 7, 420 s | 155 s 100 / 54 % · 305 s 100 / 63 % | one switch at 342.3 s, ids [1, 2] → [1, 2] |
+    | x @ 1280 live, suggest, take 7, 345 s | the same two verdicts | two suggestions, no switch |
+    | empty wall (take 2, ten times, 120 s), auto | none | 0 inference, 0 engine load |
+    | key off, take 6 | – | 593 of 593 frames identical to the build without P6, no history row |
+    | the plate made unusable, take 7, auto, 200 s | 58 ticks, all waiting | 0 inference, 0 load, one status sentence |
+
+    No switch from the show's setting on the three takes. From x @ 1920 × 1056 the gate as worded (one switch on
+    each of mur2 6–8) is met on takes 6 and 7, at the third look, 8 minutes after the first dancer: the first
+    look reads a gain right at the 5-point bar and counts as marginal each time. Take 8 (302 s, played twice)
+    reads 5, 16, then 5 points again: never two definite verdicts in a row, so it gets the suggestion and not
+    the switch. From x @ 1280, where the gain is 37–46 points, the switch comes at the second look (5.7
+    minutes). Before a switch the stream equals the run without the key, frame for frame (8,180 of 8,180 frames
+    on take 7, 5,799 of 5,799 from x @ 1280; 0.00 px). At the switch the step is 1.6 % of the dancer's height at
+    1920 × 1056 and 4.7 % at 1280 (the takes' own p99 between two frames: 30 and 34 %), OSC goes out on 71 of 71
+    frames around it, no new id and no renumbering after. After the switch the stream is l's own, with l's own
+    misses: on take 7 at 1920 × 1056, l shows one dancer where x showed two for 16 s, twice (l alone from the
+    start does the same; the truth has two there). The verdict is an average over two and a half minutes of
+    dancing, not a promise for each moment.
+  - *The switch itself* (`6ba6ba5`, mgr-ran). x → l @ 1280 at ten chosen moments of mur2 6–8 (dancers moving,
+    close, a still pair): no OSC gap, no step over the take's own p99 in the five frames after it, no new id and
+    no renumbering within 60 frames. Later differences against the x run are l's own at 7 of the 10 moments (l
+    alone emits the same); on mur2 6 with the dancers moving the switched run stays on the truth for the 240
+    frames checked, where x alone and l alone each leave it. A switch to another input size passed the take's
+    p99 at two of nine moments (the tracker's state is in network pixels): it stays a STANDBY reload.
+  - *Gate, laptop* (mur2 7 in real time; with TouchDesigner on the show patch unless said; each hold alone on
+    the machine and voided otherwise).
+
+    | Laptop run | Live frame p50 / p95, whole run | During the looks | Over 55 ms during the looks | What happened |
+    |---|---|---|---|---|
+    | l @ 1920 × 1056, auto (`48fdec1`) | 27.7 / 31.9 ms | 29.5 / **48.0 ms** | 0.4 % | one look, « keep » |
+    | x @ 1920 × 1056, auto (`48fdec1`) | 38.8 / 45.6 ms | 41.1 / **57.2 ms** | 8.0 % | two suggestions in 420 s, no switch yet |
+    | x @ 1280, auto (`6ba6ba5`) | 28.2 / 34.7 ms | 30.4 / 40.5 ms | 0.06 % | switch to l @ 1280 at 335.6 s: that frame 62 ms, the next 28 |
+    | x @ 1280, auto, without TouchDesigner (`6ba6ba5`) | 30.3 / 35.2 ms | 32.0 / 43.8 ms | 0 % | switch at 331.1 s: 43 ms, then 27 |
+    | l @ 1920 × 1056, auto, without TouchDesigner (`6ba6ba5`) | 29.1 / 33.1 ms | 29.6 / 54.0 ms | 2.7 % | two looks, « keep » |
+    | empty wall, auto · key off, without TouchDesigner (`6ba6ba5`) | 26.8 / 29.6 · 26.6 / 29.0 ms | – | – | 0 inference |
+
+    Under 55 ms on the show's setting and from x @ 1280, with and without TouchDesigner. 2 ms over from x @ 1920
+    × 1056, during the looks only (30 s each; 45.6 ms over the whole run): x at that size has 3.5 ms of margin
+    by itself (P2). A switch at 1920 × 1056 is not timed on the laptop: the 420 s hold ended before the third
+    look. The second engine loads in 0.3 s (4 to 6 live frames, the slowest 55 and 72 ms). The GPU peaks at 5.1
+    GB with TouchDesigner (3.6 GB before the run), the process at 2.3 GB of RAM. These holds ran on `48fdec1`
+    and `6ba6ba5`; the commits after them are not measured on the laptop.
+  - *When something fails* (bench GPU, each on the tree of its fix). A switched-in engine that raises on its
+    first frame (injected): the old model is live again at the next frame, the stream equals the run without a
+    switch over all 8,809 frames, no OSC gap, one alert (« the automatic switch to l @ 1280 failed (…): x @ 1280
+    still runs - the automatic swipe will not try yolo11l-pose_1280.engine again until you press Dismiss »), no
+    second try; the policy and the frame pool stay as they were, so the next look comes at its normal time (116
+    s after the fault) and says the ban. An engine file that cannot be read: the operator's Apply fails before
+    it begins, in plain words (« the engine file could not be read … rebuild yolo11l-pose_1280.engine
+    (extra/build_engines) »); the automatic swipe tries its load once (16 times in 41 s before the fix), says it
+    once the same way and waits for Dismiss, with 0 inference. A model load during the three frames of probation
+    ends the switch as overtaken instead of leaving it busy for good. Dismiss stays on screen while a fault or a
+    ban waits for it. A plate that is only not loaded yet (start-up, a project load) is no longer called
+    invalid.
+  - *Found on the way.* The one frame of 190–220 ms seen in the laptop holds is not the swipe's: it is Python's
+    full garbage collection (about 430,000 objects of torch, ultralytics and TensorRT; 89–177 ms on the laptop,
+    100–160 ms on mgr-ran), every several minutes with or without the swipe. Evidence went to the rehearsal
+    build, which stops full collections in RUN (`core/gc_policy.py`, `b949fdd` on `cordee-r2`). On this side
+    every engine the swipe drops is freed by reference counting (`a38418c`: resident 2,428 → 1,708 MB, the old
+    live engine after a switch 2,428 → 1,284, a rollback 2,776 → 2,054, the collector off; `fd1e7ca`: in the app
+    itself the model controller kept the pre-switch engine, 1,144 MB, until the next switch, which the replay
+    driver's own port could not show), and the operator swipe's own collection at its end goes through that
+    policy once it is installed (`4c3ad8f`: what waits is 43 KB after five swipes, nothing on the GPU).
+  - *Open.* From x @ 1920 × 1056 the looks put the laptop at 57 ms: starting each background inference right
+    after a live frame, instead of every 0.2 s, is the next thing to try. On mur2 8 the gain from x to l at 1920
+    × 1056 sits at the bar and no switch comes: l is also the faster model there, and a lower bar for a setting
+    that is both better and faster needs the simulation again. A switch at 1920 × 1056 is not timed on the
+    laptop. The toast, the line and Dismiss have been driven by tests and by the driver, not yet seen on the
+    real screen. Three takes, one evening, one wall, played from disk: a dusk take at the 7–8/12 rehearsal is
+    its real test.
 - **F1 — foreground** (2026-11-26, `tests/fg_eval.py`, mur2 with the 21:36 plate, every 3rd frame):
   foreground under 6,263 of 6,263 boxes a network gives at conf ≥ 0.5; a group on the dancer 94.7–100 % of
   dancer-frames; groups on nobody inside the wall 0.000–0.201 per frame; take 2 (empty) 0.0 and no stale frame (the
