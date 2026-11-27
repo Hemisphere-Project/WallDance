@@ -365,6 +365,19 @@ class SlotParams:
     fg_learn_h: float = 0.6      # while live, the blob within this x h teaches the blob->centroid offset
     fg_offset_alpha: float = 0.1
     fg_support_min: float = 0.10 # belt backing: foreground share of the slot's box
+    # -- F4 (Plan Cordée rev 2, #t-056): a HELD slot sits on a foreground group.  A point no fresh YOLO
+    # skeleton backs this frame (coasting, fg, belt, weak, or live on a bridged / synthetic track) must lie on
+    # a body-sized foreground group; after fg_anchor_s without one the slot lets go, and a track without a
+    # fresh skeleton cannot take a slot off a group.  Only with a valid plate: without one (no plate, another
+    # crop, stale, refused) the slot layer is exactly the one before. --
+    fg_anchor: bool = True
+    fg_anchor_s: float = 1.0         # on the hold clock ``t``, like every hold here (see _fg_anchor_round)
+    fg_anchor_area_h2: float = 0.05  # a group smaller than this x h^2 is not a body (a rope, a glint, a seam)
+    fg_anchor_margin_h: float = 0.25 # "on" a group: inside its box grown by this x h
+    fg_anchor_reacquire: bool = True # a held slot on no group (not live) may hand its id to a dancer nobody holds,
+    fg_anchor_reacquire_s: float = 0.5  # ... once on no group this long (filters a group's one-frame dropout),
+    fg_anchor_alone_h: float = 1.0   # ... a dancer YOLO sees (fresh skeleton, updated), on a body-sized group, with
+                                     # no other slot's point within this x h (not one someone already holds)
 
 
 @dataclass
@@ -420,6 +433,7 @@ class _Slot:
     belt_backed_t: float = -1e9             # last time a belt-only hold had independent evidence
     fg_offset: Optional[np.ndarray] = None  # foreground blob -> slot centroid (learned while live)
     lost_interior: bool = False             # lost away from the ROI border (not an exit)
+    fg_miss_since: Optional[float] = None   # F4: held and on no foreground group since (hold clock)
     filt: Optional[OneEuro2D] = None
     size_filt: Optional[OneEuro2D] = None
 
@@ -543,6 +557,9 @@ class IdentitySlots:
         fg = self._fg
         if fg is not None and p.fg_veto > 0 and fg.support(c.x, c.y, max(1.0, c.h)) < p.fg_veto:
             self.counters["fg_veto"] = self.counters.get("fg_veto", 0) + 1
+            return False
+        if self._unanchored(c):
+            self.counters["fg_anchor_wait"] = self.counters.get("fg_anchor_wait", 0) + 1
             return False
         travel = self._entry_travel(c) if entry else p.min_travel_h
         if travel > 0 and self._max_travel.get(c.key, 0.0) < travel * max(1.0, c.h):
@@ -910,7 +927,7 @@ class IdentitySlots:
                 continue
             c = cands.get(s.last_key)
             if (c is None or c.key in used or int(c.tsu or 0) > 0
-                    or is_duplicate(c, s.sid)):
+                    or is_duplicate(c, s.sid) or self._unanchored(c)):
                 continue
             self._bind(s, c, t, "same_track")
             used.add(c.key)
@@ -957,6 +974,7 @@ class IdentitySlots:
         # 4. entry: lost slots (then long-coasting slots) take established tracks anywhere
         pool = [c for k, c in cands.items() if k not in used]
         lost = [s for s in self._slots if s.state == STATE_LOST and s.sid not in measured]
+        f4_stale, f4_took = self._fg_reacquire_slots(measured, t), set()
         stale = [s for s in self._slots
                  if s.state != STATE_LOST and (
                      (s.sid not in measured and t - s.last_meas_t >= p.rebind_any_after_s)
@@ -964,7 +982,10 @@ class IdentitySlots:
                      # while yields to an established track nobody claims: the
                      # dancer most likely moved on, leaving a zombie behind
                      or (s.sid in provisional and s.hidden_since is not None
-                         and t - s.hidden_since >= p.hidden_yield_s))]
+                         and t - s.hidden_since >= p.hidden_yield_s)
+                     # F4: a held slot on no foreground group is most likely on nobody: a dancer
+                     # nobody holds may take it, wherever she is (_fg_newcomer below)
+                     or s.sid in f4_stale)]
         for group, kind in ((lost, "entry"), (stale, "reacquire")):
             pool = [c for c in pool if c.key not in used]
             if not group or not pool:
@@ -974,6 +995,8 @@ class IdentitySlots:
             for i, s in enumerate(group):
                 for j, c in enumerate(pool):
                     if not self._established(c, entry=True) or is_duplicate(c, s.sid):
+                        continue
+                    if s.sid in f4_stale and not self._fg_newcomer(c, emitting_positions(s.sid)):
                         continue
                     if s.pos is not None:
                         cost[i, j] = float(np.linalg.norm(np.array([c.x, c.y]) - s.pos)) / max(1.0, c.h)
@@ -988,6 +1011,8 @@ class IdentitySlots:
                 provisional.discard(s.sid)
                 measured[s.sid] = (np.array([c.x, c.y], dtype=np.float64),
                                    np.array([c.w, c.h], dtype=np.float64), c)
+                if s.sid in f4_stale:
+                    f4_took.add(s.sid)
 
         # 4b. static ghost yield: every slot emits, a moving skeleton-backed dancer
         # is left out, and a slot has not moved since its entry -> it gives way
@@ -1060,6 +1085,9 @@ class IdentitySlots:
                 s.state_since = t
             if t - s.last_meas_t > (s.hold_s if s.hold_s is not None else p.coast_s):
                 self._drop(s, t, "coast_expired")
+
+        # 5b. F4: a held slot sits on a foreground group (with a valid plate only)
+        self._fg_anchor_round(measured, t, f4_took)
 
         # 6. never two slots on one dancer
         self._merge_converged(t)
@@ -1210,10 +1238,11 @@ class IdentitySlots:
                            and not self._near_border(s))
         s.state = STATE_LOST
         s.state_since = t
-        s.last_key = s.key if why not in ("merged", "yield") else None
+        s.last_key = s.key if why not in ("merged", "yield", "no_fg") else None
         s.key = None
         s.belt_since = None
         s.hidden_since = None
+        s.fg_miss_since = None
 
     def _merge_converged(self, t: float) -> None:
         p = self.p
@@ -1356,6 +1385,90 @@ class IdentitySlots:
             off = s.fg_offset if s.fg_offset is not None else np.zeros(2)
             out[s.sid] = np.array([b.x, b.y], dtype=np.float64) + off
         return out
+
+    def _on_group(self, x: float, y: float, h: float) -> bool:
+        """F4: a body-sized foreground group (``fg_anchor_area_h2`` x h^2 or more) under the point (x, y) of a
+        dancer ``h`` tall: inside the group's box grown by ``fg_anchor_margin_h`` x h."""
+        p = self.p
+        h = max(1.0, float(h))
+        g, amin = p.fg_anchor_margin_h * h, p.fg_anchor_area_h2 * h * h
+        for b in self._fg.blobs:
+            if b.area < amin:
+                continue
+            x0, y0, x1, y1 = b.bbox
+            if x0 - g <= x <= x1 + g and y0 - g <= y <= y1 + g:
+                return True
+        return False
+
+    @staticmethod
+    def _backed(measured, sid: int) -> bool:
+        """F4: the slot is measured this frame by a track with a fresh YOLO skeleton (frames since a skeleton
+        unknown counts as backed: no claim either way) -- not a held point."""
+        m = measured.get(sid)
+        return m is not None and (m[2].fss is None or int(m[2].fss) == 0)
+
+    def _unanchored(self, c: SlotCandidate) -> bool:
+        """F4: binding this track would make a held point on no foreground group (no fresh skeleton, no group
+        under it): it may not take a slot.  Always False without a valid plate."""
+        return (self._fg is not None and self.p.fg_anchor and c.fss is not None and int(c.fss) > 0
+                and not self._on_group(c.x, c.y, c.h))
+
+    @staticmethod
+    def _fg_missed_s(s: _Slot, t: float) -> Optional[float]:
+        """F4's hold clock, read only here: how long the slot has been held on no foreground group (None: it is
+        not), on the hold clock ``t`` like every hold in this layer (U1 changes the time base here)."""
+        return None if s.fg_miss_since is None else t - s.fg_miss_since
+
+    def _fg_reacquire_slots(self, measured, t: float) -> set:
+        """F4: the slots a dancer nobody holds may take over (step 4): emitting, not measured this frame (not
+        live: a bridged live slot just lets go after ``fg_anchor_s``), held on no group ``fg_anchor_reacquire_s``
+        or longer.  Empty without a valid plate."""
+        p = self.p
+        if self._fg is None or not (p.fg_anchor and p.fg_anchor_reacquire):
+            return set()
+        out = set()
+        for s in self._slots:
+            m = self._fg_missed_s(s, t)
+            if s.state != STATE_LOST and s.sid not in measured and m is not None and m >= p.fg_anchor_reacquire_s:
+                out.add(s.sid)
+        return out
+
+    def _fg_newcomer(self, c: SlotCandidate, others) -> bool:
+        """F4: a track may take a held slot's id across the wall only as a dancer YOLO sees this frame (a fresh
+        skeleton, updated by the tracker: not one it only predicts), on a body-sized group, with no other slot's
+        point within ``fg_anchor_alone_h`` x h (``others``: [(pos, h)]; not the duplicate of a held dancer)."""
+        if int(c.tsu or 0) > 0 or c.fss is None or int(c.fss) > 0:
+            return False
+        h = max(1.0, float(c.h))
+        if not self._on_group(c.x, c.y, h):
+            return False
+        r = self.p.fg_anchor_alone_h
+        return all(float(np.hypot(c.x - pos[0], c.y - pos[1])) >= r * max(h, oh) for pos, oh in others)
+
+    def _fg_anchor_round(self, measured, t: float, took=()) -> None:
+        """F4 (#t-056): every emitting slot no fresh YOLO skeleton backs this frame (coasting, fg, belt, weak, or
+        live on a track without a skeleton this frame) is HELD and must sit on a foreground group; held and on
+        no group for ``fg_anchor_s`` (the hold clock, ``_fg_missed_s``), it lets go.  A slot a newcomer took
+        over this frame (``took``) starts at rest: the jump is not a speed.  Without a valid plate nothing
+        happens (and nothing is counted), so the slot layer is the one before F4."""
+        p = self.p
+        on = self._fg is not None and p.fg_anchor
+        for s in self._slots:
+            if s.sid in took:
+                s.vel = np.zeros(2)
+                self.counters["fg_anchor_reacquires"] = self.counters.get("fg_anchor_reacquires", 0) + 1
+            if not on or s.state == STATE_LOST or s.pos is None:
+                s.fg_miss_since = None
+                continue
+            h = float(s.wh[1]) if s.wh is not None else 1.0
+            if self._backed(measured, s.sid) or self._on_group(float(s.pos[0]), float(s.pos[1]), h):
+                s.fg_miss_since = None
+                continue
+            if s.fg_miss_since is None:
+                s.fg_miss_since = t
+            if self._fg_missed_s(s, t) >= p.fg_anchor_s:
+                self.counters["fg_anchor_drops"] = self.counters.get("fg_anchor_drops", 0) + 1
+                self._drop(s, t, "no_fg")
 
     def _belt_round(self, belt: BeltMeasure, measured: dict, pred: dict,
                     t: float) -> Dict[int, Optional[Tuple[float, float, float]]]:
