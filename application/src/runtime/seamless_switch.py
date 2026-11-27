@@ -84,16 +84,166 @@ def _rebuild(cand: Candidate) -> str:
 # an engine file TensorRT could not deserialize (truncated, another TensorRT, not an engine): the operator reads
 # this, the log keeps the raw error
 ENGINE_UNREADABLE = "the engine file could not be read"
+# ... but TensorRT gives no engine either when the GPU has no room for it (TouchDesigner grew beside the app,
+# 'Error Code 2: OutOfMemory' in its log): the file is sound, and a rebuild -- minutes of GPU on show night --
+# fixes nothing.  ``load_failure`` tells the two apart, and says "rebuild" only for a file shown bad.
+NO_ROOM = "no room on the GPU"
+NO_ENGINE = "TensorRT gave no engine"
+# what a load of an engine takes on the GPU, for each byte of it: the engine itself and the memory it works in
+# (mgr-ran's TensorRT logs, 1280 and 1920 x 1056: +143 to +468 MB beside 600 to 1200 MB of engine)
+LOAD_NEEDS = 1.5
+# what a failure is (``LoadFailure.kind``): the file shown bad / no room on the GPU / one of the two, not told /
+# another error
+FILE_BAD, ROOM, UNSURE, OTHER = "file", "room", "unsure", "other"
 
 
-def load_failure(exc: BaseException) -> str:
-    """Why an engine did not load, in the operator's words: ``ENGINE_UNREADABLE`` when TensorRT could not read the
-    file (its runtime returns no engine -- ultralytics then fails on ``None.create_execution_context`` -- or it
-    raises a serialization error); anything else, the error itself."""
+class LoadFailure(str):
+    """``load_failure``'s answer: the reason in the operator's words -- it IS that string, so a caller that reads
+    a string reads it as before -- with ``kind`` (FILE_BAD, ROOM, UNSURE, OTHER), what the checks found
+    (``detail``, for the log) and the one thing to do (``todo``)."""
+    kind: str
+    detail: str
+
+    def __new__(cls, why: str, kind: str = OTHER, detail: str = "") -> "LoadFailure":
+        self = super().__new__(cls, why)
+        self.kind, self.detail = kind, detail
+        return self
+
+    def todo(self, cand: Candidate, *, apply: bool = False) -> str:
+        """What to do: for the automatic swipe (its ban holds until Dismiss), or for the operator's Apply."""
+        rebuild = f"rebuild {cand.engine_file} (extra/build_engines)"
+        if self.kind == ROOM:
+            return ("close what else uses the GPU before trying it again" if apply else
+                    "close what else uses the GPU, then Dismiss lets it try again, or set the automatic swipe to off")
+        if self.kind == UNSURE:                  # never a rebuild first: the GPU's room is the quick thing to try
+            return ("close what else uses the GPU before trying it again" if apply else
+                    "close what else uses the GPU, then Dismiss lets it try again") + f"; if it fails again, {rebuild}"
+        if apply:
+            return _rebuild(cand)
+        return (f"{rebuild}, then Dismiss lets it try again" if self.kind == FILE_BAD else
+                "Dismiss lets it try again, or set the automatic swipe to off")
+
+
+def gpu_free_mb() -> Optional[float]:
+    """The GPU's free memory now, in MB (what TouchDesigner and the rest leave), or None when it cannot be read
+    (CUDA not started in this process: a CPU test)."""
+    try:
+        import torch
+        if not torch.cuda.is_initialized():
+            return None
+        return torch.cuda.mem_get_info()[0] / 2 ** 20
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _tensorrt_here() -> Optional[Tuple[int, int]]:
+    """The TensorRT this process runs (major, minor), None before anything imported it."""
+    import sys
+    try:
+        major, minor = str(sys.modules["tensorrt"].__version__).split(".")[:2]
+        return int(major), int(minor)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def engine_file_fault(path: str) -> Tuple[Optional[str], int]:
+    """What shows an engine file bad, read without TensorRT (its size, its first bytes): (the fault, None when the
+    file looks whole; the size of TensorRT's part, in bytes).  The file ultralytics writes: a 4-byte length and a
+    JSON metadata block, then TensorRT's own: b'ftrt', its size at bytes 16-23, the TensorRT that built it at bytes
+    24 and 25 (major, minor) -- so on every engine of mgr-ran, 27/11 (11.3 and the June 11.0 ones).  Damaged bytes
+    inside a whole file are not seen: such a file looks whole."""
+    import json
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            n, start = int.from_bytes(f.read(4), "little"), 0
+            if 0 < n <= size - 4:                # ultralytics' header, as its AutoBackend reads it
+                try:
+                    json.loads(f.read(n))
+                    start = 4 + n
+                except ValueError:
+                    pass
+            f.seek(start)
+            head = f.read(32)
+    except OSError as e:
+        return f"cannot be opened: {e.strerror or e}", 0
+    plan = size - start
+    if len(head) < 32 or head[:4] != b"ftrt":
+        return "not a TensorRT engine", plan
+    declared = int.from_bytes(head[16:24], "little")
+    if declared > plan:
+        return f"cut short: {plan} of its {declared} bytes", plan
+    here = _tensorrt_here()
+    if here is not None and (head[24], head[25]) != here:
+        return f"built by TensorRT {head[24]}.{head[25]}, this machine runs {here[0]}.{here[1]}", plan
+    return None, plan
+
+
+def no_room(free_mb: Optional[float], need_mb: Optional[float] = None, detail: str = "") -> LoadFailure:
+    """The GPU had no room: with the free MB when they can be read, and what a load takes when it is known."""
+    why = NO_ROOM if free_mb is None else f"{NO_ROOM}: {free_mb:.0f} MB free"
+    if free_mb is not None and need_mb is not None:
+        why += f", a load of it takes about {max(100.0, round(need_mb, -2)):.0f} MB"
+    return LoadFailure(why, ROOM, detail)
+
+
+# the engine was read but TensorRT gave no execution context (the memory it works in): ultralytics then fails on
+# ``None.set_input_shape`` (or the other calls below) -- the file is sound, the GPU had no room
+_NO_CONTEXT = ("set_input_shape", "get_tensor_shape", "set_binding_shape", "get_binding_shape")
+
+
+def out_of_memory(text: str) -> bool:
+    """An error that says the GPU ran out of memory (PyTorch's, CUDA's, TensorRT's own words)."""
+    t = text.lower()
+    return "out of memory" in t or "outofmemory" in t
+
+
+def load_failure(exc: BaseException, path: Optional[str] = None, *,
+                 free_mb: Optional[float] = None) -> LoadFailure:
+    """Why an engine did not load, in the operator's words (a ``LoadFailure``: the reason, its kind, what to do).
+
+    TensorRT gives no engine -- ultralytics then fails on ``None.create_execution_context`` -- or raises a
+    serialization error for a bad file AND for a GPU without room for it.  With the engine's ``path`` the two are
+    told apart: a file shown bad (``engine_file_fault``) is ``ENGINE_UNREADABLE`` (rebuild it); a file that looks
+    whole on a GPU with less free memory than a load of it takes (``LOAD_NEEDS``) is ``NO_ROOM``, with the free
+    MB; a file that looks whole with that room free now (the memory a failed load took is back: something else
+    may have held it) names both, a rebuild only if it fails again.  An out-of-memory error, or no execution
+    context (the engine was read), is NO_ROOM.  Anything else, the error itself.  ``free_mb``: the reading (else
+    ``gpu_free_mb()``, now).  Without ``path`` (the old call) nothing is read: no engine is ``ENGINE_UNREADABLE``,
+    the rest the error itself, as before."""
     text = str(exc)
-    if (isinstance(exc, AttributeError) and "create_execution_context" in text) or "serializ" in text.lower():
-        return ENGINE_UNREADABLE
-    return f"{type(exc).__name__}: {text[:100]}"
+    raw = f"{type(exc).__name__}: {text[:100]}"
+    no_engine = (isinstance(exc, AttributeError) and "create_execution_context" in text) or "serializ" in text.lower()
+    if path is None:
+        return LoadFailure(ENGINE_UNREADABLE, FILE_BAD) if no_engine else LoadFailure(raw)
+    oom = out_of_memory(f"{type(exc).__name__}: {text}") or (
+        isinstance(exc, AttributeError) and "'NoneType'" in text and any(a in text for a in _NO_CONTEXT))
+    if not no_engine and not oom:
+        return LoadFailure(raw)
+    free = gpu_free_mb() if free_mb is None else free_mb
+    seen = "free GPU memory not known" if free is None else f"{free:.0f} MB free on the GPU"
+    fault, plan = engine_file_fault(path)
+    need = None if fault is not None else plan * LOAD_NEEDS / 2 ** 20
+    if oom:
+        return no_room(free, need, f" ({seen})")
+    if fault is not None:
+        return LoadFailure(ENGINE_UNREADABLE, FILE_BAD, f" (the file: {fault})")
+    detail = f" (the file looks whole: {plan / 2 ** 20:.0f} MB of engine, a load takes about {need:.0f} MB; {seen})"
+    if free is not None and free < need:
+        return no_room(free, need, detail)
+    return LoadFailure(f"{NO_ENGINE}: too little room on the GPU at that moment, or a damaged file" if free is None
+                       else f"{NO_ENGINE}, {free:.0f} MB free on the GPU now: too little room at that moment, or a "
+                            f"damaged file", UNSURE, detail)
+
+
+def run_failure(error: str, *, free_mb: Optional[float] = None) -> LoadFailure:
+    """Why a loaded engine's inference failed (``CandidateRun.error``: "inference failed: <type>: <message>"), in
+    the operator's words: out of memory is NO_ROOM, as for a load; anything else, what failed and the error's type
+    (its message is for the log)."""
+    if out_of_memory(error):
+        return no_room(gpu_free_mb() if free_mb is None else free_mb)
+    parts = error.split(": ")
+    return LoadFailure(": ".join(parts[:2]) if len(parts) > 1 else error[:100])
 
 
 class SeamlessSwitch:

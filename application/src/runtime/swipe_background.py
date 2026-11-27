@@ -419,18 +419,36 @@ class BackgroundSwipe:
 
     def _not_loaded(self, other: Candidate, live: LiveSetting, exc: BaseException) -> Tuple[str, str]:
         """One attempt only: the setting is banned (no load, no inference, no look for it until Dismiss or a project
-        load), the raw error goes to the log, the operator reads plain words."""
-        why = load_failure(exc)
-        todo = (f"rebuild {other.engine_file} (extra/build_engines), then Dismiss lets it try again"
-                if why == ENGINE_UNREADABLE else "Dismiss lets it try again, or set the automatic swipe to off")
-        say(f"[SwipeAuto] {other.engine_file} did not load: {type(exc).__name__}: {exc}")
-        wait = f"the automatic swipe waits: it could not load {other.label} ({why}) - {todo}"
+        load), the raw error goes to the log, the operator reads plain words -- "rebuild" only for an engine file
+        shown bad, the free MB when the GPU had no room for it (``load_failure``)."""
+        why = load_failure(exc, self.engine_path(other))
+        say(f"[SwipeAuto] {other.engine_file} did not load: {type(exc).__name__}: {exc}{why.detail}")
+        return self._ban(other, live, "load", why, f"{type(exc).__name__}: {str(exc)[:160]}")
+
+    def _not_run(self, other: Candidate, live: LiveSetting, error: str) -> Tuple[str, str]:
+        """A resident that loaded but whose inference failed (``run.error``): as one that cannot be loaded -- the
+        setting is banned at the first failure, said once -- and the resident is handed to the release, so its
+        memory comes back (a run that failed for lack of it would only fail again beside it, at every look)."""
+        from runtime.seamless_switch import run_failure
+        say(f"[SwipeAuto] {other.label} did not run: {error}")
+        r = self.resident
+        if r is not None and r.candidate == other:
+            self.resident = None
+            self.switch.release((r.model, r.runner))
+            self._record("release", resident=r.candidate.label, purpose="its run failed")
+        return self._ban(other, live, "run", run_failure(error), error)
+
+    def _ban(self, other: Candidate, live: LiveSetting, verb: str, why, error: str) -> Tuple[str, str]:
+        """The setting ``other`` is banned (``_unloadable``: no load, no inference, no look for it until Dismiss or
+        a project load): (what the look says while it waits, the fault for the operator).  ``why``: a
+        ``LoadFailure``, which says what to do."""
+        todo = why.todo(other)
+        wait = f"the automatic swipe waits: it could not {verb} {other.label} ({why}) - {todo}"
         self._banned[other.key] = other.engine_file
         self._unloadable[other.key] = wait
-        self._record("auto-banned", setting=other.label, engine=other.engine_file,
-                     error=f"{type(exc).__name__}: {str(exc)[:160]}")
-        return wait, (f"the automatic swipe could not load {other.label} ({why}): {live.candidate.label} still runs "
-                      f"- {todo}")
+        self._record("auto-banned", setting=other.label, engine=other.engine_file, error=error[:160])
+        return wait, (f"the automatic swipe could not {verb} {other.label} ({why}): {live.candidate.label} still "
+                      f"runs - {todo}")
 
     def _run_params(self, proc) -> SwipeParams:
         """The referee's parameters for a background run (the policy's ``referee_params``: the collector's, at the
@@ -452,7 +470,8 @@ class BackgroundSwipe:
         live_ms: List[float] = []
         speed: Tuple[Optional[float], Optional[float]] = (None, None)
         outcome = ""
-        fault: Optional[str] = None              # the resident could not be loaded: said once, after the lock
+        fault: Optional[str] = None              # the resident could not be loaded / run: said once, after the lock
+        verb = "load"
         try:
             install_capture_guards()
             runner = self.runner_factory(proc)
@@ -480,6 +499,11 @@ class BackgroundSwipe:
                 self.inferences += len(run.ms)
             if run.error:
                 outcome = run.error
+                if run.error != "cancelled":
+                    # the first failed run bans the setting, as a resident that cannot be loaded: said once, its
+                    # engine released, no run again (was: a load lock, a frame on the GPU and a failure at every
+                    # look for the rest of the night, the second engine kept, nothing said)
+                    (outcome, fault), verb = self._not_run(other, live, run.error), "run"
                 return
             if len(run.boxes) < len(frames):
                 outcome = f"ran {len(run.boxes)} / {len(frames)} frames"     # never a verdict on part of them
@@ -526,7 +550,7 @@ class BackgroundSwipe:
                 ms_cand=round(speed[0], 1) if speed[0] is not None else None,     # what the « slower » rule
                 ms_live=round(speed[1], 1) if speed[1] is not None else None)     # compared
             if fault:                         # the same visible path as a failed automatic switch: THE fault
-                self._fault_why = (fault, f"the automatic swipe could not load {other.label}: Dismiss lets it "
+                self._fault_why = (fault, f"the automatic swipe could not {verb} {other.label}: Dismiss lets it "
                                           f"try again")
                 self.switch.fail(fault)
 

@@ -19,8 +19,8 @@ SAID = ("the automatic swipe could not load l @ 1280 (the engine file could not 
 WAITS = ("the automatic swipe waits: it could not load l @ 1280 (the engine file could not be read) - rebuild "
          "yolo11l-pose_1280.engine (extra/build_engines), then Dismiss lets it try again")
 OOM = "CUDA out of memory. Tried to allocate 64.00 MiB"
-SAID_OOM = (f"the automatic swipe could not load l @ 1280 (RuntimeError: {OOM}): x @ 1280 still runs - Dismiss lets "
-            f"it try again, or set the automatic swipe to off")
+SAID_OOM = ("the automatic swipe could not load l @ 1280 (no room on the GPU: 312 MB free): x @ 1280 still runs - "
+            "close what else uses the GPU, then Dismiss lets it try again, or set the automatic swipe to off")
 BAN = "the automatic switch to it failed: Dismiss lets it try again"
 AUTO_FAILED = "the last automatic switch failed: Dismiss lets it try again"
 APPLY_FAILED = "the last Apply failed: Dismiss lets it switch by itself again"
@@ -95,13 +95,15 @@ def test_dismiss_or_a_project_load_lets_it_try_once_more(lift):
     assert _faults(events) == [SAID, SAID]                           # said again for the new attempt only
 
 
-def test_a_load_that_fails_for_another_reason_says_it_and_what_to_do():
+def test_a_load_that_fails_for_another_reason_says_it_and_what_to_do(monkeypatch):
+    import runtime.seamless_switch as ss
+    monkeypatch.setattr(ss, "gpu_free_mb", lambda: 312.4, raising=False)   # out of memory: no room, its MB
     bg, proc, events, loader = _broken_bg("suggest", RuntimeError(OOM))
     assert bg.tick() == "run"
     assert _faults(events) == [SAID_OOM]
     assert bg.status()["last_look"]["outcome"] == (
-        f"the automatic swipe waits: it could not load l @ 1280 (RuntimeError: {OOM}) - Dismiss lets it try "
-        f"again, or set the automatic swipe to off")
+        "the automatic swipe waits: it could not load l @ 1280 (no room on the GPU: 312 MB free) - close what else "
+        "uses the GPU, then Dismiss lets it try again, or set the automatic swipe to off")
     assert set(_ticks(bg, proc, 5)) == {"banned"} and len(loader.loads) == 1
 
 
