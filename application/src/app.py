@@ -2389,7 +2389,7 @@ class WallDanceApp:
         self.swipe.cancel()          # P5: stop a running settings swipe ...
         self.swipe.join(2.0)         # ... and let it drop its engine before the process tears CUDA down
         self.swipe_bg.stop(2.0)      # P6: the background swipe's looker ...
-        self.swipe_switch.stop(2.0)  # ... and the seamless switch's worker
+        self.swipe_switch.stop(8.0)  # ... and the seamless switch's worker: a load in progress ends, what it holds goes
         self.tracker.logger.close()  # Phase 0: flush and close tracking log
         self.running = False
         self.recorder.close()

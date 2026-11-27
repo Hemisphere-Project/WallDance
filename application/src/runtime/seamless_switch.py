@@ -23,7 +23,10 @@ winner's TensorRT engine is built (and the live model runs TensorRT); the automa
   live frame of the current model (its OSC out: ``after_frame_end``), under the engine lock (their destructors
   free the engines).
 
-Threading: the worker owns loading, warming and freeing; the loop thread owns the live model and the swap.
+Threading: the worker owns loading, warming and freeing; the loop thread owns the live model and the swap.  The
+worker runs only while there is something to do (asked, prepared, on probation, to free); a request or a model to
+free starts it again.  One switch at a time: ``busy()`` from the moment a request is accepted to its outcome.  At
+quit ``stop()`` waits for a load in progress and frees what the switch holds.
 """
 from __future__ import annotations
 
@@ -288,6 +291,9 @@ class SeamlessSwitch:
         # (request) -> why a switch asked earlier must not go on now, or None: asked before the load, before the
         # warm-up and right before the swap (the app: the automatic swipe turned off meanwhile) -- abandoned then
         self.why_not: Optional[Callable[[Dict[str, Any]], Optional[str]]] = None
+        # a request accepted and not yet over (done, failed, abandoned, superseded): what ``busy()`` says, from the
+        # moment it is accepted -- through the worker's load and warm-up and the loop's swap -- to its outcome
+        self._underway: Optional[Dict[str, Any]] = None
         self._want: Optional[Dict[str, Any]] = None       # asked, for the worker
         self._request: Optional[Dict[str, Any]] = None    # prepared, for the loop
         self._probation: Optional[Dict[str, Any]] = None  # swapped in, its first frames not yet run
@@ -296,21 +302,48 @@ class SeamlessSwitch:
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._life_lock = threading.Lock()        # the worker ending when idle vs its restart (``start``)
 
     # ------------------------------------------------------------------ the worker thread
     def start(self) -> None:
-        if self._thread is not None and self._thread.is_alive():
-            return
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._loop, name="SeamlessSwitch", daemon=True)
-        self._thread.start()
+        with self._life_lock:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._stop.clear()
+            self._thread = threading.Thread(target=self._loop, name="SeamlessSwitch", daemon=True)
+            self._thread.start()
 
-    def stop(self, timeout: Optional[float] = 2.0) -> None:
+    def stop(self, timeout: Optional[float] = 8.0) -> None:
+        """At quit: the worker stops -- a load in progress ends first (it cannot be cut short; a load takes up to
+        about 3 s) -- then what the switch holds goes, under the engine lock, before the process tears CUDA down:
+        the models waiting to be freed (the old live pair among them) and a prepared model not swapped in yet.
+        Not the live model (the app's), not a prepared resident (the automatic swipe's).  Nothing is paced: no
+        frame is coming.  At most ``timeout`` in all; past it nothing is freed (said in the log)."""
         self._stop.set()
         self._wake.set()
+        t0 = time.perf_counter()
         t = self._thread
-        if t is not None:
+        if t is not None and t is not threading.current_thread():
             t.join(timeout)
+            if t.is_alive():
+                say("[Switch] still loading an engine at quit: nothing freed")
+                return
+        left = -1 if timeout is None else max(0.5, timeout - (time.perf_counter() - t0))
+        if not self.engine_lock.acquire(timeout=left):
+            say("[Switch] the engine lock stayed taken at quit: nothing freed")
+            return
+        try:
+            self._want = None
+            req, self._request = self._request, None
+            if req is not None and req.get("loaded_here"):
+                self._drop.append((req["prepared"].model, req["prepared"].runner))
+            req = None
+            n = len(self._drop)
+            self._drop.clear()                              # refcount frees the engines here
+            if n:
+                self._record("free", models=n, quit=True)
+        finally:
+            self.engine_lock.release()
 
     def _loop(self) -> None:
         while not self._stop.is_set():
@@ -322,12 +355,27 @@ class SeamlessSwitch:
                 self.service()
             except Exception as exc:  # noqa: BLE001 - never the app
                 say(f"[Switch] {type(exc).__name__}: {exc}")
+            with self._life_lock:
+                if self._idle():
+                    self._thread = None                     # nothing to do: no wake-up every second for the session
+                    return
+
+    def _idle(self) -> bool:
+        """Nothing asked, prepared, on probation or waiting to be freed: the worker has nothing to do."""
+        return (self._underway is None and self._want is None and self._request is None
+                and self._probation is None and not self._drop)
 
     def service(self) -> None:
         """One pass of the worker: free what waits, prepare what is asked."""
         self.free_pending()
         if self._want is not None:
-            self._prepare()
+            want = self._want
+            try:
+                self._prepare()
+            except BaseException:
+                if self._request is None:          # it never reached the loop: no switch under way any more
+                    self._end(want)
+                raise
 
     def _record(self, kind: str, **data) -> Dict[str, Any]:
         row = {"kind": kind, "wall": time.time(), **data}
@@ -350,8 +398,10 @@ class SeamlessSwitch:
         return t > seen[1]
 
     def release(self, pair: Tuple[Any, Any]) -> None:
-        """A model for the worker to free (refcount), when it is safe."""
+        """A model for the worker to free (refcount), when it is safe (the worker starts again if it had ended)."""
         self._drop.append(pair)
+        if not self._stop.is_set():
+            self.start()
 
     def free_pending(self, extra: Optional[Callable[[], None]] = None) -> bool:
         """Free the waiting models (and run ``extra`` -- the automatic swipe's resident release -- in the same
@@ -422,6 +472,12 @@ class SeamlessSwitch:
                     say(f"[Switch] {winner.engine_file} did not load: {type(exc).__name__}: {exc}")
                 self._failed_before(want, live, why)
                 return
+        if self._stop.is_set():                         # the app quits: no warm-up, no switch; ``stop`` frees it
+            if loaded_here:
+                self._drop.append((prep.model, prep.runner))
+            self._end(want)
+            self.state = "idle"
+            return
         held = self._held(want)                         # changed during the load
         if held:
             if loaded_here:
@@ -440,7 +496,8 @@ class SeamlessSwitch:
     # ------------------------------------------------------------------ asking
     def busy(self) -> Optional[str]:
         """Why another switch cannot be asked now (None: it can)."""
-        if self._want is not None or self._request is not None or self._probation is not None:
+        if self._underway is not None or self._want is not None or self._request is not None \
+                or self._probation is not None:
             return "a switch is already under way"
         return None
 
@@ -469,8 +526,9 @@ class SeamlessSwitch:
                    ("a model load is under way" if live is None else None)) or self.busy()
             if why:
                 return why
-            self._want = {"winner": winner, "text": text, "live_key": live.key, "on_done": on_done,
-                          "prepared": prepared, "auto": bool(auto)}
+            self._underway = self._want = {"winner": winner, "text": text, "live_key": live.key,
+                                           "on_done": on_done, "prepared": prepared, "auto": bool(auto),
+                                           "ticket": object()}
             self.state = "loading"
         self.start()
         self._wake.set()
@@ -553,6 +611,7 @@ class SeamlessSwitch:
             forget(prep.model)
         self.release((prep.model, prep.runner))
         self._probation = None
+        self._end(req)
         self.state = "idle"
         if self.last_switch is not None:
             self.last_switch["superseded"] = True
@@ -571,6 +630,7 @@ class SeamlessSwitch:
 
     def _swap_ok(self, req: Dict[str, Any]) -> None:
         self._probation = None
+        self._end(req)
         self.state = "idle"
         self.fault = None                       # a later switch succeeded
         if self.last_switch is not None:
@@ -601,6 +661,12 @@ class SeamlessSwitch:
         self._fail(req, f"{type(exc).__name__}: {str(exc)[:100]}", req["old"], req["new"], before=False)
 
     # ------------------------------------------------------------------ outcomes
+    def _end(self, req: Dict[str, Any]) -> None:
+        """``req`` is over (done, failed, abandoned, superseded): another switch can be asked from now on --
+        before its handlers run, as before (one of them may ask the next)."""
+        if self._underway is not None and self._underway.get("ticket") is req.get("ticket"):
+            self._underway = None
+
     def _held(self, req: Dict[str, Any]) -> Optional[str]:
         """``why_not(req)``, None without it; when it raises, held (no switch: the live model runs on)."""
         if self.why_not is None:
@@ -620,6 +686,7 @@ class SeamlessSwitch:
                 say(f"[Switch] completion handler failed: {type(exc).__name__}: {exc}")
 
     def _abandon(self, req: Dict[str, Any], text: str) -> None:
+        self._end(req)
         self.state = "idle"
         self._record("abandoned", text=text)
         self.notify("cleared", {"text": text})
@@ -634,6 +701,7 @@ class SeamlessSwitch:
         # keeps the ban: ``on_failed``); suggestions go on
         todo = (f"the automatic swipe will not try {new.engine_file} again until you press Dismiss"
                 if req.get("auto") else _rebuild(new))
+        self._end(req)
         text = f"{what} to {new.label} failed{' before it began' if before else ''} ({why}): {old.label} still " \
                f"runs - {todo}"
         self.fail(text)
