@@ -13,6 +13,11 @@ import pytest
 from test_seamless_switch import L1280
 from test_swipe_auto_live import _bg, _look_frames, _LookRunner, _live
 from test_swipe_auto_rollback import _first_frame_raises, _look, _next_runs, _setup, _two_looks_ask_the_switch
+from test_swipe_auto_live import swipe_auto_unlocked  # noqa: E402,F401 - the fixture
+
+# mode auto set on the BackgroundSwipe itself, past the app's doors: the release list must name it too (the
+# last guard before a switch, since 27/11); the build ships locked
+pytestmark = pytest.mark.usefixtures("swipe_auto_unlocked")
 
 RAW = "'NoneType' object has no attribute 'create_execution_context'"
 SAID = ("the automatic swipe could not load l @ 1280 (the engine file could not be read): x @ 1280 still runs - "
@@ -111,7 +116,7 @@ def test_after_the_operators_failed_apply_the_held_back_switch_says_it_was_the_a
     """The operator's seamless Apply failed (its first frame raised): no ban, but the switch holds the fault, so
     the next definite verdict is a suggestion -- that names the Apply, never « the last automatic switch »."""
     bg, proc, loader, live, port, tap = _setup()
-    assert _look(bg, proc, tap, 150) == "run" and bg.suggestion is not None
+    assert _look(bg, proc, tap, 150) == "run" and bg.last_advice["advice"] == "seen"     # (27/11) nothing shown
     assert bg.request_switch(L1280, "Apply now") is None
     bg.switch.service()
     assert bg.switch.drain()
@@ -119,7 +124,7 @@ def test_after_the_operators_failed_apply_the_held_back_switch_says_it_was_the_a
     assert bg.switch.fault and bg.status()["auto_banned"] == []
     (_, adv), = _next_runs(bg, proc, tap, 150)
     assert adv["advice"] == "suggest" and adv["why_not_auto"] == APPLY_FAILED
-    assert adv["text"] == f"{SAYS}: clearly better - Apply now ({APPLY_FAILED})"
+    assert adv["text"] == f"{SAYS} (6 ms a frame against 6), seen twice: Apply now? ({APPLY_FAILED})"
 
 
 def test_after_a_failed_automatic_switch_and_a_project_load_it_says_what_lifts_the_fault():
@@ -131,7 +136,7 @@ def test_after_a_failed_automatic_switch_and_a_project_load_it_says_what_lifts_t
     bg.clear_bans()
     (_, adv), = _next_runs(bg, proc, tap, 300)
     assert adv["advice"] == "suggest" and adv["why_not_auto"] == AUTO_FAILED
-    assert adv["text"] == f"{SAYS}: clearly better - Apply now ({AUTO_FAILED})"
+    assert adv["text"] == f"{SAYS} (6 ms a frame against 6), seen 3 times: Apply now? ({AUTO_FAILED})"
 
 
 @pytest.mark.parametrize("lift", ["dismiss", "clear_bans"])

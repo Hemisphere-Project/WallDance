@@ -14,6 +14,11 @@ from core.swipe import SwipeParams
 from core.swipe_auto import AutoParams, alike_ms, bar_for
 from test_seamless_switch import L1280, X1280, _live
 from test_swipe_auto_live import _look_frames, _looking_bg
+from test_swipe_auto_live import swipe_auto_unlocked  # noqa: E402,F401 - the fixture
+
+# mode auto set on the BackgroundSwipe itself, past the app's doors: the release list must name it too (the
+# last guard before a switch, since 27/11); the build ships locked
+pytestmark = pytest.mark.usefixtures("swipe_auto_unlocked")
 
 
 def _times(seed, n, floor, spread, contended, share_free=0.15):
@@ -66,7 +71,7 @@ def test_a_candidate_faster_once_live_is_not_called_slower_by_its_contended_medi
     assert sorted(cand)[75] > 1.15 * sorted(live_t)[75]                       # what the old rule read: slower
     _timed(bg, proc, loader, cand, live_t)
     proc.frames = _look_frames(150)
-    assert bg.tick() == "run" and bg.last_advice["advice"] == "suggest"       # seen once
+    assert bg.tick() == "run" and bg.last_advice["advice"] == "seen"          # seen once
     proc.frames = _look_frames(150, t0=150.0)
     assert bg.tick() == "run"
     assert bg.last_advice["advice"] == "apply" and bg.switch._want is not None
@@ -84,14 +89,12 @@ def test_a_slower_candidate_is_still_held_and_the_sentence_shows_what_was_compar
     live_t = _times(4, 150, 13.2, 0.5, (13.5, 15.0), share_free=0.12)
     _timed(bg, proc, loader, cand, live_t)
     proc.frames = _look_frames(150)
-    bg.tick()
-    proc.frames = _look_frames(150, t0=150.0)
     assert bg.tick() == "run"
     adv, look = bg.last_advice, bg.last_look
-    assert adv["advice"] == "suggest" and bg.switch._want is None
-    assert look["ms_cand"] > 1.15 * look["ms_live"]
+    assert adv["advice"] == "none" and bg.switch._want is None and bg.suggestion is None   # (since 27/11: not
+    assert look["ms_cand"] > 1.15 * look["ms_live"]                                       # suggested either)
     said = f"it is slower ({look['ms_cand']:.0f} ms a frame against {look['ms_live']:.0f})"
-    assert adv["why_not_auto"] == said and adv["text"].endswith(f"Apply now ({said})")
+    assert adv["why_not_auto"] == said
 
 
 @pytest.mark.parametrize("live_c,cand_c", [(X1280, L1280), (L1280, X1280)])
@@ -103,8 +106,10 @@ def test_the_referees_bar_in_the_background_is_the_models_cost_not_their_times(l
         if live_c != X1280:
             live["v"] = _live(cand=live_c, model_id=2)
         bg._last_live = live_c
-        _timed(bg, proc, loader, [ms], [15.0])
+        _timed(bg, proc, loader, [ms], [ms])            # (27/11) alike: never « slower », so it is suggested
         proc.frames = _look_frames(150)
+        assert bg.tick() == "run"
+        proc.frames = _look_frames(150, t0=150.0)        # (27/11) shown at the second look
         assert bg.tick() == "run"
         rows = {r.candidate: r for r in bg.suggestion["result"].rows}
         sp = bg._run_params(proc)

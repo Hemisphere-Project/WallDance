@@ -19,6 +19,9 @@ def _result(winner, live, gain, noise=0.01, switch=True):
     return SwipeResult(live, winner, switch, rows, "said")
 
 
+MS = {X: 15.0, L: 15.0, X1280: 15.0, L1280: 15.0}    # alike times (``alike_ms``): without them nothing is suggested
+
+
 def _frames(*ts):
     return [SimpleNamespace(t=float(t)) for t in ts]
 
@@ -76,41 +79,43 @@ def test_a_background_run_tries_only_the_live_input():
 
 def test_any_verdict_naming_another_setting_is_a_suggestion():
     a = SwipeAuto(MODE_SUGGEST)
-    adv = a.advise(0.0, _result(L, X, 0.04), newest_frame_t=100.0)
+    assert a.advise(0.0, _result(L, X, 0.04), newest_frame_t=100.0, ms=MS).kind == "seen"     # once: nothing shown
+    adv = a.advise(160.0, _result(L, X, 0.04), newest_frame_t=260.0, ms=MS)
     assert (adv.kind, adv.level) == ("suggest", "marginal") and adv.text.endswith("Apply now?") and adv.text.isascii()
-    adv = a.advise(160.0, _result(L, X, 0.20), newest_frame_t=260.0)
+    adv = a.advise(320.0, _result(L, X, 0.20), newest_frame_t=420.0, ms=MS)
     assert (adv.kind, adv.level, adv.why_not_auto) == ("suggest", "definite", "Auto: suggest does not switch by itself")
-    assert a.advise(320.0, _result(X, X, 0.0, switch=False), 420.0).kind == "none"
+    assert a.advise(480.0, _result(X, X, 0.0, switch=False), 580.0).kind == "none"
 
 
 def test_two_definite_verdicts_on_disjoint_frames_switch_the_seamless_pair():
     a = SwipeAuto(MODE_AUTO, AutoParams(definite_gain=0.05))
-    adv = a.advise(0.0, _result(L, X, 0.04), 100.0)
-    assert adv.kind == "suggest" and "under 5 points" in adv.why_not_auto            # too small to switch alone
-    assert a.advise(160.0, _result(L, X, 0.20), 260.0).kind == "suggest"           # once is not enough
-    assert a.advise(200.0, _result(L, X, 0.20), 260.0).kind == "suggest"           # the same frames again: no
-    adv = a.advise(320.0, _result(L, X, 0.20), 420.0)
+    adv = a.advise(0.0, _result(L, X, 0.04), 100.0, ms=MS)
+    assert adv.kind == "seen"                                                     # too small to switch alone
+    adv = a.advise(160.0, _result(L, X, 0.20), 260.0, ms=MS)
+    assert adv.kind == "suggest" and "over 5 points needed" in adv.why_not_auto     # once over 5 is not enough
+    assert a.advise(200.0, _result(L, X, 0.20), 260.0, ms=MS).kind == "suggest"   # the same frames again: no
+    adv = a.advise(320.0, _result(L, X, 0.20), 420.0, ms=MS)
     assert adv.kind == "apply" and adv.seamless and adv.text.startswith("switching to l @ 1920 x 1056")
 
 
 def test_another_input_size_is_never_automatic():
     a = SwipeAuto(MODE_AUTO)
-    a.advise(0.0, _result(L, X1280, 0.30), 100.0)
-    adv = a.advise(160.0, _result(L, X1280, 0.30), 260.0)
+    a.advise(0.0, _result(L, X1280, 0.30), 100.0, ms=MS)
+    adv = a.advise(160.0, _result(L, X1280, 0.30), 260.0, ms=MS)
     assert adv.kind == "suggest" and not adv.seamless and "another input size" in adv.why_not_auto
 
 
 def test_what_keeps_a_definite_win_a_suggestion():
     a = SwipeAuto(MODE_AUTO)                                                    # slower than the live setting
-    a.advise(0.0, _result(X, L, 0.20), 100.0)
+    a.advise(0.0, _result(X, L, 0.20), 100.0, ms={X: 26.0, L: 15.0})
     adv = a.advise(160.0, _result(X, L, 0.20), 260.0, ms={X: 26.0, L: 15.0})
-    assert adv.kind == "suggest" and "slower" in adv.why_not_auto
+    assert adv.kind == "none" and "slower" in adv.why_not_auto                    # (not even suggested, since 27/11)
     a = SwipeAuto(MODE_AUTO, AutoParams(dwell_s=300, back_s=900))               # dwell, then no way back
     a.switched(1000.0, X1280, L1280)
-    a.advise(1010.0, _result(X1280, L1280, 0.20), 1100.0)
-    assert "moment ago" in a.advise(1170.0, _result(X1280, L1280, 0.20), 1260.0).why_not_auto
-    a.advise(1400.0, _result(X1280, L1280, 0.20), 1390.0)
-    assert "just left" in a.advise(1560.0, _result(X1280, L1280, 0.20), 1550.0).why_not_auto
+    a.advise(1010.0, _result(X1280, L1280, 0.20), 1100.0, ms=MS)
+    assert "moment ago" in a.advise(1170.0, _result(X1280, L1280, 0.20), 1260.0, ms=MS).why_not_auto
+    a.advise(1400.0, _result(X1280, L1280, 0.20), 1390.0, ms=MS)
+    assert "just left" in a.advise(1560.0, _result(X1280, L1280, 0.20), 1550.0, ms=MS).why_not_auto
 
 
 def test_after_a_run_the_referee_could_not_judge_it_waits():
@@ -141,7 +146,7 @@ def test_a_verdict_naming_another_setting_a_switch_or_a_reset_ends_the_back_off(
     a.due(0.0, 45, 105)
     a.advise(30.0, _keep(), 30.0)
     assert a.due(100.0, 45, 105) == "idle"
-    a.advise(110.0, _result(L, X, 0.04), 110.0)                                  # named: the next run at once
+    a.advise(110.0, _result(L, X, 0.04), 110.0, ms=MS)                           # named: the next run at once
     assert a.keep_wait() == 0 and a.due(120.0, 45, 105) == "run"
     a.advise(150.0, _keep(), 150.0)
     a.switched(160.0, X, L)

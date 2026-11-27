@@ -3055,8 +3055,11 @@ class WallDanceApp:
         its bans say nothing then (it tries nothing), a failed switch still waits for Dismiss, as P5's failed Apply
         does."""
         bans = self.swipe_bg.health() if self.swipe_bg.mode != "off" else None
+        # the row names what the swipe line shows: once the background's suggestion (or its withdrawal) took the
+        # line, the operator's verdict and its Apply button are no longer on screen -- no row quotes them
+        on_line = self._swipe_shown != "background"
         return self.swipe.readiness(plate_ready=self._swipe_plate_ready(),
-                                    live_now=self._swipe_live_setting(),
+                                    live_now=self._swipe_live_setting() if on_line else None,
                                     other_fault=self.swipe_switch.health() or bans,
                                     seamless=self._swipe_seamless_winner() is not None,
                                     swipe_auto=self.swipe_bg.mode)
@@ -3433,6 +3436,8 @@ class WallDanceApp:
         an alert (a failure only).  Never the health line: only a switch that failed is a fault (the readiness row,
         ``swipe_switch.health()``)."""
         text = str(payload.get("text", ""))
+        if kind == "suggest" and payload.get("again") and self._swipe_shown != "background":
+            return                                        # named again: never over the operator's own verdict
         if kind == "suggest":
             self._swipe_shown = "background"
             res = dict(payload.get("result") or {})
@@ -3444,8 +3449,9 @@ class WallDanceApp:
             if sug is not None:
                 res.update(self._swipe_apply_hint(sug["winner_c"]))
             self.bus.publish(api.SettingsSwipeResult(res, ""))
-            self.bus.publish(api.Toast("A better model may be available - see 'Try other settings' "
-                                       "(Apply now)", 6.0, (255, 200, 100)))
+            if not payload.get("again"):                  # said once: a look naming it again redraws the line only
+                self.bus.publish(api.Toast("A better model may be available - see 'Try other settings' "
+                                           "(Apply now)", 6.0, (255, 200, 100)))
         elif kind == "switching":
             # an automatic switch: information, in the green of the operator's own Apply -- only a failure is an
             # alert (red)

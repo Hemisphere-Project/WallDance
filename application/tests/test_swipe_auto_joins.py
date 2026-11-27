@@ -29,6 +29,8 @@ def test_a_suggestion_on_screen_does_not_keep_the_plate_object_it_was_judged_on(
     plate = _Plate()
     live["v"] = dataclasses.replace(live["v"], plate_ref=plate)
     proc.frames = _look_frames(150)
+    assert bg.tick() == "run"
+    proc.frames = _look_frames(150, t0=150.0)            # (27/11) shown at the second look
     assert bg.tick() == "run" and bg.suggestion is not None
     gone = weakref.ref(plate)
     live["v"] = dataclasses.replace(live["v"], plate_ref=None)     # the foreground let it go (no live model...)
@@ -69,6 +71,8 @@ def test_the_replay_dismiss_is_the_apps_not_now_then_the_fault():
     import switch_replay as SR
     bg, proc, events, loader, live = _looking_bg()
     proc.frames = _look_frames(150)
+    assert bg.tick() == "run"
+    proc.frames = _look_frames(150, t0=150.0)            # (27/11) shown at the second look
     assert bg.tick() == "run" and bg.suggestion is not None
     sw = _Switch()
     assert SR.press_dismiss(sw, bg) is True                       # « not now »: the fault stays

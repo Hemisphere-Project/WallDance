@@ -15,6 +15,11 @@ from test_seamless_switch import L1280
 from test_seamless_switch_superseded import M1280
 from test_swipe_auto_failures import SAID, WAITS, _broken_bg
 from test_swipe_auto_rollback import _first_frame_raises, _setup, _two_looks_ask_the_switch
+from test_swipe_auto_live import swipe_auto_unlocked  # noqa: E402,F401 - the fixture
+
+# mode auto set on the BackgroundSwipe itself, past the app's doors: the release list must name it too (the
+# last guard before a switch, since 27/11); the build ships locked
+pytestmark = pytest.mark.usefixtures("swipe_auto_unlocked")
 
 UNBAN = "the automatic swipe will not try l @ 1280 again until you press Dismiss"
 

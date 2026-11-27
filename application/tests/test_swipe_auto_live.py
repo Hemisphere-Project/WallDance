@@ -39,6 +39,7 @@ class _BgProc(_SwitchProc):
     def __init__(self):
         super().__init__()
         self.frames = []
+        self.timing = {"yolo": 6.0}     # the live call's time: the « slower » rule refuses a winner without it
 
     def swipe_fresh(self, after_t=None):
         return [f for f in self.frames if after_t is None or float(f.t) > after_t], self.clock
@@ -66,7 +67,7 @@ def _bg(live, *, loader=None, port=None, busy=lambda: None, mode="off", engine_e
     return bg, proc, events
 
 
-def test_the_automatic_switch_keeps_the_old_live_model_beside_at_the_same_input():
+def test_the_automatic_switch_keeps_the_old_live_model_beside_at_the_same_input(swipe_auto_unlocked):  # (27/11) auto: released
     """mode auto: the resident (the other model at the live input) goes live, the old live model becomes the
     resident -- the way back is as cheap."""
     from runtime.swipe_background import Resident
@@ -178,10 +179,13 @@ def test_a_look_loads_the_other_model_once_and_suggests_it():
     assert loader.loads == [L1280.engine_file] and bg.resident.candidate == L1280      # the other model, here
     assert loader.infers == 150 and bg.inferences == 150
     assert bg.last_advice["kind"] == "advice" and bg.last_look["outcome"]
+    assert bg.suggestion is None and bg.last_advice["advice"] == "seen"            # (27/11) once: nothing shown
+    proc.frames = _look_frames(150, t0=150.0)
+    assert bg.tick() == "run" and loader.infers == 300
     assert bg.suggestion is not None and bg.suggestion["winner_c"] == L1280
     kind, payload = [e for e in events if e[0] == "suggest"][-1]
     assert payload["winner"] == "l @ 1280" and payload["result"]["switch"]
-    assert bg.tick() == "idle" and loader.infers == 150 and len(loader.loads) == 1    # its frames are used
+    assert bg.tick() == "idle" and loader.infers == 300 and len(loader.loads) == 1    # its frames are used
 
 
 def test_a_run_needs_a_full_pool_of_frames_the_last_run_did_not_use():
@@ -340,14 +344,14 @@ def test_no_room_for_a_gain_means_no_run_no_inference():
     assert bg.tick() == "idle" and bg.auto.skipped == skipped + 1          # its frames are no longer fresh
 
 
-def test_two_definite_runs_on_disjoint_frames_switch_in_mode_auto():
+def test_two_definite_runs_on_disjoint_frames_switch_in_mode_auto(swipe_auto_unlocked):  # (27/11) auto: released
     """Mode auto, the policy's own rule: a definite winner at the same input twice in a row, on frames no earlier
     run looked at -- the first run suggests (why not yet), the second asks the switch for the resident."""
     bg, proc, events, loader, live = _looking_bg(mode="auto")
     proc.frames = _look_frames(150)
     assert bg.tick() == "run"
     first = bg.last_advice
-    assert first["advice"] == "suggest" and first["why_not_auto"] and bg.switch._want is None
+    assert first["advice"] == "seen" and first["why_not_auto"] and bg.switch._want is None
     assert bg.auto.policy.fresh(proc.frames) == []       # advise marked them looked at
     proc.frames = _look_frames(150, t0=150.0)
     assert bg.tick() == "run"
@@ -391,7 +395,7 @@ def _apply_adv(winner=L1280):
                                 f"60 %", why_not_auto=None)
 
 
-def test_a_failed_automatic_switch_is_not_tried_again_until_dismiss():
+def test_a_failed_automatic_switch_is_not_tried_again_until_dismiss(swipe_auto_unlocked):  # (27/11) auto: released
     """An automatic switch that did not happen (here: the engine raises on its first live frame) -- the previous
     setting runs on (a warn row), the fault names the engine, and the automatic swipe stands down for that setting:
     a later definite verdict (a look that ran meanwhile) says nothing until Dismiss."""

@@ -71,7 +71,7 @@ from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 from core.swipe import Candidate, SwipeParams
 from core.swipe import score_frame
 from core.swipe_auto import (MODE_AUTO, MODE_OFF, AutoParams, SwipeAuto, alike_ms, bar_for,  # noqa: F401 - PolicyPort
-                             headroom, parse_mode, referee_params)
+                             headroom, parse_mode, referee_params, released_modes, suggestion_text)
 from core.swipe_runner import (SWIPE_MODELS, CandidateRunner, ExclusionCells, install_capture_guards,
                                live_run_from_boxes, no_graph_capture, result_dict, score_runs)
 from runtime.seamless_switch import ENGINE_UNREADABLE, Prepared, SeamlessSwitch, _runner_factory, load_failure
@@ -91,6 +91,11 @@ WALL_WAIT = "the automatic swipe waits for an empty wall to load {}"
 # itself -- the alert, the readiness row -- since Dismiss on the suggestion means « not now »)
 AUTO_FAILED = "the last automatic switch failed"
 APPLY_FAILED = "the last Apply failed"
+# the last guard: mode auto in a build that does not release it (the app's doors refuse it already)
+AUTO_NOT_RELEASED = "Auto: switch is not released in this build"
+# a suggestion on screen that the looks no longer name goes after this many of them in a row
+UNCONFIRMED = 2
+NOT_CONFIRMED = "the last looks did not confirm it"
 # what the look and the readiness row say while an automatic switch's ban holds (the switch's fault says the same):
 # it names the setting (``l @ 1280``), never its engine file -- the file is named only where the instruction is about
 # the file (rebuild it)
@@ -914,9 +919,15 @@ class BackgroundSwipe:
 
     # ------------------------------------------------------------------ the advice
     def _act(self, adv, result, live: LiveSetting) -> None:
+        """One verdict's advice.  A suggestion is shown once (one toast): a later look that names it again
+        updates its line silently (figures, time: its age counts from then); ``UNCONFIRMED`` looks in a row that do
+        not (a « keep », another winner, no verdict -- the referee's refusal of the plate among them --, a winner
+        the « slower » rule refuses) withdraw it."""
+        sug = self.suggestion
         if result.winner is None:
-            # no verdict (the operator's swipe's no_verdict): silent -- no toast, nothing withdrawn, no row
+            # no verdict (the operator's swipe's no_verdict): no toast, no row; a suggestion on screen unconfirmed
             self.last_advice = self._record("advice", advice="none", no_verdict=True, reason=result.reason)
+            self._unconfirmed()
             return
         a = {"kind": adv.kind, "level": adv.level, "winner": adv.winner.label if adv.winner else None,
              "seamless": adv.seamless, "streak": adv.streak, "text": adv.text, "why_not_auto": adv.why_not_auto,
@@ -926,25 +937,43 @@ class BackgroundSwipe:
             # switched to -- nothing said, nothing withdrawn
             self.last_advice = self._record("advice", advice="none", banned=adv.winner.label, reason=result.reason)
             return
-        if adv.kind == "apply" and self.switch.fault:
-            adv.kind = "suggest"
-            held = self._fault_why                # whose switch the fault is (the request carried ``auto``)
-            adv.why_not_auto = held[1] if held is not None and held[0] == self.switch.fault else AUTO_FAILED
-            said = adv.text.removeprefix(f"switching to {adv.winner.label}: ")     # the apply text, without its verb
-            adv.text = f"{said}: clearly better - Apply now ({adv.why_not_auto})"
+        held = None
+        if adv.kind == "apply" and MODE_AUTO not in released_modes():
+            held = (AUTO_NOT_RELEASED, "")         # the last guard: shown as a suggestion, nothing switches
+        elif adv.kind == "apply" and self.switch.fault:
+            why = self._fault_why                  # whose switch the fault is (the request carried ``auto``)
+            why = why[1] if why is not None and why[0] == self.switch.fault else AUTO_FAILED
+            held = (why, why)
+        if held is not None:
+            adv.kind, adv.why_not_auto, adv.held = "suggest", held[0], held[1]
+            adv.said = adv.text.removeprefix(f"switching to {adv.winner.label}: ")    # the apply text, no verb
+            adv.text = suggestion_text(adv.said, adv.streak, adv.held)
             a.update(kind="suggest", why_not_auto=adv.why_not_auto, text=adv.text)
         if adv.kind == "none" and result.winner is not None and result.winner == result.current:
             a["keeps"] = live.candidate.label
         self.last_advice = self._record("advice", advice=a["kind"], **{k: v for k, v in a.items() if k != "kind"})
-        if adv.kind == "none":
-            if adv.winner is None:                # (a setting dismissed a moment ago: nothing is shown for it)
-                self._clear_suggestion(f"the last look keeps {live.candidate.label}")
+        if sug is not None and adv.kind in ("seen", "suggest") and adv.winner == sug["winner_c"]:
+            # named again: the same line, the figures and the time of this look -- no toast, no alert
+            seen = int(sug.get("seen", 2)) + 1
+            hold = sug.get("held", "") if adv.kind == "seen" else adv.held    # « seen once » says nothing of it
+            self.suggestion = {**sug, "text": suggestion_text(adv.said, seen, hold), "held": hold, "seen": seen,
+                               "unconfirmed": 0, "reason": result.reason, "level": adv.level,
+                               "why_not_auto": sug.get("why_not_auto") if adv.kind == "seen" else adv.why_not_auto,
+                               "wall": self.wall(), "result": result}
+            self._record("confirmed", setting=adv.winner.label, seen=seen)
+            self.notify("suggest", {**{k: v for k, v in self.suggestion.items() if k in a}, "again": True,
+                                    "result": result_dict(result)})
+            return
+        if adv.kind in ("none", "seen") or (sug is not None and adv.winner != sug["winner_c"]):
+            self._unconfirmed()
+        if adv.kind in ("none", "seen"):
             return
         if adv.kind == "suggest":
             # the setting it was judged on, for what_changed's words -- without the plate object (``plate_ref``,
             # in no word and no key): a suggestion that outlives its plate (no live model to see the scene change)
             # does not keep it in memory up to its max age
-            self.suggestion = {**a, "winner_c": adv.winner, "live_key": live.key,
+            self.suggestion = {**a, "winner_c": adv.winner, "live_key": live.key, "held": adv.held,
+                               "seen": adv.streak, "unconfirmed": 0,
                                "live": dataclasses.replace(live, plate_ref=None), "wall": self.wall(),
                                "result": result}
             self.notify("suggest", {**a, "result": result_dict(result)})
@@ -1049,6 +1078,15 @@ class BackgroundSwipe:
         return why
 
     # ------------------------------------------------------------------ the operator's side
+    def _unconfirmed(self) -> None:
+        """A look that did not name the suggestion on screen: the ``UNCONFIRMED``-th in a row withdraws it."""
+        sug = self.suggestion
+        if sug is None:
+            return
+        sug["unconfirmed"] = int(sug.get("unconfirmed", 0)) + 1
+        if sug["unconfirmed"] >= UNCONFIRMED:
+            self._clear_suggestion(NOT_CONFIRMED)
+
     def _clear_suggestion(self, why: Optional[str]) -> None:
         if self.suggestion is None:
             return

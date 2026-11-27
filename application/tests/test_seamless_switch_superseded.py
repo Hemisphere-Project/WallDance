@@ -12,6 +12,7 @@ import weakref
 from types import SimpleNamespace
 
 import pytest
+from test_swipe_auto_live import swipe_auto_unlocked  # noqa: E402,F401 - the fixture
 
 from core.swipe import Candidate
 from test_seamless_switch import L1280, X1280, _Loader, _Port, _Runner, _controller, _live, _proc
@@ -135,7 +136,7 @@ class _LivePort(_Port):
         return old
 
 
-def test_after_a_superseded_automatic_switch_the_looker_sees_a_change_by_hand():
+def test_after_a_superseded_automatic_switch_the_looker_sees_a_change_by_hand(swipe_auto_unlocked):  # noqa: F811 - (27/11) auto: released
     """Mode auto switches to its resident l @ 1280; during the probation the operator loads m @ 1280.  The
     policy never heard of the switch (no confirmation); the looker's next tick sees a live setting that is
     neither the old one nor the one it expected: a change by hand (the dwell starts), no ban, the switch not
@@ -168,7 +169,7 @@ def test_after_a_superseded_automatic_switch_the_looker_sees_a_change_by_hand():
     assert "switched" not in [k for k, _ in events]
 
 
-def test_after_a_superseded_automatic_switch_a_change_by_hand_to_its_setting_is_one_too():
+def test_after_a_superseded_automatic_switch_a_change_by_hand_to_its_setting_is_one_too(swipe_auto_unlocked):  # noqa: F811 - (27/11) auto: released
     """The same switch to l @ 1280, overtaken by the operator's m @ 1280 before the looker saw l live.  Later the
     operator picks l @ 1280 by hand: that is a change by hand too (its row, the dwell from then) -- the switch that
     did not last no longer makes l @ 1280 the setting the looker expects."""

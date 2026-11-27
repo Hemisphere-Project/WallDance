@@ -9,6 +9,12 @@ CPU, with the fakes of ``test_swipe_auto_live`` and ``test_swipe_auto_rollback``
 from test_seamless_switch import _Port, _live
 from test_swipe_auto_live import _bg
 from test_swipe_auto_rollback import _JudgingRunner, _look, _setup, _Tap
+import pytest  # noqa: E402
+from test_swipe_auto_live import swipe_auto_unlocked  # noqa: E402,F401 - the fixture
+
+# mode auto set on the BackgroundSwipe itself, past the app's doors: the release list must name it too (the
+# last guard before a switch, since 27/11); the build ships locked
+pytestmark = pytest.mark.usefixtures("swipe_auto_unlocked")
 
 SNOOZE_SAYS = "the automatic swipe waits: l @ 1280 was dismissed - it looks again at "
 
@@ -16,7 +22,7 @@ SNOOZE_SAYS = "the automatic swipe waits: l @ 1280 was dismissed - it looks agai
 def test_off_ends_the_snooze_a_mode_set_again_looks_at_once():
     bg, proc, loader, live, port, _ = _setup(mode="suggest")
     tap = _Tap(range(1500))
-    assert _look(bg, proc, tap, 150) == "run" and bg.suggestion is not None
+    assert _look(bg, proc, tap, 150) == "run" and _look(bg, proc, tap, 300) == "run" and bg.suggestion is not None
     bg.dismiss()                                          # not now: l @ 1280 aside for 15 min
     assert _look(bg, proc, tap, 300) == "snoozed"
     bg.set_mode("off")
@@ -24,20 +30,20 @@ def test_off_ends_the_snooze_a_mode_set_again_looks_at_once():
     assert not str((bg.status()["last_look"] or {}).get("outcome", "")).startswith(SNOOZE_SAYS)
     assert _look(bg, proc, tap, 301) == "off"
     bg.set_mode("suggest")                                # a mode set again: fresh, l @ 1280 is looked at
-    assert _look(bg, proc, tap, 302) == "run", "a mode set again after off still waits for the old snooze"
-    assert bg.suggestion is not None
+    assert _look(bg, proc, tap, 600) == "run", "a mode set again after off still waits for the old snooze"
+    assert bg.last_advice["advice"] == "seen"            # (27/11) a new streak: seen once, nothing shown yet
 
 
 def test_off_ends_the_streak_a_verdict_before_it_never_counts_after():
     bg, proc, loader, live, port, _ = _setup(mode="auto")
     tap = _Tap(range(1500))
-    assert _look(bg, proc, tap, 150) == "run" and bg.last_advice["why_not_auto"] == "seen 1 time(s), 2 needed"
+    assert _look(bg, proc, tap, 150) == "run" and bg.last_advice["why_not_auto"] == "seen once, it looks again"
     bg.set_mode("off")
     assert _look(bg, proc, tap, 151) == "off"
     bg.set_mode("auto")
     assert _look(bg, proc, tap, 300) == "run"
-    assert bg.last_advice["advice"] == "suggest", "a verdict seen before off counted towards a switch after it"
-    assert bg.last_advice["why_not_auto"] == "seen 1 time(s), 2 needed" and bg.switch._want is None
+    assert bg.last_advice["advice"] == "seen", "a verdict seen before off counted towards a switch after it"
+    assert bg.last_advice["why_not_auto"] == "seen once, it looks again" and bg.switch._want is None
 
 
 def test_a_mode_click_during_a_snooze_loads_the_second_engine_with_a_dancer_on_the_wall():
@@ -50,16 +56,17 @@ def test_a_mode_click_during_a_snooze_loads_the_second_engine_with_a_dancer_on_t
     proc.swipe_lost_share = lambda: 0.66
     tap = _Tap(range(1500))
     bg.set_mode("suggest")                                # the click: its look loads, whatever is on the wall
-    assert _look(bg, proc, tap, 150) == "run" and bg.suggestion is not None and len(loader.loads) == 1
+    assert _look(bg, proc, tap, 150) == "run" and _look(bg, proc, tap, 300) == "run"       # (27/11) two looks
+    assert bg.suggestion is not None and len(loader.loads) == 1
     bg.dismiss()                                          # not now: l @ 1280 aside for 15 min
     shown, live["v"], state["run"] = live["v"], None, False
-    assert _look(bg, proc, tap, 160) == "loading" and bg.resident is None   # a model load in STANDBY freed it
+    assert _look(bg, proc, tap, 310) == "loading" and bg.resident is None   # a model load in STANDBY freed it
     live["v"], state["run"] = shown, True
-    assert _look(bg, proc, tap, 170) == "snoozed" and bg.resident is None   # RUN, a dancer: no moment to load
+    assert _look(bg, proc, tap, 320) == "snoozed" and bg.resident is None   # RUN, a dancer: no moment to load
     infers = loader.infers
     bg.set_mode("auto")                                   # the operator's click, the snooze still on
-    assert _look(bg, proc, tap, 171) == "snoozed"
+    assert _look(bg, proc, tap, 321) == "snoozed"
     assert len(loader.loads) == 2 and bg.resident is not None, "the mode click during a snooze loaded nothing"
     assert loader.infers == infers and bg.suggestion is None and bg.switch._want is None   # still not looked at
     assert bg.status()["last_look"]["outcome"].startswith(SNOOZE_SAYS)
-    assert _look(bg, proc, tap, 172) == "snoozed" and len(loader.loads) == 2               # once
+    assert _look(bg, proc, tap, 322) == "snoozed" and len(loader.loads) == 2               # once

@@ -13,6 +13,11 @@ import numpy as np
 import pytest
 
 from test_swipe_auto_rollback import _look, _setup
+from test_swipe_auto_live import swipe_auto_unlocked  # noqa: E402,F401 - the fixture
+
+# mode auto set on the BackgroundSwipe itself, past the app's doors: the release list must name it too (the
+# last guard before a switch, since 27/11); the build ships locked
+pytestmark = pytest.mark.usefixtures("swipe_auto_unlocked")
 
 ENHANCED = (True, False, True, 3.0, 1.6, False, False, 0, 40.0, 0.0)
 
@@ -21,12 +26,12 @@ def test_an_enhancement_change_starts_the_verdicts_and_the_pool_over():
     """Fails before: look 2 runs on frames kept under the old picture, counts look 1's verdict, asks the switch."""
     bg, proc, loader, live, port, tap = _setup(mode="auto")
     assert _look(bg, proc, tap, 150) == "run"
-    assert bg.last_advice["why_not_auto"] == "seen 1 time(s), 2 needed" and bg.auto.policy._streak == 1
+    assert bg.last_advice["why_not_auto"] == "seen once, it looks again" and bg.auto.policy._streak == 1
     live["v"] = dataclasses.replace(live["v"], enhance=ENHANCED)          # Calibrate moved CLAHE and gamma
     assert _look(bg, proc, tap, 300) == "idle"                          # frames kept before the change: never
     assert loader.infers == 150 and bg.switch._want is None and bg.auto.policy._streak == 0
     assert _look(bg, proc, tap, 451) == "run"                           # a whole pool kept after it
-    assert bg.last_advice["why_not_auto"] == "seen 1 time(s), 2 needed"  # counted from one again
+    assert bg.last_advice["why_not_auto"] == "seen once, it looks again"  # counted from one again
     assert bg.switch._want is None
 
 

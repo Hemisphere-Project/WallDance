@@ -18,6 +18,11 @@ import pytest
 from test_seamless_switch import L1280, X1280, _Loader, _Port, _Runner, _live
 from test_swipe_auto_live import ON_HER, _apply_adv, _bg, _look_frames, _looking_bg
 from test_swipe_auto_rollback import _first_frame_raises, _look, _next_runs, _setup, _Tap
+from test_swipe_auto_live import swipe_auto_unlocked  # noqa: E402,F401 - the fixture
+
+# mode auto set on the BackgroundSwipe itself, past the app's doors: the release list must name it too (the
+# last guard before a switch, since 27/11); the build ships locked
+pytestmark = pytest.mark.usefixtures("swipe_auto_unlocked")
 
 SNOOZE = 900                     # core.config.SWIPE_AUTO_SNOOZE_S: 15 min of the loop clock
 SNOOZE_SAYS = "the automatic swipe waits: l @ 1280 was dismissed - it looks again at "
@@ -47,22 +52,23 @@ def test_dismiss_on_a_suggestion_is_not_now_then_a_new_streak():
     suggestion, no switch --, the look's row says why and goes with it; then two fresh definite verdicts."""
     bg, proc, loader, live, port, _ = _setup(mode="auto")
     tap = _Tap(range(1500))
-    assert _look(bg, proc, tap, 150) == "run" and bg.last_advice["why_not_auto"] == "seen 1 time(s), 2 needed"
-    assert bg.suggestion is not None
+    bg.auto.policy._switched_at = 100.0                  # (27/11) a change by hand at 100 s: the dwell holds look 2
+    assert _look(bg, proc, tap, 150) == "run" and bg.last_advice["why_not_auto"] == "seen once, it looks again"
+    assert _look(bg, proc, tap, 300) == "run" and bg.suggestion is not None          # seen twice, held back
     infers = loader.infers
     bg.dismiss()                                         # the app's Dismiss, the suggestion on the swipe line
     assert bg.suggestion is None
     events = _events(bg)
-    did = {_look(bg, proc, tap, t) for t in range(151, 150 + SNOOZE)}
+    did = {_look(bg, proc, tap, t) for t in range(301, 300 + SNOOZE)}
     assert did == {"snoozed"}, f"Dismiss did not put l @ 1280 aside: the looks did {sorted(did)}"
     assert loader.infers == infers and bg.switch._want is None and bg.suggestion is None
     assert [k for k, _ in events if k in ("suggest", "switching", "fault")] == []
     assert bg.status()["last_look"]["outcome"].startswith(SNOOZE_SAYS)
-    proc.clock, proc.frames = 150.0 + SNOOZE, []         # the snooze is over (an empty wall): its row goes
+    proc.clock, proc.frames = 300.0 + SNOOZE, []         # the snooze is over (an empty wall): its row goes
     assert bg.tick() == "idle" and bg.status()["last_look"] is None
-    runs = _next_runs(bg, proc, tap, 150 + SNOOZE, n=2, stop=1500)
-    assert [a["advice"] for _, a in runs] == ["suggest", "apply"], "not a new streak after the snooze"
-    assert runs[0][1]["why_not_auto"] == "seen 1 time(s), 2 needed" and bg.switch._want is not None
+    runs = _next_runs(bg, proc, tap, 300 + SNOOZE, n=2, stop=1500)
+    assert [a["advice"] for _, a in runs] == ["seen", "apply"], "not a new streak after the snooze"
+    assert runs[0][1]["why_not_auto"] == "seen once, it looks again" and bg.switch._want is not None
     from core.config import SWIPE_AUTO_SNOOZE_S
     assert SWIPE_AUTO_SNOOZE_S == SNOOZE and bg.snooze_s == SNOOZE
 
@@ -73,7 +79,7 @@ def test_not_now_ends_with_a_new_scene_or_a_project_load(ends):
     the snooze: the look no longer waits for it."""
     bg, proc, loader, live, port, _ = _setup(mode="suggest")
     tap = _Tap(range(1500))
-    assert _look(bg, proc, tap, 150) == "run" and bg.suggestion is not None
+    assert _look(bg, proc, tap, 150) == "run" and _look(bg, proc, tap, 300) == "run" and bg.suggestion is not None
     bg.dismiss()
     assert _look(bg, proc, tap, 300) == "snoozed", "Dismiss put nothing aside"
     if ends == "a new scene":
@@ -90,7 +96,7 @@ def test_not_now_ends_with_a_new_scene_or_a_project_load(ends):
 def test_a_setting_an_automatic_switch_failed_to_is_never_suggested_nor_looked_at(how):
     bg, proc, loader, live, port, _ = _setup()
     tap = _Tap(range(1500))
-    assert _look(bg, proc, tap, 150) == "run" and bg.suggestion is not None          # « seen 1 time(s) »
+    assert _look(bg, proc, tap, 150) == "run" and bg.last_advice["advice"] == "seen"   # (27/11) nothing shown
     if how == "failed before it began":
         bg.switch.warm = lambda prep, winner: "RuntimeError: its warm-up raised"
     assert _look(bg, proc, tap, 300) == "run" and bg.last_advice["advice"] == "apply"
@@ -120,6 +126,8 @@ def test_a_suggestion_ages_out_even_on_an_empty_wall():
     clock = {"wall": 10_000.0}
     bg, proc, events, loader, live = _looking_bg(wall=lambda: clock["wall"])
     proc.frames = _look_frames()
+    assert bg.tick() == "run"
+    proc.frames = _look_frames(t0=150.0)                 # (27/11) a suggestion is shown at the second look
     assert bg.tick() == "run" and bg.suggestion is not None
     proc.frames = []                                     # the wall empties: no look runs from now on
     clock["wall"] += 1799.0
@@ -188,7 +196,7 @@ def test_an_automatic_switch_that_fails_before_it_begins_says_one_thing_to_do():
     bg._act(_apply_adv(), _result(), live["v"])
     assert bg.last_advice["advice"] == "suggest" and bg.switch._want is None
     assert bg.suggestion["why_not_auto"] == "the last automatic switch failed"
-    assert bg.suggestion["text"].endswith("clearly better - Apply now (the last automatic switch failed)")
+    assert bg.suggestion["text"].endswith("seen twice: Apply now? (the last automatic switch failed)")
     assert "automatic swipe to off" not in text + bg.suggestion["text"]
 
 
@@ -198,6 +206,8 @@ def test_in_mode_suggest_the_line_says_what_the_mode_does():
     bg, proc, events, loader, live = _looking_bg("suggest")
     proc.frames = _look_frames()
     assert bg.tick() == "run"
+    proc.frames = _look_frames(t0=150.0)                 # (27/11) shown at the second look
+    assert bg.tick() == "run"
     assert bg.suggestion["why_not_auto"] == "Auto: suggest does not switch by itself"
-    assert bg.suggestion["text"] == ("l @ 1280 covers 100 % of the dancers, x @ 1280 33 %: clearly better - Apply now "
-                                     "(Auto: suggest does not switch by itself)")
+    assert bg.suggestion["text"] == ("l @ 1280 covers 100 % of the dancers, x @ 1280 33 % (6 ms a frame against 6), "
+                                     "seen twice: Apply now?")    # (27/11) one wording: the mode in /status only

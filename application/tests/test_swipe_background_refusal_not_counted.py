@@ -69,7 +69,7 @@ def test_regression_guard_a_background_accept_is_still_told(calls):
     bg.referee = RefereeReport()
     proc.frames = _look_frames()
     assert bg.tick() == "run"
-    assert bg.last_advice["advice"] == "suggest"
+    assert bg.last_advice["advice"] == "seen"              # (27/11) named once: nothing shown yet
     assert calls == [("accept", None)]
     assert bg.status()["last_look"]["outcome"] != WAITS
 

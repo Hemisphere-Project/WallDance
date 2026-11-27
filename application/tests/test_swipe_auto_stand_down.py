@@ -18,6 +18,11 @@ import pytest
 
 from test_seamless_switch import L1280
 from test_swipe_auto_live import _look_frames, _looking_bg
+from test_swipe_auto_live import swipe_auto_unlocked  # noqa: E402,F401 - the fixture
+
+# mode auto set on the BackgroundSwipe itself, past the app's doors: the release list must name it too (the
+# last guard before a switch, since 27/11); the build ships locked
+pytestmark = pytest.mark.usefixtures("swipe_auto_unlocked")
 
 MOVED_WAIT = "the automatic swipe waits: the references are not right (moved) - see the health line"
 OTHER_WAIT = "the automatic swipe waits: the references are not right (other wall) - see the health line"
@@ -95,6 +100,8 @@ def test_a_suggestion_shown_is_withdrawn_at_the_alert_and_the_row_leaves_when_it
     plate = _Plate()
     _with_plate(live, plate)
     proc.frames = _look_frames(150)
+    assert bg.tick() == "run"
+    proc.frames = _look_frames(150, t0=150.0)            # (27/11) shown at the second look
     assert bg.tick() == "run" and bg.suggestion is not None
     ref.say(ref.RW.MOVED, plate, times=2)
     assert bg.tick() == "waiting"
@@ -104,9 +111,9 @@ def test_a_suggestion_shown_is_withdrawn_at_the_alert_and_the_row_leaves_when_it
     ref.say(ref.RW.MATCHES, plate)                                        # a match clears it at once
     proc.clock = 300.0
     assert bg.tick() == "idle" and bg.status()["last_look"] is None      # the row left at the first look
-    assert loader.infers == 150 and bg.auto.policy._streak == 0          # the pool and the verdicts start over
+    assert loader.infers == 300 and bg.auto.policy._streak == 0          # the pool and the verdicts start over
     proc.frames = _look_frames(150, t0=301.0)
-    assert bg.tick() == "run" and loader.infers == 300
+    assert bg.tick() == "run" and loader.infers == 450
 
 
 def test_a_run_in_progress_stops_at_its_next_frame_when_the_alert_comes(ref):
@@ -144,7 +151,7 @@ def test_no_verdict_a_match_a_first_alert_or_another_plates_alert_go_on(ref):
     assert ref.watch.current(plate) is None
     ref.say(ref.RW.MOVED, other, times=2)                                 # another plate's alert, confirmed
     assert ref.watch.current(other).alert and ref.watch.current(plate) is None
-    assert bg.tick() == "run" and loader.infers == 150 and bg.suggestion is not None
+    assert bg.tick() == "run" and loader.infers == 150 and bg.last_advice["advice"] == "seen"   # (27/11) once
 
 
 def test_a_watch_never_fed_or_absent_from_the_build_lets_it_look(monkeypatch):

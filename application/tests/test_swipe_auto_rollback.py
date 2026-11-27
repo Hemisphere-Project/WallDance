@@ -13,6 +13,12 @@ import numpy as np
 from core.swipe import Observation, SwipeFrame
 from test_seamless_switch import L1280, X1280, _live, _Port
 from test_swipe_auto_live import DANCER, ON_HER, _bg, _LookRunner
+import pytest  # noqa: E402
+from test_swipe_auto_live import swipe_auto_unlocked  # noqa: E402,F401 - the fixture
+
+# mode auto set on the BackgroundSwipe itself, past the app's doors: the release list must name it too (the
+# last guard before a switch, since 27/11); the build ships locked
+pytestmark = pytest.mark.usefixtures("swipe_auto_unlocked")
 
 BAN = "the automatic swipe will not try l @ 1280 again until you press Dismiss"
 DWELL = "the setting changed a moment ago"
@@ -72,7 +78,7 @@ def _next_runs(bg, proc, tap, start, n=1, stop=1000, after=None):
 
 def _two_looks_ask_the_switch(bg, proc, tap):
     """Look 1 (frames 0..149) names l @ 1280 once, look 2 (150..299) twice: mode auto asks the switch."""
-    assert _look(bg, proc, tap, 150) == "run" and bg.last_advice["why_not_auto"] == "seen 1 time(s), 2 needed"
+    assert _look(bg, proc, tap, 150) == "run" and bg.last_advice["why_not_auto"] == "seen once, it looks again"
     assert _look(bg, proc, tap, 300) == "run" and bg.last_advice["advice"] == "apply"
     assert bg.switch._want is not None and bg.switch._want["auto"] is True
     before = dict(vars(bg.auto.policy))
@@ -99,7 +105,7 @@ def test_a_rolled_back_switch_starts_no_look_before_the_cadence():
     loads, infers = len(loader.loads), loader.infers
     bg.dismiss()                                         # the ban stands the looker down: Dismiss lifts it
     (first, _), = _next_runs(bg, proc, tap, 300)
-    assert first == without == 450, f"a look started by the failure itself, at {first} s (without the switch: " \
+    assert first == without == 600, f"a look started by the failure itself, at {first} s (without the switch: " \
                                     f"{without} s)"
     assert len(loader.loads) == loads + 1 and loader.infers == infers + 150     # that look's own load and run only
     assert after == before, "the rolled-back switch changed the policy"
@@ -132,7 +138,7 @@ def test_an_operators_failed_apply_leaves_the_policy_as_it_was():
     """(d) Mode auto, look 1 suggests l @ 1280 (seen once); the operator's Apply swaps it in, its first frame
     raises: no ban (it was not ours), and the policy, the pool and the cadence are as before the Apply."""
     bg, proc, loader, live, port, tap = _setup()
-    assert _look(bg, proc, tap, 150) == "run" and bg.suggestion is not None
+    assert _look(bg, proc, tap, 150) == "run" and bg.last_advice["advice"] == "seen"     # (27/11) nothing shown
     before = dict(vars(bg.auto.policy))
     assert bg.request_switch(L1280, "Apply now") is None
     bg.switch.service()
@@ -171,6 +177,6 @@ def test_a_switch_that_succeeds_starts_the_dwell_and_the_pool_as_before():
     assert bg.switch.fault is None and bg.resident.candidate == X1280
     dense = _Tap([300.0 + 0.5 * j for j in range(1, 700)])     # two pools inside the dwell
     runs = _next_runs(bg, proc, dense, 300, n=2, after=300.0)
-    assert [a["why_not_auto"] for _, a in runs] == ["seen 1 time(s), 2 needed", DWELL]
+    assert [a["why_not_auto"] for _, a in runs] == ["seen once, it looks again", DWELL]
     assert runs[-1][0] - 300 < bg.auto.params.dwell_s
     assert "manual-change" not in [h["kind"] for h in bg.history]
