@@ -106,6 +106,8 @@ class ModelController:
         self._trt_requested: bool = USE_TENSORRT
         # P5 Apply: (model, on_done, rollback) of a request_setting switch until the main loop has run it
         self._setting_request: Optional[tuple] = None
+        # P6: the pre-switch model and bookkeeping, for restore_live, while a seamless switch is on probation
+        self._swap_back: Optional[tuple] = None
 
     @staticmethod
     def _is_trt_input_size_mismatch_error(exc: Exception) -> bool:
@@ -268,13 +270,22 @@ class ModelController:
         tracker's space stays where it was: ``FrameProcessor.adopt_model``).  The bookkeeping follows: the
         current model's name, the model manager's input (the combo, the badge, the « net input » row and what
         Save writes).  Returns the previous ``(model, runner)``; on any error everything is put back and the
-        error raised."""
+        error raised.
+
+        The previous model stays held here (``_swap_back``) only while ``model`` is on probation: once its first
+        frames ran well, or once a model load replaced it (``_attach_model``), it is let go -- else its engine
+        stayed on the GPU after the switch freed it, until the next switch."""
         proc = self.processor()
         mm = self.model_manager
         back = (self.model, self.current_model_name, self.current_model, mm.imgsz, mm.shape,
                 getattr(mm, "_loaded_shape", None))
         shape = tuple(int(v) for v in cand.shape) if cand.shape else None
-        old = proc.adopt_model(model, runner, net_input=(int(cand.imgsz), shape), on_fail=on_fail, on_ok=on_ok)
+
+        def ok() -> None:
+            self._swap_back = None              # its first frames ran: no way back any more
+            if on_ok is not None:
+                on_ok()
+        old = proc.adopt_model(model, runner, net_input=(int(cand.imgsz), shape), on_fail=on_fail, on_ok=ok)
         try:
             self._swap_back = back
             self.model = model
@@ -289,6 +300,7 @@ class ModelController:
         except Exception:
             proc.revert_swap()
             self._restore_bookkeeping(back)
+            self._swap_back = None
             raise
         return old
 
@@ -534,6 +546,8 @@ class ModelController:
         the project's rectangle when its engine loaded or on PyTorch, else the
         square)."""
         proc = self.processor()
+        if getattr(proc, "model", None) is not self.model:
+            self._swap_back = None      # a load replaced the live model: a seamless switch's way back goes with it
         proc.model = self.model
         proc.settings.yolo_shape = self.model_manager.effective_shape()
 
