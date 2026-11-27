@@ -558,6 +558,85 @@ def test_candidates_are_dropped_without_a_collection_and_finalized_once(monkeypa
     assert gcmod.collect is not None
 
 
+def _gc_policy_module(installed, request=None, policy=True):
+    """A stand-in for the rehearsal build's ``core.gc_policy`` (not on this branch): ``POLICY.installed``
+    and ``request(reason)``."""
+    import types
+    mod = types.ModuleType("core.gc_policy")
+    asked = []
+    if policy:
+        mod.POLICY = SimpleNamespace(installed=installed)
+    mod.request = request or asked.append
+    return mod, asked
+
+
+def _finalize_with(monkeypatch, gc_policy, empty_cache=True):
+    """(finalize's dict, the collections it ran) with ``gc_policy`` as ``sys.modules["core.gc_policy"]``
+    (None: no such module)."""
+    import sys
+    import core.swipe_runner as sr
+    from core.swipe_runner import CandidateRunner
+    collects = []
+    monkeypatch.setattr(sr, "gc", SimpleNamespace(collect=lambda *a: collects.append(a) or 0))
+    if gc_policy is None:
+        monkeypatch.delitem(sys.modules, "core.gc_policy", raising=False)
+    else:
+        monkeypatch.setitem(sys.modules, "core.gc_policy", gc_policy)
+    runner = CandidateRunner(SwipeInput(half=False), device="cpu", loader=lambda p: _BrightBoxModel())
+    return runner.finalize(lambda: None, empty_cache=empty_cache), collects
+
+
+def test_an_installed_gc_policy_gets_the_end_of_swipe_collection_as_a_request(monkeypatch):
+    """The rehearsal build's gc policy installed (U3, #t-029: no full collection in RUN with a dancer on the
+    wall): the swipe's end asks it for one (served at its next invisible moment) instead of a 90-177 ms
+    collection right after a live frame.  The dict keeps its keys; nothing was collected: ``gc_s`` 0.0."""
+    pytest.importorskip("kornia")
+    mod, asked = _gc_policy_module(installed=True)
+    fin, collects = _finalize_with(monkeypatch, mod)
+    assert asked == ["swipe ended"] and collects == []
+    assert set(fin) == {"gc_s", "empty_cache_s"} and fin["gc_s"] == 0.0
+    fin, collects = _finalize_with(monkeypatch, mod, empty_cache=False)    # a cancelled swipe: the same
+    assert asked == ["swipe ended"] * 2 and collects == []
+
+
+@pytest.mark.parametrize("case", ["not installed", "no such module", "no POLICY", "request raises"])
+def test_without_an_installed_gc_policy_the_swipe_end_collects_as_before(monkeypatch, case):
+    """This branch (no ``core.gc_policy``), the replay drivers and the tests (the policy never installed),
+    a module without its policy object, a request that raises (it never escapes: the collection runs as
+    before): one ``gc.collect`` at the end of the swipe, as measured in tonight's gates."""
+    pytest.importorskip("kornia")
+
+    def boom(reason):
+        raise RuntimeError("the policy cannot take it")
+    mod = {"not installed": lambda: _gc_policy_module(installed=False)[0],
+           "no such module": lambda: None,
+           "no POLICY": lambda: _gc_policy_module(installed=True, policy=False)[0],
+           "request raises": lambda: _gc_policy_module(installed=True, request=boom)[0]}[case]()
+    fin, collects = _finalize_with(monkeypatch, mod)
+    assert len(collects) == 1
+    assert set(fin) == {"gc_s", "empty_cache_s"} and fin["gc_s"] >= 0.0
+
+
+def test_a_swipe_with_the_gc_policy_installed_requests_once_and_never_collects(monkeypatch):
+    """The whole swipe (two candidates, run_swipe's release_s sums finalize's dict): no full collection at
+    all, one request at its end."""
+    pytest.importorskip("kornia")
+    import sys
+    import core.swipe_runner as sr
+    from core.swipe_runner import CandidateRunner
+    collects = []
+    monkeypatch.setattr(sr, "gc", SimpleNamespace(collect=lambda *a: collects.append(a) or 0))
+    mod, asked = _gc_policy_module(installed=True)
+    monkeypatch.setitem(sys.modules, "core.gc_policy", mod)
+    runner = CandidateRunner(SwipeInput(half=False), device="cpu", loader=lambda p: _BrightBoxModel())
+    frames = [_facade_frame()] * 2
+    obs = [Observation(groups=[(460.0, 750.0, 5000.0)])] * 2
+    out = run_swipe(frames, obs, CandidatePlan([X1280, L1920]), X1280, runner, lambda c: c.engine_file,
+                    SwipeParams(min_groups=1))
+    assert collects == [] and asked == ["swipe ended"]
+    assert out.result is not None and out.timing["release_s"] >= 0.0
+
+
 def test_a_cancelled_swipe_makes_no_cuda_call_at_its_end():
     """Dropped because the live model reloads: its first RUN frame captures a graph outside any lock, so the
     end of a cancelled swipe calls no empty_cache (the engines are already freed, under the lock)."""
@@ -834,7 +913,12 @@ def test_the_controller_collects_runs_and_reports_a_switch():
     assert err == "" and res["switch"] and res["winner"].startswith("l @")
     row = c.readiness(plate_ready=True, live_now=live["v"])
     assert row.status == "warn" and "covers 100 % of the dancers, x @ 1280 0 %" in row.detail
+    # the automatic swipe off (the default): P5's row, P5's Apply label
     assert row.detail.endswith("- in STANDBY press 'Apply l @ 1920 x 1056 (STANDBY)', under Try other settings")
+    # P6, the automatic swipe on: the reload Apply's label says what it costs
+    row = c.readiness(plate_ready=True, live_now=live["v"], swipe_auto="suggest")
+    assert row.detail.endswith("- in STANDBY press 'Apply l @ 1920 x 1056 (STANDBY: a few seconds without "
+                               "tracking)', under Try other settings")
     why, winner, conf = c.applicable(live["v"])
     assert why is None and winner.model == "yolo11l-pose"
     assert conf == getattr(c.outcome.result, "recommended_conf", None)
@@ -1064,6 +1148,44 @@ def test_the_controller_refuses_without_plate_or_tensorrt():
     assert c.start() == "no model loaded"
 
 
+def test_the_operators_swipe_refuses_a_ready_plate_that_is_not_usable():
+    """``plate_status`` "ready" while ``plate_usable`` is False (found stale, refused for its camera, invalidated):
+    'Try other settings' does not start -- its verdict would be judged against a plate that does not hold, and
+    its Apply allowed -- and the operator reads the sentence he reads without a plate; usable, it starts as
+    before.  The start and the readiness row ask the one predicate, ``WallDanceApp._swipe_plate_ready``."""
+    pytest.importorskip("dearpygui")
+    import inspect
+    import app as appmod
+    from runtime import api
+    proc = _FakeProc(_frames(), 30)
+    proc.plate_status, proc.plate_usable = "ready", False
+    events = []
+    fake = SimpleNamespace(processor=proc, bus=SimpleNamespace(publish=events.append), system_state=None)
+    fake._swipe_plate_ready = lambda: appmod.WallDanceApp._swipe_plate_ready(fake)
+    fake.swipe, ev = _controller(proc, {"v": _live()}, _FakeRunner())
+    fake.swipe.plate_ready = fake._swipe_plate_ready             # what WallDanceApp.__init__ passes
+    appmod.WallDanceApp._cb_run_settings_swipe(fake)
+    why = "no valid empty-wall plate: Calibrate on the empty wall first"
+    assert not fake.swipe.busy and fake.swipe.state == "error" and fake.swipe.text == why
+    assert ev["result"][-1] == ({}, why)
+    toasts = [e.message for e in events if isinstance(e, api.Toast)]
+    assert toasts == [f"Swipe: {why}"]
+    proc.plate_usable = True
+    appmod.WallDanceApp._cb_run_settings_swipe(fake)
+    fake.swipe.join(5)
+    assert fake.swipe.state == "done" and fake.swipe.outcome is not None
+    assert events[-1].message.startswith("Swipe: keeping 150 frames")
+    proc.plate_status = "stale"                                  # not ready: refused as before
+    assert appmod.WallDanceApp._swipe_plate_ready(fake) is False
+    # a processor without ``plate_usable`` (a fake, an older build): ready is enough, as before
+    assert appmod.WallDanceApp._swipe_plate_ready(SimpleNamespace(processor=SimpleNamespace(plate_status="ready")))
+    # the start and the readiness row both call it
+    assert "plate_ready=self._swipe_plate_ready," in inspect.getsource(appmod.WallDanceApp.__init__)
+    assert ("plate_ready=self._swipe_plate_ready()"
+            in inspect.getsource(appmod.WallDanceApp._swipe_readiness_row))
+    assert "self._swipe_readiness_row()" in inspect.getsource(appmod.WallDanceApp._build_readiness_report)
+
+
 def _dancing(n, lost=5):
     from core.swipe import SwipeFrame
     return [SwipeFrame(float(i), np.zeros((1824, 1260), np.uint8), Observation(groups=[DANCER]), i < lost)
@@ -1185,9 +1307,24 @@ def test_readiness_row_only_for_advice_or_a_fault():
     r = check_swipe(result=switch)
     assert r.status == "warn"
     # J2 (review of 0e7fbe5): the row names the Apply button by its label; « Try other settings » would start a
-    # new swipe and drop the advice
-    assert r.detail == ("l @ 1920 x 1056 covers 91 % of the dancers, x @ 1280 51 % - in STANDBY press "
-                        "'Apply l @ 1920 x 1056 (STANDBY)', under Try other settings")
+    # new swipe and drop the advice.  The automatic swipe off (the default): P5's row, word for word -- also
+    # when the winner's engine is built (Apply is P5's reload then)
+    p5 = ("l @ 1920 x 1056 covers 91 % of the dancers, x @ 1280 51 % - in STANDBY press "
+          "'Apply l @ 1920 x 1056 (STANDBY)', under Try other settings")
+    assert r.detail == p5
+    assert check_swipe(result=switch, seamless=True).detail == p5
+    assert check_swipe(result=switch, seamless=True, swipe_auto="off").detail == p5
+    # P6, the automatic swipe on: the reload Apply's label says what it costs ...
+    for mode in ("suggest", "auto"):
+        r = check_swipe(result=switch, swipe_auto=mode)
+        assert r.status == "warn" and r.detail == (
+            "l @ 1920 x 1056 covers 91 % of the dancers, x @ 1280 51 % - in STANDBY press "
+            "'Apply l @ 1920 x 1056 (STANDBY: a few seconds without tracking)', under Try other settings")
+        # ... and the winner's engine built: Apply is the seamless switch, usable during the show
+        r = check_swipe(result=switch, seamless=True, swipe_auto=mode)
+        assert r.status == "warn" and r.detail == (
+            "l @ 1920 x 1056 covers 91 % of the dancers, x @ 1280 51 % - press 'Apply l @ 1920 x 1056' (under Try "
+            "other settings): it switches between two frames, the show runs on")
     r = check_swipe(fault="Apply of l @ 1920 x 1056 failed: its engine did not load on TensorRT; x @ 1280 runs "
                           "again, as before - press Dismiss (rebuild yolo11l-pose_1920x1056.engine "
                           "(extra/build_engines) before applying it again)", result=switch)
@@ -1328,7 +1465,7 @@ def test_a_failed_apply_load_restores_the_old_input(tmp_path, monkeypatch):
     assert done == [False, True] and mc.model_manager.shape == (1920, 1056)
 
 
-def _apply_fixture(trt=True):
+def _apply_fixture(trt=True, mode="off"):
     pytest.importorskip("dearpygui")
     import app as appmod
     proc = _FakeProc(_frames(), 30)
@@ -1346,7 +1483,12 @@ def _apply_fixture(trt=True):
     from runtime.api import SystemState
     fake = SimpleNamespace(
         swipe=c, _swipe_live_setting=lambda: live["v"], _swipe_pending_apply=None,
-        system_state=SystemState.STANDBY,
+        system_state=SystemState.STANDBY, _swipe_shown="operator",
+        # P6: no seamless switch here (the winner's engine is not built): Apply is the reload -- P5's with the
+        # automatic swipe off, P6's reload path with it on
+        swipe_bg=SimpleNamespace(suggestion=None, dismiss=lambda: None, mode=mode),
+        swipe_switch=SimpleNamespace(can_switch=lambda w: f"its engine is not built ({w.engine_file})",
+                                     dismiss=lambda: None),
         configs=SimpleNamespace(_current_project="jeudi0809_mur2"), settings=SimpleNamespace(imgsz=1280),
         models=SimpleNamespace(request_setting=request, current_model_name="yolo11x-pose",
                                model_manager=SimpleNamespace(is_using_tensorrt=lambda: trt),
@@ -1356,13 +1498,15 @@ def _apply_fixture(trt=True):
         bus=SimpleNamespace(publish=lambda e: calls.append(e)))
     fake._swipe_apply_done = lambda ok: appmod.WallDanceApp._swipe_apply_done(fake, ok)
     fake._swipe_restore_done = lambda ok, w, p: appmod.WallDanceApp._swipe_restore_done(fake, ok, w, p)
+    fake._apply_settings_swipe_p5 = lambda: appmod.WallDanceApp._apply_settings_swipe_p5(fake)
     appmod.WallDanceApp._cb_apply_settings_swipe(fake)
     return appmod, c, live, calls, pending, fake
 
 
-def test_apply_switches_then_applies_the_confidence_once_the_winner_runs_on_tensorrt():
+@pytest.mark.parametrize("mode", ["off", "suggest"])
+def test_apply_switches_then_applies_the_confidence_once_the_winner_runs_on_tensorrt(mode):
     from runtime import api
-    appmod, c, live, calls, pending, fake = _apply_fixture()
+    appmod, c, live, calls, pending, fake = _apply_fixture(mode=mode)
     winner = c.outcome.result.winner
     assert ("switch", winner.model, winner.imgsz, winner.shape) in calls
     assert ("combo", winner.model) in calls and ("combo", "imgsz", "1280") in calls
@@ -1377,9 +1521,10 @@ def test_apply_switches_then_applies_the_confidence_once_the_winner_runs_on_tens
     assert c.readiness(plate_ready=True, live_now=live["v"]) is None      # applied: nothing left to say
 
 
-def test_a_failed_load_is_a_fault_with_what_runs_and_what_to_do():
+@pytest.mark.parametrize("mode", ["off", "suggest"])
+def test_a_failed_load_is_a_fault_with_what_runs_and_what_to_do(mode):
     from runtime import api
-    appmod, c, live, calls, pending, fake = _apply_fixture(trt=True)
+    appmod, c, live, calls, pending, fake = _apply_fixture(trt=True, mode=mode)
     pending["done"](False)                                         # the model did not load: the old one stays
     assert not any(isinstance(e, tuple) and e[0] == "conf" for e in calls) and c.applied is None
     last = [e for e in calls if isinstance(e, api.SettingsSwipeProgress)][-1]
@@ -1394,11 +1539,12 @@ def test_a_failed_load_is_a_fault_with_what_runs_and_what_to_do():
     assert c.readiness(plate_ready=True, live_now=live["v"]) is None       # Dismiss clears it
 
 
-def test_a_pytorch_fallback_goes_back_to_the_previous_setting():
+@pytest.mark.parametrize("mode", ["off", "suggest"])
+def test_a_pytorch_fallback_goes_back_to_the_previous_setting(mode):
     """The engine did not load and PyTorch would run the winner far over the frame budget (review N2): the
     previous model and input come back through the same switch, and the row says so."""
     from runtime import api
-    appmod, c, live, calls, pending, fake = _apply_fixture(trt=False)
+    appmod, c, live, calls, pending, fake = _apply_fixture(trt=False, mode=mode)
     winner = c.outcome.result.winner
     live["v"] = _live(cand=winner, model_id=3)                     # the winner, on PyTorch
     pending["done"](True)
@@ -1418,28 +1564,56 @@ def test_a_pytorch_fallback_goes_back_to_the_previous_setting():
         f"press Dismiss (rebuild {winner.engine_file} (extra/build_engines) before applying it again)")
 
 
-def test_a_good_apply_clears_a_failed_one():
+@pytest.mark.parametrize("mode", ["off", "suggest"])
+def test_a_good_apply_clears_a_failed_one(mode):
     """The fault row of a failed Apply goes on Dismiss (above) or with the next Apply that works."""
-    appmod, c, live, calls, pending, fake = _apply_fixture(trt=True)
+    appmod, c, live, calls, pending, fake = _apply_fixture(trt=True, mode=mode)
     pending["done"](False)
     assert c.readiness(plate_ready=True, live_now=live["v"]).status == "warn"
     c.mark_applied(c.outcome.result.winner)                        # what _swipe_apply_done does on success
     assert c.readiness(plate_ready=True, live_now=live["v"]) is None
 
 
-def test_apply_is_refused_during_a_show():
-    """Apply reloads the model (camera closed, no tracking for seconds): STANDBY only, like the dry-run."""
-    pytest.importorskip("dearpygui")
+def _run_apply_fake(seamless_why, mode="suggest"):
     import app as appmod
-    from runtime import api
     from runtime.api import SystemState
-    events = []
-    fake = SimpleNamespace(system_state=SystemState.RUN, bus=SimpleNamespace(publish=events.append),
-                           swipe=SimpleNamespace(applicable=lambda live: pytest.fail("must not get here")))
+    events, asked = [], []
+    winner = L1920
+    fake = SimpleNamespace(
+        system_state=SystemState.RUN, bus=SimpleNamespace(publish=events.append), _swipe_shown="operator",
+        _swipe_live_setting=lambda: _live(),
+        swipe=SimpleNamespace(applicable=lambda live: (None, winner, None)),
+        swipe_switch=SimpleNamespace(can_switch=lambda w: seamless_why),
+        # P6's Apply: the automatic swipe on (off, Apply is P5's: test_swipe_keyoff.py)
+        swipe_bg=SimpleNamespace(suggestion=None, mode=mode,
+                                 request_switch=lambda w, text, on_done=None: asked.append((w, text)) or None),
+        models=SimpleNamespace(request_setting=lambda *a, **k: pytest.fail("no reload during a show")))
     appmod.WallDanceApp._cb_apply_settings_swipe(fake)
+    return events, asked, winner
+
+
+def test_apply_is_refused_during_a_show_when_it_reloads():
+    """An Apply that reloads the model (its engine must be built; camera closed, no tracking for seconds):
+    STANDBY only, like the dry-run."""
+    pytest.importorskip("dearpygui")
+    from runtime import api
+    events, asked, _ = _run_apply_fake("its engine is not built on this machine (yolo11l-pose_1920x1056.engine)")
     (toast,) = events
-    assert isinstance(toast, api.Toast)
-    assert toast.message == "Apply: stop the show first - Apply reloads the model, a few seconds without tracking"
+    assert isinstance(toast, api.Toast) and not asked
+    assert toast.message == ("Apply: stop the show first - this Apply reloads the model (its engine is not built "
+                             "on this machine (yolo11l-pose_1920x1056.engine)), a few seconds without tracking")
+
+
+def test_a_seamless_apply_runs_during_a_show():
+    """P6: the winner's engine is built: Apply loads it beside the live one and switches between two frames --
+    usable in RUN, no reload."""
+    pytest.importorskip("dearpygui")
+    from runtime import api
+    events, asked, winner = _run_apply_fake(None)
+    assert asked == [(winner, "switching to l @ 1920 x 1056 (Apply)")]
+    (prog,) = events
+    assert isinstance(prog, api.SettingsSwipeProgress) and prog.state == "applying"
+    assert prog.text == "switching to l @ 1920 x 1056 between two frames..."
 
 
 def test_a_recommended_confidence_becomes_the_dials_anchor():
@@ -1456,7 +1630,9 @@ def test_a_recommended_confidence_becomes_the_dials_anchor():
 
 def test_remote_apply_is_heavy_and_run_is_control():
     from services.remote_api import POLICY
+    # a remote Apply is STANDBY only whatever the automatic swipe's key (P5's class); the key itself is control
     assert POLICY["ApplySettingsSwipe"] == "heavy" and POLICY["LoadModel"] == "heavy"
+    assert POLICY["SetSwipeAuto"] == "control"
     assert POLICY["RunSettingsSwipe"] == "control" and POLICY["CancelSettingsSwipe"] == "safe"
     assert POLICY["DismissSwipeNotice"] == "safe"
 
@@ -1490,10 +1666,13 @@ def test_quit_cancels_and_joins_the_swipe():
     calls = []
     fake = SimpleNamespace(swipe=SimpleNamespace(cancel=lambda: calls.append("cancel"),
                                                  join=lambda t: calls.append(("join", t))),
+                           swipe_bg=SimpleNamespace(stop=lambda t: calls.append(("bg-stop", t))),
+                           swipe_switch=SimpleNamespace(stop=lambda t: calls.append(("switch-stop", t))),
                            tracker=SimpleNamespace(logger=SimpleNamespace(close=lambda: None)),
                            recorder=SimpleNamespace(close=lambda: None), running=True)
     appmod.WallDanceApp._cb_quit(fake)
-    assert calls == ["cancel", ("join", 2.0)] and fake.running is False
+    assert calls[:2] == ["cancel", ("join", 2.0)] and ("bg-stop", 2.0) in calls and ("switch-stop", 2.0) in calls
+    assert fake.running is False
 
 
 def test_the_live_setting_is_none_while_a_model_loads():

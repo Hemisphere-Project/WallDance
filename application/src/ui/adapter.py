@@ -221,6 +221,7 @@ class DpgUiAdapter:
                 api.CancelSettingsSwipe() if busy else api.RunSettingsSwipe()),
             "on_swipe_apply": lambda: submit(api.ApplySettingsSwipe()),
             "on_swipe_dismiss": lambda: submit(api.DismissSwipeNotice()),
+            "on_swipe_auto": lambda mode: submit(api.SetSwipeAuto(str(mode))),
             "on_model_change": lambda name: submit(api.LoadModel(name)),
             "on_trt_toggle": lambda v: submit(api.ToggleTrt(bool(v))),
             "on_trt_rebuild": lambda: submit(api.RebuildTrt()),
@@ -408,6 +409,7 @@ class DpgUiAdapter:
             api.SettingsSwipeProgress: lambda e: self.gui.show_swipe_progress(
                 e.state, e.text, e.progress),
             api.SettingsSwipeResult: lambda e: self.gui.show_swipe_result(e.result, e.error),
+            api.SettingsSwipeHold: lambda e: self.gui.show_swipe_hold(e.held),
             api.Alert: lambda e: (
                 self.gui.show_toast(f"/!\\ {e.message}", duration=8.0, color=(255, 80, 80)),
                 # a condition that lasts until the operator acts stays in the alerts strip

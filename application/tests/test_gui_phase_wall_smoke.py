@@ -28,7 +28,7 @@ def test_phase_wall_builds_and_renders_readiness_rows():
             _on_capture_plate=noop,
             _on_dryrun=noop,
             _on_swipe=noop,
-            _on_swipe_apply=noop,
+            _on_swipe_apply=noop, _on_swipe_auto=noop,
             _on_swipe_dismiss=noop,
             _btn_standby_theme=th,
         )
@@ -79,9 +79,21 @@ def test_phase_wall_builds_and_renders_readiness_rows():
         assert not g._swipe_busy
         assert dpg.get_item_configuration("swipe_apply_btn")["show"]
         assert dpg.get_item_configuration("swipe_dismiss_btn")["show"]
-        assert dpg.get_item_configuration("swipe_apply_btn")["label"] == "Apply l @ 1920 x 1056 (STANDBY)"
+        # the reload Apply says so (the panel is narrow: on three lines)
+        assert dpg.get_item_configuration("swipe_apply_btn")["label"] == \
+            "Apply l @ 1920 x 1056\n(STANDBY: a few seconds\nwithout tracking)"
         assert "91 %" in dpg.get_value("swipe_status_text")
         assert "not built on this machine" in dpg.get_value("swipe_status_text")
+        # P6: a seamless Apply (the engine is built) says nothing about STANDBY
+        WallDanceGUI.show_swipe_result(g, {"reason": "r", "switch": True, "winner": "l @ 1920 x 1056",
+                                           "apply_seamless": True, "apply_label": "Apply l @ 1920 x 1056",
+                                           "apply_tip": "Loads it beside the live model"})
+        assert dpg.get_item_configuration("swipe_apply_btn")["label"] == "Apply l @ 1920 x 1056"
+        assert dpg.get_value("swipe_apply_tip") == "Loads it beside the live model"
+        # P6: the automatic swipe's mode combo sits beside the swipe button
+        assert dpg.get_value("swipe_auto_combo") == "Auto: off"
+        WallDanceGUI.show_swipe_progress(g, "auto_switched", "switched to l @ 1280 at 21:04", 1.0)
+        assert dpg.get_value("swipe_status_text") == "switched to l @ 1280 at 21:04"
         WallDanceGUI.show_swipe_result(g, {}, "swipe cancelled: cancelled")
         assert not dpg.get_item_configuration("swipe_apply_btn")["show"]
 

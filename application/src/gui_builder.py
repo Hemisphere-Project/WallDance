@@ -18,6 +18,7 @@ from core.config import (RECORDING_SLOTS, IDENTITY_SLOTS_ENABLED, IDENTITY_SLOTS
                          IDENTITY_SLOTS_STABILITY, IDENTITY_SLOTS_COAST_S,
                          IDENTITY_SLOTS_STATIC_GUARD, IDENTITY_SLOTS_SMART_HOLD, FOREGROUND_ENABLED,
                          IDENTITY_SLOTS_USE_IR_BELT, OSC_SEND_STATE, DETECTION_DEFAULTS)
+import core.config as core_config       # SWIPE_AUTO_UNLOCKED, read when the panel is built
 from gui_icons import Icons
 from gui_constants import (
     TEXT_NORMAL, TEXT_MUTED, TEXT_DIM, TEXT_HINT, TEXT_FAINT,
@@ -707,6 +708,17 @@ def build_phase_panel(gui: Any):
 # clipped on the right.
 _PHASE_WRAP = CONTROL_PANEL_WIDTH - 34
 
+# The swipe button's tooltip: P5's while the automatic swipe is off (its Apply is P5's, STANDBY only), P6's once it
+# is on (``WallDanceGUI.sync_combo`` follows the mode's combo).
+SWIPE_BTN_TIP_OFF = ("During the warmup, in RUN, with the empty-wall snapshot ready:\n"
+                     "keeps 150 frames with a dancer on the wall, one a second (about\n"
+                     "two and a half minutes of dancing), then tries on them both models\n"
+                     "at the largest input when the dancers are small in the network\n"
+                     "(else the other model at the live input), and names the setting\n"
+                     "that covers the dancers best.  The show runs on; nothing switches\n"
+                     "until you Apply, in STANDBY.  Press again to cancel.")
+SWIPE_BTN_TIP_ON = SWIPE_BTN_TIP_OFF.replace("until you Apply, in STANDBY.", "until you Apply.")
+
 
 def build_phase_rig(gui: Any):
     """① Rig & Frame — camera source + stage ROI + manual exclusion paint."""
@@ -894,22 +906,39 @@ def build_phase_wall(gui: Any):
             )
             dpg.bind_item_theme(swipe_btn, gui._btn_standby_theme)
             with dpg.tooltip(swipe_btn):
-                dpg.add_text("During the warmup, in RUN, with the empty-wall snapshot ready:\n"
-                             "keeps 150 frames with a dancer on the wall, one a second (about\n"
-                             "two and a half minutes of dancing), then tries on them both models\n"
-                             "at the largest input when the dancers are small in the network\n"
-                             "(else the other model at the live input), and names the setting\n"
-                             "that covers the dancers best.  The show runs on; nothing switches\n"
-                             "until you Apply, in STANDBY.  Press again to cancel.")
+                dpg.add_text(SWIPE_BTN_TIP_OFF, tag="swipe_btn_tip")
+        # P6 the automatic swipe: its mode, right under the swipe button (never in the health line).  Hidden while
+        # it is locked off in this build (core.config.SWIPE_AUTO_UNLOCKED): the panel is P5's; the combo is there
+        # all the same, so the app's syncs of it land on a hidden item
+        with dpg.group(horizontal=True, tag="swipe_auto_row", show=bool(core_config.SWIPE_AUTO_UNLOCKED)):
+            dpg.add_spacer(width=scaled(160))
+            swipe_auto = dpg.add_combo(
+                items=["Auto: off", "Auto: suggest", "Auto: switch"],
+                default_value="Auto: off",
+                tag="swipe_auto_combo",
+                width=scaled(130),
+                callback=gui._on_swipe_auto,
+            )
+            with dpg.tooltip(swipe_auto):
+                dpg.add_text("The automatic swipe, while the show runs:\n"
+                             "  off      nothing in the background (the project's default)\n"
+                             "  suggest  each time two and a half minutes of dancing are kept, it\n"
+                             "           tries the other model at the same network input on them and\n"
+                             "           says so here when it does better (Apply now, or Dismiss)\n"
+                             "  switch   the same, and when the other model is clearly better it\n"
+                             "           switches between two frames, with an alert\n"
+                             "An empty wall costs nothing.  Saved with the project when not off.")
         dpg.add_text("", tag="swipe_status_text", color=TEXT_MUTED, wrap=scaled(_PHASE_WRAP))
         with dpg.group(horizontal=True):
             swipe_apply = dpg.add_button(label="Apply", tag="swipe_apply_btn", show=False,
                                          width=scaled(240), height=scaled(26), callback=gui._on_swipe_apply)
             with dpg.tooltip(swipe_apply):
+                # P5's tooltip (the automatic swipe is off by default); each verdict shown sets its own
                 dpg.add_text("STANDBY only: switches the model / network input to the swipe's\n"
                              "pick -- the engine reloads, a few seconds without tracking, as\n"
                              "when you change the model by hand.  Not saved: Save the project\n"
-                             "to keep it.")
+                             "to keep it.",
+                             tag="swipe_apply_tip")
             swipe_dismiss = dpg.add_button(label="Dismiss", tag="swipe_dismiss_btn", show=False,
                                            width=scaled(80), height=scaled(26), callback=gui._on_swipe_dismiss)
             with dpg.tooltip(swipe_dismiss):

@@ -10,9 +10,13 @@ camera pixels -- without touching the live pipeline's state:
 * boxes kept down to ``LOW_CONF`` (0.02) so the scoring chooses its own threshold;
 * one engine at a time: load, warm up, time each inference, then drop it (a TensorRT model is freed by
   refcount the moment its last reference goes: ~1 GB back at once on mgr-ran) right after a live frame, before
-  the next.  One ``gc.collect`` and one ``torch.cuda.empty_cache`` at the very end of the swipe, also right
-  after a live frame (a full collection holds the GIL ~90 ms on mgr-ran and frees no GPU memory; per
-  candidate it stalled a live frame each time).  Never builds an engine.
+  the next.  One ``torch.cuda.empty_cache`` at the very end of the swipe, also right after a live frame, and
+  one ``gc.collect`` there -- or, when the app's gc policy is installed (``core.gc_policy``, the rehearsal
+  build), a request for one, served at the policy's next invisible moment (STANDBY, a frame with an empty
+  wall).  A full collection holds the GIL 90-177 ms (mgr-ran, the show laptop) and frees no GPU memory: per
+  candidate it stalled a live frame each time; at the swipe's end it frees 30-80 small objects (mgr-ran 27/11:
+  closures, the TensorRT backend's namedtuple class; five swipes in a row without it left 560 objects, 43 KB,
+  and not one more MB on the GPU).  Never builds an engine.
 
 Thread safety (measured on mgr-ran 26/11, ``tmp_analysis/swipe-1126/live/exp`` and ``runs``): ultralytics
 8.4.1xx captures a CUDA graph when it loads a TensorRT engine.  While one thread captures, another thread's
@@ -37,6 +41,7 @@ import copy
 import gc
 import inspect
 import math
+import sys
 import threading
 import time
 from dataclasses import dataclass, field, fields, is_dataclass
@@ -404,6 +409,20 @@ def install_capture_guards() -> bool:
 # ----------------------------------------------------------------------------------------------------
 # The runner
 # ----------------------------------------------------------------------------------------------------
+def _installed_gc_policy():
+    """``core.gc_policy`` when the app has installed it (the rehearsal build: no full collection in RUN with a
+    dancer on the wall), else None.  Looked up in ``sys.modules``, never imported: a policy can only be
+    installed in a process that imported it, and the replay drivers keep never importing it.  Never
+    raises."""
+    try:
+        mod = sys.modules.get("core.gc_policy")
+        if mod is not None and getattr(getattr(mod, "POLICY", None), "installed", False):
+            return mod
+    except Exception:  # noqa: BLE001 - a lookup error means today's collection
+        pass
+    return None
+
+
 @dataclass
 class CandidateRun:
     candidate: Candidate
@@ -501,62 +520,85 @@ class CandidateRunner:
         with ENGINE_LOAD_LOCK, no_graph_capture():
             return self._run(images, cand, engine_path, cancelled=cancelled, pace=pace, on_frame=on_frame)
 
-    def _run(self, images, cand, engine_path, *, cancelled, pace, on_frame) -> CandidateRun:
+    def load(self, engine_path: str, cand: Candidate, model=None) -> Tuple[Any, Any, float]:
+        """(model, PoseRunner, seconds) for one engine, warmed at ``cand``'s input (``model``: the loader's
+        object already made).  The caller holds ENGINE_LOAD_LOCK and ``no_graph_capture`` (``run`` does; the
+        seamless switch's load and the background swipe's resident load too)."""
         from core.yolo_runner import PoseRunner
-        torch = self._torch
-        run = CandidateRun(cand)
-        imgsz = (int(cand.shape[0]), int(cand.shape[1])) if cand.shape else int(cand.imgsz)
+        imgsz = self.imgsz_arg(cand)
         th, tw = (imgsz if isinstance(imgsz, tuple) else (imgsz, imgsz))
+        t0 = self.clock()
+        if model is None:
+            model = self.loader(engine_path)
+        runner = PoseRunner(model)
+        z = self._torch.full((1, 3, th, tw), 0.5, device=self.device)
+        for _ in range(WARMUP_CALLS):
+            runner(z, imgsz=imgsz, conf=self.conf, iou=self.inp.iou, half=self.inp.half)
+        del z
+        self._sync()
+        return model, runner, self.clock() - t0
+
+    @staticmethod
+    def imgsz_arg(cand: Candidate):
+        return (int(cand.shape[0]), int(cand.shape[1])) if cand.shape else int(cand.imgsz)
+
+    def infer(self, images: Sequence[np.ndarray], cand: Candidate, runner, *,
+              cancelled: Optional[Callable[[], bool]] = None, pace: Optional[Callable[[], None]] = None,
+              on_frame: Optional[Callable[[int, int], None]] = None) -> CandidateRun:
+        """Every image through an already loaded model (``runner``: its PoseRunner), timed; no load, no
+        release.  ``pace()`` before each inference, ``cancelled()`` stops early."""
+        run = CandidateRun(cand)
+        imgsz = self.imgsz_arg(cand)
+        for i, image in enumerate(images):
+            if cancelled is not None and cancelled():
+                run.error = "cancelled"
+                break
+            try:
+                t1 = self.clock()
+                tensor, lb, (rx, ry) = self.prepare(image, cand)
+                self._sync()
+                t2 = self.clock()
+                if pace is not None:
+                    pace()
+                t3 = self.clock()
+                results = runner(tensor, imgsz=imgsz, conf=self.conf, iou=self.inp.iou, half=self.inp.half)
+                boxes = boxes_from_results(results, lb, rx, ry)       # .cpu(): waits for the GPU
+                t4 = self.clock()
+            except Exception as exc:  # noqa: BLE001 - this candidate is out, the swipe goes on
+                run.error = f"inference failed: {type(exc).__name__}: {str(exc)[:160]}"
+                break
+            run.prep_ms.append((t2 - t1) * 1000.0)
+            run.ms.append((t4 - t3) * 1000.0)
+            run.boxes.append(boxes)
+            if on_frame is not None:
+                on_frame(i + 1, len(images))
+        return run
+
+    def _run(self, images, cand, engine_path, *, cancelled, pace, on_frame) -> CandidateRun:
+        run = CandidateRun(cand)
         model = runner = None
         try:
             t0 = self.clock()
             try:
-                model = self.loader(engine_path)
                 # the engine deserialises at the warm-up: a live load, project switch or Apply waiting for
                 # ENGINE_LOAD_LOCK waits one engine load at most
+                model = self.loader(engine_path)
                 if cancelled is not None and cancelled():
                     run.error = "cancelled"
                     return run
-                runner = PoseRunner(model)
-                z = torch.full((1, 3, th, tw), 0.5, device=self.device)
-                for _ in range(WARMUP_CALLS):
-                    runner(z, imgsz=imgsz, conf=self.conf, iou=self.inp.iou, half=self.inp.half)
-                del z
-                self._sync()
+                model, runner, _ = self.load(engine_path, cand, model=model)
+                load_s = self.clock() - t0
             except Exception as exc:  # noqa: BLE001 - a candidate that cannot load is skipped, not fatal
                 run.error = f"load failed: {type(exc).__name__}: {str(exc)[:160]}"
                 return run
-            run.load_s = self.clock() - t0
-            for i, image in enumerate(images):
-                if cancelled is not None and cancelled():
-                    run.error = "cancelled"
-                    break
-                try:
-                    t1 = self.clock()
-                    tensor, lb, (rx, ry) = self.prepare(image, cand)
-                    self._sync()
-                    t2 = self.clock()
-                    if pace is not None:
-                        pace()
-                    t3 = self.clock()
-                    results = runner(tensor, imgsz=imgsz, conf=self.conf, iou=self.inp.iou,
-                                     half=self.inp.half)
-                    boxes = boxes_from_results(results, lb, rx, ry)       # .cpu(): waits for the GPU
-                    t4 = self.clock()
-                except Exception as exc:  # noqa: BLE001 - this candidate is out, the swipe goes on
-                    run.error = f"inference failed: {type(exc).__name__}: {str(exc)[:160]}"
-                    break
-                run.prep_ms.append((t2 - t1) * 1000.0)
-                run.ms.append((t4 - t3) * 1000.0)
-                run.boxes.append(boxes)
-                if on_frame is not None:
-                    on_frame(i + 1, len(images))
+            run = self.infer(images, cand, runner, cancelled=cancelled, pace=pace, on_frame=on_frame)
+            run.load_s = load_s
             return run
         finally:
             if pace is not None and model is not None and run.error != "cancelled":
                 pace()                                # the destructor's stall right after a live frame
             t5 = self.clock()
-            results = tensor = runner = model = None  # noqa: F841 - frees the engine (refcount)
+            runner = model = None                     # frees the engine (refcount)
             run.release_s = self.clock() - t5
 
     def _sync(self) -> None:
@@ -565,20 +607,34 @@ class CandidateRunner:
 
     def finalize(self, pace: Optional[Callable[[], None]] = None, empty_cache: bool = True) -> Dict[str, float]:
         """End of the swipe: one full collection and one ``empty_cache`` (the swipe's cached blocks), right
-        after a live frame, under the engine-load lock.  ``empty_cache=False`` (a cancelled or dropped swipe:
-        the live model may be reloading, and its first RUN frame captures a graph outside any lock): the
-        collection only, no CUDA call -- the candidates' engines are already freed (refcount, under the lock)
+        after a live frame, under the engine-load lock.  With the app's gc policy installed (``core.gc_policy``,
+        the rehearsal build) no collection here: ``request("swipe ended")``, and the policy collects at its
+        next invisible moment, never in RUN with a dancer on the wall (``gc_s`` 0.0); what waits until then
+        is ~9 KB of small objects a swipe, nothing on the GPU (the engines went by refcount).  Without it (the
+        module absent, the policy not installed: the replay drivers, the tests), or if the request fails:
+        the collection, as before.  ``empty_cache=False`` (a cancelled or dropped swipe: the live model may
+        be reloading, and its first RUN frame captures a graph outside any lock): the collection (or the
+        request) only, no CUDA call -- the candidates' engines are already freed (refcount, under the lock)
         and the cached blocks stay in torch's cache for the live loop."""
         try:
             from core.model_manager import ENGINE_LOAD_LOCK
         except Exception:  # noqa: BLE001
             ENGINE_LOAD_LOCK = threading.RLock()
         t0 = t1 = t2 = self.clock()
+        requested = False
         with ENGINE_LOAD_LOCK:
             if pace is not None and empty_cache:
                 pace()
             t0 = self.clock()
-            gc.collect()
+            policy = _installed_gc_policy()
+            if policy is not None:
+                try:
+                    policy.request("swipe ended")
+                    requested = True
+                except Exception:  # noqa: BLE001 - a policy that cannot take it: today's collection
+                    pass
+            if not requested:
+                gc.collect()
             t1 = t2 = self.clock()
             if empty_cache and self.device.type == "cuda":
                 try:
@@ -586,7 +642,7 @@ class CandidateRunner:
                 except Exception:  # noqa: BLE001
                     pass
                 t2 = self.clock()
-        return {"gc_s": t1 - t0, "empty_cache_s": t2 - t1}
+        return {"gc_s": 0.0 if requested else t1 - t0, "empty_cache_s": t2 - t1}
 
 
 # ----------------------------------------------------------------------------------------------------
@@ -671,6 +727,15 @@ def _jsonable_fields(obj, skip: Sequence[str] = ()) -> Dict[str, Any]:
     """Every dataclass field of ``obj`` but ``skip``, JSON-ready: whatever ``core.swipe`` adds to its rows
     and result (a guard figure, a recommended confidence) travels to the operator without a change here."""
     return {f.name: _jsonable(getattr(obj, f.name)) for f in fields(obj) if f.name not in skip}
+
+
+def result_dict(result) -> Dict[str, Any]:
+    """A bare ``SwipeResult`` (the background swipe's: no SwipeOutcome around it), JSON-ready like
+    ``SwipeOutcome.to_dict``'s verdict part."""
+    rows = [{**_jsonable_fields(r, skip=("candidate",)), "label": r.candidate.label} for r in result.rows]
+    out = {**_jsonable_fields(result, skip=("current", "winner", "rows")), "rows": rows,
+           "current": result.current.label, "winner": result.winner.label if result.winner else None}
+    return out
 
 
 def recommended_conf(result) -> Optional[float]:

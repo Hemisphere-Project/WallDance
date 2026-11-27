@@ -380,6 +380,23 @@ SWIPE_RUN_MAX_S = 60.0
 # dancers move on.  A warmup's verdict is applied in STANDBY in the minutes after it; an afternoon rehearsal's
 # verdict must not be offered at night.
 SWIPE_VERDICT_MAX_AGE_S = 1800.0
+# The autonomous swipe (Plan Cordee P6, core/swipe_auto.py + runtime/swipe_background.py): project key swipe_auto =
+# off | suggest | auto.  Off unless the project says otherwise (the key is written only when it is not off).  It
+# looks every SWIPE_AUTO_LOOK_S at the kept frames (an empty wall costs nothing); a background run's candidate
+# inferences are SWIPE_AUTO_PACE_S apart (at most one every four live frames at 20 fps), right after a live pass.
+SWIPE_AUTO = "off"
+# The automatic swipe is locked off in this build: no combo on screen, the mode stays off whoever asks (the
+# GUI, the remote SetSwipeAuto), a project's key that is not off is read as off.  False until the blind
+# review's second group of findings is fixed and read again; flipping it is the reviewed act that opens
+# "suggest".  Read when needed (core.config.SWIPE_AUTO_UNLOCKED), never copied at import: a test or a gate
+# driver sets it.
+SWIPE_AUTO_UNLOCKED = False
+SWIPE_AUTO_LOOK_S = 5.0
+SWIPE_AUTO_PACE_S = 0.2
+# The other model at the live input is loaded only when a background run is due (a full pool of frames with
+# dancers the previous run did not use: two and a half minutes of dancing) and released after this long without
+# a run due -- an empty wall for hours holds one engine, the live one.
+SWIPE_AUTO_RESIDENT_IDLE_S = 600.0
 # Light changed since the empty-wall snapshot (Thomas 2026-10-07: "luminosity change is a killer"): the
 # raw ROI brightness over the snapshot's (core/foreground.ForegroundDetector.light_ratio), sampled at 1 Hz
 # in standby and RUN alike; when its median over LIGHT_CHANGE_S leaves [1/RATIO, RATIO] the operator is

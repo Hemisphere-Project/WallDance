@@ -816,6 +816,14 @@ class WallDanceGUI:
         if 'on_swipe' in self.callbacks:
             self.callbacks['on_swipe'](bool(getattr(self, "_swipe_busy", False)))
 
+    _SWIPE_AUTO_MODES = {"Auto: off": "off", "Auto: suggest": "suggest", "Auto: switch": "auto"}
+
+    def _on_swipe_auto(self, sender=None, app_data=None, *args):
+        """P6: the automatic swipe's mode (the combo beside 'Try other settings')."""
+        mode = self._SWIPE_AUTO_MODES.get(str(app_data), "off")
+        if 'on_swipe_auto' in self.callbacks:
+            self.callbacks['on_swipe_auto'](mode)
+
     def _on_swipe_apply(self, *args):
         if 'on_swipe_apply' in self.callbacks:
             self.callbacks['on_swipe_apply']()
@@ -2147,6 +2155,7 @@ class WallDanceGUI:
             'imgsz': ['adv_imgsz_combo'],
             'camera': ['adv_camera_combo'],
             'input_rotation': ['input_rotation_combo'],
+            'swipe_auto': ['swipe_auto_combo'],
         }
         if name == 'input_rotation':
             value = rotation_label(value)
@@ -2154,6 +2163,9 @@ class WallDanceGUI:
             for tag in tag_map[name]:
                 if dpg.does_item_exist(tag):
                     dpg.set_value(tag, value)
+        if name == 'swipe_auto' and dpg.does_item_exist("swipe_btn_tip"):   # P5's words while it is off
+            from gui_builder import SWIPE_BTN_TIP_OFF, SWIPE_BTN_TIP_ON
+            dpg.set_value("swipe_btn_tip", SWIPE_BTN_TIP_OFF if value == "Auto: off" else SWIPE_BTN_TIP_ON)
     
     def update_model_dropdown(self, model_name: str):
         """Update model dropdown to show current model."""
@@ -3189,13 +3201,15 @@ class WallDanceGUI:
         """P5 swipe progress line + the button's label (Cancel while it runs).  Posted from the swipe's
         worker thread: set_value / configure_item only, like the dry-run result."""
         busy = state in ("collecting", "running")
+        if state.startswith("auto_"):                  # P6 the switch's own line, never the button's
+            _show_swipe_switch_line(state, text, self)
+            return
         self._swipe_busy = busy
         if dpg.does_item_exist("swipe_btn"):
             dpg.configure_item("swipe_btn", label="Cancel swipe" if busy else "Try other settings")
         if state != "done" and dpg.does_item_exist("swipe_apply_btn"):
             dpg.configure_item("swipe_apply_btn", show=False)      # pressed, or a new swipe: nothing to apply
-        if dpg.does_item_exist("swipe_dismiss_btn"):                 # a failed Apply waits for its acknowledgement
-            dpg.configure_item("swipe_dismiss_btn", show=(state == "apply_failed"))
+        _show_swipe_dismiss(self, state == "apply_failed")          # a failed Apply waits for its acknowledgement
         if dpg.does_item_exist("swipe_status_text"):
             if busy:
                 dpg.set_value("swipe_status_text", f"{text} ({100 * float(progress):.0f} %)")
@@ -3212,9 +3226,9 @@ class WallDanceGUI:
         self._swipe_busy = False
         if dpg.does_item_exist("swipe_btn"):
             dpg.configure_item("swipe_btn", label="Try other settings")
-        for b in ("swipe_apply_btn", "swipe_dismiss_btn"):
-            if dpg.does_item_exist(b):
-                dpg.configure_item(b, show=False)
+        if dpg.does_item_exist("swipe_apply_btn"):
+            dpg.configure_item("swipe_apply_btn", show=False)
+        _show_swipe_dismiss(self, False)
         if not dpg.does_item_exist(tag):
             return
         if error:
@@ -3222,7 +3236,9 @@ class WallDanceGUI:
             dpg.configure_item(tag, color=WARN_AMBER)
             return
         r = result or {}
-        lines = [str(r.get("reason", ""))]
+        auto = r.get("auto") or {}
+        lines = [str(auto.get("text"))] if auto.get("text") else []     # P6: the background suggestion's line
+        lines.append(str(r.get("reason", "")))
         for row in r.get("rows", []):
             cov, loose, ms = row.get("coverage"), row.get("loose_per_frame"), row.get("ms_p50")
             line = f"  {row.get('label', '?')}: "
@@ -3241,9 +3257,22 @@ class WallDanceGUI:
         dpg.set_value(tag, "\n".join(lines))
         dpg.configure_item(tag, color=WARN_AMBER if r.get("switch") else TEXT_NORMAL)
         if r.get("switch") and r.get("winner") and dpg.does_item_exist("swipe_apply_btn"):
-            dpg.configure_item("swipe_apply_btn", label=f"Apply {r['winner']} (STANDBY)", show=True)
-            if dpg.does_item_exist("swipe_dismiss_btn"):
-                dpg.configure_item("swipe_dismiss_btn", show=True)
+            label = r.get("apply_label") or f"Apply {r['winner']} (STANDBY: a few seconds without tracking)"
+            standby = " (STANDBY:" in label                   # the panel is narrow: the STANDBY note under it
+            # (P5's « Apply ... (STANDBY) », the automatic swipe off, fits on one line, as it did)
+            shown = (label.replace(" (STANDBY", "\n(STANDBY", 1).replace(" a few seconds ", " a few seconds\n", 1)
+                     if standby else label)
+            dpg.configure_item("swipe_apply_btn", label=shown, show=True,
+                               width=scaled(240), height=scaled(58 if standby else 26))
+            if r.get("apply_tip") and dpg.does_item_exist("swipe_apply_tip"):
+                dpg.set_value("swipe_apply_tip", r["apply_tip"])
+            _show_swipe_dismiss(self, True)
+
+    def show_swipe_hold(self, held):
+        """P6: something waits for Dismiss (the switch's fault, a setting the automatic swipe leaves alone): its
+        button stays on screen whatever else the panel shows, until Dismiss or a project load lifts it."""
+        self._swipe_held = bool(held)
+        _show_swipe_dismiss(self, getattr(self, "_swipe_dismiss_wanted", False))
 
     def show_dryrun_result(self, summary, error=""):
         """Render the phase-⑤ dry-run replay summary into a single text widget.
@@ -3443,3 +3472,24 @@ class WallDanceGUI:
     def is_running(self) -> bool:
         """Check if GUI is still running."""
         return dpg.is_dearpygui_running()
+
+
+def _show_swipe_dismiss(gui, wanted):
+    """The swipe panel's one rule for Dismiss: on screen while the panel's state asks for it (a failed Apply, a
+    verdict or a suggestion to apply) or while something waits for it (``show_swipe_hold``), whatever the state."""
+    gui._swipe_dismiss_wanted = bool(wanted)
+    if dpg.does_item_exist("swipe_dismiss_btn"):
+        dpg.configure_item("swipe_dismiss_btn", show=bool(wanted) or bool(getattr(gui, "_swipe_held", False)))
+
+
+def _show_swipe_switch_line(state, text, gui):
+    """P6: the switch's line -- switching / switched / cleared, the seamless Apply's or the automatic swipe's
+    (a failure is ``apply_failed``)."""
+    if dpg.does_item_exist("swipe_apply_btn") and state in ("auto_switching", "auto_switched", "auto_cleared"):
+        dpg.configure_item("swipe_apply_btn", show=False)
+    if state in ("auto_switched", "auto_cleared"):
+        _show_swipe_dismiss(gui, False)
+    if dpg.does_item_exist("swipe_status_text"):
+        dpg.set_value("swipe_status_text", text)
+        dpg.configure_item("swipe_status_text",
+                           color={"auto_switching": WARN_AMBER, "auto_switched": OK_GREEN}.get(state, TEXT_MUTED))
