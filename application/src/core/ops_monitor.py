@@ -695,6 +695,20 @@ class Alert:
     data: dict = field(default_factory=dict)
 
 
+def _points_sent(points: Optional[dict]) -> int:
+    """F4h: how many points OSC sends now (core/points_report.points_summary; None = not told: 0)."""
+    try:
+        return int((points or {}).get("sent") or 0)
+    except (TypeError, ValueError, AttributeError):
+        return 0
+
+
+def _points_words(points: Optional[dict]) -> str:
+    """F4h: « 1 point sent: D1 held on the foreground » (core/points_report.points_text)."""
+    from core.points_report import points_text
+    return points_text(points)
+
+
 class HealthMonitor:
     """Per-second health tick -> alerts with sustain windows + cooldowns.
 
@@ -772,8 +786,10 @@ class HealthMonitor:
              height_median: Optional[float] = None,
              height_gate: Optional[Tuple[float, float]] = None,
              light_ratio: Optional[float] = None, light_ref: str = "",
-             picture_dn: Optional[float] = None) -> List[Alert]:
+             picture_dn: Optional[float] = None,
+             points: Optional[dict] = None) -> List[Alert]:
         out: List[Alert] = []
+        self._points = points          # F4h: what OSC sends (core/points_report.points_summary), None = unknown
         live = (in_run and camera_open and not camera_reconnecting
                 and not playback_active and model_ready)
 
@@ -815,6 +831,14 @@ class HealthMonitor:
         if live and n_tracked == 0:
             if self._no_det_since is None:
                 self._no_det_since = now
+            elif now - self._no_det_since >= self.no_detection_s and _points_sent(points):
+                # F4h: no detector track, but points still go out (held, coasting): say so, not « no dancer »
+                self._fire(now, Alert(
+                    "no_detection",
+                    f"Nobody seen by the detector for {now - self._no_det_since:.0f}s while RUNNING - "
+                    f"{_points_words(points)}",
+                    {"seconds": now - self._no_det_since, "points_sent": _points_sent(points),
+                     "points_held": int((points or {}).get("held") or 0)}), out)
             elif now - self._no_det_since >= self.no_detection_s:
                 self._fire(now, Alert(
                     "no_detection",
@@ -1077,6 +1101,8 @@ class LoopWatchdog:
 from collections import deque  # noqa: E402 - H2's own imports, kept in its section
 from typing import Deque  # noqa: E402
 
+from core.points_report import HELD_STATES as _HELD_STATES  # noqa: E402 - F4h: the states of a held point
+
 BARE_GROUP_S = 3.0        # a group without a point for longer than this turns the line red
 BARE_GAP_S = 1.0          # a group not seen bare (a point passed over it, it flickered under the size) for less
                           # than this keeps its count running; longer, its episode ends
@@ -1098,8 +1124,9 @@ EMPTY_WALL_HOW = "when the wall is empty: CALIBRATE (2 Calibrate), then Save to 
 RESTART_HOW = "restart the app"
 # The order of the rows when two share the worst state: the first one names the line.
 HEALTH_PRIORITY = ("camera", "output", POINTS_ROW, "empty wall", "frames", "engine", "camera stalls",
-                   "enhancement", "ROI", "plate exposure", "fps", "gpu", "light", "no dancer", "over cap",
-                   "height")
+                   "enhancement", "ROI", "plate exposure", "fps", "gpu", "light", "no dancer", "detector",
+                   "over cap", "height")
+DETECTOR_ROW = "detector"   # F4h: « no dancer »'s row while points are still sent (held, coasting)
 
 
 def foreground_groups(fg, zone_ok: Optional[Callable[[float, float], bool]] = None):
@@ -1175,6 +1202,7 @@ class BareGroupWatch:
         self._open = [b for b in self._open if now - b.seen <= self.gap_s]
         self._any_since, self._why, self._last_t = None, str(why or "not checked"), now
         self.groups = self.points = self.bare = 0
+        self.held = 0
 
     def update(self, now: float, groups, points, body_h: float = 0.0,
                bounds: Optional[Tuple[float, float, float, float]] = None, why: str = "") -> None:
@@ -1182,13 +1210,16 @@ class BareGroupWatch:
             self.not_checked(now, why or "no foreground on this frame")
             return
         pts = []
+        held = 0
         for p in points or ():
             h = float(p[2]) if len(p) > 2 and p[2] else float(body_h or 0.0)
             pts.append((float(p[0]), float(p[1]), h))
+            held += int(len(p) > 3 and p[3] in _HELD_STATES)   # F4h: (x, y, h, slot state): a held point is a point
         bare = [g for g in groups
                 if not any((px - g[0]) ** 2 + (py - g[1]) ** 2 <= (self.reach_h * ph) ** 2 for px, py, ph in pts)]
         self._why, self._last_t = "", now
         self.groups, self.points, self.bare = len(groups), len(pts), len(bare)
+        self.held = held
         if bare:
             if self._any_since is None:
                 self._any_since = now
@@ -1240,12 +1271,13 @@ class BareGroupWatch:
             return CheckResult(POINTS_ROW, "fail", f"{who} had no point for {age:.0f} s{where} - if it is a "
                                                    f"dancer: {MAX_DANCERS_HOW}")
         g, p = self.groups, self.points
+        k = getattr(self, "held", 0)
         return CheckResult(POINTS_ROW, "ok", f"{g} bod{'y' if g == 1 else 'ies'} on the wall, {p} point"
-                                             f"{'' if p == 1 else 's'}: none without a point for more than "
-                                             f"{self.sustain_s:.0f} s")
+                                             f"{'' if p == 1 else 's'}{f' ({k} held)' if k else ''}: none without "
+                                             f"a point for more than {self.sustain_s:.0f} s")
 
     def snapshot(self, now: float) -> Dict[str, object]:
-        return {"groups": self.groups, "points": self.points, "bare": self.bare,
+        return {"groups": self.groups, "points": self.points, "bare": self.bare, "held": getattr(self, "held", 0),
                 "worst_s": round(self.worst_s(now), 1), "episodes": self.episodes,
                 "not_checked": self._why or None}
 
@@ -1408,7 +1440,12 @@ def health_alert_rows(mon: HealthMonitor, now: float) -> List[CheckResult]:
     elif mon._light_alerted:
         out.append(CheckResult("light", "warn", "the light is not the empty-wall snapshot's - " + LIGHT_REMEDY))
     s = held(mon._no_det_since, mon.no_detection_s)
-    if s is not None:
+    pts = getattr(mon, "_points", None)
+    if s is not None and _points_sent(pts):
+        # F4h: points still go out (held, coasting) with no detector track under them: not « no dancer »
+        out.append(CheckResult(DETECTOR_ROW, "warn", f"nobody seen for {s:.0f} s, {_points_words(pts)} - if "
+                                                     "dancers are on the wall: check the IR and the picture"))
+    elif s is not None:
         out.append(CheckResult("no dancer", "warn", f"no dancer tracked for {s:.0f} s - if dancers are on the "
                                                     "wall: check the IR and the picture"))
     s = held(mon._over_cap_since, mon.over_cap_s)

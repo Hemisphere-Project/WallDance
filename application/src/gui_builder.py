@@ -1314,13 +1314,14 @@ def build_identity_slot_controls(gui: Any):
         with dpg.tooltip(fg_chk):
             dpg.add_text("Compares each frame with a snapshot of the EMPTY wall:\n"
                          "a shape that is not on the snapshot is somebody.  Keeps a\n"
-                         "dancer's point when YOLO loses them (state 'fg'), stops\n"
+                         "dancer's point when YOLO loses them ('held on the foreground'), stops\n"
                          "fixed figures (coat, stain) from taking an id, and lets the\n"
                          "belt hold a still dancer.  Calibrate records the snapshot\n"
                          "(2 - Calibrate); re-calibrate after moving the camera or\n"
                          "changing the lights.")
     dpg.add_text("empty wall: -", tag="fg_status_text", color=TEXT_DIM)
-    dpg.add_text("ids: -", tag="identity_slots_status_text", color=TEXT_DIM)
+    dpg.add_text("ids: -", tag="identity_slots_status_text", color=TEXT_DIM,
+                 wrap=scaled(_PHASE_WRAP))   # F4h: the slot words are longer (« held on the foreground »)
 
 
 # --------------------------------------------------------------------------- #

@@ -499,6 +499,7 @@ class FrameProcessor:
         # is the wall clock live; replays install a frame clock.
         self._slots: Optional[IdentitySlots] = None
         self.last_emitted: List[ScaledTrack] = []
+        self.last_sent: Optional[List[ScaledTrack]] = None   # F4h: what that frame put out on OSC (None: nothing)
         self._output_clock = time.perf_counter
         self._out_last_t: Optional[float] = None
         self._out_dt = 0.05
@@ -1449,6 +1450,7 @@ class FrameProcessor:
             # what a camera stall's keep-alive re-sends (D34), stamped with the live frame
             self._osc_last = (sent, original_w, original_h, states, self.stall.frames)
         self.last_emitted = out_tracks
+        self.last_sent = sent             # F4h: the points the reports count (OSC off, L>1 warm-up: None)
         # M2: the coordinates of the stream, in the event log -- what OSC sent, or with OSC off
         # (a replay) what it would send at L == 1 -- so a session scores with no proxy.
         self._log_sent(sent if sent is not None else (out_tracks if L == 1 else None), sent is not None)
@@ -1571,6 +1573,7 @@ class FrameProcessor:
             self._slots.reset()
         self._out_last_t = None
         self.last_emitted = []
+        self.last_sent = None
         self._osc_last = None             # nothing for a stall keep-alive to re-send (D34)
         self._belt_static = None          # a new scene / take: relearn the glints
         if self._belt_detector is not None:

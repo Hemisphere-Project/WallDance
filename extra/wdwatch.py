@@ -244,6 +244,8 @@ def health_of(st: Dict[str, Any]) -> Dict[str, Any]:
          "camera_running": p.get("camera_running"), "camera_reconnecting": p.get("camera_reconnecting"),
          "gpu_fallback": p.get("gpu_fallback_reason") or None,
          "enhance_bypassed": p.get("enhance_bypassed")}
+    if isinstance(p.get("points"), dict):   # F4h: the points OSC sends, of which held (absent in older builds)
+        h["points"] = p["points"]
     if "health" in st:
         h["line"] = st["health"]
     return h
@@ -706,6 +708,33 @@ def _health_spark(polls: List[Dict[str, Any]], since: float) -> str:
     return "".join(out)
 
 
+_HELD_WORDS = {"fg": "held on the foreground", "belt": "held on the belt", "weak": "held on a weak detection",
+               "coasting": "coasting", "live": "live"}   # core/points_report.SLOT_WORDS (this tool runs app-free)
+
+
+def _points_line(oks: List[Dict[str, Any]], since: float, minutes: float) -> str:
+    """F4h: « POINTS now 1 sent, 1 held: D1 held on the foreground 21.6s | 15 min: sent at 5 of 17 polls, held
+    at 5 » -- the points OSC sends, from the build's StatsTick ``points``.  "" (no line, the screen as before)
+    when the build does not report them or no point was sent in the window."""
+    win = [p for p in oks if p["t"] >= since and isinstance((p.get("health") or {}).get("points"), dict)]
+    sent = [p for p in win if (p["health"]["points"].get("sent") or 0) > 0]
+    if not sent:
+        return ""
+    held = [p for p in sent if (p["health"]["points"].get("held") or 0) > 0]
+    pts = (oks[-1].get("health") or {}).get("points")
+    if not isinstance(pts, dict) or not pts.get("sent"):
+        now_s = "none sent"
+    else:
+        def one(s: Dict[str, Any]) -> str:
+            age = s.get("age_s")
+            tail = f" {age:.1f}s" if isinstance(age, (int, float)) and s.get("state") != "live" else ""
+            return f"D{s.get('id')} {_HELD_WORDS.get(s.get('state'), s.get('state'))}{tail}"
+        now_s = (f"{pts.get('sent')} sent, {pts.get('held') or 0} held: "
+                 + ", ".join(one(s) for s in pts.get("slots") or ()))
+    return (f"POINTS now {now_s} | {minutes:.0f} min: sent at {len(sent)} of {len(win)} polls, held at "
+            f"{len(held)}")
+
+
 def render_summary(records: List[Dict[str, Any]], now: float, minutes: float = 15.0,
                    width: int = 100) -> str:
     """One screen (<= 24 lines of <= ``width`` ASCII characters) from a run's log records."""
@@ -743,6 +772,9 @@ def render_summary(records: List[Dict[str, Any]], now: float, minutes: float = 1
                    f"{' RECONNECTING' if h.get('camera_reconnecting') else ''} | recorder {rec.get('state')}"
                    f" | OSC {'on' if osc.get('enabled') else 'off'} {osc.get('target', '')}"
                    f"{' | GPU fallback: ' + str(h['gpu_fallback']) if h.get('gpu_fallback') else ''}")
+        pts_line = _points_line(oks, since, minutes)
+        if pts_line:
+            out.append(pts_line)
         out.append("HEALTH " + (_health_line(h["line"]) if "line" in h else "(no health line in this build)"))
         if "line" in h:                     # H2: its state at each poll of the window
             spark = _health_spark(polls, since)

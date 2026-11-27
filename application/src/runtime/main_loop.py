@@ -67,6 +67,7 @@ from services import app_log
 from services.remote_api import RemoteApi, load_or_create_token
 from core.config_store import PROJECTS_DIR
 from core.ops_monitor import Alert
+from core import points_report
 from core.version import app_version
 from services import crash_marker
 from core import gc_policy
@@ -892,6 +893,7 @@ class MainLoop:
                 return self._on_frame_error(exc)
             self._proc_fail_streak = 0
             app.last_tracked = tracked
+            self._points_frame = getattr(self, "_points_frame", 0) + 1   # F4h: a frame processed (_points_sent)
             if display_frame is not None:
                 app._last_review_frame = display_frame.copy()
             elif t.preview_source_frame is not None:
@@ -1134,10 +1136,12 @@ class MainLoop:
             and brightness >= app.settings.brightness_threshold
         )
         _stats_t0 = time.perf_counter()
+        sent = self._points_sent("stats")     # F4h: what this tick's frame sent on OSC (None: nothing)
         app.bus.publish(api.StatsTick(dict(
             fps=app.fps,
-            num_dancers=len(t.tracked),
-            slots_text=self._slots_text(),
+            # F4h: the points OSC sends (a held slot counts), not the tracker's reported tracks
+            **points_report.stats_fields(sent, t.tracked),
+            slots_text=self._slots_text(sending=sent is not None),
             latency_ms=app.latency_ms,
             brightness=brightness,
             timing=app.timing,
@@ -1189,7 +1193,17 @@ class MainLoop:
                 True, app.settings.bg_subtract_enabled,
                 fg_ratio, is_mismatched))
 
-    def _slots_text(self) -> str:
+    def _points_sent(self, reader: str):
+        """F4h: the points OSC sends now, for one reader (« stats » each tick, « health » once a second): what
+        the last processed frame put out (points_report.sent_tracks), or None when no frame was processed since
+        this reader last asked (STANDBY, a model reload, the camera down: the processor's record is stale)."""
+        n = getattr(self, "_points_frame", 0)
+        seen = self.__dict__.setdefault("_points_seen", {})
+        fresh = n != seen.get(reader, 0)
+        seen[reader] = n
+        return points_report.sent_tracks(self.app.processor) if fresh else None
+
+    def _slots_text(self, sending: bool = True) -> str:
         """Phase-6 'Dancer IDs' readout: each slot's state + the belt status."""
         proc = self.app.processor
         settings = self.app.settings
@@ -1200,11 +1214,7 @@ class MainLoop:
             belt = proc.belt_status
         except Exception:  # noqa: BLE001 - a readout must never stop the loop
             return ""
-        if not states:
-            return f"ids: waiting for dancers (max {settings.max_dancers})"
-        parts = [f"D{sid} {st}" + (f" {age:.1f}s" if st == "coasting" else "")
-                 for sid, st, age in states]
-        return "ids: " + " | ".join(parts) + f"   belt: {belt}"
+        return points_report.slots_text(states, belt, settings.max_dancers, sending)   # F4h: the states in words
 
     def _tick_record(self):
         """Record stage: periodic recording-UI refresh + pause-at-frame.
@@ -1356,6 +1366,7 @@ class MainLoop:
                 light_ratio=light_median,
                 light_ref=light_ref,
                 picture_dn=picture_dn,
+                points=points_report.points_summary(self._points_sent("health")),   # F4h: what OSC sends
             )
         except Exception as e:  # noqa: BLE001 - monitoring must never kill the loop
             print(f"[Alert] health tick failed: {e}")
@@ -1560,7 +1571,7 @@ class MainLoop:
             pts = []
             for tr in getattr(proc, "last_emitted", None) or ():
                 x, y = proc.sent_xy(tr)
-                pts.append((x, y, float(tr.bbox[3])))
+                pts.append((x, y, float(tr.bbox[3]), getattr(tr, "slot_state", None)))   # F4h: held ones counted
             measured = getattr(proc, "dancer_height", None)
             body_h = float(measured[0]) if measured else float(self.app.settings.person_height_px)
             bounds = None

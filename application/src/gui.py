@@ -26,6 +26,7 @@ from gui_constants import (
     LAYOUT_H_PAD, LAYOUT_V_MARGIN, LAYOUT_V_FALLBACK,
 )
 from core.config import DANCER_COLORS
+from core.points_report import dancers_text
 from gui_icons import Icons
 
 # GPU monitoring (optional - works with NVIDIA GPUs)
@@ -1985,8 +1986,9 @@ class WallDanceGUI:
         enhance_bypassed: bool = False,
         gpu_fallback_reason: str = "",
         slots_text: str = "",
+        points: dict = None,
     ):
-        """Update stats display."""
+        """Update stats display.  ``num_dancers``: the points OSC sends; ``points``: how many held (F4h)."""
         self.fps = fps
         self.num_dancers = num_dancers
         if slots_text and dpg.does_item_exist("identity_slots_status_text"):
@@ -2000,7 +2002,7 @@ class WallDanceGUI:
             dpg.set_value("preview_tex_text", f"{preview_tex[0]}x{preview_tex[1]}")
 
         dpg.set_value("fps_text", f"{fps:.1f}")
-        dpg.set_value("dancers_text", str(num_dancers))
+        dpg.set_value("dancers_text", dancers_text(num_dancers, points))
         dpg.set_value("brightness_text", f"{brightness:.0f}")
 
         # Update GPU stats (in top bar)
