@@ -1,6 +1,6 @@
 """P6, the blind re-read of group B2 (finding 8): the swipe line is not redrawn over what the operator must still
 read -- on a real ``WallDanceApp`` (no GUI, no main loop, CPU; the looker thread never started, the mode set through
-the app's own door with the ``swipe_auto_unlocked`` fixture: the build ships locked).
+the app's own door with the ``swipe_auto_unlocked`` fixture: the build does not ship auto).
 
 A look that names a standing suggestion again redraws its line silently (« ... seen 3 times: Apply now? »).  It did
 so whenever the line had last been the background's: over the red line of a FAILED Apply of that very suggestion --

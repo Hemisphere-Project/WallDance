@@ -549,7 +549,7 @@ Rev 2 (release in the last column):
 | P3 | Model by the ratchet | bench GPU | P1, F3 | 0.5d | #t-049 | measured 26/11, choice open (§5) | 1 |
 | P4 | Dancer height at the network | bench ⚙ | P1 | 0.5d | #t-050 | landed 26/11; the live band open | 1 |
 | P5 | Warmup swipe | bench GPU + laptop | P1, F1 | 2d | #t-058 | built 26/11 on `cordee-swipe`; the review's findings answered, per-swipe gate in §5; re-review pending | – |
-| P6 | Autonomous swipe | bench GPU + laptop | P5 | 3d | #t-059 | merged off and locked 27/11 (`de08e67`); gate in §5: green on the show's setting, 2 ms over during the looks from x @ 1920 × 1056, a switch from there that falls either side of the bar; the review's second group and its second round fixed on `cordee-swipe`, read a third time: good for the rehearsal with conditions of use, `suggest` opens with the release commit; a laptop hold owed before a show; `auto` behind the third | – |
+| P6 | Autonomous swipe | bench GPU + laptop | P5 | 3d | #t-059 | merged off and locked 27/11 (`de08e67`), `suggest` released the same day; gate in §5: green on the show's setting, 2 ms over during the looks from x @ 1920 × 1056, a switch from there that falls either side of the bar; the review's second group and its second round fixed on `cordee-swipe`, read a third time and checked: `suggest` released for rehearsals 27/11, with conditions of use; a laptop hold owed before a show; `auto` behind the third | – |
 | X1 | Servo on the highlights | bench ⚙ | – | 1d | #t-027 ④ | todo | 2 |
 | X2 | Light verdict | bench ⚙ | – | 0.5d | #t-054 | todo | 2 |
 | X3 | Emptiness first | bench ⚙ | – | 1d | #t-027 ⑤ | todo | 2 |
@@ -950,13 +950,16 @@ Filled by the step named. Until then the cell says so.
     The x @ 1920 × 1056 row is the review's point about the bar, on the bench itself: one take, one setting, two
     builds whose streams differ by a hundredth of a pixel at first, and the switch comes at the second look or
     at the third.
-  - *Key off, and the lock.* Which modes this build lets anyone set is one list,
-    `core.config.SWIPE_AUTO_RELEASED`, shipped as ("off",): the « Auto: » list is not on screen, the app and the
-    remote API refuse any other mode (« Automatic swipe: suggest is not released in this build - it stays off
-    »), and a project file that asks for one loads off and says so. "suggest" joins the list in the commit that
-    closes the review's second group, once that group is read again (Thomas, 27/11: « suggest once justified »);
-    "auto" in the one that closes the third. With the key off, Apply and every word around it are P5's and no
-    thread, engine or inference of P6 exists; the frame path pays a few attribute reads. Key off is still not
+  - *Key off, and the lock.* Which modes a build lets anyone set is one list, `core.config.SWIPE_AUTO_RELEASED`.
+    It shipped as ("off",) from the merge of 27/11 — the « Auto: » list not on screen, every other mode refused
+    by the app and the remote API, a project asking for one loading off — until the release commit of the same
+    day, taken once the review's second group had been read again three times and checked on the real classes
+    (Thomas, 27/11: « suggest once justified »): the list is now ("off", "suggest"). The « Auto: » list shows
+    off and suggest; "auto" is refused at every door (« Automatic swipe: switch is not released in this build -
+    it stays suggest »), a project that asks for it loads off and says so, and in suggest nothing asks for a
+    switch. "auto" joins with the commit that closes the review's third group. `suggest` is released for
+    rehearsals, under the conditions of use below. With the key off, Apply and every word around it are P5's and
+    no thread, engine or inference of P6 exists; the frame path pays a few attribute reads. Key off is still not
     byte for byte the build before P6, in two places. P5's own swipe: its pool of kept frames starts again when
     the plate's refusal for this camera or the picture's enhancement changes; the referee tells the reference
     watch nothing while the plate is not usable; « Try other settings » is refused on a plate that is ready but

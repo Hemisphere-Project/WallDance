@@ -16,11 +16,12 @@ SUGGEST_TIP = ("  suggest  while dancers are on the wall, it tries the other mod
                "           slower (Apply now, or Dismiss: not now, 15 min)\n")
 
 
-@pytest.mark.parametrize("released", ["suggest only", "all"])
+@pytest.mark.parametrize("released", ["shipped", "suggest only", "all"])
 def test_the_combos_tooltip_says_when_a_suggestion_shows_and_what_dismiss_does(panel, released, request):  # noqa: F811
     """Fails before: « says so here when it does better (Apply now, or Dismiss) », every two and a half minutes."""
     from core.config import SWIPE_AUTO_SNOOZE_S
-    request.getfixturevalue("swipe_auto_suggest_only" if released == "suggest only" else "swipe_auto_unlocked")
+    if released != "shipped":                    # shipped: off and suggest, nothing patched
+        request.getfixturevalue("swipe_auto_suggest_only" if released == "suggest only" else "swipe_auto_unlocked")
     dpg = panel
     _wall_panel(dpg)
     _, tip = _combo(dpg)

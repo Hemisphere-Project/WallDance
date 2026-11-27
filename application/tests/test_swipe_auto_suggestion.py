@@ -21,8 +21,8 @@ import pytest
 from core.swipe import Candidate, SwipeResult, SwipeRow
 from core.swipe_auto import MODE_AUTO, AutoParams, SwipeAuto
 from test_seamless_switch import L1280, _Port, _live
-from test_swipe_auto_live import (_bg, _look_frames, _looking_bg, swipe_auto_suggest_only,  # noqa: F401
-                                  swipe_auto_unlocked)
+from test_swipe_auto_live import (_bg, _look_frames, _looking_bg, swipe_auto_off_only,  # noqa: F401
+                                  swipe_auto_suggest_only, swipe_auto_unlocked)
 from test_swipe_auto_rollback import _JudgingRunner, _look, _Tap
 
 TOAST = "A better model may be available - see 'Try other settings' (Apply now)"
@@ -237,12 +237,12 @@ def test_the_readiness_row_names_what_the_swipe_line_shows():
 
 
 # ------------------------------------------------------------------------------------------ 8. the last guard
-@pytest.mark.parametrize("released", ["locked", "suggest only"])
+@pytest.mark.parametrize("released", ["off only", "suggest only", "shipped"])
 def test_no_automatic_switch_unless_the_build_releases_auto(released, request):
     """Mode auto set past the app's doors, the build not releasing it: shown as a suggestion, nothing switches.
-    Fails before: the switch was asked."""
-    if released == "suggest only":
-        request.getfixturevalue("swipe_auto_suggest_only")
+    Fails before: the switch was asked.  « shipped »: the list as the build ships it, nothing patched."""
+    if released != "shipped":
+        request.getfixturevalue("swipe_auto_off_only" if released == "off only" else "swipe_auto_suggest_only")
     bg, proc, loader, live = _evening_bg("auto")
     tap = _Tap(range(1500))
     _look(bg, proc, tap, 150)

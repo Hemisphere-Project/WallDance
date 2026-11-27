@@ -1,6 +1,6 @@
 """P6 (Plan Cordee): the technician's Dismiss and Apply on the background swipe's line, and what the app shows of an
 automatic switch -- on a real ``WallDanceApp`` (no GUI, no main loop, CPU; the looker thread never started, the
-mode set through the app's own door with the ``swipe_auto_unlocked`` fixture: the build ships locked).
+mode set through the app's own door with the ``swipe_auto_unlocked`` fixture: the build does not ship auto).
 
 * one press, one meaning: with the background suggestion on the line, Dismiss is « not now » -- it lifts no ban,
   acknowledges no fault, and Dismiss stays on screen for them; with none on the line it acknowledges the fault and
