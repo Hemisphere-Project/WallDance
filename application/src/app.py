@@ -110,11 +110,13 @@ from core.ops_monitor import (
 from core.enhancer import ImageEnhancer
 from core.input_shape import shape_str
 from core.swipe import Candidate
+from core.swipe_auto import parse_mode as parse_swipe_mode
 from core.tracker import DancerTracker
 from core.tracking_logger import _json_default
 from core.video_recorder import VideoRecorder
 from core.version import app_version
 from core.input_transform import IDENTITY, InputTransform, remap_exclusion_bundle
+import core.config as core_config      # SWIPE_AUTO_UNLOCKED, read when needed (a test or a driver sets it)
 import core.config_schema as config_schema
 from runtime import api
 from runtime.api import SystemState
@@ -1563,7 +1565,18 @@ class WallDanceApp:
         if "swipe_collect" in config or full_config:         # P5 (no GUI: a project key)
             self.settings.swipe_collect = bool(config.get("swipe_collect", SWIPE_COLLECT))
         if "swipe_auto" in config or full_config:            # P6: absent = off
-            self._cb_swipe_auto(config.get("swipe_auto", SWIPE_AUTO), quiet=True)
+            asked = config.get("swipe_auto", SWIPE_AUTO)
+            asked_mode = parse_swipe_mode(asked)
+            if asked_mode != "off" and not core_config.SWIPE_AUTO_UNLOCKED:
+                # locked off in this build: the project's key is read as off, said once at this load
+                self._cb_swipe_auto("off", quiet=True)
+                say(f"[SwipeAuto] mode off - this project asks for {asked_mode}, "
+                    "which is not released in this build")
+                word = self._SWIPE_AUTO_LABELS[asked_mode].removeprefix("Auto: ")
+                self.bus.publish(api.Toast(f"Automatic swipe: off - this project asks for {word}, which is not "
+                                           "released in this build", 6.0, (255, 200, 100)))
+            else:
+                self._cb_swipe_auto(asked, quiet=True)
             if self.swipe_bg.mode != "off":                  # the project turns it on: said once, never silent
                 say(f"[SwipeAuto] mode {self.swipe_bg.mode} (from the project)")
                 word = self._SWIPE_AUTO_LABELS[self.swipe_bg.mode].removeprefix("Auto: ")
@@ -2963,7 +2976,15 @@ class WallDanceApp:
 
     def _cb_swipe_auto(self, mode, quiet: bool = False) -> None:
         """The operator's (or the project's) mode.  The looker thread starts with the first mode that is not
-        off and stays (it releases the resident model when the mode goes off)."""
+        off and stays (it releases the resident model when the mode goes off).  Locked off in this build
+        (``core.config.SWIPE_AUTO_UNLOCKED`` False): any other mode is refused, whoever asks -- the combo, the
+        remote SetSwipeAuto -- and nothing of P6 starts; off is always accepted."""
+        if parse_swipe_mode(mode) != "off" and not core_config.SWIPE_AUTO_UNLOCKED:
+            self._sync("combo", "swipe_auto", self._SWIPE_AUTO_LABELS[self.swipe_bg.mode])
+            say(f"[SwipeAuto] {parse_swipe_mode(mode)} refused: not released in this build, it stays off")
+            self.bus.publish(api.Toast("Automatic swipe: not released in this build - it stays off",
+                                       5.0, (255, 200, 100)))
+            return
         m = self.swipe_bg.set_mode(mode)
         if m != "off":
             self.swipe_bg.start()

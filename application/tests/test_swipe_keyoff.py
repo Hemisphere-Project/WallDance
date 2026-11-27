@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from test_seamless_switch import L1280, L1920, X1280, _Loader, _Port, _live  # noqa: F401
-from test_swipe_auto_live import _bg, _looking_bg, _look_frames
+from test_swipe_auto_live import _bg, _looking_bg, _look_frames, swipe_auto_unlocked  # noqa: F401
 
 P5_RUN_TOAST = "Apply: stop the show first - Apply reloads the model, a few seconds without tracking"
 P5_APPLY_TIP = ("STANDBY only: switches the model / network input to the swipe's\n"
@@ -330,7 +330,7 @@ def test_key_off_stops_a_look_under_way():
 # A project load that brings the key on
 # ----------------------------------------------------------------------------------------------------------
 @pytest.mark.parametrize("mode,word", [("suggest", "suggest"), ("auto", "switch")])
-def test_a_project_load_that_turns_the_key_on_says_so_once(mode, word, capsys):
+def test_a_project_load_that_turns_the_key_on_says_so_once(mode, word, capsys, swipe_auto_unlocked):
     appmod = _app()
     from runtime import api
     live = {"v": _live()}

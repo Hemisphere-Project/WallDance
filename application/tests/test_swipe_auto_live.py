@@ -18,6 +18,14 @@ from test_seamless_switch import L1280, L1920, X1280, _Loader, _Port, _Runner, _
 from test_seamless_switch import _BgProc as _SwitchProc
 
 
+@pytest.fixture
+def swipe_auto_unlocked(monkeypatch):
+    """The automatic swipe released (``core.config.SWIPE_AUTO_UNLOCKED``), for a test that turns it on through the
+    app's doors (the combo's callback, a project load).  The build ships it locked: never autouse."""
+    import core.config
+    monkeypatch.setattr(core.config, "SWIPE_AUTO_UNLOCKED", True)
+
+
 class _BgProc(_SwitchProc):
     """... with the tap's kept frames, as the background swipe looks at them."""
 
@@ -289,7 +297,7 @@ def test_swipe_auto_is_written_only_when_not_off(mode):
         assert cfg["swipe_auto"] == mode
 
 
-def test_a_project_without_the_key_runs_off_and_a_partial_config_leaves_it():
+def test_a_project_without_the_key_runs_off_and_a_partial_config_leaves_it(swipe_auto_unlocked):
     pytest.importorskip("dearpygui")
     from app import WallDanceApp
     app = MagicMock()

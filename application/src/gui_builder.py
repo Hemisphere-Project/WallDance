@@ -18,6 +18,7 @@ from core.config import (RECORDING_SLOTS, IDENTITY_SLOTS_ENABLED, IDENTITY_SLOTS
                          IDENTITY_SLOTS_STABILITY, IDENTITY_SLOTS_COAST_S,
                          IDENTITY_SLOTS_STATIC_GUARD, IDENTITY_SLOTS_SMART_HOLD, FOREGROUND_ENABLED,
                          IDENTITY_SLOTS_USE_IR_BELT, OSC_SEND_STATE, DETECTION_DEFAULTS)
+import core.config as core_config       # SWIPE_AUTO_UNLOCKED, read when the panel is built
 from gui_icons import Icons
 from gui_constants import (
     TEXT_NORMAL, TEXT_MUTED, TEXT_DIM, TEXT_HINT, TEXT_FAINT,
@@ -848,8 +849,10 @@ def build_phase_wall(gui: Any):
             dpg.bind_item_theme(swipe_btn, gui._btn_standby_theme)
             with dpg.tooltip(swipe_btn):
                 dpg.add_text(SWIPE_BTN_TIP_OFF, tag="swipe_btn_tip")
-        # P6 the automatic swipe: its mode, right under the swipe button (never in the health line)
-        with dpg.group(horizontal=True):
+        # P6 the automatic swipe: its mode, right under the swipe button (never in the health line).  Hidden while
+        # it is locked off in this build (core.config.SWIPE_AUTO_UNLOCKED): the panel is P5's; the combo is there
+        # all the same, so the app's syncs of it land on a hidden item
+        with dpg.group(horizontal=True, tag="swipe_auto_row", show=bool(core_config.SWIPE_AUTO_UNLOCKED)):
             dpg.add_spacer(width=scaled(160))
             swipe_auto = dpg.add_combo(
                 items=["Auto: off", "Auto: suggest", "Auto: switch"],
