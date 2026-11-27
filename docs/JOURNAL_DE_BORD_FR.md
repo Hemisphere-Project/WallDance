@@ -130,7 +130,7 @@ Une session de travail a tourné seule, la nuit, sur la machine d'analyse. Chaqu
 - **La suite.** Il a été renvoyé à sa session ; « Apply » est déjà refusé en RUN. Il n'entrera que si ses tests et une nouvelle relecture sont verts d'ici le 3 décembre. Sa version automatique, voulue par Thomas pour la répétition, attend derrière. Il est entré le soir même, comme conseil : voir plus bas. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@e577566b9 ; hub log 2026-11-26 -->
 - La session de montage recommande de s'en tenir à des suggestions le 7 décembre ; c'est à Thomas de trancher. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@e577566b9 -->
 
-#### Le soir du 26 et la nuit du 26 au 27 <!-- src: hub note 2026-11-26-rehearsal-build-status.md@05f992706 ; hub note 2026-11-27-camera-stalls-addendum.md -->
+#### Le soir du 26 et la nuit du 26 au 27 <!-- src: hub note 2026-11-26-rehearsal-build-status.md@05f992706 ; hub note 2026-11-26-rehearsal-build-status.md@f89e7065b ; hub note 2026-11-27-camera-stalls-addendum.md -->
 
 Ce qui a rejoint le montage, puis ce qui attend Thomas. Pour chaque pièce, dans le même ordre : ce qu'on a vu, ce qu'on a fait, ce que ça apporte, ses limites.
 
@@ -178,14 +178,51 @@ Ce qui a rejoint le montage, puis ce qui attend Thomas. Pour chaque pièce, dans
 - *Apporte :* les prises rejouées avec ce réglage redonnent des détections.
 - *Limites :* la machine d'analyse ne montrait pas le défaut ; un test passé là seulement ne prouvait rien pour le portable. Le test de la correction lit désormais la mémoire comme le portable.
 
+**Les maintiens pendant un arrêt de caméra : construit, relu, et laissé de côté.**
+
+- *Vu :* la pièce prévue devait empêcher un arrêt de la caméra d'user le temps où l'on garde le point d'un danseur perdu. La relecture indépendante a montré que le montage le fait déjà. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@f89e7065b -->
+- Le montage porte un pont pour les arrêts, que la version du 8 octobre n'avait pas : pendant un arrêt, il met en pause le temps de maintien. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@f89e7065b -->
+- *Fait :* on a rejoué les prises du 8 octobre avec leurs vrais arrêts. Avec ce pont seul, les points perdus sur la première image après un arrêt passent de 42 à 1, et de 89 à 47 en tout. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@f89e7065b -->
+- Sur la prise 5 du mur, la danseuse a son point sur 98 % des images, au lieu de 87 %. La pièce prévue, ajoutée par-dessus, ne change rien en direct : même sortie sur les quatre prises. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@f89e7065b -->
+- Elle n'entre donc pas dans le montage, sur la recommandation de la session de montage ; elle est gardée de côté.
+- *Apporte :* pas de code en plus qui ne changerait rien : les points tiennent déjà pendant un arrêt de caméra.
+- *Limites :* quand les images reviennent, un point gardé suit parfois le mauvais groupe. Sur trois prises, la part de points sur personne monte un peu, de moins d'un point. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@f89e7065b -->
+- C'est à regarder plus tard ; cela comptera moins si le lien à 124 Mo/s supprime les arrêts. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@f89e7065b -->
+
+**Changer de projet ou de caméra repart à neuf.**
+
+- *Vu :* essayé sur le vrai chemin de l'app, le montage échouait à chaque fois. Le danseur suivi et son point maintenu passaient d'un projet à l'autre, et d'une caméra à l'autre. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@f89e7065b -->
+- L'ancien point était encore envoyé jusqu'à 48 images de plus. Un changement court était pris pour un arrêt de caméra. Après un plus long, le premier danseur du nouveau projet partait de l'ancien point. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@f89e7065b -->
+- *Fait :* un changement de projet, un changement de caméra et « New project » repartent maintenant à neuf, comme le bouton « Reset ». Un changement d'éclairage dans un même projet garde ses danseurs. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@f89e7065b -->
+- Un changement raté garde l'ancien projet et n'est plus pris pour un arrêt. Un modèle qui échoue à se charger ne garde plus de mémoire de la carte graphique.
+- *Apporte :* le nouveau projet ne reçoit plus rien de l'ancien, et les visuels plus aucun point venu de l'ancien projet.
+- *Limites :* recharger un modèle en RUN garde les points figés, avec leurs numéros, pendant ses 3 secondes, comme un arrêt de caméra. C'est laissé tel quel : à Thomas de le changer s'il le veut. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@f89e7065b -->
+
+**La ligne « Wall light » de la carte de Calibrate.**
+
+- *Vu :* en prenant les images du guide, on a vu que la carte « Scene Calibration » perdait sa ligne « Wall light », la lumière du mur. C'était le cas à chaque vrai Calibrate. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@f89e7065b -->
+- Et juste après un Calibrate, la vérification disait au technicien de refaire Calibrate, sur sa ligne « plate exposure » : l'exposition de l'image du mur vide.
+- *Fait :* une seule cause aux deux : l'image du mur vide reste en attente, non écrite, jusqu'à « Save ». La carte finit maintenant toujours par sa ligne « Wall light » : le verdict, « en cours de mesure », ou « pas de verdict » avec quoi faire.
+- L'image du mur vide garde aussi, dès sa prise, l'exposition et le gain de la caméra. La vérification ne redemande donc plus de Calibrate juste après un Calibrate.
+- *Apporte :* le technicien lit toujours la lumière du mur sur la carte, et ne reçoit plus deux consignes contraires.
+- *Limites :* deux cas rares à l'écran. Une carte fermée pendant les deux secondes de la prise revient une fois ; l'assistant guidé montrerait cette mise à jour dans l'ancienne fenêtre.
+
+**La pause de la boucle d'images : corrigée.**
+
+- *Vu :* toutes les quelques minutes, la boucle d'images s'arrêtait 100 à 170 millisecondes pour un grand nettoyage de la mémoire. L'autre session l'a trouvé ; sur le portable, des images prenaient 193 et 216 millisecondes. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@f89e7065b -->
+- *Fait :* en RUN, ce grand nettoyage ne part plus de lui-même. L'app le fait au démarrage, en passant en STANDBY, après les chargements et à la fin de Calibrate. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@f89e7065b -->
+- *Apporte :* vérifié dans la vraie app, sur le portable du spectacle, avec la caméra : aucun grand nettoyage en RUN en 11 minutes. Les petits durent 0,6 milliseconde d'habitude, 4,2 au plus. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@f89e7065b -->
+- Sur 17 minutes, la soupape de sécurité s'est déclenchée une fois, à 14 min 19 s. Elle a fait son nettoyage sur le mur vide, en 174 millisecondes, comme prévu. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@f89e7065b -->
+- *Limites :* ce nettoyage n'a rien libéré. Quelque chose dans l'app s'accumule lentement : quelques dizaines de mégaoctets sur un spectacle de trois heures. À trouver, mais pas urgent. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@f89e7065b -->
+
 **Petit, mais réel.**
 
 - *Le fichier « dernier projet ».* L'autre session a vu que la batterie de tests, lancée sur le portable, réécrivait le fichier qui dit à l'app quel projet proposer au démarrage. Le 26 au soir, il a désigné quelques minutes un projet d'essai. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
 - Il a été remis aussitôt. Un garde-fou fait maintenant échouer tout test qui toucherait le vrai fichier. Prouvé sur le portable dans la nuit : toute la batterie y passe, le fichier intact.
-- *Une pause de la boucle d'images.* Toutes les quelques minutes, une image prend 100 à 170 millisecondes : le nettoyage de la mémoire. L'autre session l'a trouvé ; la correction est en cours. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
-- Ce nettoyage se fera en STANDBY, aux chargements et au démarrage, et plus pendant le spectacle.
+- *Le guide a ses vraies images.* Le guide de Nico montre maintenant 13 vraies images de l'app, prises la nuit sur la machine d'analyse ; il fait 41 pages. Seule manque la photo du dispositif sur place. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@f89e7065b -->
+- Ces images ont forcé deux corrections : la vérification compte quatorze lignes, et les messages « Go-Live check » s'affichent en haut à gauche de la fenêtre.
 
-**En attente d'une décision de Thomas** (état au 27 novembre, 1 h 23) : <!-- src: hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
+**En attente d'une décision de Thomas** (état au 27 novembre, 3 h 49) : <!-- src: hub note 2026-11-26-rehearsal-build-status.md@f89e7065b -->
 
 - **Le point maintenu sur un vrai corps.** Il réduit presque de moitié les points envoyés sur personne : 3,14 % au lieu de 5,82 sur la machine d'analyse, 3,5 % au lieu de 6,2 sur le portable. L'objectif était 2 %. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
 - La session de montage recommande de l'accepter avec un objectif reformulé. En attendant, il reste hors du montage.
@@ -202,6 +239,7 @@ Ce qui a rejoint le montage, puis ce qui attend Thomas. Pour chaque pièce, dans
 - Pendant la répétition, Thomas peut suivre le portable à distance et écrire à Nico sur l'écran.
 - On sait d'où viennent les arrêts de la caméra, et un réglage les supprime sur un bureau. L'app vérifie l'image du mur vide qu'elle charge, et le dit.
 - Pendant l'échauffement, un bouton conseille un meilleur réglage du détecteur ; rien ne change sans le technicien. La consigne de la ligne de santé n'est plus jamais coupée.
+- Changer de projet ou de caméra repart à neuf, et la boucle d'images ne marque plus de pause pendant le spectacle. La carte de Calibrate dit toujours la lumière du mur.
 
 ### Limites et ce qui reste
 
@@ -213,7 +251,7 @@ Ce qui a rejoint le montage, puis ce qui attend Thomas. Pour chaque pièce, dans
 - **Les arrêts de caméra.** Ils viennent de l'app elle-même ; le lien ralenti à 124 Mo/s les supprime sur un bureau. Reste à le vérifier sur la façade et à côté de TouchDesigner, si Thomas retient ce réglage. <!-- src: hub note 2026-11-27-camera-stalls-addendum.md ; hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
 - **Le capot.** Fermer le capot avec l'app ouverte met l'ordinateur en veille, et l'app s'arrête avec lui. À éviter pendant un spectacle. <!-- src: hub log 2026-11-25 -->
 - **Un message attendu.** Le 26 novembre à 13 h 02, la version de spectacle a été fermée de force, avec l'accord de Thomas, pour libérer la caméra. À sa prochaine ouverture, elle affichera une fois « Previous session crashed » : c'est normal. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@e577566b9 -->
-- **Reste à faire avant la répétition.** Trancher le point maintenu et l'étape « un danseur ». Finir la tenue des maintiens pendant les arrêts de caméra, et la pause de la boucle d'images. Compléter la fiche de Nico, installer le montage sur le portable, choisir le modèle de chaque projet. Et Thomas doit vérifier à l'œil que la comparaison au mur vide voit bien les danseurs que le détecteur rate. <!-- src: hub note 2026-11-26-night-session-wrap.md ; hub project.md ; hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
+- **Reste à faire avant la répétition.** Trancher le point maintenu et l'étape « un danseur ». Compléter la fiche de Nico, installer le montage sur le portable, choisir le modèle de chaque projet. Et Thomas doit vérifier à l'œil que la comparaison au mur vide voit bien les danseurs que le détecteur rate. <!-- src: hub note 2026-11-26-night-session-wrap.md ; hub project.md ; hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
 - **Repoussé après le 12 décembre.** L'assistant de réglage pas à pas, le filtre des fausses détections et la refonte du suivi du Plan Cordée. <!-- src: hub note 2026-11-25-setup-and-detection-roadmap.md -->
 
 ## Séance du 18 novembre 2026 — l'audit et le « Plan Cordée » <!-- src: hub log 2026-11-18 -->
