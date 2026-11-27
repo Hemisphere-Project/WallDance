@@ -106,6 +106,14 @@ class GcPolicy:
         self._was_calibrating = False
         self._first_frame = False
 
+    @property
+    def collecting(self) -> bool:
+        """True from the start of a full collection the policy makes (``collect``) to its end, else False -- also
+        after one that raised, and never for one the interpreter started by itself.  A thread that wakes inside
+        the collection's tail sees it before ``collected_n`` moves (``runtime.swipe_controller.after_frame_end``,
+        the release of an engine)."""
+        return self._ours
+
     # ------------------------------------------------------------------ set-up
     def install(self) -> None:
         """Raise the third threshold (the first two stay) and start timing every collection."""

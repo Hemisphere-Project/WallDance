@@ -173,11 +173,11 @@ class RefereeReport:
     stale, invalidated, refused for its camera -- the referee judged against a plate that does not hold, its
     verdict is worth nothing: above all no accept).  A refusal is told only when its frames share none with the last refusal told (its
     oldest kept frame after that one's newest, or its newest before that one's oldest): the same pool pressed
-    three times is one refusal.  A refusal from the automatic swipe's background look (``background``) is never
-    told: the alert is for three deliberate presses of the operator's, and on a wall the referee refuses for
-    another reason than a wrong plate the looker alone would raise it in the middle of a show; its own row says it
-    (``REFEREE_WAIT``).  Its accept is told (it can only start the count over).  The watch counts; nothing here
-    does."""
+    three times is one refusal.  The automatic swipe's background look (``background``) tells the watch nothing,
+    either way: the alert is for three deliberate presses of the operator's -- on a wall the referee refuses for
+    another reason than a wrong plate the looker alone would raise it in the middle of a show (its own row says it,
+    ``REFEREE_WAIT``), and its accepts, one every look, would start the operator's refusals over so the alert
+    hardly ever built.  The watch counts; nothing here does."""
 
     def __init__(self) -> None:
         self._last: Optional[Tuple[float, float]] = None    # (oldest, newest) frame time of the last refusal told
@@ -188,12 +188,12 @@ class RefereeReport:
         """Returns what the watch was told: "refusal", "accept", or None (nothing, or no watch in this build).
         ``plate_ok``: the plate the verdict's frames were judged on was usable (the ``LiveSetting.plate_ok`` the
         swipe ran on); False tells nothing.  ``background``: the verdict is the automatic swipe's own look, not
-        the operator's press: a refusal tells nothing (and is not remembered as told), an accept is told."""
-        if not plate_ok:
+        the operator's press: it tells the watch nothing, either way -- a refusal would build the plate alert by
+        itself mid-show, an accept would start the operator's own refusals over at every look -- and nothing of
+        it is remembered as told."""
+        if not plate_ok or background:
             return None
         if referee_refused(result):
-            if background:
-                return None                         # the looker's refusal: never toward the plate alert
             ts = [float(f.t) for f in frames or ()]
             span = (min(ts), max(ts)) if ts else None
             with self._lock:
@@ -265,7 +265,7 @@ def after_frame_end(proc, stop: Optional[threading.Event] = None) -> None:
     release would land right after that collection, in the same gap between frames: it waits once more for a
     frame's end, 0.2 s at most again.  "Right now" counts: the policy's counter (``collected_n``) moves only once
     its collection is over, and this thread wakes inside the collection's tail, before it moves (measured, 8 of
-    8: ``_ours`` is still set there).  The policy is read through ``sys.modules``, never imported here (the
+    8: the policy's ``collecting`` is still true there).  The policy is read through ``sys.modules``, never imported here (the
     replay drivers do not load it); without the policy, or without a collection, nothing changes."""
     ev = getattr(proc, "frame_end", None)
     if ev is None:
@@ -280,7 +280,7 @@ def after_frame_end(proc, stop: Optional[threading.Event] = None) -> None:
         try:
             pol = getattr(sys.modules.get("core.gc_policy"), "POLICY", None)
             n = getattr(pol, "collected_n", None)
-            return None if n is None else (int(n), bool(getattr(pol, "_ours", False)))
+            return None if n is None else (int(n), bool(getattr(pol, "collecting", False)))
         except Exception:  # noqa: BLE001 - a broken policy changes nothing here
             return None
 

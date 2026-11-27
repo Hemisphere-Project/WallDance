@@ -227,6 +227,28 @@ def test_the_collection_count_moves_by_one_per_full_collection_and_never_on_a_re
     assert p.tick(in_run=False, wall_empty=True) is None and p.collected_n == 3
 
 
+
+def test_collecting_is_true_from_the_start_of_the_policys_full_collection_to_its_end():
+    """``collecting`` (read by an engine's release, P6): true inside a full collection the policy makes -- seen by
+    the gc callbacks at its start and its end --, false before and after, false after one that raised, never true
+    for a collection the interpreter started by itself."""
+    p, fake, _ = _policy()
+    seen = []
+    fake.callbacks.append(lambda phase, info: seen.append((phase, p.collecting)))
+    assert p.collecting is False
+    p.start()                                                   # the start-up collection
+    assert seen == [("start", True), ("stop", True)] and p.collecting is False
+    seen.clear()
+    fake.run(2)                                                 # not the policy's
+    assert seen == [("start", False), ("stop", False)]
+
+    def boom():
+        raise RuntimeError("gc failed")
+    fake.collect = boom
+    with pytest.raises(RuntimeError):
+        p.collect("by hand")
+    assert p.collecting is False
+
 # ------------------------------------------------------------------------------- the app's moments (hooks)
 def _app(state="RUN", calibrating=False, slots=()):
     return SimpleNamespace(last_fps_time=0.0, system_state=SimpleNamespace(name=state),

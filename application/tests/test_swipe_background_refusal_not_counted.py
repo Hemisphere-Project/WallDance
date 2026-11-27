@@ -4,8 +4,9 @@ The plate watch (``core.reference_watch``, a fake here) raises its alert « refu
 with STANDBY then Calibrate for instruction: that is for three deliberate presses of the operator's « Try other
 settings ».  The automatic swipe's looks go through the same ``RefereeReport.note``; on a wall the referee refuses
 for another reason than a wrong plate, mode suggest would raise the alert by itself in the middle of a show.  So a
-background refusal tells the watch nothing and is said in the swipe's own row; a background accept is still told;
-the operator's swipe tells both, as before.
+background refusal tells the watch nothing and is said in the swipe's own row; a background accept tells nothing
+either (re-read of 5de60e5, b2 finding 7: it started the operator's refusals over at every look); the operator's
+swipe tells both, as before.
 """
 import sys
 import types
@@ -62,15 +63,15 @@ def test_a_background_refusal_tells_the_watch_nothing_and_is_said_in_the_swipes_
     assert [k for k, _r in calls] == ["refusal"]
 
 
-def test_regression_guard_a_background_accept_is_still_told(calls):
-    """Regression guard: a background look that judged on the plate (here it suggests another setting) still
-    tells the watch « accept », which can only start its count over."""
+def test_a_background_accept_tells_the_watch_nothing_either(calls):
+    """A background look that judged on the plate (here it suggests another setting) tells the watch nothing:
+    its « accept » would start the operator's refusals over at every look."""
     bg, proc, events, loader, live = _looking_bg()
     bg.referee = RefereeReport()
     proc.frames = _look_frames()
     assert bg.tick() == "run"
     assert bg.last_advice["advice"] == "seen"              # (27/11) named once: nothing shown yet
-    assert calls == [("accept", None)]
+    assert calls == []
     assert bg.status()["last_look"]["outcome"] != WAITS
 
 

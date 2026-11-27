@@ -109,6 +109,8 @@ LATE_WAIT = "the automatic swipe waits: the live frames run late (one in twenty 
 LATE_WINDOW_S = 3.0       # the recent live frames: those of the last this long ...
 LATE_MIN_FRAMES = 20      # ... at least this many, compared at their 95th percentile (one in twenty)
 LATE_WARMUP_S = 3.0       # a look's first inferences warm up: the live frames beside them are not counted
+# a load started out of RUN that RUN overtook (it cannot be cut short): the first RUN frames waited for it -- said once
+LOAD_INTO_RUN = "the second model finished loading as RUN began"
 
 
 def _setting_name(key: str) -> str:
@@ -372,6 +374,7 @@ class BackgroundSwipe:
         self.last_counts: Tuple[int, int] = (0, 0)      # fresh frames with dancers, of which lost
         self._quiet = True                              # this look's moment: a load or a release would not show
         self._mode_set = False                          # the mode was just set (not off): the next look's moment
+        self._click = False                             # ... taken by a look, kept until a look tries the load
         self._click_look = False                        # this look is that one: a load moment whatever else is true
         self._quiet_since: Optional[float] = None       # loop clock since when the wall is seen empty in RUN
         self._was_run = False                           # RUN at the last look (entering RUN starts the count again)
@@ -426,12 +429,13 @@ class BackgroundSwipe:
             self._thread = threading.Thread(target=self._loop, name="SwipeAuto", daemon=True)
             self._thread.start()
 
-    def stop(self, timeout: Optional[float] = 3.0) -> None:
+    def stop(self, timeout: Optional[float] = 8.0) -> None:
         """At quit (``_cb_quit``, on the loop thread, before the switch's ``stop``): the looker ends -- a load in
-        progress ends first (it cannot be cut short: about 3 s cold), and what it loaded is dropped there, never
-        kept (``_ensure_resident``) -- then the resident goes here, under the engine lock, unpaced: no frame is
-        coming, and nothing here waits for a frame's end.  At most ``timeout`` in all; past it nothing is freed
-        (said in the log)."""
+        progress ends first (it cannot be cut short: about 3 s cold, more beside a busy GPU), and what it loaded is
+        dropped there, never kept (``_ensure_resident``) -- then the resident goes here, under the engine lock,
+        unpaced: no frame is coming, and nothing here waits for a frame's end.  At most ``timeout`` in all (8 s,
+        as the switch's own: a cold load ends inside it, before the process tears CUDA down); past it nothing is
+        freed (said in the log)."""
         self._stop.set()
         self._wake.set()
         t0 = time.perf_counter()
@@ -514,10 +518,12 @@ class BackgroundSwipe:
         """This look's moment (``_quiet``): a load here does not show -- out of RUN, or in RUN on a wall seen empty
         (no track, no identity slot held) for ``empty_s``, counted from the first look that saw it empty and never
         from before RUN began -- or it is the first look after the mode was set (``set_mode``), whatever is on the
-        wall: the operator's own click, used by that look only."""
+        wall: the operator's own click, kept until a look tries the load (``_load_when_quiet``) -- a look that
+        cannot (the plate pending, a model loading, busy) leaves it to the next."""
         self._next_s = None
         mode_set, self._mode_set = self._mode_set, False
-        self._click_look = mode_set
+        self._click = self._click or mode_set
+        self._click_look = self._click
         run = bool(self.in_run())
         entered, self._was_run = run and not self._was_run, run
         if not run:
@@ -532,7 +538,7 @@ class BackgroundSwipe:
             self._quiet_since = None
         elif self._quiet_since is None or entered:
             self._quiet_since = now
-        self._quiet = mode_set or (empty and now - self._quiet_since >= self.empty_s - 1e-6)
+        self._quiet = self._click or (empty and now - self._quiet_since >= self.empty_s - 1e-6)
 
     def _wanted(self, live: LiveSetting, other: Optional[Candidate]) -> Optional[Candidate]:
         """The second engine a look would run (the other model at the live input), or None: the mode off, the live
@@ -562,9 +568,11 @@ class BackgroundSwipe:
         once), else None."""
         want = self._wanted(live, other)
         if want is None:
+            self._click = False               # the click's moment: nothing to load for this setting
             self._end_wall_wait()             # nothing to load for this setting: nothing waits
             return None
         if self._fits(live, want):
+            self._click = False               # ... or it is loaded already
             return None
         if not self._quiet:
             if self._quiet_since is not None:      # an empty wall being counted: look again once it has lasted
@@ -575,12 +583,15 @@ class BackgroundSwipe:
         runner = self.runner_factory(proc)
         with self.engine_lock, no_graph_capture():
             if self._cancelled(live):
-                return None                   # a load or a switch began meanwhile: the next look
+                return None                   # a load or a switch began meanwhile: the next look (the click kept)
+            self._click = False               # the click's moment is used here: the load is tried
             failed = self._ensure_resident(proc, live, want, runner)
         if self._stop.is_set():
             return "off"                      # the app quits: nothing loaded is kept, nothing said
         if failed:
             wait, fault = failed
+            if fault is None:
+                return None                   # RUN began before the load started: no load, the next moment
             self.last_look = self._record("look", look="none", t=now, frames=0, seconds=0.0, outcome=wait)
             if fault:
                 self._fault_why = (fault, f"the automatic swipe could not load {want.label}")
@@ -825,6 +836,11 @@ class BackgroundSwipe:
             return None
         if not self._quiet:
             return WALL_WAIT.format(other.label), None
+        if not self._was_run and self.in_run():
+            # this look's moment was out of RUN and RUN has begun since: never a load (nor a release) on entering
+            # RUN -- the next moment (an empty wall, STANDBY); the click's moment is over with it
+            self._quiet = False
+            return WALL_WAIT.format(other.label), None
         if r is not None:
             del r
             self._release_now("replaced")     # under the caller's lock: freed here, before the new one loads
@@ -846,6 +862,11 @@ class BackgroundSwipe:
         self._record("load", resident=other.label, seconds=round(load_s, 2), mb=mb)
         say(f"[SwipeAuto] {other.label} loaded beside the live model ({load_s:.2f} s"
             + (f", about {mb} MB)" if mb is not None else ")"))
+        if not self._was_run and self.in_run():
+            # RUN began while it loaded (a load cannot be cut short): the first RUN frames waited for it
+            say(f"[SwipeAuto] {other.label} finished loading as RUN began: the first RUN frames waited for it")
+            self.last_look = self._record("look", look="none", t=float(proc.loop_clock()), frames=0,
+                                          seconds=round(load_s, 2), outcome=LOAD_INTO_RUN)
         return None
 
     def _not_loaded(self, other: Candidate, live: LiveSetting, exc: BaseException) -> Tuple[str, str]:
@@ -1015,7 +1036,7 @@ class BackgroundSwipe:
                 return
             from runtime.swipe_controller import REFEREE_WAIT, referee_refused
             refused = referee_refused(result)        # the plate refused: said in this row, not to the plate watch
-            if self.referee is not None:             # used the plate: told to the plate watch (a refusal is not)
+            if self.referee is not None:             # the plate watch hears nothing of a look, either way
                 self.referee.note(result, frames, plate_ok=live.plate_ok, background=True)
             now = proc.loop_clock()
             # the « slower » rule: the candidate's times here and the live model's sampled over the same run, alike

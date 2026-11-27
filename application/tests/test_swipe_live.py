@@ -1671,9 +1671,9 @@ def test_quit_cancels_and_joins_the_swipe():
                            tracker=SimpleNamespace(logger=SimpleNamespace(close=lambda: calls.append("log"))),
                            recorder=SimpleNamespace(close=lambda: None), running=True)
     appmod.WallDanceApp._cb_quit(fake)
-    # P6: the looker -- its stop waits for a load in progress (about 3 s cold) and frees its engine -- then the
-    # switch -- its stop waits for a load in progress and frees what it holds -- then the rest of the quit
-    assert calls == ["cancel", ("join", 2.0), ("bg-stop", 3.0), ("switch-stop", 8.0), "log"]
+    # P6: the looker -- its stop waits for a load in progress (about 3 s cold: 8 s, as the switch's) and frees its
+    # engine -- then the switch -- its stop waits for a load in progress and frees what it holds -- then the rest
+    assert calls == ["cancel", ("join", 2.0), ("bg-stop", 8.0), ("switch-stop", 8.0), "log"]
     assert fake.running is False
 
 
