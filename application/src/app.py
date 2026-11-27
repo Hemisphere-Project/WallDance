@@ -845,7 +845,8 @@ class WallDanceApp:
             processor=lambda: self.processor, live=self._swipe_live_setting, engine_path=_engine_path,
             busy=self._swipe_bg_busy, switch=self.swipe_switch, notify=self._swipe_notify, mode=SWIPE_AUTO,
             referee=self.swipe.referee,     # fix6: one plate-watch report for the operator's swipe and ours
-            in_run=lambda: self.system_state == SystemState.RUN, wall_empty=self._swipe_wall_empty)
+            in_run=lambda: self.system_state == SystemState.RUN, wall_empty=self._swipe_wall_empty,
+            standby=lambda: self.system_state == SystemState.STANDBY)    # no look there: the pool is frozen
         self._swipe_shown = ""          # which verdict the swipe line shows: "operator" | "background"
         # the automatic swipe turned off: a switch asked before (the operator's seamless Apply, an automatic one)
         # and not yet swapped in does not happen -- the key-off build runs none
@@ -3069,24 +3070,34 @@ class WallDanceApp:
             frame = tuple(int(v) for v in self.roi.state.source_size)
         except Exception:  # noqa: BLE001
             frame = ()
+        # what the processor does to the picture before the network pass (``FrameProcessor._sync_gpu_settings``,
+        # the same list as the tap's key, ``_swipe_setting_key``): another value is another scene
+        bg = getattr(self.processor, "bg_subtractor", None)
         enhance = (bool(s.enhance_enabled), bool(s.enhance_lite), bool(s.enhance_force),
                    round(float(self.enhancer.clahe_clip), 3), round(float(self.enhancer.gamma), 3),
-                   bool(getattr(s, "greyscale", False)), bool(s.bg_subtract_enabled), int(s.bg_subtract_sensitivity),
-                   round(float(s.brightness_threshold), 1), round(float(s.denoise_strength), 3))
+                   bool(getattr(s, "greyscale", False)),
+                   bool(s.bg_subtract_enabled and bg is not None and getattr(bg, "has_reference", False)),
+                   int(s.bg_subtract_sensitivity), round(float(s.brightness_threshold), 1),
+                   round(float(s.denoise_strength), 3))
         try:
             grid, cells = self.processor.get_exclusion()
             exclusion = (tuple(int(v) for v in grid), tuple(sorted((int(c[0]), int(c[1])) for c in cells)))
         except Exception:  # noqa: BLE001
             exclusion = ()
+        # the plate the pipeline holds in memory (captured again = another scene), and that object itself: the one
+        # the reference watch keys its verdict on (``WATCH.current(plate)``) -- read together, so both are the same
+        det = getattr(self.processor, "_fg_detector", None)
+        plate_ref = getattr(det, "plate", None) if det is not None else None
+        plate = getattr(self.processor, "plate_identity", None)
+        if plate_ref is not None and (not plate or plate[0] != id(plate_ref)):
+            plate_ref = None              # swapped between the two reads: the next look reads the new one
         return LiveSetting(project=self.configs._current_project,
                            candidate=Candidate(self.models.current_model_name, int(s.imgsz),
                                                tuple(shape) if shape else None),
                            model_id=id(self.models.model), trt=trt,
                            roi=(bool(s.roi_enabled), int(s.roi_x), int(s.roi_y), int(s.roi_w), int(s.roi_h)),
-                           # the plate the pipeline holds in memory (captured again = another scene)
-                           plate=getattr(self.processor, "plate_identity", None),
-                           plate_ok=bool(getattr(self.processor, "plate_usable", True)), frame=frame,
-                           enhance=enhance, exclusion=exclusion)
+                           plate=plate, plate_ok=bool(getattr(self.processor, "plate_usable", True)), frame=frame,
+                           enhance=enhance, exclusion=exclusion, plate_ref=plate_ref)
 
     def _cb_run_settings_swipe(self):
         """Start the swipe (worker thread; the show runs on at the live setting)."""
@@ -3363,7 +3374,8 @@ class WallDanceApp:
         return "the automatic swipe is off" if self.swipe_bg.mode == "off" else None
 
     def _swipe_bg_busy(self) -> Optional[str]:
-        """Why the background swipe must not look now (None: it may)."""
+        """Why the background swipe must not look now (None: it may).  Not STANDBY: there the looker loads or frees
+        its second engine and runs no look (``BackgroundSwipe.standby``) -- a reason here would stop the load too."""
         if self.swipe.busy:
             return "the operator's swipe runs"
         m = self.models

@@ -7,7 +7,9 @@ and acts on its advice, on its own thread, without the operator:
   counted under the tap's lock (no image copied).  A run needs a FULL pool of them (``SwipeParams.frames`` = 150,
   1 s apart: two and a half minutes of dancing; never the operator's 80 % floor), then the policy's ``due``.  An
   empty wall, STANDBY, a model load, an operator's swipe, a calibration: ``idle`` -- no inference, no state that
-  grows (on an empty wall or in STANDBY the second engine may be loaded: see the background run);
+  grows (on an empty wall or in STANDBY the second engine may be loaded: see the background run).  In STANDBY no
+  look runs at all (the pool is frozen there, the show's output is not live), so no switch is asked there; a run
+  in progress when STANDBY begins stops at its next frame and its verdict is dropped;
 * **the background run**, much gentler than the operator's swipe: two settings only -- the live one, scored on
   the boxes it already made (``SwipeFrame.boxes``: no inference), and the OTHER MODEL AT THE LIVE NETWORK INPUT,
   kept RESIDENT (under ``ENGINE_LOAD_LOCK`` and without a CUDA graph).  A load or a release stops the loop for
@@ -33,8 +35,12 @@ and acts on its advice, on its own thread, without the operator:
   not usable (``LiveSetting.plate_ok`` False: no foreground, invalidated, refused for its camera, found stale) is
   worth nothing.  While it is not usable: ``waiting`` -- no run starts, no engine is loaded, no inference, no
   suggestion, no switch; the look says so (``PLATE_WAIT``, in ``status``); a suggestion shown goes; a run in
-  progress stops at its next frame and its verdict is dropped.  Any change of the scene (the plate's state among
-  it, either way) starts the policy's verdicts over AND the pool: frames kept before are never scored;
+  progress stops at its next frame and its verdict is dropped.  The same wait while the reference watch
+  (``core.reference_watch``, the rehearsal build's) says the plate in use is wrong -- the camera moved, another
+  wall, refused by the referee three times...: a confirmed alert, ``WATCH.current(LiveSetting.plate_ref)`` --;
+  the look quotes its status (``REFERENCES_WAIT``), the alert and its one instruction stay the watch's (the health
+  line).  Any change of the scene (the plate's state among it, the watch's alert, the picture's enhancement:
+  either way) starts the policy's verdicts over AND the pool: frames kept before are never scored;
 * **the switch** goes through ``runtime.seamless_switch`` (the operator's Apply's own path): the resident model
   becomes the live one between two frames and the old live model the resident one -- no camera close, no modal,
   the tracker and the slots untouched; never while a background inference is in flight on it (the switch's
@@ -69,11 +75,16 @@ from core.swipe_auto import (MODE_AUTO, MODE_OFF, AutoParams, SwipeAuto, alike_m
 from core.swipe_runner import (SWIPE_MODELS, CandidateRunner, ExclusionCells, install_capture_guards,
                                live_run_from_boxes, no_graph_capture, result_dict, score_runs)
 from runtime.seamless_switch import ENGINE_UNREADABLE, Prepared, SeamlessSwitch, _runner_factory, load_failure
-from runtime.swipe_controller import PLATE_UNUSABLE, LiveSetting, make_pacer, say, what_changed
+from runtime.swipe_controller import PLATE_UNUSABLE, LiveSetting, _plate_watch, make_pacer, say, what_changed
 
 # the empty-wall plate is not usable (LiveSetting.plate_ok False): what the look says, and why a suggestion goes
 PLATE_NOT_VALID = "the empty-wall plate is not valid - Calibrate on the empty wall"
 PLATE_WAIT = f"the automatic swipe waits: {PLATE_NOT_VALID}"
+# the reference watch says the references are wrong (its status quoted): no instruction here, the alert is its own
+REFERENCES_WRONG = "the references are not right ({}) - see the health line"
+REFERENCES_WAIT = f"the automatic swipe waits: {REFERENCES_WRONG}"
+# a run's verdict when STANDBY began after its last frame
+STANDBY_DROP = "STANDBY began during the run"
 # a look fell due without the second engine while a dancer is tracked: it loads at the next empty wall (or STANDBY)
 WALL_WAIT = "the automatic swipe waits for an empty wall to load {}"
 # why an automatic switch is only suggested: the switch holds a fault (whose: what lifts it is said by the fault
@@ -226,7 +237,8 @@ class BackgroundSwipe:
                  engine_lock=None, wall: Callable[[], float] = time.time, referee=None,
                  in_run: Callable[[], bool] = lambda: False, wall_empty: Callable[[], bool] = lambda: True,
                  empty_s: Optional[float] = None, gpu_used: Callable[[], Optional[int]] = _gpu_used_bytes,
-                 snooze_s: Optional[float] = None, max_age_s: Optional[float] = None):
+                 snooze_s: Optional[float] = None, max_age_s: Optional[float] = None,
+                 standby: Callable[[], bool] = lambda: False):
         from core.config import (SWIPE_AUTO_LOAD_EMPTY_S, SWIPE_AUTO_LOOK_S, SWIPE_AUTO_PACE_S, SWIPE_AUTO_SNOOZE_S,
                                  SWIPE_VERDICT_MAX_AGE_S)
         self.processor = processor
@@ -247,6 +259,7 @@ class BackgroundSwipe:
         self.snooze_s = float(SWIPE_AUTO_SNOOZE_S if snooze_s is None else snooze_s)    # Dismiss: not now, this long
         self.max_age_s = float(SWIPE_VERDICT_MAX_AGE_S if max_age_s is None else max_age_s)  # a suggestion's age
         self.in_run = in_run              # the app is in RUN (the show's output is live)
+        self.standby = standby            # the app is in STANDBY: no look (out of RUN alone is when loads may go)
         self.wall_empty = wall_empty      # no track on screen, no identity slot held (core.gc_policy.wall_empty)
         self.gpu_used = gpu_used          # bytes on the GPU, read around the resident's load
         self.models = tuple(models)
@@ -286,6 +299,7 @@ class BackgroundSwipe:
         self._was_run = False                           # RUN at the last look (entering RUN starts the count again)
         self._next_s: Optional[float] = None            # the next look sooner than look_s (an empty wall counted)
         self._wall_wait: Optional[str] = None           # a look due waits for an empty wall: what its row says
+        self._ref_wait: Optional[str] = None            # the look waits on the reference watch: what its row says
         self.history: Deque[Dict[str, Any]] = deque(maxlen=200)   # looks, advices, switches (bounded)
         self.inferences = 0                        # candidate inferences so far
         self.ticks = 0
@@ -495,10 +509,11 @@ class BackgroundSwipe:
         return (live.project, int(c.imgsz), tuple(c.shape) if c.shape else None, bool(live.trt))
 
     def tick(self) -> str:
-        """One look.  Returns what it did: off | loading | waiting (the plate is not usable, or a look due waits for
-        an empty wall to load the other model) | idle | busy | banned (the other model could not be loaded or run,
-        or an automatic switch to it failed) | snoozed (the operator dismissed it a moment ago) | run | probe |
-        nothing-to-compare.  First, a suggestion too old goes, whatever the wall (an empty wall runs no look)."""
+        """One look.  Returns what it did: off | loading | waiting (the plate is not usable, the reference watch
+        says it is wrong, or a look due waits for an empty wall to load the other model) | idle (STANDBY among
+        it) | busy | banned (the other model could not be loaded or run, or an automatic switch to it failed) |
+        snoozed (the operator dismissed it a moment ago) | run | probe | nothing-to-compare.  First, a suggestion
+        too old goes, whatever the wall (an empty wall runs no look)."""
         t0 = time.perf_counter()
         try:
             self.withdraw_stale()
@@ -519,16 +534,20 @@ class BackgroundSwipe:
         if live is None:
             self._next_s = min(self.look_s, 0.5)    # a model loads: its second engine follows as soon as it is live
             return "loading"
-        scene = (live.project, live.roi, live.plate, live.plate_ok, live.frame)
+        wrong = self._references_wrong(live)      # the watch's status while it says the references are wrong
+        scene = (live.project, live.roi, live.plate, live.plate_ok, live.frame, live.enhance, wrong is not None)
         if scene != self._scene:
             if self._scene is not None:
                 # nothing learned so far describes this scene: the policy's verdicts start over, and so does the
-                # pool -- frames kept before now are never scored (those kept on a plate that was not usable, or
-                # that a run already used: the policy's memory of them is gone)
+                # pool -- frames kept before now are never scored (those kept on a plate that was not usable or
+                # that the watch called wrong, on another picture, or that a run already used: the policy's
+                # memory of them is gone)
                 self.auto.reset()
                 self._fresh_after = float(proc.loop_clock())
                 self._clear_suggestion(PLATE_NOT_VALID if not live.plate_ok and not plate_pending else
-                                       "the scene changed (project, ROI, empty-wall plate or camera)")
+                                       REFERENCES_WRONG.format(wrong) if wrong else
+                                       "the scene changed (project, ROI, empty-wall plate, camera or picture "
+                                       "enhancement)")
             self._scene = scene
         if self._last_live is not None and live.candidate != self._last_live and live.candidate != self._expect:
             self.auto.switched(proc.loop_clock(), self._last_live, live.candidate)       # by hand: the dwell too
@@ -550,6 +569,20 @@ class BackgroundSwipe:
             return "waiting"
         if self.last_look is not None and self.last_look.get("outcome") == PLATE_WAIT:
             self.last_look = None             # the plate is usable again: the wait is over, no look since
+        if wrong:
+            # the watch says this plate is wrong (moved, another wall, refused): the same wait as the plate's -- no
+            # frame read, no engine, no inference; said once, quoting the watch, whose alert it is
+            self.state = "waiting"
+            self.last_counts = (0, 0)
+            self._ref_wait = REFERENCES_WAIT.format(wrong)
+            if self.last_look is None or self.last_look.get("outcome") != self._ref_wait:
+                self.last_look = self._record("look", look="none", t=float(proc.loop_clock()), frames=0,
+                                              seconds=0.0, outcome=self._ref_wait)
+            return "waiting"
+        if self._ref_wait is not None:
+            if self.last_look is not None and self.last_look.get("outcome") == self._ref_wait:
+                self.last_look = None         # the watch no longer says so: the wait is over, no look since
+            self._ref_wait = None
         frames, now = proc.swipe_fresh(self._fresh_after)
         fresh = self.auto.fresh(frames)
         self.last_counts = (len(fresh), sum(1 for f in fresh if f.lost))
@@ -568,6 +601,8 @@ class BackgroundSwipe:
         if got:
             return got                        # banned: it could not be loaded just now, said once as the switch's
                                               # fault; off: the app quits
+        if self.standby():
+            return "idle"                     # STANDBY: the second engine may load (above), no look, no switch
         if len(fresh) < self.auto.run_frames:
             self._end_wall_wait()             # no look is due any more
             return "idle"                     # a full pool of fresh frames with dancers first: nothing scored
@@ -607,11 +642,38 @@ class BackgroundSwipe:
         return kind
 
     # ------------------------------------------------------------------ the background run
-    def _cancelled(self, live0: LiveSetting) -> bool:
+    def _cancelled(self, live0: LiveSetting, look: bool = False) -> bool:
+        """``look``: a look's run, which stops too in STANDBY and while the watch says the references are wrong
+        (``_stood_down``); a load of the second engine does not."""
         if self._stop.is_set() or self.auto.mode == MODE_OFF or self.busy() or self.switch.busy():
             return True                       # (a switch -- the operator's Apply -- waits for nothing: it stops)
         now = self.live()
-        return now is None or now.key != live0.key
+        return now is None or now.key != live0.key or (look and self._stood_down(now) is not None)
+
+    def _references_wrong(self, live: LiveSetting) -> Optional[str]:
+        """The reference watch's status while it says the plate this setting is judged against is wrong (a
+        confirmed alert: moved, another wall, refused...), else None: no verdict for that plate, a match, an alert
+        not confirmed yet, no plate object, no watch in this build.  The plate is ``LiveSetting.plate_ref``, the
+        object ``plate`` identifies: the one the watch keys its verdict on."""
+        if live.plate_ref is None:
+            return None
+        rw = _plate_watch()
+        watch = getattr(rw, "WATCH", None) if rw is not None else None
+        if watch is None:
+            return None
+        try:
+            v = watch.current(live.plate_ref)
+        except Exception:  # noqa: BLE001 - the watch must never sink a look
+            return None
+        return str(v.status).replace("_", " ") if v is not None and v.alert else None
+
+    def _stood_down(self, live: LiveSetting) -> Optional[str]:
+        """Why a look must not run, or its verdict count, now: STANDBY, or the watch says the references are
+        wrong; None when it may."""
+        if self.standby():
+            return STANDBY_DROP
+        wrong = self._references_wrong(live)
+        return REFERENCES_WRONG.format(wrong) if wrong else None
 
     def _ensure_resident(self, proc, live: LiveSetting, other: Candidate,
                          runner: CandidateRunner) -> Optional[Tuple[str, str]]:
@@ -739,7 +801,7 @@ class BackgroundSwipe:
             install_capture_guards()
             runner = self.runner_factory(proc)
             with self.engine_lock, no_graph_capture():
-                if self._cancelled(live):
+                if self._cancelled(live, look=True):
                     outcome = "cancelled before it began"
                     return
                 failed = self._ensure_resident(proc, live, other, runner)
@@ -758,7 +820,7 @@ class BackgroundSwipe:
                 res = self.resident                     # (an operator's Apply may take it off meanwhile)
                 with self._resident_lock:
                     run = runner.infer([f.image for f in frames], other, res.runner,
-                                       cancelled=lambda: self._cancelled(live), pace=paced)
+                                       cancelled=lambda: self._cancelled(live, look=True), pace=paced)
                 self.inferences += len(run.ms)
             if run.error:
                 outcome = run.error
@@ -784,6 +846,10 @@ class BackgroundSwipe:
                 # the plate (or the setting) changed after the last frame was inferred: the verdict goes
                 gone = after is not None and not after.plate_ok
                 outcome = f"dropped: {PLATE_NOT_VALID if gone else 'the setting changed during the run'}"
+                return
+            down = self._stood_down(after)
+            if down:                                 # STANDBY, or the watch's alert, after the last frame
+                outcome = f"dropped: {down}"
                 return
             from runtime.swipe_controller import REFEREE_WAIT, referee_refused
             refused = referee_refused(result)        # the plate refused: said in this row, not to the plate watch

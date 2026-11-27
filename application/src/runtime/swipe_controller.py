@@ -38,7 +38,7 @@ import importlib
 import os
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 
 from core.swipe import Candidate, SwipeParams
@@ -75,13 +75,16 @@ class LiveSetting:
     model_id: int
     trt: bool = True
     roi: Tuple = ()                 # (enabled, x, y, w, h)
-    plate: Any = ""                 # the empty-wall plate the foreground holds
+    plate: Any = ""                 # the empty-wall plate the foreground holds (``plate_identity``)
     plate_ok: bool = True           # loaded, not invalidated by hand (X5), not refused for its camera (X6),
                                     # not found stale (F2's latch, where the build has it)
     frame: Tuple = ()               # the camera frame (width, height)
     enhance: Tuple = ()             # what the network sees: enhancement on / lite / forced, CLAHE, gamma,
                                     # greyscale, background subtraction and its sensitivity
     exclusion: Tuple = ()           # the operator's excluded cells (grid, cells): boxes the referee drops
+    # the plate object ``plate`` identifies -- the one the reference watch keys its verdict on (``WATCH.current``);
+    # not part of the key, nor compared: ``plate`` stands for it
+    plate_ref: Any = field(default=None, compare=False, repr=False)
 
     @property
     def key(self) -> Tuple:
