@@ -739,6 +739,7 @@ class WallDanceApp:
             apply_config=self._apply_config_without_model,
             saveable_config=self._get_saveable_config,
             request_reprocess=self._request_reprocess,
+            start_clean=self._cb_project_start_clean,
         )
         # CALIBRATE / DANCERS orchestration (DECOMPOSITION_PLAN Phase 2
         # (5)): owns the calibration state machines stepped by the main
@@ -2137,6 +2138,13 @@ class WallDanceApp:
         if self.osc:
             self.osc.send_clear()
         print("Tracker reset")
+
+    def _cb_project_start_clean(self):
+        """A project switch (A2, #t-023 follow-up): the new project starts as a restart does --
+        the tracker and the identity slots reset (the Reset button's path, OSC clear included)
+        and the camera is not live (D34): the switch's silence is never bridged as a stall."""
+        self._cb_tracker_reset()
+        self.processor.camera_not_live()
 
     def _camera_preview_geometry(self, width: int, height: int):
         """Preview geometry + GUI layout follow-up after a camera (re)open."""

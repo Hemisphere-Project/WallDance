@@ -84,6 +84,7 @@ class ConfigManager:
         apply_config: Callable[[Dict], None],
         saveable_config: Callable[[], Dict],
         request_reprocess: Callable[[], None],
+        start_clean: Optional[Callable[[], None]] = None,
     ) -> None:
         self.models = models
         self.cameras = cameras
@@ -98,6 +99,8 @@ class ConfigManager:
         self.apply_config = apply_config
         self.saveable_config = saveable_config
         self.request_reprocess = request_reprocess
+        # A2 (#t-023 follow-up): the app's clean start of a new project (tracker, slots, stall clock)
+        self.start_clean = start_clean
 
         self.config_store = ConfigStore()
         self._current_project = "default"
@@ -287,6 +290,10 @@ class ConfigManager:
         self._current_project = self.config_store.infer_project_from_config(config, config_filepath)
         print("[Project Switch] Applying config settings...")
         self.apply_config(config)
+        # A2 (#t-023 follow-up): the new project starts as a restart does -- no track, no slot,
+        # no hold of the old one -- and this switch's silence is never a camera stall (D34).
+        if self.start_clean is not None:
+            self.start_clean()
 
         # 10. Update project tracking
         self.config_store.remember_last_project(self._current_project)

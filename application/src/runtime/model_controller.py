@@ -572,7 +572,9 @@ class ModelController:
             try:
                 load_result["model"] = self.model_manager.load_model(model_name, force_pt=force_pt)
             except Exception as e:
-                load_result["error"] = e
+                # the words only: the exception's traceback holds the failed load's frames (the
+                # half-built model, its GPU memory) in a cycle until a collection (A2, cf. yolo_runner)
+                load_result["error"] = str(e)
             load_result["done"] = True
 
         # Start loading in background thread
@@ -635,7 +637,7 @@ class ModelController:
                     try:
                         fallback_result["model"] = self.model_manager.load_model(model_name, force_pt=True)
                     except Exception as e2:
-                        fallback_result["error"] = e2
+                        fallback_result["error"] = str(e2)     # the words only (as above)
                     fallback_result["done"] = True
 
                 fallback_thread = threading.Thread(target=fallback_load, daemon=True)
