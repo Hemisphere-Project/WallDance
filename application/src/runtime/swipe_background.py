@@ -72,7 +72,8 @@ from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 from core.swipe import Candidate, SwipeParams
 from core.swipe import score_frame
 from core.swipe_auto import (MODE_AUTO, MODE_OFF, AutoParams, SwipeAuto, alike_ms, bar_for,  # noqa: F401 - PolicyPort
-                             headroom, parse_mode, referee_params, released_modes, suggestion_text)
+                             headroom, parse_mode, referee_params, released_modes, suggestion_text,
+                             unconfirmed_text)
 from core.swipe_runner import (SWIPE_MODELS, CandidateRunner, ExclusionCells, install_capture_guards,
                                live_run_from_boxes, no_graph_capture, result_dict, score_runs)
 from runtime.seamless_switch import ENGINE_UNREADABLE, Prepared, SeamlessSwitch, _runner_factory, load_failure
@@ -309,6 +310,18 @@ class PolicyPort:
         ban, a fresh pair of looks is needed before it is suggested again."""
         self.policy._end_streak()
 
+    def unconfirmed(self) -> None:
+        """A look did not confirm the suggestion on screen: the next look as soon as a full pool is kept."""
+        self.policy.unconfirmed()
+
+    def withdrawn(self) -> None:
+        """The comparison a suggestion (or a streak) was made on no longer holds: the streak ends."""
+        self.policy.withdrawn()
+
+    def failed(self, now: float) -> None:
+        """A look raised: the looks back off as after a « keep »."""
+        self.policy.failed(now)
+
 
 class BackgroundSwipe:
     def __init__(self, *, processor: Callable[[], Any], live: Callable[[], Optional[LiveSetting]],
@@ -372,6 +385,7 @@ class BackgroundSwipe:
         self.resident: Optional[Resident] = None
         self._resident_lock = switch.guard         # held while the looker infers on the resident: the swap waits
         self._scene: Optional[Tuple] = None
+        self._exclusion: Optional[Tuple] = None    # the excluded cells at the last look: a change ends the streak
         self._fresh_after: Optional[float] = None  # loop clock of the last scene change: only frames kept after it
         self._last_live: Optional[Candidate] = None
         self._expect: Optional[Candidate] = None   # the setting a switch moved to (not a manual change)
@@ -394,6 +408,7 @@ class BackgroundSwipe:
         self._late_until: Optional[float] = None        # loop clock until which no look starts: the frames ran late
         self._late_says: Optional[str] = None           # ... what the look's row says meanwhile
         self._late_n = 0                                # looks stood down in a row for late frames
+        self._look_failures = 0                         # looks that raised, in a row (``LOOK_FAILURES``)
         self.history: Deque[Dict[str, Any]] = deque(maxlen=200)   # looks, advices, switches (bounded)
         self.inferences = 0                        # candidate inferences so far
         self.ticks = 0
@@ -662,7 +677,13 @@ class BackgroundSwipe:
             self._expect = None
         self._last_live = live.candidate
         if self.suggestion is not None and self.suggestion.get("live_key") != live.key:
+            # judged on another comparison (the excluded cells, the live model reloaded): it goes, and the streak
+            # with it -- a new suggestion needs two looks in a row on this one (was: one look, and a new toast)
             self._clear_suggestion("the setting changed since the suggestion")
+            self.auto.withdrawn()
+        if self._exclusion is not None and live.exclusion != self._exclusion:
+            self.auto.withdrawn()             # the same without a suggestion: a verdict seen once does not count
+        self._exclusion = live.exclusion
         if not live.plate_ok:
             # a verdict on this plate is worth nothing: no frame read, no engine, no inference, nothing said
             self.state = "waiting"
@@ -753,6 +774,7 @@ class BackgroundSwipe:
             if self.auto.skipped > skipped:   # the pre-filter: the live setting leaves no room for the bar
                 self.last_look = self._record("look", look="skipped", t=now, frames=len(fresh), seconds=0.0,
                                               outcome="no room for a gain over the bar: no run, no inference")
+                self._unconfirmed(None)       # ... nor for the suggestion on screen: it does not confirm it
             return "idle"
         if not fits:
             # due, and no second engine while a dancer is tracked: no load now (it would show), the next empty wall
@@ -953,6 +975,12 @@ class BackgroundSwipe:
         conf = float(getattr(getattr(proc, "settings", None), "confidence", 0.0) or 0.0) or 0.15
         return self.auto.referee_params(conf, base)
 
+    # a look that raised (an error in the code around the engine: the scoring, the advice): what /status says -- its
+    # class and message go to the log line only -- and the looks back off as after a « keep »; the LOOK_FAILURES-th
+    # in a row puts the setting aside as a run that failed does (``_not_run``: its ban, its sentences)
+    LOOK_FAILED = "the automatic swipe waits: its last look failed, see the log"
+    LOOK_FAILURES = 3
+
     def _run(self, kind: str, live: LiveSetting, other: Candidate, fresh: list, now0: float) -> None:
         proc = self.processor()
         sp = self._run_params(proc)
@@ -1058,9 +1086,17 @@ class BackgroundSwipe:
             adv = self.auto.advise(now, result, newest_frame_t=max(float(f.t) for f in frames), ms=ms)
             outcome = REFEREE_WAIT if refused else result.reason
             self._act(adv, result, live)
+            self._look_failures = 0
         except Exception as exc:  # noqa: BLE001 - errors end the look, never the app
-            outcome = f"error: {type(exc).__name__}: {str(exc)[:160]}"
-            say(f"[SwipeAuto] {outcome}")
+            error = f"{type(exc).__name__}: {str(exc)[:160]}"
+            say(f"[SwipeAuto] the look at {other.label} failed: {error}")
+            self._look_failures += 1
+            if self._look_failures >= self.LOOK_FAILURES:
+                self._look_failures = 0
+                (outcome, fault), verb = self._not_run(other, live, error), "run"
+            else:
+                outcome = self.LOOK_FAILED
+                self.auto.failed(float(proc.loop_clock()))      # its frames stay fresh: no look for a while
         finally:
             seconds = time.perf_counter() - t_wall0
             if not ran:                       # cancelled, failed, not scored: its frames stay fresh
@@ -1081,14 +1117,15 @@ class BackgroundSwipe:
     # ------------------------------------------------------------------ the advice
     def _act(self, adv, result, live: LiveSetting) -> None:
         """One verdict's advice.  A suggestion is shown once (one toast): a later look that names it again
-        updates its line silently (figures, time: its age counts from then); ``UNCONFIRMED`` looks in a row that do
-        not (a « keep », another winner, no verdict -- the referee's refusal of the plate among them --, a winner
-        the « slower » rule refuses) withdraw it."""
+        updates its line silently (figures, time: its age counts from then); a look that does not (a « keep »,
+        another winner, no verdict -- the referee's refusal of the plate among them --, a winner the « slower »
+        rule refuses) takes its « Apply now? » off the line, and ``UNCONFIRMED`` of them in a row withdraw it
+        (``_unconfirmed``)."""
         sug = self.suggestion
         if result.winner is None:
             # no verdict (the operator's swipe's no_verdict): no toast, no row; a suggestion on screen unconfirmed
             self.last_advice = self._record("advice", advice="none", no_verdict=True, reason=result.reason)
-            self._unconfirmed()
+            self._unconfirmed(result)
             return
         a = {"kind": adv.kind, "level": adv.level, "winner": adv.winner.label if adv.winner else None,
              "seamless": adv.seamless, "streak": adv.streak, "text": adv.text, "why_not_auto": adv.why_not_auto,
@@ -1126,22 +1163,25 @@ class BackgroundSwipe:
                 if why == sug.get("held"):         # the reason the line said: the one that holds now, or none
                     why = hold or adv.why_not_auto
             self.suggestion = {**sug, "text": suggestion_text(adv.said, seen, hold), "held": hold, "seen": seen,
-                               "unconfirmed": 0, "reason": result.reason, "level": adv.level,
+                               "said": adv.said, "unconfirmed": 0, "reason": result.reason, "level": adv.level,
                                "why_not_auto": why, "wall": self.wall(), "result": result}
             self._record("confirmed", setting=adv.winner.label, seen=seen)
             self.notify("suggest", {**{k: v for k, v in self.suggestion.items() if k in a}, "again": True,
                                     "result": result_dict(result)})
             return
-        if adv.kind in ("none", "seen") or (sug is not None and adv.winner != sug["winner_c"]):
-            self._unconfirmed()
         if adv.kind in ("none", "seen"):
+            # a « keep », another winner seen once, the suggestion's own winner refused (the « slower » rule)
+            same = sug is not None and adv.winner == sug["winner_c"]
+            self._unconfirmed(result, adv.why_not_auto if same and adv.kind == "none" else "")
             return
+        if sug is not None and adv.winner != sug["winner_c"]:
+            self._unconfirmed(result, replaced=True)  # another winner shown or switched to: this one goes
         if adv.kind == "suggest":
             # the setting it was judged on, for what_changed's words -- without the plate object (``plate_ref``,
             # in no word and no key): a suggestion that outlives its plate (no live model to see the scene change)
             # does not keep it in memory up to its max age
             self.suggestion = {**a, "winner_c": adv.winner, "live_key": live.key, "held": adv.held,
-                               "seen": adv.streak, "unconfirmed": 0,
+                               "seen": adv.streak, "said": adv.said, "unconfirmed": 0,
                                "live": dataclasses.replace(live, plate_ref=None), "wall": self.wall(),
                                "result": result}
             self.notify("suggest", {**a, "result": result_dict(result)})
@@ -1254,14 +1294,35 @@ class BackgroundSwipe:
         return why
 
     # ------------------------------------------------------------------ the operator's side
-    def _unconfirmed(self) -> None:
-        """A look that did not name the suggestion on screen: the ``UNCONFIRMED``-th in a row withdraws it."""
+    def _unconfirmed(self, result=None, why: str = "", replaced: bool = False) -> None:
+        """A look that did not confirm the suggestion on screen (``result``: its verdict, None for a look the
+        pre-filter skipped; ``why``: the policy's reason when it refused the suggestion's own winner).  The
+        ``UNCONFIRMED``-th in a row withdraws it.  Before that, the line stops inviting: no « Apply now? », its
+        figures and « not confirmed at the last look (HH:MM) » (``unconfirmed_text``), and no Apply button -- the
+        event's ``winner`` is None, and the app's line shows Apply only with a winner --; and the next look comes
+        as soon as a full pool of fresh frames is kept, not after the back-off or the wait after a refusal
+        (``SwipeAuto.unconfirmed``): gone one pool of dancing (about 150 s) after that first look.  A look that
+        names it again restores the line (``_act``).  ``replaced``: another winner takes the line (a new
+        suggestion, a switch): counted only."""
         sug = self.suggestion
         if sug is None:
             return
         sug["unconfirmed"] = int(sug.get("unconfirmed", 0)) + 1
         if sug["unconfirmed"] >= UNCONFIRMED:
             self._clear_suggestion(NOT_CONFIRMED)
+            return
+        if replaced:
+            return
+        said = sug.get("said") or str(sug.get("text", "")).split(", seen ")[0]
+        at = time.strftime("%H:%M", time.localtime(float(self.wall())))
+        sug["text"] = unconfirmed_text(said, at, why)
+        self.auto.unconfirmed()
+        self._record("unconfirmed", setting=sug["winner_c"].label, why=why or None)
+        shown = {k: v for k, v in sug.items() if k in ("kind", "level", "seamless", "streak", "text", "why_not_auto",
+                                                        "reason")}
+        self.notify("suggest", {**shown, "again": True, "winner": None, "unconfirmed": sug["unconfirmed"],
+                                "result": (result_dict(result) if result is not None else
+                                           {"reason": (self.last_look or {}).get("outcome", "")})})
 
     def _clear_suggestion(self, why: Optional[str]) -> None:
         if self.suggestion is None:
@@ -1270,11 +1331,15 @@ class BackgroundSwipe:
         if why:
             self.notify("cleared", {"text": f"suggestion withdrawn: {why}"})
 
+    # an Apply of a suggestion the last look did not confirm (pressed as its line changed, or from afar)
+    LAST_NOT_CONFIRMED = "the last look did not confirm it"
+
     def withdraw_stale(self, live: Optional[LiveSetting] = None, setting: bool = False) -> Optional[str]:
         """The suggestion goes once it no longer stands, and why it went (the swipe line: « suggestion withdrawn:
         <why> »), or None: ``setting`` -- judged on another setting or scene than ``live`` (another project among
         them; P5's words for what changed) --, or older than ``max_age_s`` (P5's bound on the operator's own
-        verdict, said the same way).  Every look asks the age, whatever the wall; the operator's Apply asks both."""
+        verdict, said the same way).  Every look asks the age, whatever the wall; the operator's Apply asks both,
+        and whether the last look confirmed it.  A setting or scene that changed ends the streak too."""
         sug = self.suggestion
         if sug is None:
             return None
@@ -1283,6 +1348,9 @@ class BackgroundSwipe:
             changed = what_changed(sug["live"], live) if sug.get("live") is not None else None
             why = (PLATE_NOT_VALID if changed == PLATE_UNUSABLE else
                    f"{changed or 'the setting changed'} since the suggestion")
+            self.auto.withdrawn()             # another comparison: the streak goes with it
+        if why is None and setting and int(sug.get("unconfirmed", 0)) > 0:
+            why = self.LAST_NOT_CONFIRMED     # its Apply button is off the line already: a press in flight
         if why is None:
             age = float(self.wall()) - float(sug.get("wall", self.wall()))
             if age > self.max_age_s:
@@ -1311,30 +1379,39 @@ class BackgroundSwipe:
         self.auto.end_snooze()
         self._end_snooze_row()
 
-    def dismiss(self, not_now: bool = True) -> bool:
+    def dismiss(self, not_now: bool = True, behind: bool = False) -> bool:
         """The operator's Dismiss: one press, one meaning.  A suggestion on screen (``not_now``: the app says the
         swipe line shows it) -- « not now »: it goes, the policy ends the streak and puts that setting aside (no
         suggestion, no switch by itself, no look for it) for ``snooze_s`` of the loop clock or until the scene
         changes; no ban is lifted, and a fault stays for its own Dismiss.  No suggestion on screen: a fault or a
         ban held is acknowledged -- the settings an automatic switch failed to (or whose resident did not load or
-        run) may be tried again (the fault is the switch's to drop), and a suggestion not shown goes too.  True
-        for « not now »."""
+        run) may be tried again (the fault is the switch's to drop), and a suggestion not shown goes too:
+        ``behind`` (the operator's Dismiss over his own verdict, the suggestion behind it) -- « not now » for it as
+        well, put aside as above (was: dropped, the streak kept: shown again with a toast at the next look);
+        without it (an Apply), it just goes.  True for « not now » on the line."""
         sug = self.suggestion
         if sug is not None and not_now:
-            self.suggestion = None
-            winner = sug["winner_c"]
-            self.auto.dismissed(float(self.processor().loop_clock()), winner, self.snooze_s)
-            until = time.strftime("%H:%M", time.localtime(float(self.wall()) + self.snooze_s))
-            self._end_snooze_row()
-            self._snooze_says = SNOOZE_WAIT.format(winner.label, until)
-            self._record("dismissed", setting=winner.label, seconds=self.snooze_s)
-            self.notify("cleared", {"text": "dismissed"})
+            self._not_now(sug)
             return True
         self._lift()
         if sug is not None:
-            self.suggestion = None
-            self.notify("cleared", {"text": "dismissed"})
+            if behind:
+                self._not_now(sug)
+            else:
+                self.suggestion = None
+                self.notify("cleared", {"text": "dismissed"})
         return False
+
+    def _not_now(self, sug: Dict[str, Any]) -> None:
+        """The operator's « not now » to the suggestion ``sug``: it goes, its setting is put aside (``dismiss``)."""
+        self.suggestion = None
+        winner = sug["winner_c"]
+        self.auto.dismissed(float(self.processor().loop_clock()), winner, self.snooze_s)
+        until = time.strftime("%H:%M", time.localtime(float(self.wall()) + self.snooze_s))
+        self._end_snooze_row()
+        self._snooze_says = SNOOZE_WAIT.format(winner.label, until)
+        self._record("dismissed", setting=winner.label, seconds=self.snooze_s)
+        self.notify("cleared", {"text": "dismissed"})
 
     def held(self) -> bool:
         """A setting is banned: Dismiss has something to lift (its button stays on screen)."""

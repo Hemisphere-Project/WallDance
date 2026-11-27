@@ -12,8 +12,8 @@ from test_swipe_auto_lock import _combo, _wall_panel, panel  # noqa: F401 - the 
 
 SUGGEST_TIP = ("  suggest  while dancers are on the wall, it tries the other model\n"
                "           at the same network input and says so here when it does\n"
-               "           better on two looks in a row and is no slower (Apply now,\n"
-               "           or Dismiss: not now, 15 min)\n")
+               "           better on two looks in a row and is no more than 15 %\n"
+               "           slower (Apply now, or Dismiss: not now, 15 min)\n")
 
 
 @pytest.mark.parametrize("released", ["suggest only", "all"])

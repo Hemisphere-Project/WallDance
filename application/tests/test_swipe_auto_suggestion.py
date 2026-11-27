@@ -126,7 +126,8 @@ def test_a_slower_model_is_not_suggested_and_an_unknown_time_refuses():
     for clock in (200.0, 800.0):
         proc.clock, proc.frames = clock, _look_frames(150, t0=clock - 200.0)
         assert bg.tick() == "run"
-        assert bg.suggestion is None and bg.last_advice["why_not_auto"] == "it is slower (30 ms a frame against 15)"
+        assert bg.suggestion is None
+        assert bg.last_advice["why_not_auto"] == "it is more than 15 % slower (30 ms a frame against 15)"
     bg, proc, events, loader, live = _looking_bg("auto")
     proc.timing = {}                                      # no live time sampled during the runs
     for clock in (200.0, 800.0):

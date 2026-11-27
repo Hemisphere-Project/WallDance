@@ -3367,9 +3367,10 @@ class WallDanceApp:
         A background suggestion on the swipe line: « not now » -- it goes and its setting is put aside a while
         (``BackgroundSwipe.dismiss``); a failed Apply or automatic switch and the bans stay, and Dismiss with them
         for a second press.  No background suggestion on the line: a failed Apply or automatic switch is
-        acknowledged (its fail row goes) and the bans are lifted."""
+        acknowledged (its fail row goes) and the bans are lifted -- and a background suggestion behind the
+        operator's own verdict is « not now » too (its setting put aside, its streak over)."""
         self.swipe.dismiss()
-        if self.swipe_bg.dismiss(not_now=self._swipe_shown == "background"):
+        if self.swipe_bg.dismiss(not_now=self._swipe_shown == "background", behind=True):
             self.bus.publish(api.SettingsSwipeProgress("dismissed", "dismissed", 0.0))
             self.bus.publish(api.SettingsSwipeHold(bool(self.swipe_switch.fault) or self.swipe_bg.held()))
             return

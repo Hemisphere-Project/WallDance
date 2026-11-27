@@ -132,7 +132,8 @@ class AutoParams:
     wins: int = 2                 # ... on this many verdicts in a row naming the same setting, on disjoint frames
     dwell_s: float = 300.0        # after any switch nothing switches by itself for this long
     back_s: float = 900.0         # ... and never back to the setting just left before this long
-    slower: float = 1.15          # never by itself to a setting this many times the live one's inference time ...
+    slower: float = 1.15          # never to a setting more than this many times the live one's inference time
+                                  # (15 % slower passes: the measure's own noise, see ``alike_ms``) ...
     speed_q: float = 10.0         # ... both times this low percentile of their inferences over the run (``alike_ms``);
                                   # either one unknown: refused.  The rule holds for a suggestion too
     streak_gap_s: float = core_config.SWIPE_AUTO_STREAK_GAP_S   # two verdicts this far apart are not « in a row »
@@ -180,6 +181,18 @@ def suggestion_text(said: str, seen: int, held: str = "") -> str:
     holds an automatic switch back, in parentheses after it."""
     times = "twice" if seen == 2 else f"{seen} times"
     return f"{said}, seen {times}: Apply now?" + (f" ({held})" if held else "")
+
+
+NOT_CONFIRMED_AT = "not confirmed at the last look ({})"
+
+
+def unconfirmed_text(said: str, at: str, why: str = "") -> str:
+    """The line of a suggestion the last look did not confirm: no « Apply now? », the figures of the looks that
+    named it and when the last look was (``at``: HH:MM) -- « l @ 1280 covered 99 % of the dancers, x @ 1280 76 %
+    (6 ms a frame against 6) - not confirmed at the last look (21:40) »; ``why``: the reason the policy refused it
+    at that look (the « slower » rule), after a colon."""
+    said = said.replace(" covers ", " covered ", 1)     # ``said`` is advise's: those looks are over
+    return f"{said} - {NOT_CONFIRMED_AT.format(at)}" + (f": {why}" if why else "")
 
 
 @dataclass
@@ -318,8 +331,9 @@ class SwipeAuto:
 
         A setting named once is « seen » (nothing shown, the next look comes at once); named on ``wins`` looks in a
         row it is suggested, or switched to in mode auto when the switch's own conditions hold, and the looks back
-        off as after a « keep ».  Never a setting the « slower » rule refuses, nor one whose time or the live
-        model's is not known (fail closed)."""
+        off as after a « keep ».  Never a setting more than ``slower`` times the live model's time (15 % slower:
+        the measure's own noise lets up to that through), nor one whose time or the live model's is not known (fail
+        closed)."""
         p = self.params
         fresh = self._seen_until is None or newest_frame_t is None or newest_frame_t > self._seen_until
         if newest_frame_t is not None:
@@ -345,7 +359,8 @@ class SwipeAuto:
         level = "definite" if definite else "marginal"
         mw, ml = (ms or {}).get(winner), (ms or {}).get(live)
         slow = ("its time or the live model's is not known" if not mw or not ml else
-                f"it is slower ({mw:.0f} ms a frame against {ml:.0f})" if mw > p.slower * ml else "")
+                f"it is more than {100 * (p.slower - 1):.0f} % slower ({mw:.0f} ms a frame against {ml:.0f})"
+                if mw > p.slower * ml else "")
         if slow:
             # the « slower » rule refuses it: neither suggested nor switched to, no streak; judged, nothing to say
             self._end_streak()
@@ -400,6 +415,27 @@ class SwipeAuto:
         if winner == self._left and self._switched_at is not None and now - self._switched_at < p.back_s:
             return JUST_LEFT
         return ""
+
+    # -- a suggestion on screen -----------------------------------------------------------------------------
+    def unconfirmed(self) -> None:
+        """A look did not confirm the suggestion on screen (a « keep », another winner, no verdict -- the referee's
+        refusal among them --, a refusal of the « slower » rule, no room for a gain): the next look comes as soon
+        as a full pool of fresh frames is kept (``run_frames``: about 150 s of dancing), not after the back-off nor
+        after the wait that follows a look the referee could not judge -- a second look that does not confirm it
+        withdraws it.  The back-off's series is kept: a look that confirms it backs off as before."""
+        self._keep_at = None
+        self._none_at = None
+
+    def withdrawn(self) -> None:
+        """A suggestion went because the comparison it was made on no longer holds (the excluded cells, the live
+        setting, the scene changed): the streak ends with it -- the next suggestion needs two looks in a row on the
+        new comparison."""
+        self._end_streak()
+
+    def failed(self, now: float) -> None:
+        """A look raised: no look for ``keep_wait`` from now, as after a « keep » (doubled if the next one fails
+        too) -- its frames stay fresh, and the next look would run the same 150 inferences at once."""
+        self._back_off(now)
 
     # -- the operator's Dismiss ----------------------------------------------------------------------------
     def dismissed(self, now: float, winner: Candidate, for_s: float) -> None:

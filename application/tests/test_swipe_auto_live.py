@@ -215,7 +215,8 @@ def test_the_status_counts_say_what_they_hold():
 
 def test_a_run_without_a_verdict_says_nothing():
     """The referee's no verdict (here: the empty-wall picture is not trusted -- boxes on nobody everywhere): no
-    suggestion, no toast, a standing suggestion untouched."""
+    suggestion, no toast, a standing suggestion stays (since 27/11 its line no longer invites: one look that did
+    not confirm it, ``test_swipe_auto_unconfirmed``)."""
     from core.swipe import Observation, SwipeFrame
     import numpy as np
     bg, proc, events, loader, live = _looking_bg()
@@ -227,7 +228,7 @@ def test_a_run_without_a_verdict_says_nothing():
     n = len(events)
     assert bg.tick() == "run"
     assert bg.last_advice.get("no_verdict") and bg.last_advice["reason"].startswith("no verdict")
-    assert events[n:] == [] and bg.suggestion["text"] == "earlier"
+    assert [k for k, p in events[n:] if not p.get("again")] == [] and bg.suggestion["unconfirmed"] == 1
 
 
 def test_the_run_judges_at_the_shows_confidence():

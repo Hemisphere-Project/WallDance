@@ -55,10 +55,10 @@ def _next_run(bg, proc, tap, start, stop):
 
 # ------------------------------------------------------------------- 1. a stand-down is not a verdict
 def test_regression_guard_a_stand_down_neither_withdraws_nor_counts_in_the_streak():
-    """Shown at 300 s (the looks back off 300 s), a « keep » at 600 s (one look that does not confirm it; the
-    back-off doubles: 600 s), the look due at 1200 s stands down for late frames: the suggestion stays, the streak
-    and the back-off are as they were.  The next look comes when the stand-down's wait ends and names it: the
-    same line, seen 3 times, no second toast."""
+    """Shown at 300 s (the looks back off 300 s), a « keep » at 600 s (one look that does not confirm it; since
+    27/11 the next look is due 150 fresh frames later), the look due at 750 s stands down for late frames: the
+    suggestion stays, the streak and the back-off are as they were.  The next look comes when the stand-down's
+    wait ends and names it: the same line, seen 3 times, no second toast."""
     bg, proc, loader, live = _evening_bg()
     events = _events(bg)
     tap = _Tap(range(3000))
@@ -67,13 +67,13 @@ def test_regression_guard_a_stand_down_neither_withdraws_nor_counts_in_the_strea
     assert _runs(bg, proc, tap, 301, 601) == [600] and bg.suggestion["unconfirmed"] == 1
     pol = bg.auto.policy
     streak, backoff = (pol._streak, pol._streak_winner, pol._streak_at), (pol._keeps, pol._keep_at, pol.keep_wait())
-    _late_from(bg, {1200.0})
+    _late_from(bg, {750.0})
     loader.infer_boxes = [ON_HER]                         # it would name it again
-    assert _runs(bg, proc, tap, 601, 1201) == [] and bg.status()["last_look"]["outcome"] == LATE.format(72)
+    assert _runs(bg, proc, tap, 601, 751) == [] and bg.status()["last_look"]["outcome"] == LATE.format(72)
     assert bg.suggestion is not None and bg.suggestion["unconfirmed"] == 1, "a stand-down counted as unconfirmed"
     assert (pol._streak, pol._streak_winner, pol._streak_at) == streak, "a stand-down moved the streak"
     assert (pol._keeps, pol._keep_at, pol.keep_wait()) == backoff, "a stand-down moved the back-off"
-    assert _next_run(bg, proc, tap, 1201, 1600) == 1500   # the stand-down's own 300 s, from 1200 s
+    assert _next_run(bg, proc, tap, 751, 1600) == 1050    # the stand-down's own 300 s, from 750 s
     assert bg.suggestion["text"] == SEEN_3 and bg.suggestion["unconfirmed"] == 0
     assert len(_toasts(events)) == 1
 

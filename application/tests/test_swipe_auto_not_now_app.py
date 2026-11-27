@@ -57,7 +57,8 @@ def test_dismiss_on_the_suggestion_is_not_now_and_the_next_press_acknowledges(re
 def test_regression_guard_dismiss_over_the_operators_own_verdict_acknowledges_as_before(real_app,  # noqa: F811
                                                                                          swipe_auto_unlocked):  # noqa: F811
     """The operator's swipe's verdict on the line (a background suggestion behind it): its Dismiss is P5's, and the
-    fault and the bans are acknowledged as before; the hidden suggestion goes, nothing is put aside."""
+    fault and the bans are acknowledged as before; the hidden suggestion goes -- since 27/11 « not now » too, its
+    setting put aside (``test_swipe_auto_dismiss_behind``)."""
     app, events = real_app
     _on(app, "suggest")
     bg = app.swipe_bg
@@ -69,7 +70,7 @@ def test_regression_guard_dismiss_over_the_operators_own_verdict_acknowledges_as
     app._cb_dismiss_swipe()
     assert app.swipe.dismissed and app.swipe_switch.fault is None and not bg.held() and bg.suggestion is None
     assert _holds(events) == [False]
-    assert getattr(bg.auto, "snoozed", lambda now: None)(app.processor.loop_clock()) is None
+    assert bg.auto.snoozed(app.processor.loop_clock()) == L1280
 
 
 # ------------------------------------------------------------------------ 5. Apply on a stale suggestion

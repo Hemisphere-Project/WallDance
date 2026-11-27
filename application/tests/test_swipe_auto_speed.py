@@ -93,7 +93,7 @@ def test_a_slower_candidate_is_still_held_and_the_sentence_shows_what_was_compar
     adv, look = bg.last_advice, bg.last_look
     assert adv["advice"] == "none" and bg.switch._want is None and bg.suggestion is None   # (since 27/11: not
     assert look["ms_cand"] > 1.15 * look["ms_live"]                                       # suggested either)
-    said = f"it is slower ({look['ms_cand']:.0f} ms a frame against {look['ms_live']:.0f})"
+    said = f"it is more than 15 % slower ({look['ms_cand']:.0f} ms a frame against {look['ms_live']:.0f})"
     assert adv["why_not_auto"] == said
 
 
