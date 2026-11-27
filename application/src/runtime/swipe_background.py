@@ -725,8 +725,10 @@ class BackgroundSwipe:
                 gone = after is not None and not after.plate_ok
                 outcome = f"dropped: {PLATE_NOT_VALID if gone else 'the setting changed during the run'}"
                 return
-            if self.referee is not None:             # refused / used the plate: told to the plate watch
-                self.referee.note(result, frames, plate_ok=live.plate_ok)
+            from runtime.swipe_controller import REFEREE_WAIT, referee_refused
+            refused = referee_refused(result)        # the plate refused: said in this row, not to the plate watch
+            if self.referee is not None:             # used the plate: told to the plate watch (a refusal is not)
+                self.referee.note(result, frames, plate_ok=live.plate_ok, background=True)
             now = proc.loop_clock()
             # the « slower » rule: the candidate's times here and the live model's sampled over the same run, alike
             speed = self.auto.speed(run.ms, live_ms)
@@ -734,7 +736,7 @@ class BackgroundSwipe:
             self.auto.ran(now, probe=(kind == "probe"))          # the policy's order: ran, then advise
             ran = True
             adv = self.auto.advise(now, result, newest_frame_t=max(float(f.t) for f in frames), ms=ms)
-            outcome = result.reason
+            outcome = REFEREE_WAIT if refused else result.reason
             self._act(adv, result, live)
         except Exception as exc:  # noqa: BLE001 - errors end the look, never the app
             outcome = f"error: {type(exc).__name__}: {str(exc)[:160]}"

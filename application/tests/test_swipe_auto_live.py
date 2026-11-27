@@ -349,10 +349,10 @@ def test_two_definite_runs_on_disjoint_frames_switch_in_mode_auto():
     assert [k for k, _ in events].count("switching") == 1
 
 
-def test_a_background_refusal_is_told_to_the_plate_watch_with_the_operators(monkeypatch):
+def test_a_background_refusal_is_not_told_to_the_plate_watch_the_operators_press_is(monkeypatch):
     """fix6's RefereeReport, shared with the operator's swipe: the background run's refusal of the empty-wall plate
-    is told to the plate watch (core.reference_watch, a fake here) once, and the operator's swipe on the same pool
-    is not told again."""
+    is not told to the plate watch (core.reference_watch, a fake here: its alert is for the operator's presses),
+    and the operator's swipe on the same pool is told (the looker's refusal was never told)."""
     import sys
     import types
     from runtime.swipe_controller import RefereeReport
@@ -370,10 +370,12 @@ def test_a_background_refusal_is_told_to_the_plate_watch_with_the_operators(monk
     proc.frames = [SwipeFrame(float(i), img, Observation(groups=[DANCER]), i < 100, (nobody,)) for i in range(150)]
     loader.infer_boxes = [nobody, ON_HER]
     bg.tick()
-    assert [k for k, _r in calls] == ["refusal"]
-    assert calls[0][1].startswith("no verdict: every setting puts boxes where the empty-wall picture shows nobody")
-    refused = SimpleNamespace(winner=None, reason=calls[0][1])
-    assert shared.note(refused, proc.frames) is None and len(calls) == 1      # the operator's press, same pool
+    assert calls == []
+    waits = "the referee does not trust the empty-wall picture: the automatic swipe waits"
+    assert bg.last_look["outcome"] == waits
+    refused = SimpleNamespace(winner=None, reason="no verdict: every setting puts boxes where the empty-wall "
+                                                  "picture shows nobody")
+    assert shared.note(refused, proc.frames) == "refusal" and len(calls) == 1  # the operator's press, same pool
 
 
 def _apply_adv(winner=L1280):

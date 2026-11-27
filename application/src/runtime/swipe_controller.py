@@ -133,6 +133,11 @@ def say(text: str) -> None:
 # against decide's real output)
 REFEREE_REFUSAL = "no verdict: every setting puts boxes where the empty-wall picture shows nobody"
 
+# the automatic swipe's own row (``status()["last_look"]["outcome"]``) after a background look the referee refused
+# the plate on: that refusal is not told to the plate watch (``RefereeReport.note(background=True)``), and the
+# looker waits as after any run without a verdict
+REFEREE_WAIT = "the referee does not trust the empty-wall picture: the automatic swipe waits"
+
 
 def referee_refused(result) -> bool:
     """The referee refused the empty-wall plate: no verdict, every setting puts boxes where it shows nobody."""
@@ -164,19 +169,27 @@ class RefereeReport:
     stale, invalidated, refused for its camera -- the referee judged against a plate that does not hold, its
     verdict is worth nothing: above all no accept).  A refusal is told only when its frames share none with the last refusal told (its
     oldest kept frame after that one's newest, or its newest before that one's oldest): the same pool pressed
-    three times is one refusal.  The watch counts; nothing here does."""
+    three times is one refusal.  A refusal from the automatic swipe's background look (``background``) is never
+    told: the alert is for three deliberate presses of the operator's, and on a wall the referee refuses for
+    another reason than a wrong plate the looker alone would raise it in the middle of a show; its own row says it
+    (``REFEREE_WAIT``).  Its accept is told (it can only start the count over).  The watch counts; nothing here
+    does."""
 
     def __init__(self) -> None:
         self._last: Optional[Tuple[float, float]] = None    # (oldest, newest) frame time of the last refusal told
         self._lock = threading.Lock()
 
-    def note(self, result, frames: Sequence[Any] = (), plate_ok: bool = True) -> Optional[str]:
+    def note(self, result, frames: Sequence[Any] = (), plate_ok: bool = True,
+             background: bool = False) -> Optional[str]:
         """Returns what the watch was told: "refusal", "accept", or None (nothing, or no watch in this build).
         ``plate_ok``: the plate the verdict's frames were judged on was usable (the ``LiveSetting.plate_ok`` the
-        swipe ran on); False tells nothing."""
+        swipe ran on); False tells nothing.  ``background``: the verdict is the automatic swipe's own look, not
+        the operator's press: a refusal tells nothing (and is not remembered as told), an accept is told."""
         if not plate_ok:
             return None
         if referee_refused(result):
+            if background:
+                return None                         # the looker's refusal: never toward the plate alert
             ts = [float(f.t) for f in frames or ()]
             span = (min(ts), max(ts)) if ts else None
             with self._lock:
