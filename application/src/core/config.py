@@ -393,6 +393,10 @@ SWIPE_AUTO = "off"
 SWIPE_AUTO_UNLOCKED = False
 SWIPE_AUTO_LOOK_S = 5.0
 SWIPE_AUTO_PACE_S = 0.2
+# The operator's Dismiss on a background suggestion means « not now »: that setting is neither suggested nor
+# switched to by itself, and no look runs for it, for this long of the loop clock (or until the scene changes);
+# after it, a new streak of verdicts.
+SWIPE_AUTO_SNOOZE_S = 900.0
 # The other model at the live input (the second engine) stops the loop some 50 ms to load or release: it is loaded
 # when the mode is set (the operator's click, whatever is on the wall), else loaded and released only out of RUN,
 # or in RUN once the wall has been empty this long (no track, no identity slot held) -- never on entering RUN,

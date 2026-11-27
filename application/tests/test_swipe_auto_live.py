@@ -387,7 +387,7 @@ def _apply_adv(winner=L1280):
 def test_a_failed_automatic_switch_is_not_tried_again_until_dismiss():
     """An automatic switch that did not happen (here: the engine raises on its first live frame) -- the previous
     setting runs on (a warn row), the fault names the engine, and the automatic swipe stands down for that setting:
-    later definite verdicts are suggestions until Dismiss."""
+    a later definite verdict (a look that ran meanwhile) says nothing until Dismiss."""
     from runtime.swipe_background import Resident
     live = {"v": _live()}
     port = _Port()
@@ -409,8 +409,7 @@ def test_a_failed_automatic_switch_is_not_tried_again_until_dismiss():
     bg.switch.dismiss()                                   # the fault row goes ... but not the ban: the bg's Dismiss
     bg.resident = Resident(L1280, "l1280b", _Runner("l1280b"), bg._resident_key(live["v"]), 0.4)
     bg._act(_apply_adv(), res, live["v"])
-    assert bg.last_advice["advice"] == "suggest" and bg.switch._want is None
-    assert bg.last_advice["why_not_auto"] == "the automatic switch to it failed: Dismiss lets it try again"
+    assert bg.last_advice["advice"] == "none" and bg.switch._want is None and bg.suggestion is None
     bg.dismiss()                                          # the operator's Dismiss (the app calls both)
     bg._act(_apply_adv(), res, live["v"])
     assert bg.last_advice["advice"] == "apply" and bg.switch._want is not None

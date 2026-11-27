@@ -85,7 +85,7 @@ def test_the_app_tells_the_panel_when_something_waits_for_dismiss():
     fake = SimpleNamespace(bus=SimpleNamespace(publish=out.append), _swipe_shown="background",
                            swipe=SimpleNamespace(dismiss=lambda: None),
                            swipe_switch=SimpleNamespace(fault=None, dismiss=lambda: None),
-                           swipe_bg=SimpleNamespace(held=lambda: held["ban"], dismiss=lambda: None))
+                           swipe_bg=SimpleNamespace(held=lambda: held["ban"], dismiss=lambda **k: None))
     appmod.WallDanceApp._swipe_notify(fake, "fault", {"text": SAID})
     assert _holds(out) == [True], "the fault does not keep Dismiss on screen"
     held["ban"] = True                         # a later switch succeeded: the fault went, the ban holds

@@ -79,7 +79,7 @@ def test_any_verdict_naming_another_setting_is_a_suggestion():
     adv = a.advise(0.0, _result(L, X, 0.04), newest_frame_t=100.0)
     assert (adv.kind, adv.level) == ("suggest", "marginal") and adv.text.endswith("Apply now?") and adv.text.isascii()
     adv = a.advise(160.0, _result(L, X, 0.20), newest_frame_t=260.0)
-    assert (adv.kind, adv.level, adv.why_not_auto) == ("suggest", "definite", "automatic switching is off")
+    assert (adv.kind, adv.level, adv.why_not_auto) == ("suggest", "definite", "Auto: suggest does not switch by itself")
     assert a.advise(320.0, _result(X, X, 0.0, switch=False), 420.0).kind == "none"
 
 

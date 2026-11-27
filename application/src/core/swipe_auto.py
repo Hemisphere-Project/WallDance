@@ -6,7 +6,9 @@ setting better:
 
 * **a suggestion** -- any verdict that names another setting: one line with an « Apply now » button; the operator
   decides.  The referee already did the statistics (an unbiased sample, a paired test corrected for the number
-  of settings compared, a higher bar for a costlier setting): no second threshold is stacked on it;
+  of settings compared, a higher bar for a costlier setting): no second threshold is stacked on it.  Dismiss on
+  it means « not now » (``dismissed``): the streak ends, and that setting is neither suggested nor switched to by
+  itself for a while (``snoozed``) or until the scene changes;
 * **an automatic switch** -- mode ``auto`` only, and only for the SEAMLESS pair: the other model at the same
   network input, its engine resident, swapped between two frames (a size change needs another engine and a few
   seconds without tracking, as a manual change does: a better input size is always a suggestion).  It needs two
@@ -168,7 +170,8 @@ class SwipeAuto:
         self.reset()
 
     def reset(self) -> None:
-        """Another project, ROI, plate or camera: nothing learned so far describes this scene."""
+        """Another project, ROI, plate or camera: nothing learned so far describes this scene (a Dismiss's snooze
+        ends too)."""
         self._last_end: Optional[float] = None       # end of the last background run or probe
         self._last_probe: Optional[float] = None
         self._streak_winner: Optional[Candidate] = None
@@ -184,6 +187,8 @@ class SwipeAuto:
         self._run_woken = False                      # ... and whether the lost share called it
         self.skipped = 0                             # runs the pre-filter saved
         self.woken = 0                               # runs the lost share called during a back-off
+        self._snoozed: Optional[Candidate] = None    # the setting the operator dismissed (« not now ») ...
+        self._snoozed_until: Optional[float] = None  # ... until then
 
     # -- when to look -------------------------------------------------------------------------------------
     def fresh(self, frames: Sequence[SwipeFrame]) -> List[SwipeFrame]:
@@ -272,6 +277,10 @@ class SwipeAuto:
         if self.mode == MODE_OFF or result is None or result.winner is None or not result.switch:
             self._streak_winner, self._streak = None, 0
             return AutoAdvice()
+        if self.snoozed(now) == result.winner:
+            # dismissed while this run went on: nothing said, nothing switched, no streak (a new one after)
+            self._streak_winner, self._streak = None, 0
+            return AutoAdvice(winner=result.winner, why_not_auto="dismissed: not now")
         winner, live = result.winner, result.current
         row = next((r for r in result.rows if r.candidate == winner), None)
         cur = next((r for r in result.rows if r.candidate == live), None)
@@ -291,7 +300,7 @@ class SwipeAuto:
                          seamless=same_input, streak=self._streak)
         why = ""
         if self.mode != MODE_AUTO:
-            why = "automatic switching is off"
+            why = "Auto: suggest does not switch by itself"
         elif not same_input:
             why = "another input size needs a few seconds without tracking: apply it by hand"
         elif not definite:
@@ -312,6 +321,24 @@ class SwipeAuto:
         adv.kind = "apply"
         adv.text = f"switching to {winner.label}: {said}"
         return adv
+
+    # -- the operator's Dismiss ----------------------------------------------------------------------------
+    def dismissed(self, now: float, winner: Candidate, for_s: float) -> None:
+        """The operator dismissed the suggestion of ``winner``: not now.  The streak is over, and that setting is
+        neither suggested nor switched to by itself for ``for_s`` (``snoozed``), or until ``reset`` (a new scene)
+        or ``end_snooze``; after it, a new streak."""
+        self._streak_winner, self._streak = None, 0
+        self._snoozed, self._snoozed_until = winner, float(now) + max(0.0, float(for_s))
+
+    def snoozed(self, now: float) -> Optional[Candidate]:
+        """The setting a Dismiss put aside, while it lasts; None once it is over."""
+        if self._snoozed is not None and now >= self._snoozed_until:
+            self._snoozed, self._snoozed_until = None, None
+        return self._snoozed
+
+    def end_snooze(self) -> None:
+        """A project load: a setting put aside by a Dismiss may be suggested again."""
+        self._snoozed, self._snoozed_until = None, None
 
     def switched(self, now: float, old: Candidate, new: Candidate) -> None:
         """The live setting changed, by the app or by the operator: the dwell starts, the streak is over (the

@@ -1486,7 +1486,7 @@ def _apply_fixture(trt=True, mode="off"):
         system_state=SystemState.STANDBY, _swipe_shown="operator",
         # P6: no seamless switch here (the winner's engine is not built): Apply is the reload -- P5's with the
         # automatic swipe off, P6's reload path with it on
-        swipe_bg=SimpleNamespace(suggestion=None, dismiss=lambda: None, mode=mode),
+        swipe_bg=SimpleNamespace(suggestion=None, dismiss=lambda **k: None, mode=mode),
         swipe_switch=SimpleNamespace(can_switch=lambda w: f"its engine is not built ({w.engine_file})",
                                      dismiss=lambda: None),
         configs=SimpleNamespace(_current_project="jeudi0809_mur2"), settings=SimpleNamespace(imgsz=1280),

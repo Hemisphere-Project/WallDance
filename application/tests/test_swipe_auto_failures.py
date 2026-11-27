@@ -5,8 +5,9 @@
   once, as the switch's fault (the visible path of a failed automatic switch), in plain words; the raw error goes
   to the log; while it holds, the look says why the swipe waits (was: a new load at every look, 16 in 41 s on the
   GPU, the raw AttributeError in /status, nothing on screen);
-* the suggestion an apply becomes after a failure says the winner once, and says whose switch failed and what
-  lifts it.  CPU, with the fakes of ``test_swipe_auto_live`` and ``test_swipe_auto_rollback``."""
+* the suggestion an apply becomes after a failure says the winner once, and says whose switch failed (what lifts
+  it is the fault's own words: Dismiss on a suggestion means « not now »).  CPU, with the fakes of
+  ``test_swipe_auto_live`` and ``test_swipe_auto_rollback``."""
 import pytest
 
 from test_seamless_switch import L1280
@@ -21,9 +22,8 @@ WAITS = ("the automatic swipe waits: it could not load l @ 1280 (the engine file
 OOM = "CUDA out of memory. Tried to allocate 64.00 MiB"
 SAID_OOM = ("the automatic swipe could not load l @ 1280 (no room on the GPU: 312 MB free): x @ 1280 still runs - "
             "close what else uses the GPU, then Dismiss lets it try again, or set the automatic swipe to off")
-BAN = "the automatic switch to it failed: Dismiss lets it try again"
-AUTO_FAILED = "the last automatic switch failed: Dismiss lets it try again"
-APPLY_FAILED = "the last Apply failed: Dismiss lets it switch by itself again"
+AUTO_FAILED = "the last automatic switch failed"
+APPLY_FAILED = "the last Apply failed"
 SAYS = "l @ 1280 covers 100 % of the dancers, x @ 1280 33 %"
 
 
@@ -107,18 +107,6 @@ def test_a_load_that_fails_for_another_reason_says_it_and_what_to_do(monkeypatch
     assert set(_ticks(bg, proc, 5)) == {"banned"} and len(loader.loads) == 1
 
 
-def test_the_bans_suggestion_says_the_winner_once():
-    """After a failed automatic switch the next look suggests the same setting -- its label once (it read « l @
-    1280: l @ 1280 covers ... »)."""
-    bg, proc, loader, live, port, tap = _setup()
-    _two_looks_ask_the_switch(bg, proc, tap)
-    _first_frame_raises(port)
-    (_, adv), = _next_runs(bg, proc, tap, 300)
-    assert adv["advice"] == "suggest" and adv["why_not_auto"] == BAN
-    assert adv["text"] == f"{SAYS}: clearly better - Apply now ({BAN})"
-    assert bg.status()["suggestion"]["text"] == f"{SAYS}: clearly better - Apply now ({BAN})"
-
-
 def test_after_the_operators_failed_apply_the_held_back_switch_says_it_was_the_apply():
     """The operator's seamless Apply failed (its first frame raised): no ban, but the switch holds the fault, so
     the next definite verdict is a suggestion -- that names the Apply, never « the last automatic switch »."""
@@ -136,7 +124,7 @@ def test_after_the_operators_failed_apply_the_held_back_switch_says_it_was_the_a
 
 def test_after_a_failed_automatic_switch_and_a_project_load_it_says_what_lifts_the_fault():
     """A project load lifts the ban, not the fault: the next definite verdict is held back by the fault -- that of
-    an automatic switch -- and the operator reads what lifts it."""
+    an automatic switch -- and the operator reads whose it was (the fault says what lifts it)."""
     bg, proc, loader, live, port, tap = _setup()
     _two_looks_ask_the_switch(bg, proc, tap)
     _first_frame_raises(port)

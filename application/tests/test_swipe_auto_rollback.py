@@ -14,7 +14,7 @@ from core.swipe import Observation, SwipeFrame
 from test_seamless_switch import L1280, X1280, _live, _Port
 from test_swipe_auto_live import DANCER, ON_HER, _bg, _LookRunner
 
-BAN = "the automatic switch to it failed: Dismiss lets it try again"
+BAN = "the automatic swipe will not try yolo11l-pose_1280.engine again until you press Dismiss"
 DWELL = "the setting changed a moment ago"
 
 
@@ -97,6 +97,7 @@ def test_a_rolled_back_switch_starts_no_look_before_the_cadence():
     assert bg.switch.fault and bg.status()["auto_banned"] == [L1280.engine_file]
     after = dict(vars(bg.auto.policy))
     loads, infers = len(loader.loads), loader.infers
+    bg.dismiss()                                         # the ban stands the looker down: Dismiss lifts it
     (first, _), = _next_runs(bg, proc, tap, 300)
     assert first == without == 450, f"a look started by the failure itself, at {first} s (without the switch: " \
                                     f"{without} s)"
@@ -111,22 +112,20 @@ def test_a_rolled_back_switch_never_judges_again_the_frames_a_look_judged():
     look2 = {tap.t_of[i] for i in loader.judged[-1]}
     assert max(look2) == 299.0
     _first_frame_raises(port)
+    bg.dismiss()                                         # the ban stands the looker down: Dismiss lifts it
     _next_runs(bg, proc, tap, 300)
     again = sorted(look2 & {tap.t_of[i] for i in loader.judged[-1]})
     assert not again, f"{len(again)} frames judged again ({again[0]:.0f} .. {again[-1]:.0f} s)"
 
 
 def test_the_looks_after_a_failed_automatic_switch_say_the_ban_never_the_dwell():
-    """(c) The streak went on: the next definite verdict is a suggestion that says the ban, at once and after,
-    never « the setting changed a moment ago » (the setting did not change) nor « seen 1 time(s) »."""
+    """(c) The looker stands down for the banned setting: no look runs, the look's row says the ban, at once and
+    after, never « the setting changed a moment ago » (the setting did not change); nothing is suggested."""
     bg, proc, loader, live, port, tap = _setup()
     _two_looks_ask_the_switch(bg, proc, tap)
     _first_frame_raises(port)
-    runs = _next_runs(bg, proc, tap, 300, n=2)
-    whys = [a["why_not_auto"] for _, a in runs]
-    assert whys == [BAN, BAN], whys
-    assert [a["advice"] for _, a in runs] == ["suggest", "suggest"] and bg.switch._want is None
-    assert bg.status()["suggestion"]["text"].endswith(f"clearly better - Apply now ({BAN})")
+    assert _next_runs(bg, proc, tap, 300, n=2) == [] and bg.switch._want is None
+    assert bg.status()["last_look"]["outcome"] == BAN and bg.status()["suggestion"] is None
 
 
 def test_an_operators_failed_apply_leaves_the_policy_as_it_was():
@@ -156,7 +155,7 @@ def test_a_look_during_the_probation_does_not_turn_the_rollback_into_a_change_by
     live["v"] = _live()                                  # the old model took the frame back
     did = _look(bg, proc, tap, 301)
     assert "manual-change" not in [h["kind"] for h in bg.history], "the rollback was taken for a change by hand"
-    assert did == "idle" and dict(vars(bg.auto.policy)) == before
+    assert did == "banned" and dict(vars(bg.auto.policy)) == before        # (the ban: no look for l @ 1280)
 
 
 def test_a_switch_that_succeeds_starts_the_dwell_and_the_pool_as_before():

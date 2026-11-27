@@ -3157,6 +3157,13 @@ class WallDanceApp:
         from_bg = sug is not None and self._swipe_shown == "background"
         live = self._swipe_live_setting()
         if from_bg:
+            # judged on another setting, scene or project than the live one, or too old: it goes, nothing switches
+            # (the looker would withdraw it at its next look, up to 5 s later -- after a project switch, too late)
+            stale = self.swipe_bg.withdraw_stale(live, setting=True)
+            if stale:
+                self.bus.publish(api.Toast(f"Swipe Apply: nothing switched - suggestion withdrawn: {stale}",
+                                           5.0, (255, 200, 100)))
+                return
             winner, conf = sug["winner_c"], None
         else:
             why, winner, conf = self.swipe.applicable(live)
@@ -3180,7 +3187,7 @@ class WallDanceApp:
                                        f"({seamless_why}), a few seconds without tracking", 5.0, (255, 200, 100)))
             return
         if from_bg:
-            self.swipe_bg.dismiss()
+            self.swipe_bg.dismiss(not_now=False)     # applied, not « not now »: it goes, the bans with it (as before)
         why = self.models.request_setting(winner.model, winner.imgsz, winner.shape,
                                           on_done=self._swipe_apply_done)
         if why:
@@ -3234,7 +3241,7 @@ class WallDanceApp:
         if conf is not None:
             self._swipe_set_confidence(float(conf))
         if from_bg:
-            self.swipe_bg.dismiss()
+            self.swipe_bg.dismiss(not_now=False)     # applied, not « not now » (as before)
         else:
             self.swipe.mark_applied(winner)
         self._sync("combo", "imgsz", str(int(winner.imgsz)))
@@ -3311,11 +3318,17 @@ class WallDanceApp:
         self.bus.publish(api.SettingsSwipeProgress("apply_failed", text, 0.0))
 
     def _cb_dismiss_swipe(self) -> None:
-        """Dismiss: the swipe's advice goes -- the operator's verdict (its readiness row too) or the background
-        suggestion -- and a failed Apply or automatic switch is acknowledged (its fail row goes)."""
+        """Dismiss, one press, one meaning.  The operator's own verdict goes (its readiness row too), as before.
+        A background suggestion on the swipe line: « not now » -- it goes and its setting is put aside a while
+        (``BackgroundSwipe.dismiss``); a failed Apply or automatic switch and the bans stay, and Dismiss with them
+        for a second press.  No background suggestion on the line: a failed Apply or automatic switch is
+        acknowledged (its fail row goes) and the bans are lifted."""
         self.swipe.dismiss()
+        if self.swipe_bg.dismiss(not_now=self._swipe_shown == "background"):
+            self.bus.publish(api.SettingsSwipeProgress("dismissed", "dismissed", 0.0))
+            self.bus.publish(api.SettingsSwipeHold(bool(self.swipe_switch.fault) or self.swipe_bg.held()))
+            return
         self.swipe_switch.dismiss()
-        self.swipe_bg.dismiss()
         self.bus.publish(api.SettingsSwipeProgress("dismissed", "dismissed", 0.0))
         self.bus.publish(api.SettingsSwipeHold(False))       # nothing waits for Dismiss any more
 
@@ -3369,7 +3382,7 @@ class WallDanceApp:
 
     def _swipe_notify(self, kind: str, payload: Dict) -> None:
         """The seamless switch's and the background swipe's events -> the swipe line beside the button, a toast,
-        an alert.  Never the health line: only a switch that failed is a fault (the readiness row,
+        an alert (a failure only).  Never the health line: only a switch that failed is a fault (the readiness row,
         ``swipe_switch.health()``)."""
         text = str(payload.get("text", ""))
         if kind == "suggest":
@@ -3386,8 +3399,8 @@ class WallDanceApp:
             self.bus.publish(api.Toast("A better model may be available - see 'Try other settings' "
                                        "(Apply now)", 6.0, (255, 200, 100)))
         elif kind == "switching":
-            self.bus.publish(api.Alert("swipe_switch", text, {"from": payload.get("from"),
-                                                              "to": payload.get("to")}))
+            # an automatic switch: information, in a toast's ordinary colour -- only a failure is an alert (red)
+            self.bus.publish(api.Toast(text, 6.0, (255, 200, 100)))
             self.bus.publish(api.SettingsSwipeProgress("auto_switching", text, 0.5))
         elif kind == "switched":
             if payload.get("auto"):                       # the operator's Apply has its own line (_swipe_switch_done)

@@ -23,8 +23,12 @@ and acts on its advice, on its own thread, without the operator:
   about 30 s of gentle inference), judged at the show's confidence.  A run without a verdict says nothing (the
   operator's swipe's ``no_verdict``);
 * **the advice** (``SwipeAuto.advise``): ``none`` (it keeps the live setting), ``suggest`` (a warning with
-  « Apply now » that stays until applied, dismissed or stale), ``apply`` (mode auto, a definite seamless winner:
-  the switch, with an alert);
+  « Apply now » that stays until applied, dismissed, stale or ``SWIPE_VERDICT_MAX_AGE_S`` old -- P5's bound on the
+  operator's own verdict), ``apply`` (mode auto, a definite seamless winner: the switch, with a toast; only a
+  failure is an alert).  Dismiss means one thing at a time: on a suggestion, « not now » -- the policy puts that
+  setting aside (``SWIPE_AUTO_SNOOZE_S`` of the loop clock, or until the scene changes: no suggestion, no switch,
+  no look for it), no ban lifted, a fault left to its own Dismiss; with no suggestion on screen, the fault and the
+  bans are acknowledged and lifted;
 * **the plate**: the referee judges every setting against the empty-wall plate, so a verdict on a plate that is
   not usable (``LiveSetting.plate_ok`` False: no foreground, invalidated, refused for its camera, found stale) is
   worth nothing.  While it is not usable: ``waiting`` -- no run starts, no engine is loaded, no inference, no
@@ -38,9 +42,9 @@ and acts on its advice, on its own thread, without the operator:
   model's first frames ran: a switch rolled back leaves the policy and the pool as they were, plus the ban.  A
   switch that fails is the switch's fault, the one thing of the swipe that belongs to the health line;
 * **a resident that cannot be loaded** (a broken engine file, no GPU memory left beside TouchDesigner) is tried
-  once: that setting is banned like a failed automatic switch -- and more: no load, no inference, no look run for
-  it -- until Dismiss, a project load or a switch to it that works; it is said once, as the switch's fault, in
-  plain words (the raw error goes to the log), and while it holds, the look says why the swipe waits.
+  once: that setting is banned like a failed automatic switch -- no load, no inference, no look run for it, never
+  suggested -- until Dismiss, a project load or a switch to it that works; it is said once, as the switch's fault,
+  in plain words (the raw error goes to the log), and while it holds, the look says why the swipe waits.
 
 Threading: the looker thread owns the resident model and its inferences; the loop thread owns the live model and
 the swap.  Every CUDA call here happens under ENGINE_LOAD_LOCK (a live load waits, and a running look stops at its
@@ -65,17 +69,21 @@ from core.swipe_auto import (MODE_AUTO, MODE_OFF, AutoParams, SwipeAuto, alike_m
 from core.swipe_runner import (SWIPE_MODELS, CandidateRunner, ExclusionCells, install_capture_guards,
                                live_run_from_boxes, no_graph_capture, result_dict, score_runs)
 from runtime.seamless_switch import ENGINE_UNREADABLE, Prepared, SeamlessSwitch, _runner_factory, load_failure
-from runtime.swipe_controller import LiveSetting, make_pacer, say
+from runtime.swipe_controller import PLATE_UNUSABLE, LiveSetting, make_pacer, say, what_changed
 
 # the empty-wall plate is not usable (LiveSetting.plate_ok False): what the look says, and why a suggestion goes
 PLATE_NOT_VALID = "the empty-wall plate is not valid - Calibrate on the empty wall"
 PLATE_WAIT = f"the automatic swipe waits: {PLATE_NOT_VALID}"
 # a look fell due without the second engine while a dancer is tracked: it loads at the next empty wall (or STANDBY)
 WALL_WAIT = "the automatic swipe waits for an empty wall to load {}"
-# why an automatic switch is only suggested: the same setting failed before (the ban), or the switch holds a fault
-BANNED_SAYS = "the automatic switch to it failed: Dismiss lets it try again"
-AUTO_FAILED = "the last automatic switch failed: Dismiss lets it try again"
-APPLY_FAILED = "the last Apply failed: Dismiss lets it switch by itself again"
+# why an automatic switch is only suggested: the switch holds a fault (whose: what lifts it is said by the fault
+# itself -- the alert, the readiness row -- since Dismiss on the suggestion means « not now »)
+AUTO_FAILED = "the last automatic switch failed"
+APPLY_FAILED = "the last Apply failed"
+# what the look and the readiness row say while an automatic switch's ban holds (the switch's fault says the same)
+BAN_WAIT = "the automatic swipe will not try {} again until you press Dismiss"
+# what the look says while a setting the operator dismissed is put aside (the policy's snooze)
+SNOOZE_WAIT = "the automatic swipe waits: {} was dismissed - it looks again at {}"
 
 
 @dataclass
@@ -126,8 +134,9 @@ class PolicyPort:
     """Every call into ``core.swipe_auto`` goes through here, in the order the policy asks (REPORT_P6, 66ddeaa): on
     each look ``fresh`` -> the live setting's own scores on them -> ``room`` -> ``due``; on "run" the candidates
     scored on the newest ``run_frames`` fresh frames -> ``ran`` -> ``advise``; ``switched`` once a swap's first
-    frames ran (or a change by hand); ``reset`` on a new scene.  A rename or a new argument costs one edit in this
-    class."""
+    frames ran (or a change by hand); ``reset`` on a new scene; ``dismissed`` at the operator's Dismiss of a
+    suggestion, ``snoozed`` at each look, ``end_snooze`` at a project load.  A rename or a new argument costs one
+    edit in this class."""
 
     def __init__(self, mode: str, params: Optional[AutoParams] = None):
         self.policy = SwipeAuto(parse_mode(mode), params)
@@ -193,6 +202,16 @@ class PolicyPort:
     def reset(self) -> None:
         self.policy.reset()
 
+    def dismissed(self, now: float, winner: Candidate, for_s: float) -> None:
+        """The operator's Dismiss of a suggestion of ``winner``: not now (the streak ends, a snooze)."""
+        self.policy.dismissed(now, winner, for_s)
+
+    def snoozed(self, now: float) -> Optional[Candidate]:
+        return self.policy.snoozed(now)
+
+    def end_snooze(self) -> None:
+        self.policy.end_snooze()
+
 
 class BackgroundSwipe:
     def __init__(self, *, processor: Callable[[], Any], live: Callable[[], Optional[LiveSetting]],
@@ -206,8 +225,10 @@ class BackgroundSwipe:
                  engine_exists: Callable[[str], bool] = os.path.exists,
                  engine_lock=None, wall: Callable[[], float] = time.time, referee=None,
                  in_run: Callable[[], bool] = lambda: False, wall_empty: Callable[[], bool] = lambda: True,
-                 empty_s: Optional[float] = None, gpu_used: Callable[[], Optional[int]] = _gpu_used_bytes):
-        from core.config import SWIPE_AUTO_LOAD_EMPTY_S, SWIPE_AUTO_LOOK_S, SWIPE_AUTO_PACE_S
+                 empty_s: Optional[float] = None, gpu_used: Callable[[], Optional[int]] = _gpu_used_bytes,
+                 snooze_s: Optional[float] = None, max_age_s: Optional[float] = None):
+        from core.config import (SWIPE_AUTO_LOAD_EMPTY_S, SWIPE_AUTO_LOOK_S, SWIPE_AUTO_PACE_S, SWIPE_AUTO_SNOOZE_S,
+                                 SWIPE_VERDICT_MAX_AGE_S)
         self.processor = processor
         self.live = live
         self.engine_path = engine_path
@@ -223,6 +244,8 @@ class BackgroundSwipe:
         self.look_s = float(SWIPE_AUTO_LOOK_S if look_s is None else look_s)
         self.pace_s = float(SWIPE_AUTO_PACE_S if pace_s is None else pace_s)
         self.empty_s = float(SWIPE_AUTO_LOAD_EMPTY_S if empty_s is None else empty_s)
+        self.snooze_s = float(SWIPE_AUTO_SNOOZE_S if snooze_s is None else snooze_s)    # Dismiss: not now, this long
+        self.max_age_s = float(SWIPE_VERDICT_MAX_AGE_S if max_age_s is None else max_age_s)  # a suggestion's age
         self.in_run = in_run              # the app is in RUN (the show's output is live)
         self.wall_empty = wall_empty      # no track on screen, no identity slot held (core.gc_policy.wall_empty)
         self.gpu_used = gpu_used          # bytes on the GPU, read around the resident's load
@@ -237,11 +260,13 @@ class BackgroundSwipe:
         self.engine_lock = engine_lock
         self.wall = wall
         self.referee = referee      # the plate watch's word (RefereeReport, fix6): the operator's swipe's, shared
-        # settings an automatic switch failed to: no automatic attempt again until Dismiss, a project load or a
-        # switch to it that works (the operator's Apply, confirmed)
+        # settings banned -- an automatic switch to them failed, or their resident could not be loaded or run: no
+        # look at all for them (never suggested, never switched to by itself) until Dismiss, a project load or a
+        # switch to it that works (the operator's Apply, confirmed); key -> engine file
         self._banned: Dict[str, str] = {}
-        # ... of them, those whose resident could not be loaded: no look at all for them, and what the look says
+        # ... of them, those whose resident could not be loaded or run: what the look says (else ``BAN_WAIT``)
         self._unloadable: Dict[str, str] = {}
+        self._snooze_says: Optional[str] = None    # what the look says while a dismissed setting is put aside
         self._fault_why: Optional[Tuple[str, str]] = None   # (the switch's fault, why it holds an apply back)
         self.resident: Optional[Resident] = None
         self._resident_lock = switch.guard         # held while the looker infers on the resident: the swap waits
@@ -471,10 +496,12 @@ class BackgroundSwipe:
 
     def tick(self) -> str:
         """One look.  Returns what it did: off | loading | waiting (the plate is not usable, or a look due waits for
-        an empty wall to load the other model) | idle | busy | banned (the other model could not be loaded) | run |
-        probe | nothing-to-compare."""
+        an empty wall to load the other model) | idle | busy | banned (the other model could not be loaded or run,
+        or an automatic switch to it failed) | snoozed (the operator dismissed it a moment ago) | run | probe |
+        nothing-to-compare.  First, a suggestion too old goes, whatever the wall (an empty wall runs no look)."""
         t0 = time.perf_counter()
         try:
+            self.withdraw_stale()
             return self._tick()
         finally:
             self.ticks += 1
@@ -531,12 +558,12 @@ class BackgroundSwipe:
         if why:
             return "busy"
         other = other_model(live.candidate, self.models)
-        wait = self._unloadable.get(other.key) if other is not None else None
+        wait, did = self._stands_down(other, now)
         if wait:
-            # its resident could not be loaded: no load, no inference, no look until Dismiss or a project load
+            # banned or dismissed a moment ago: no load, no inference, no look -- the look's row says why
             if self.last_look is None or self.last_look.get("outcome") != wait:
                 self.last_look = self._record("look", look="none", t=now, frames=0, seconds=0.0, outcome=wait)
-            return "banned"
+            return did
         got = self._load_when_quiet(proc, live, other, now)
         if got:
             return got                        # banned: it could not be loaded just now, said once as the switch's
@@ -641,6 +668,38 @@ class BackgroundSwipe:
             self._record("release", resident=r.candidate.label, purpose="its run failed")
         return self._ban(other, live, "run", run_failure(error), error)
 
+    def _stands_down(self, other: Optional[Candidate], now: float) -> Tuple[Optional[str], str]:
+        """(what the look says, what the tick returns) while the looker leaves ``other`` alone: banned until
+        Dismiss, a project load or a switch to it that works -- "banned" --, or dismissed by the operator a moment
+        ago, the policy's snooze -- "snoozed"; else (None, "").  The snooze's row goes once it is over."""
+        if other is None:
+            return None, ""
+        if other.key in self._banned:
+            return self._ban_says(other.key), "banned"
+        snoozed = self.auto.snoozed(now)
+        if snoozed is not None and snoozed == other:
+            return self._snooze_says or SNOOZE_WAIT.format(other.label, "the end of the snooze"), "snoozed"
+        self._end_snooze_row(snoozed is None)
+        return None, ""
+
+    def _end_snooze_row(self, over: bool = True) -> None:
+        """The snooze's row leaves /status (no longer what the look waits for); ``over``: the snooze too."""
+        if self._snooze_says is not None and self.last_look is not None \
+                and self.last_look.get("outcome") == self._snooze_says:
+            self.last_look = None
+        if over:
+            self._snooze_says = None
+
+    def _ban_says(self, key: str) -> str:
+        """Why the automatic swipe leaves a banned setting alone (the look's row, the readiness row): its load or
+        run failure and what to do, or the automatic switch to it that failed."""
+        return self._unloadable.get(key) or BAN_WAIT.format(self._banned.get(key, key))
+
+    def _put_aside(self, cand: Candidate) -> None:
+        """``cand`` is banned: a suggestion of it goes, without a word (the switch's fault says what happened)."""
+        if self.suggestion is not None and self.suggestion.get("winner_c") == cand:
+            self._clear_suggestion(None)
+
     def _ban(self, other: Candidate, live: LiveSetting, verb: str, why, error: str) -> Tuple[str, str]:
         """The setting ``other`` is banned (``_unloadable``: no load, no inference, no look for it until Dismiss or
         a project load): (what the look says while it waits, the fault for the operator).  ``why``: a
@@ -649,6 +708,7 @@ class BackgroundSwipe:
         wait = f"the automatic swipe waits: it could not {verb} {other.label} ({why}) - {todo}"
         self._banned[other.key] = other.engine_file
         self._unloadable[other.key] = wait
+        self._put_aside(other)
         self._record("auto-banned", setting=other.label, engine=other.engine_file, error=error[:160])
         return wait, (f"the automatic swipe could not {verb} {other.label} ({why}): {live.candidate.label} still "
                       f"runs - {todo}")
@@ -768,12 +828,15 @@ class BackgroundSwipe:
         a = {"kind": adv.kind, "level": adv.level, "winner": adv.winner.label if adv.winner else None,
              "seamless": adv.seamless, "streak": adv.streak, "text": adv.text, "why_not_auto": adv.why_not_auto,
              "reason": result.reason}
-        banned = adv.winner is not None and adv.winner.key in self._banned
-        if adv.kind == "apply" and (self.switch.fault or banned):
+        if adv.winner is not None and adv.winner.key in self._banned:
+            # banned while this look ran (the looker runs none for a banned setting): never suggested, never
+            # switched to -- nothing said, nothing withdrawn
+            self.last_advice = self._record("advice", advice="none", banned=adv.winner.label, reason=result.reason)
+            return
+        if adv.kind == "apply" and self.switch.fault:
             adv.kind = "suggest"
             held = self._fault_why                # whose switch the fault is (the request carried ``auto``)
-            whose = held[1] if held is not None and held[0] == self.switch.fault else AUTO_FAILED
-            adv.why_not_auto = BANNED_SAYS if banned else whose
+            adv.why_not_auto = held[1] if held is not None and held[0] == self.switch.fault else AUTO_FAILED
             said = adv.text.removeprefix(f"switching to {adv.winner.label}: ")     # the apply text, without its verb
             adv.text = f"{said}: clearly better - Apply now ({adv.why_not_auto})"
             a.update(kind="suggest", why_not_auto=adv.why_not_auto, text=adv.text)
@@ -781,27 +844,37 @@ class BackgroundSwipe:
             a["keeps"] = live.candidate.label
         self.last_advice = self._record("advice", advice=a["kind"], **{k: v for k, v in a.items() if k != "kind"})
         if adv.kind == "none":
-            self._clear_suggestion(f"the last look keeps {live.candidate.label}")
+            if adv.winner is None:                # (a setting dismissed a moment ago: nothing is shown for it)
+                self._clear_suggestion(f"the last look keeps {live.candidate.label}")
             return
         if adv.kind == "suggest":
-            self.suggestion = {**a, "winner_c": adv.winner, "live_key": live.key, "wall": self.wall(),
+            self.suggestion = {**a, "winner_c": adv.winner, "live_key": live.key, "live": live, "wall": self.wall(),
                                "result": result}
             self.notify("suggest", {**a, "result": result_dict(result)})
             return
         # apply (mode auto, a definite seamless winner): the resident goes live through the switch (warmed there
         # at the live call's arguments, swapped by the loop between two frames)
+        busy = self.busy() or self.switch.busy()
+        if busy:
+            # an operator's Apply (or a load, a calibration...) began since the run: nothing failed -- no fault, no
+            # ban, nothing said; the next look decides again
+            self._record("not-switched", setting=adv.winner.label, why=busy)
+            return
         r = self.resident
         why = (f"{adv.winner.label} is not loaded beside the live model" if r is None or r.candidate != adv.winner
                else self.switch.request(adv.winner, adv.text, prepared=Prepared(r.candidate, r.model, r.runner),
                                         auto=True))
+        if why and self.switch.busy():
+            self._record("not-switched", setting=adv.winner.label, why=why)    # an Apply landed in between: the same
+            return
         if why:
             text = (f"the automatic switch to {adv.winner.label} failed before it began ({why}): "
-                    f"{live.candidate.label} still runs - set the automatic swipe to off")
+                    f"{live.candidate.label} still runs - Dismiss lets it try again")
             self._fault_why = (text, AUTO_FAILED)
             self.switch.fail(text)
             return
         self.state = "switching"
-        self.notify("switching", {"text": adv.text, "to": adv.winner.label, "from": live.candidate.label})
+        self.notify("switching", {"text": adv.text, "to": adv.winner.label, "from": live.candidate.label})   # a toast
 
     # ------------------------------------------------------------------ the switch's hooks (loop thread)
     def _on_switched(self, req, old_pair, old_cand: Candidate, new_cand: Candidate, take_t: float) -> bool:
@@ -837,7 +910,8 @@ class BackgroundSwipe:
 
     def _on_switch_failed(self, req) -> None:
         """A switch that did not happen (it failed before it began, or its first frames raised): the old live model
-        is live again -- not our resident; an automatic one is not tried again for that setting until Dismiss.  The
+        is live again -- not our resident; after an automatic one the looker stands down for that setting (no look,
+        no suggestion, no switch: ``_stands_down``) until Dismiss, a project load or a switch to it that works.  The
         policy never heard of it: its dwell, streak and pool are as they were before the swap."""
         old = req.get("old_pair")
         if old is not None and self.resident is not None and self.resident.model is old[0]:
@@ -850,6 +924,7 @@ class BackgroundSwipe:
             target = req.get("winner") or req.get("new")
             if target is not None:
                 self._banned[target.key] = target.engine_file
+                self._put_aside(target)
                 self._record("auto-banned", setting=target.label, engine=target.engine_file)
         self.state = "watching" if self.auto.mode != MODE_OFF else "off"
 
@@ -858,9 +933,11 @@ class BackgroundSwipe:
                        on_done: Optional[Callable[[bool, str], None]] = None) -> Optional[str]:
         """The operator's seamless Apply with the automatic swipe beside it: its resident when that is the winner
         (no second load), else the resident leaves first and the switch loads the winner (the winner never loads
-        beside it: two engines, the live one and the winner)."""
+        beside it: two engines, the live one and the winner).  A resident loaded for another project, input or
+        TensorRT state than the live one (``_fits``) is never handed over: it leaves, as for another winner."""
         r = self.resident
-        if r is not None and r.candidate == winner:
+        live = self.live()
+        if live is not None and self._fits(live, winner):
             return self.switch.request(winner, text, on_done, prepared=Prepared(r.candidate, r.model, r.runner))
         why = self.switch.can_switch(winner) or self.switch.busy()
         if why:
@@ -882,11 +959,32 @@ class BackgroundSwipe:
         if why:
             self.notify("cleared", {"text": f"suggestion withdrawn: {why}"})
 
+    def withdraw_stale(self, live: Optional[LiveSetting] = None, setting: bool = False) -> Optional[str]:
+        """The suggestion goes once it no longer stands, and why it went (the swipe line: « suggestion withdrawn:
+        <why> »), or None: ``setting`` -- judged on another setting or scene than ``live`` (another project among
+        them; P5's words for what changed) --, or older than ``max_age_s`` (P5's bound on the operator's own
+        verdict, said the same way).  Every look asks the age, whatever the wall; the operator's Apply asks both."""
+        sug = self.suggestion
+        if sug is None:
+            return None
+        why = None
+        if setting and (live is None or sug.get("live_key") != live.key):
+            changed = what_changed(sug["live"], live) if sug.get("live") is not None else None
+            why = (PLATE_NOT_VALID if changed == PLATE_UNUSABLE else
+                   f"{changed or 'the setting changed'} since the suggestion")
+        if why is None:
+            age = float(self.wall()) - float(sug.get("wall", self.wall()))
+            if age > self.max_age_s:
+                why = f"it is {age / 60.0:.0f} min old"
+        if why is not None:
+            self._clear_suggestion(why)
+        return why
+
     def _lift(self, key: Optional[str] = None) -> None:
         """The ban on one setting (``key``), or on all, goes; so does the look's row that waits for one of them
         (/status no longer says it)."""
-        waits = list(self._unloadable.values()) if key is None else [self._unloadable.get(key)]
-        if self.last_look is not None and self.last_look.get("outcome") in [w for w in waits if w]:
+        waits = [self._ban_says(k) for k in (list(self._banned) if key is None else [key]) if k in self._banned]
+        if self.last_look is not None and self.last_look.get("outcome") in waits:
             self.last_look = None
         if key is None:
             self._banned.clear()
@@ -896,17 +994,36 @@ class BackgroundSwipe:
             self._unloadable.pop(key, None)
 
     def clear_bans(self) -> None:
-        """A project load: the settings an automatic switch failed to (or whose resident did not load) may be tried
-        again."""
+        """A project load: the settings an automatic switch failed to (or whose resident did not load or run) may
+        be tried again, and a setting the operator dismissed may be suggested again."""
         self._lift()
+        self.auto.end_snooze()
+        self._end_snooze_row()
 
-    def dismiss(self) -> None:
-        """The operator's Dismiss: the suggestion goes (a failed switch is the switch's to acknowledge) and the
-        settings an automatic switch failed to (or whose resident did not load) may be tried again."""
+    def dismiss(self, not_now: bool = True) -> bool:
+        """The operator's Dismiss: one press, one meaning.  A suggestion on screen (``not_now``: the app says the
+        swipe line shows it) -- « not now »: it goes, the policy ends the streak and puts that setting aside (no
+        suggestion, no switch by itself, no look for it) for ``snooze_s`` of the loop clock or until the scene
+        changes; no ban is lifted, and a fault stays for its own Dismiss.  No suggestion on screen: a fault or a
+        ban held is acknowledged -- the settings an automatic switch failed to (or whose resident did not load or
+        run) may be tried again (the fault is the switch's to drop), and a suggestion not shown goes too.  True
+        for « not now »."""
+        sug = self.suggestion
+        if sug is not None and not_now:
+            self.suggestion = None
+            winner = sug["winner_c"]
+            self.auto.dismissed(float(self.processor().loop_clock()), winner, self.snooze_s)
+            until = time.strftime("%H:%M", time.localtime(float(self.wall()) + self.snooze_s))
+            self._end_snooze_row()
+            self._snooze_says = SNOOZE_WAIT.format(winner.label, until)
+            self._record("dismissed", setting=winner.label, seconds=self.snooze_s)
+            self.notify("cleared", {"text": "dismissed"})
+            return True
         self._lift()
-        if self.suggestion is not None:
+        if sug is not None:
             self.suggestion = None
             self.notify("cleared", {"text": "dismissed"})
+        return False
 
     def held(self) -> bool:
         """A setting is banned: Dismiss has something to lift (its button stays on screen)."""
@@ -917,9 +1034,7 @@ class BackgroundSwipe:
         no fault left to say: a later switch succeeded); None without a ban."""
         if not self._banned:
             return None
-        key = sorted(self._banned)[0]
-        return self._unloadable.get(key) or (f"the automatic swipe will not try {self._banned[key]} again until "
-                                             f"you press Dismiss")
+        return self._ban_says(sorted(self._banned)[0])
 
     def status(self) -> Dict[str, Any]:
         """For /status and the readiness row (JSON-ready).  ``counts``: of the fresh frames with dancers, ``lost``
@@ -930,7 +1045,7 @@ class BackgroundSwipe:
                 "resident": self.resident.candidate.label if self.resident is not None else None,
                 "resident_mb": self.resident.mb if self.resident is not None else None,
                 "last_look": self.last_look, "last_advice": self.last_advice,
-                "suggestion": ({k: v for k, v in sug.items() if k not in ("winner_c", "live_key", "result")}
+                "suggestion": ({k: v for k, v in sug.items() if k not in ("winner_c", "live_key", "live", "result")}
                                if sug is not None else None),
                 "inferences": self.inferences, "auto_banned": sorted(self._banned.values()),
                 "counts": {"lost": lost, "covered": fresh - lost}}
