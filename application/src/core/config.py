@@ -388,10 +388,11 @@ SWIPE_AUTO = "off"
 # The modes of the automatic swipe this build lets anyone set (mode keys): the combo shows only these (its row is
 # hidden while off is the only one), any other mode is refused whoever asks (the GUI, the remote SetSwipeAuto)
 # and the mode stays what it was, a project's key that is not among them is read as off.  "off" always;
-# "suggest" is added by the commit that closes the blind review's second group of findings after its re-read;
-# "auto" by the one that closes the third.  Read when needed (core.swipe_auto.released_modes), never copied at
-# import: a test or a gate driver sets it.
-SWIPE_AUTO_RELEASED = ("off",)
+# "suggest" released on 2026-11-27, after the blind review's second group of findings and its three rounds were
+# read again: for rehearsals, with the conditions of use written in the operator's guide.  "auto" joins with the
+# commit that closes the review's third group.  Read when needed (core.swipe_auto.released_modes), never copied
+# at import: a test or a gate driver sets it.
+SWIPE_AUTO_RELEASED = ("off", "suggest")
 SWIPE_AUTO_LOOK_S = 5.0
 SWIPE_AUTO_PACE_S = 0.2
 # The operator's Dismiss on a background suggestion means « not now »: that setting is neither suggested nor

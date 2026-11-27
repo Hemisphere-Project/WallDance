@@ -1,6 +1,6 @@
 """P6 (Plan Cordee): setting Auto to off acknowledges the automatic swipe's own fault (the check of c983cfa, B3,
 finding 3) -- on a real ``WallDanceApp`` (no GUI, no main loop, CPU; the mode set through the app's own door with
-the ``swipe_auto_unlocked`` fixture: the build ships locked).
+the ``swipe_auto_unlocked`` fixture: the build does not ship auto).
 
 A failure of the background's own load or run tells the technician one thing, « set Auto to off ».  After he did,
 the red line and the readiness row still said « ... - set Auto to off » until he pressed Dismiss.  Now Auto to off

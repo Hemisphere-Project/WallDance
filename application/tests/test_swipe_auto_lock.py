@@ -1,18 +1,20 @@
 """P6 (Plan Cordee), the automatic swipe released mode by mode (``core.config.SWIPE_AUTO_RELEASED``, the build ships
-``("off",)``): a blind review accepted merging it off, but off was one click away (the combo under 'Try other
-settings', the remote SetSwipeAuto in RUN) while two groups of its findings are open.  The owner opens suggest
-first (once the second group is read again), auto later (the third).  Only off: the combo is not on screen (the
-panel is P5's), any other mode is refused whoever asks, with one toast, and a project whose key is not off loads
-off, said once, with nothing of P6 started.  Off and suggest (the ``swipe_auto_suggest_only`` fixture): the combo
-shows those two, suggest is set from it, remotely and from a project; auto is refused and the mode stays what it
-was; a project that asks for auto loads off.  All three (the ``swipe_auto_unlocked`` fixture): as before the lock.
+``("off", "suggest")`` since 27/11): a blind review accepted merging it off, but off was one click away (the combo
+under 'Try other settings', the remote SetSwipeAuto in RUN) while two groups of its findings were open.  The owner
+opened suggest first (the second group read again, 27/11), auto later (the third).  Only off (the
+``swipe_auto_off_only`` fixture, the build until 27/11): the combo is not on screen (the panel is P5's), any other
+mode is refused whoever asks, with one toast, and a project whose key is not off loads off, said once, with nothing
+of P6 started.  Off and suggest (the build as it ships, and the same list set by the ``swipe_auto_suggest_only``
+fixture): the combo shows those two, suggest is set from it, remotely and from a project; auto is refused and the
+mode stays what it was; a project that asks for auto loads off.  All three (the ``swipe_auto_unlocked`` fixture):
+as before the lock.
 
 The doors are tested on a real ``WallDanceApp`` (no GUI, no main loop, CPU), the combo on the headless panel."""
 from types import SimpleNamespace
 
 import pytest
 
-from test_swipe_auto_live import swipe_auto_suggest_only, swipe_auto_unlocked  # noqa: F401 - the fixtures
+from test_swipe_auto_live import swipe_auto_off_only, swipe_auto_suggest_only, swipe_auto_unlocked  # noqa: F401
 
 REFUSED = "Automatic swipe: {} is not released in this build - it stays {}"
 READ_OFF = "Automatic swipe: off - this project asks for {}, which is not released in this build"
@@ -115,18 +117,86 @@ def panel():
         dpg.destroy_context()
 
 
+@pytest.fixture(params=["shipped", "set"])
+def suggest_released(request):
+    """Off and suggest released: the build as it ships (nothing patched), and the same list set explicitly (the
+    ``swipe_auto_suggest_only`` fixture: these tests keep testing it when the build ships auto too)."""
+    if request.param == "set":
+        request.getfixturevalue("swipe_auto_suggest_only")
+    return request.param
+
+
 # ----------------------------------------------------------------------------------------------------------
-# Off only: the build as it ships
+# The build as it ships: off and suggest (27/11)
 # ----------------------------------------------------------------------------------------------------------
-def test_the_build_ships_with_off_the_only_mode_released():
+def test_the_build_ships_with_off_and_suggest_released():
     import core.config
     from core.swipe_auto import released_modes
-    assert core.config.SWIPE_AUTO_RELEASED == ("off",)
-    assert released_modes() == ("off",)
-    assert core.config.SWIPE_AUTO == "off"
+    assert core.config.SWIPE_AUTO_RELEASED == ("off", "suggest")
+    assert released_modes() == ("off", "suggest")
+    assert core.config.SWIPE_AUTO == "off"                       # a project without the key: off, as before
 
 
-def test_off_only_the_combo_is_not_on_screen_and_holds_off_only(panel):
+def test_the_shipped_build_end_to_end_suggest_opens_auto_stays_closed_and_nothing_switches(panel, real_app, capsys):
+    """Nothing patched, on a real ``WallDanceApp``: the combo shows off and suggest (its tooltip says those two);
+    suggest is set from the combo and by the remote SetSwipeAuto; auto is refused by both, one toast each, the mode
+    staying where it was (off, then suggest); and with the mode at suggest, a look whose advice is an automatic
+    switch asks for no switch -- the last guard in ``_act`` shows it as a suggestion."""
+    from core.swipe import SwipeResult, SwipeRow
+    from core.swipe_auto import AutoAdvice
+    from runtime.swipe_background import AUTO_NOT_RELEASED
+    from test_seamless_switch import L1280, X1280, _live
+    dpg = panel
+    _wall_panel(dpg)
+    items, tip = _combo(dpg)
+    assert _on_screen(dpg, "swipe_auto_combo"), "the combo is hidden in the shipped build"
+    assert items == ["Auto: off", "Auto: suggest"], f"the shipped combo offers {items}"
+    assert "  suggest  " in tip and "switch" not in tip, "the tooltip describes a mode the combo does not offer"
+    app, events = real_app
+    bg = app.swipe_bg
+    _pick(app, "Auto: switch")                                      # auto while off: refused by both doors
+    _set_remote(app, "auto")
+    assert bg.mode == "off" and not _p6_runs(app)
+    assert _toasts(events) == [REFUSED.format("switch", "off")] * 2
+    events.clear()
+    _pick(app, "Auto: suggest")                                     # suggest: from the combo, then remotely
+    assert bg.mode == "suggest" and bg._thread.is_alive(), "the combo's suggest was refused"
+    _pick(app, "Auto: off")
+    assert bg.mode == "off"
+    _set_remote(app, "suggest")
+    assert bg.mode == "suggest", "the remote suggest was refused"
+    assert _toasts(events) == [] and _combo_syncs(events) == ["Auto: suggest", "Auto: off", "Auto: suggest"]
+    thread = bg._thread
+    _pick(app, "Auto: switch")                                      # auto while suggest: refused, suggest goes on
+    _set_remote(app, "auto")
+    assert bg.mode == "suggest" and bg._thread is thread and thread.is_alive()
+    assert _toasts(events) == [REFUSED.format("switch", "suggest")] * 2
+    assert _combo_syncs(events)[3:] == ["Auto: suggest"] * 2
+    out = capsys.readouterr().out
+    assert out.count("[SwipeAuto] auto refused: not released in this build, it stays off") == 2
+    assert out.count("[SwipeAuto] auto refused: not released in this build, it stays suggest") == 2
+    # the last guard: an advice to switch by itself (as mode auto would give) reaches _act while the mode is
+    # suggest -- the looker stopped, so this look is the only one
+    bg.stop(1.0)
+    events.clear()
+    said = "l @ 1280 covers 100 % of the dancers, x @ 1280 33 % (6.0 ms a frame against 6.0)"
+    adv = AutoAdvice(kind="apply", level="definite", winner=L1280, seamless=True, streak=2,
+                     text=f"switching to {L1280.label}: {said}", said=said)
+    result = SwipeResult(X1280, L1280, True, [SwipeRow(L1280, 1.0, 0.0, 6.0, net=1.0),
+                                              SwipeRow(X1280, 0.33, 0.0, 6.0, net=0.33)], "l @ 1280 does better")
+    bg._act(adv, result, _live())
+    assert app.swipe_switch._want is None and bg.state != "switching", "a switch auto would make was asked"
+    assert not app.swipe_switch.fault, "a switch was tried (and failed: nothing loaded beside the live model)"
+    assert bg.last_advice["advice"] == "suggest" and bg.last_advice["why_not_auto"] == AUTO_NOT_RELEASED
+    assert bg.suggestion is not None and bg.suggestion["winner_c"] == L1280
+    assert bg.mode == "suggest"
+    assert not [t for t in _toasts(events) if "switching" in t.lower()]
+
+
+# ----------------------------------------------------------------------------------------------------------
+# Off only (the swipe_auto_off_only fixture): the build until 27/11
+# ----------------------------------------------------------------------------------------------------------
+def test_off_only_the_combo_is_not_on_screen_and_holds_off_only(panel, swipe_auto_off_only):  # noqa: F811
     """The row hidden as before (regression guard); new: its one item is off."""
     dpg = panel
     from gui import WallDanceGUI
@@ -142,7 +212,8 @@ def test_off_only_the_combo_is_not_on_screen_and_holds_off_only(panel):
 
 
 @pytest.mark.parametrize("label", ["Auto: suggest", "Auto: switch"])
-def test_regression_guard_a_sync_to_a_label_not_in_the_list_breaks_nothing(panel, label):
+def test_regression_guard_a_sync_to_a_label_not_in_the_list_breaks_nothing(panel, label,
+                                                                          swipe_auto_off_only):  # noqa: F811
     """The app never syncs a mode it did not accept, but a sync of one lands without an error: the combo says it,
     its items stay the released ones, the row stays hidden, the swipe button's tooltip follows (P6's words)."""
     dpg = panel
@@ -158,7 +229,8 @@ def test_regression_guard_a_sync_to_a_label_not_in_the_list_breaks_nothing(panel
 
 @pytest.mark.parametrize("mode,label,word", MODES)
 def test_off_only_the_combo_and_the_remote_command_are_refused_and_off_is_accepted(real_app, mode, label, word,
-                                                                                   capsys):
+                                                                                   capsys,
+                                                                                   swipe_auto_off_only):  # noqa: F811
     """Refused as before (regression guard); new: the toast names the mode refused and the one it stays."""
     app, events = real_app
     _set_remote(app, mode)
@@ -178,7 +250,7 @@ def test_off_only_the_combo_and_the_remote_command_are_refused_and_off_is_accept
 
 @pytest.mark.parametrize("mode,label,word", MODES)
 def test_regression_guard_off_only_a_project_that_asks_for_it_loads_off_says_so_once_and_starts_nothing(
-        real_app, mode, label, word, capsys):
+        real_app, mode, label, word, capsys, swipe_auto_off_only):  # noqa: F811
     app, events = real_app
     app._apply_config_without_model({"swipe_auto": mode})
     assert app.swipe_bg.mode == "off", "the project's key turned the automatic swipe on while not released"
@@ -191,9 +263,9 @@ def test_regression_guard_off_only_a_project_that_asks_for_it_loads_off_says_so_
 
 
 # ----------------------------------------------------------------------------------------------------------
-# Off and suggest: the build once the review's second group is closed
+# Off and suggest: the build as it ships, and the same list set explicitly
 # ----------------------------------------------------------------------------------------------------------
-def test_suggest_released_the_combo_is_on_screen_with_off_and_suggest(panel, swipe_auto_suggest_only):  # noqa: F811
+def test_suggest_released_the_combo_is_on_screen_with_off_and_suggest(panel, suggest_released):
     dpg = panel
     _wall_panel(dpg)
     assert _on_screen(dpg, "swipe_auto_combo"), "the combo is hidden while suggest is released"
@@ -202,7 +274,7 @@ def test_suggest_released_the_combo_is_on_screen_with_off_and_suggest(panel, swi
     assert "  suggest  " in tip and "switch" not in tip, "the tooltip describes a mode the combo does not offer"
 
 
-def test_suggest_released_it_is_set_from_the_combo_and_remotely(real_app, swipe_auto_suggest_only):  # noqa: F811
+def test_suggest_released_it_is_set_from_the_combo_and_remotely(real_app, suggest_released):
     app, events = real_app
     _pick(app, "Auto: suggest")
     assert app.swipe_bg.mode == "suggest" and app.swipe_bg._thread.is_alive(), "the combo's suggest was refused"
@@ -215,8 +287,7 @@ def test_suggest_released_it_is_set_from_the_combo_and_remotely(real_app, swipe_
 
 
 @pytest.mark.parametrize("how", ["combo", "remote"])
-def test_suggest_released_auto_is_refused_and_the_mode_stays_suggest(real_app, swipe_auto_suggest_only,  # noqa: F811
-                                                                     how, capsys):
+def test_suggest_released_auto_is_refused_and_the_mode_stays_suggest(real_app, suggest_released, how, capsys):
     """Asked for auto while suggest runs (the remote command, or a combo item it no longer shows): refused, one toast
     and one log line, and suggest goes on -- not forced off."""
     app, events = real_app
@@ -235,8 +306,8 @@ def test_suggest_released_auto_is_refused_and_the_mode_stays_suggest(real_app, s
     assert capsys.readouterr().out.count("[SwipeAuto] auto refused: not released in this build, it stays suggest") == 1
 
 
-def test_suggest_released_a_project_brings_it_and_one_that_asks_for_auto_loads_off(real_app,  # noqa: F811
-                                                                                   swipe_auto_suggest_only, capsys):
+def test_suggest_released_a_project_brings_it_and_one_that_asks_for_auto_loads_off(real_app, suggest_released,
+                                                                                   capsys):
     app, events = real_app
     app._apply_config_without_model({"swipe_auto": "suggest"})
     assert app.swipe_bg.mode == "suggest", "a project's suggest was read as off while suggest is released"
