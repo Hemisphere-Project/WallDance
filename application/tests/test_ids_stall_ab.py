@@ -325,3 +325,158 @@ def test_a_raised_limit_lets_the_condition_s_frame_rate_through():
     done = ab.apply_condition(cam, c)
     assert nm.n["AcquisitionFrameRate"].v == 40.0 and cam.state.fps == 40.0
     assert done["set"]["AcquisitionFrameRate"] == 40.0
+
+
+# --------------------------------------------------------------------------- U2c: what the app does beside the camera
+def test_u2c_keys_are_off_by_default_and_trt_d2h_read_through_the_gpu():
+    a, b, c, d = ab.conditions(_args(cond=["A:", "B:trt=1", "C:xf=90,cpu=2", "D:d2h=1"]), 2334784)
+    assert (a["xf"], a["trt"], a["d2h"], a["cpu"], a["gpu"]) == (0, False, False, 0, False)
+    assert b["trt"] == 1 and b["gpu"] is True and b["d2h"] is False
+    assert (c["xf"], c["cpu"], c["gpu"]) == (90, 2, False)          # one thing at a time: no GPU read
+    assert d["d2h"] is True and d["gpu"] is True and d["trt"] == 0
+    with pytest.raises(ValueError):
+        ab.conditions(_args(cond=["A:xf=45"]), 2334784)
+    with pytest.raises(ValueError):
+        ab.parse_cond("A:yolo=1")
+
+
+def test_trt_runs_the_engine_on_each_gpu_frame_at_the_engine_shape():
+    torch = pytest.importorskip("torch")
+    calls = []
+
+    class FakeModel:
+        def __call__(self, x, **kw):
+            calls.append((tuple(x.shape), kw))
+            return []
+
+    loaded = []
+    c = ab.conditions(_args(cond=["B:trt=1,d2h=1"]), 2334784)[0]
+    load = ab.SideLoad(c, SimpleNamespace(engine="show.engine", engine_hw="64x32", preview_scale=0.5),
+                       loader=lambda p: loaded.append(p) or FakeModel())
+    assert loaded == ["show.engine"]                    # loaded once, before the camera opens
+    load.start(None)
+    load.frame(None)                                    # no new frame: nothing done
+    for _ in range(3):
+        load.frame(torch.rand(1, 3, 50, 40))
+    info = load.stop()
+    assert [s for s, _ in calls] == [(1, 3, 64, 32)] * 3        # height x width, as the app's engine names
+    assert calls[0][1]["imgsz"] == [64, 32] and calls[0][1]["half"] is True
+    assert info["frames"] == 3 and info["trt_calls"] == 3 and info["errors"] == []
+    assert info["d2h_calls"] == 3 and info["d2h_bytes"] == 3 * 25 * 20 * 3     # a uint8 preview per frame
+    assert info["engine_hw"] == [64, 32] and "trt_ms_mean" in info
+
+
+def test_trt_without_an_engine_is_refused():
+    c = ab.conditions(_args(cond=["B:trt=1"]), 2334784)[0]
+    with pytest.raises(SystemExit):
+        ab.SideLoad(c, SimpleNamespace(engine=None))
+
+
+def test_an_inference_error_is_recorded_not_raised():
+    torch = pytest.importorskip("torch")
+
+    def broken(x, **kw):
+        raise RuntimeError("engine gone")
+
+    c = ab.conditions(_args(cond=["B:trt=1"]), 2334784)[0]
+    load = ab.SideLoad(c, SimpleNamespace(engine="e", engine_hw="32x32"), loader=lambda p: broken)
+    load.frame(torch.rand(1, 3, 8, 8))
+    info = load.stop()
+    assert info["trt_calls"] == 0 and info["errors"] == ["RuntimeError: engine gone"]
+
+
+def test_the_cpu_thread_converts_frames_until_stopped_and_xf_turns_the_camera_input():
+    import numpy as np
+    c = ab.conditions(_args(cond=["C:xf=90,cpu=2"]), 2334784)[0]
+    cam = SimpleNamespace(input_transform=None)
+    load = ab.SideLoad(c, SimpleNamespace())
+    load.start(cam)
+    assert cam.input_transform.rotation == 90           # the app's input_rotation, in the acquisition thread
+    load.frame(np.zeros((12, 16, 3), np.uint8))
+    time.sleep(0.2)
+    info = load.stop()
+    assert info["cpu_loops"] >= 2 and info["xf"] == 90
+    assert not load._thread.is_alive()
+    n = info["cpu_loops"]
+    time.sleep(0.12)
+    assert load.info["cpu_loops"] == n                   # stopped: no more work
+
+
+def test_a_run_records_its_load(monkeypatch, tmp_path):
+    import camera.ids_camera as ic
+
+    class FakeCam:
+        def __init__(self, settings):
+            self.settings = settings
+            self.state = ic.IDSCameraState()
+            self.input_transform = None
+
+        def _track_frame(self, *a, **k):
+            return None
+
+        def open(self, serial):
+            self.state.width, self.state.height = 1824, 1260
+            return True
+
+        def start_acquisition(self):
+            return True
+
+        def get_stream_diagnostics(self):
+            return {"counters": {}, "incomplete": 0}
+
+        def read(self):
+            import numpy as np
+            self.state.frame_count += 1
+            return True, np.zeros((4, 4, 3), np.uint8)
+
+        def stop_acquisition(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(ic, "IDSCamera", FakeCam)
+    assert ab.main(["--minutes", "0.003", "--reps", "1", "--roi", "1824x1260+432+136",
+                    "--cond", "P:", "--cond", "X:xf=90,cpu=1", "--out", str(tmp_path)]) == 0
+    runs = [json.loads(l) for l in (tmp_path / "stall_ab_runs.jsonl").read_text().splitlines()]
+    assert [r["geom"] for r in runs] == ["P", "X"]
+    assert runs[0]["load"]["frames"] > 0 and runs[0]["load"]["cpu_loops"] == 0 and "xf" not in runs[0]["load"]
+    assert runs[1]["load"]["xf"] == 90 and runs[1]["load"]["cpu_loops"] >= 1
+    assert runs[1]["cond"]["cpu"] == 1 and runs[1]["cond"]["gpu"] is False
+
+
+def test_trt2_runs_the_engine_on_a_constant_gpu_tensor_without_the_frame_upload():
+    torch = pytest.importorskip("torch")
+    import numpy as np
+    c = ab.conditions(_args(cond=["K:trt=2"]), 2334784)[0]
+    assert c["trt"] == 2 and c["gpu"] is False           # the frame is read on the CPU path: no upload
+    seen = []
+    load = ab.SideLoad(c, SimpleNamespace(engine="e", engine_hw="64x32"),
+                       loader=lambda p: (lambda x, **kw: seen.append(x)))
+    load.frame(np.zeros((12, 16, 3), np.uint8))
+    load.frame(np.ones((12, 16, 3), np.uint8))
+    info = load.stop()
+    assert info["trt_calls"] == 2 and [tuple(x.shape) for x in seen] == [(1, 3, 64, 32)] * 2
+    assert torch.equal(seen[0], seen[1])                 # the same constant tensor, whatever the frame
+    with pytest.raises(ValueError):
+        ab.conditions(_args(cond=["K:trt=3"]), 2334784)
+
+
+def test_mog_runs_the_app_s_motion_stage_on_each_cpu_frame_in_a_worker():
+    pytest.importorskip("cv2")
+    import numpy as np
+    c = ab.conditions(_args(cond=["M:mog=0.5"]), 2334784)[0]
+    assert c["mog"] == 0.5 and c["gpu"] is False and ab.conditions(_args(cond=["P:"]), 2334784)[0]["mog"] == 0.0
+    load = ab.SideLoad(c, SimpleNamespace(cv2_threads=2))
+    rng = np.random.default_rng(0)
+    for _ in range(4):
+        load.frame(rng.integers(0, 255, (64, 96, 3), dtype=np.uint8))
+    load.frame(None)                                       # no new frame: nothing submitted
+    info = load.stop()
+    assert info["mog_calls"] == 4 and info["errors"] == [] and info["mog_scale"] == 0.5
+    assert info["mog_ms"] >= 0.0 and load._mog_pool._shutdown
+    import cv2
+    before = cv2.getNumThreads()
+    one = ab.SideLoad(ab.conditions(_args(cond=["M1:mog=0.5,cvt=1"]), 2334784)[0], SimpleNamespace(cv2_threads=4))
+    assert one.stop()["cv2_threads"] == 1                  # cvt=N overrides --cv2-threads for that condition
+    assert cv2.getNumThreads() == before                   # and the process-wide setting is put back

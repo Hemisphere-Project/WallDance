@@ -43,6 +43,21 @@ the run order and exits. ``--dump-nodes PATH`` writes, once before the first run
 stream starts, every readable node of the data stream, the transport-layer device and
 the camera (read only: what the GenTL producer says about transfer errors).
 
+**What the app does beside the camera (U2c, 2026-11-26).** Four more keys, each one
+thing the WallDance app does that the bare tool did not: ``xf=90`` (the app's input
+transform: a 90/180/270 turn of every frame IN the acquisition thread, as the app's
+``input_rotation``), ``trt=1`` (a TensorRT inference of the show engine ``--engine`` on
+each frame read through ``read_gpu()``, in-process, resized on the GPU to
+``--engine-hw HxW``: the app's RUN; ``trt=2`` = the same inference on a constant tensor kept on the
+GPU, the frame read on the CPU path: the GPU's work without the upload), ``d2h=1`` (a preview-sized GPU->CPU download of each
+frame, ``--preview-scale``, uint8: the app's preview), ``cpu=N`` (a second thread that,
+20 times a second, allocates a frame-sized BGR array, copies the latest frame into it
+and converts it to float N times: the app's unpack/convert traffic), ``mog=S`` (the app's
+motion stage on each frame in a worker thread: blur, downscale by S, OpenCV MOG2, opening,
+contours, with the app's 4 OpenCV threads, or ``cvt=N``). ``trt`` and ``d2h``
+read through ``read_gpu()`` (the pinned upload, i.e. ``gpu=1``). Each run records what
+the load did (calls, mean ms, errors) under ``"load"``.
+
 The app code (application/src) is found from ``--repo``, ``$WD_REPO_ROOT``, else the
 first ancestor of the cwd or of this file holding application/src/core: an uploaded
 copy (``wdremote py``) sits in a scratch dir, so there the cwd (the slot's
@@ -64,7 +79,8 @@ DIAG_KEYS = ("frame_id_gaps", "frame_ids_skipped", "incomplete")
 READBACK_NODES = ("Width", "Height", "OffsetX", "OffsetY", "PixelFormat", "AcquisitionFrameRate",
                   "ExposureTime", "Gain", "DeviceLinkThroughputLimit", "DeviceLinkCurrentThroughput",
                   "DeviceLinkSpeed", "DeviceLinkAcquisitionFrameRateLimit", "PayloadSize")
-COND_KEYS = ("geom", "roi", "pf", "fps", "exp", "gain", "tl", "buf", "tmo", "gpu")
+COND_KEYS = ("geom", "roi", "pf", "fps", "exp", "gain", "tl", "buf", "tmo", "gpu",
+             "xf", "trt", "d2h", "cpu", "mog", "cvt")     # U2c: what the app does beside the camera
 # The IDS U3V producer's data-stream registers the app does not read: WHY a frame came incomplete
 # (buffer overflow / packet error / packet unavailable / stop / timeout) and the frames it started.
 EXTRA_STREAM_NODES = ("IncompleteFramesBufferOverflowReg", "IncompleteFramesPacketErrorReg",
@@ -134,6 +150,7 @@ def resolve_cond(cond: dict, args, default_pixels: int) -> dict:
          "tmo": float(cond["tmo"]) if "tmo" in cond else args.wait_timeout_ms,
          "gpu": bool(int(cond["gpu"])) if "gpu" in cond else bool(args.gpu),
          "roi": None, "ratio": None, "pixels": None}
+    r.update(side_keys(cond))
     roi = cond.get("roi") or (None if "geom" in cond else args.roi)
     if roi:
         w, h, ox, oy = parse_roi(roi)
@@ -377,6 +394,176 @@ def start_with_timeout(cam, tmo_ms):
     return ok
 
 
+# --------------------------------------------------------------------------- U2c: the app's work beside the camera
+def side_keys(cond: dict) -> dict:
+    """The U2c keys of one condition (all off by default): ``xf`` (degrees), ``trt``, ``d2h``
+    (booleans), ``cpu`` (conversions per frame). ``trt=1`` / ``d2h`` need the GPU read: they
+    force ``gpu``. ``trt=2`` = the same inference on a CONSTANT tensor kept on the GPU, once per frame
+    read on the plain CPU path: the GPU's work without the frame's upload."""
+    r = {"xf": int(cond.get("xf", 0)), "trt": int(cond.get("trt", 0)),
+         "d2h": bool(int(cond.get("d2h", 0))), "cpu": int(cond.get("cpu", 0)),
+         "mog": float(cond.get("mog", 0)), "cvt": int(cond.get("cvt", 0))}
+    if r["xf"] % 90:
+        raise ValueError(f"condition {cond.get('name')!r}: xf={r['xf']} is not a multiple of 90")
+    if r["trt"] not in (0, 1, 2):
+        raise ValueError(f"condition {cond.get('name')!r}: trt={r['trt']} (0, 1 or 2)")
+    if r["trt"] == 1 or r["d2h"]:
+        r["gpu"] = True
+    return r
+
+
+def parse_hw(text: str):
+    """"1920x1056" -> (1920, 1056): the app's engine shape convention, height x width."""
+    h, w = (int(v) for v in str(text).lower().split("x"))
+    return h, w
+
+
+def load_engine(path: str):
+    """The show engine through ultralytics (as the app's ModelManager loads it)."""
+    from ultralytics import YOLO
+    return YOLO(path, task="pose")
+
+
+class SideLoad:
+    """What the app does beside the camera, done by the tool (one condition's ``xf``/``trt``/
+    ``d2h``/``cpu``). ``frame(x)`` runs the per-frame part on each frame read (a CPU BGR array
+    or, through ``read_gpu``, a (1, 3, H, W) float tensor); ``stop()`` ends the ``cpu`` thread
+    and returns the counts. Loads the engine BEFORE the camera's stream starts."""
+
+    def __init__(self, c: dict, args, loader=load_engine):
+        self.c = c
+        self.info = {"frames": 0, "trt_calls": 0, "trt_ms": 0.0, "d2h_calls": 0, "d2h_bytes": 0,
+                     "cpu_loops": 0, "errors": []}
+        self._model = None
+        self._stop = False
+        self._thread = None
+        self._src = None
+        if c.get("trt"):
+            eng = getattr(args, "engine", None)
+            if not eng:
+                raise SystemExit("ids_stall_ab: trt=1 needs --engine PATH (the show engine)")
+            self._hw = parse_hw(getattr(args, "engine_hw", "1920x1056"))
+            t0 = time.perf_counter()
+            self._model = loader(eng)
+            self.info.update(engine=str(eng), engine_hw=list(self._hw))
+            self.info["load_s"] = round(time.perf_counter() - t0, 2)
+        self._scale = float(getattr(args, "preview_scale", 0.5) or 0.5)
+        self._mog = self._mog_pool = self._mog_future = None
+        if c.get("mog"):
+            import cv2
+            from concurrent.futures import ThreadPoolExecutor
+            nthr = int(c.get("cvt") or getattr(args, "cv2_threads", 4) or 4)    # the app's CV2_NUM_THREADS
+            self._cv2_prev = cv2.getNumThreads()                                  # put back at stop()
+            cv2.setNumThreads(nthr)
+            self._mog = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=16, detectShadows=True)
+            self._mog_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="u2c-mog")
+            self.info.update(mog_calls=0, mog_ms=0.0, mog_scale=float(c["mog"]), cv2_threads=cv2.getNumThreads())
+
+    def start(self, cam=None) -> None:
+        if self.c.get("xf") and cam is not None:
+            from core.input_transform import InputTransform
+            cam.input_transform = InputTransform(rotation=int(self.c["xf"]) % 360)
+            self.info["xf"] = int(self.c["xf"]) % 360
+        if self.c.get("cpu"):
+            import threading
+            self._thread = threading.Thread(target=self._cpu_loop, name="u2c-cpu", daemon=True)
+            self._thread.start()
+
+    def _infer(self, t):
+        import torch.nn.functional as F
+        if self.c.get("trt") == 2:          # the GPU's work only: a constant tensor already on the GPU
+            if getattr(self, "_const", None) is None:
+                import torch
+                self._const = torch.rand((1, 3) + tuple(self._hw), device="cuda" if torch.cuda.is_available() else "cpu")
+            t = self._const
+        x = F.interpolate(t, size=self._hw, mode="bilinear", align_corners=False)
+        self._model(x, imgsz=list(self._hw), conf=0.25, iou=0.45, half=True, verbose=False)
+
+    def frame(self, x) -> None:
+        if x is None:
+            return
+        self.info["frames"] += 1
+        if x is not None and hasattr(x, "shape") and len(x.shape) >= 2:
+            self._src = x
+        try:
+            if self._model is not None:
+                t0 = time.perf_counter()
+                self._infer(x)
+                self.info["trt_ms"] += (time.perf_counter() - t0) * 1000.0
+                self.info["trt_calls"] += 1
+            if self._mog is not None and hasattr(x, "dtype") and str(x.dtype) == "uint8":
+                import numpy as np
+                self._mog_wait()
+                gray = np.ascontiguousarray(x[:, :, 0]) if x.ndim == 3 else x
+                self._mog_future = self._mog_pool.submit(self._mog_feed, gray)
+            if self.c.get("d2h"):
+                import torch.nn.functional as F
+                p = F.interpolate(x, scale_factor=self._scale, mode="bilinear", align_corners=False)
+                host = p[0].permute(1, 2, 0).mul(255.0).clamp_(0, 255).byte().contiguous().cpu()
+                self.info["d2h_calls"] += 1
+                self.info["d2h_bytes"] += int(host.numel())
+        except Exception as e:
+            if len(self.info["errors"]) < 5:
+                self.info["errors"].append(f"{type(e).__name__}: {str(e)[:160]}")
+
+    def _mog_feed(self, gray) -> None:
+        """The app's motion stage on one frame (core/motion_detector.py preprocess + feed_preprocessed):
+        in the dark (mean < 55) a 5x5 median then a 5x5 Gaussian blur at full size, else a 3x3 blur;
+        downscale by S; MOG2 (shadows on); the cleaned mask opened; then contours (its detect)."""
+        import cv2
+        import numpy as np
+        t0 = time.perf_counter()
+        if float(np.mean(gray)) < 55:
+            g = cv2.GaussianBlur(cv2.medianBlur(gray, 5), (5, 5), 0)
+        else:
+            g = cv2.GaussianBlur(gray, (3, 3), 0)
+        sc = float(self.c["mog"])
+        small = cv2.resize(g, None, fx=sc, fy=sc, interpolation=cv2.INTER_AREA) if sc < 1.0 else g
+        fg = self._mog.apply(small)
+        clean = (fg == 255).astype(np.uint8) * 255
+        clean = cv2.morphologyEx(clean, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
+        cv2.findContours(clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        self.info["mog_ms"] += (time.perf_counter() - t0) * 1000.0
+        self.info["mog_calls"] += 1
+
+    def _mog_wait(self) -> None:
+        fut, self._mog_future = self._mog_future, None
+        if fut is not None:
+            try:
+                fut.result()
+            except Exception as e:
+                if len(self.info["errors"]) < 5:
+                    self.info["errors"].append(f"mog {type(e).__name__}: {str(e)[:160]}")
+
+    def _cpu_loop(self) -> None:
+        import numpy as np
+        n = int(self.c["cpu"])
+        while not self._stop:
+            t0 = time.perf_counter()
+            src = self._src
+            if src is None or not hasattr(src, "dtype") or str(getattr(src, "dtype", "")) != "uint8":
+                src = np.zeros((1260, 1824, 3), np.uint8)      # the app's crop as BGR until a CPU frame comes
+            for _ in range(n):
+                b = np.empty(src.shape[:2] + (3,), np.uint8)
+                b[...] = src[..., :1] if src.ndim == 3 else src[..., None]
+                b.astype(np.float32)
+            self.info["cpu_loops"] += 1
+            time.sleep(max(0.0, 0.05 - (time.perf_counter() - t0)))
+
+    def stop(self) -> dict:
+        self._stop = True
+        if self._mog_pool is not None:
+            self._mog_wait()
+            self._mog_pool.shutdown(wait=True)
+            import cv2
+            cv2.setNumThreads(self._cv2_prev)
+            self.info["mog_ms"] = round(self.info["mog_ms"] / max(1, self.info["mog_calls"]), 2)
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+        self.info["trt_ms_mean"] = round(self.info.pop("trt_ms") / max(1, self.info["trt_calls"]), 2)
+        return dict(self.info)
+
+
 def run_one(c, args):
     """One run of condition ``c`` (resolve_cond) for ``args.minutes``."""
     from camera.ids_camera import IDSCamera, IDSCameraSettings
@@ -386,6 +573,7 @@ def run_one(c, args):
                            gain_auto=False, gain_db=c["gain"], newest_only=True,
                            buffer_count=c["buf"],
                            prefer_high_bit_depth=False, user_set=IDS_USER_SET)
+    load = SideLoad(c, args)               # U2c: the engine loads before the camera opens
     cam = IDSCamera(st)
     stalls = []
     track = cam._track_frame
@@ -426,8 +614,9 @@ def run_one(c, args):
         wall0 = time.time()
         f0 = cam.state.frame_count
         read = cam.read_gpu if c["gpu"] else cam.read
+        load.start(cam)
         while time.perf_counter() - t0 < args.minutes * 60.0:
-            read()
+            load.frame(read()[1])
             time.sleep(0.005)
         t_end = time.perf_counter()
         seconds = t_end - t0
@@ -440,6 +629,7 @@ def run_one(c, args):
             stalls.append(dict(hole, since_start_s=round(seconds, 2)))
         temps.append(gpu_temp())
     finally:
+        load_info = load.stop()
         restored = restore_nodes(cam, applied.get("restore", {}))
         cam.close()
     counters = {k: v - before["counters"].get(k, 0) for k, v in after["counters"].items()
@@ -451,6 +641,7 @@ def run_one(c, args):
            "stalls": stalls, "stream_counters_delta": counters,
            "stream_extra_delta": {k: v - extra0.get(k, 0) for k, v in extra1.items() if v != extra0.get(k, 0)},
            "readback": rb, "set": applied.get("set", {}), "restored": restored, "temps": temps,
+           "load": load_info,
            **{k: int(after.get(k) or 0) - int(before.get(k) or 0) for k in DIAG_KEYS}}
     print(f"[ab]   {frames} frames ({rec['fps']} fps), {len(stalls)} stall(s) "
           f"{[(s['gap_ms'], s['kind']) for s in stalls]}, frame-id gaps "
@@ -496,6 +687,10 @@ def main(argv=None):
     ap.add_argument("--dump-nodes", default=None,
                     help="JSON path: at the first run, every readable node of the data stream, "
                          "the transport-layer device and the camera (read only)")
+    ap.add_argument("--engine", default=None, help="U2c trt=1: the show engine (.engine) run on each frame")
+    ap.add_argument("--engine-hw", default="1920x1056", help="U2c trt=1: the engine's input, HxW (app convention)")
+    ap.add_argument("--preview-scale", type=float, default=0.496, help="U2c d2h=1: the preview's scale")
+    ap.add_argument("--cv2-threads", type=int, default=4, help="U2c mog=S: OpenCV threads (the app's CV2_NUM_THREADS)")
     ap.add_argument("--plan-only", action="store_true", help="print the run order and exit")
     ap.add_argument("--out", default=os.environ.get("WD_REMOTE_OUT", "."))
     ap.add_argument("--repo", default=None,

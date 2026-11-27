@@ -5,6 +5,17 @@ controller XHC1 port 3, link 5 Gb/s (USB 3, `DeviceLinkSpeed` 500 MB/s), IDS pea
 Hub row walldance #t-043 (L2), Thomas's ask of 26/11 15:45. Tool: `extra/ids_stall_ab.py` (branch `r2-stall`).
 Records: `gates/stall/runs/<job>/`, table `gates/stall/analysis/runs_table.md`, gate `gates/stall/run_gate.sh`.
 
+> **Corrected on 27/11 — read `CAMERA_STALLS_2026-11_ADDENDUM.md` first.** This verdict compared the bare camera
+> tool on the desk (0.11 stalls a minute) with the APP on the facade of 08/10 (about 3 a minute) and concluded
+> that « the level is set by the place ». It never ran the app and the tool side by side. Measured side by side
+> in the night of 26-27/11, at the app's exact camera settings, alternated, 6 minutes a side: the bare tool 0
+> stalls against the app in RUN 39; RUN 39 against STANDBY 0; the preview and the detector's inference are not
+> it; the app's motion stage at the show's size against a quarter: 35 against 1; **the app at the default
+> 162 MB/s against 124 MB/s: 46 against 0**, and 0 in a further 15 minutes at 124. So the first cause is what the
+> app does beside the camera, and the throughput limit at 124 MB/s removes the stalls on the desk. What stands
+> below: what a stall is, that a faster link stalls more, that the frame rate and another program's load do not
+> matter. What falls: « the place sets the level » as the first explanation, and the order of the suspects.
+
 ## In plain words
 
 - **What a stall is.** Each time, the USB transfer of one picture breaks halfway; the camera's driver then repairs
