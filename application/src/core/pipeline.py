@@ -556,6 +556,10 @@ class FrameProcessor:
         # worker runs its inferences in the loop's slack, one per live frame.
         self.frame_done = threading.Event()
         self.frame_done_t: float = 0.0
+        # P6: set once that frame is over -- its OSC out, the loop's tick done (``frame_ended``): an engine let go
+        # then delays no frame's output
+        self.frame_end = threading.Event()
+        self.frame_end_t: float = 0.0
         # P6 seamless switch: the model just swapped in runs its first frames on probation -- if its call raises,
         # the previous model is put back for that very frame (``adopt_model``).
         self._swap_probation: Optional[dict] = None
@@ -947,6 +951,12 @@ class FrameProcessor:
                 (bool(s.roi_enabled), int(s.roi_x), int(s.roi_y), int(s.roi_w), int(s.roi_h)),
                 self.plate_identity, self._plate_invalid, bool(self.plate_refusal),
                 bool(getattr(self._fg_detector, "stale_latched", False)), round(float(s.confidence or 0.0), 4))
+
+    def frame_ended(self) -> None:
+        """The loop, at the end of each tick: if the tick ran a live network pass, its frame is over now."""
+        if self.frame_done_t > self.frame_end_t:
+            self.frame_end_t = time.perf_counter()
+            self.frame_end.set()
 
     def loop_clock(self) -> float:
         """The loop's clock: the wall clock live, the take's frame clock in a replay (the swipe's time base)."""

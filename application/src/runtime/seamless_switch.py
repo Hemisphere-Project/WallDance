@@ -19,8 +19,9 @@ winner's TensorRT engine is built (and the live model runs TensorRT); the automa
   swipe fault of the health line (``health()``, plain ASCII: what runs, the one thing to do), cleared by the
   operator's acknowledgement (``dismiss``) or a later switch that succeeds.  A switch that did not happen never
   leaves the new engine live.
-* models that leave (the old live one, a failed one) are freed on the worker thread, right after a live frame of
-  the current model, under the engine lock (their destructors free the engines).
+* models that leave (the old live one, a failed one) are freed on the worker thread, right after the end of a
+  live frame of the current model (its OSC out: ``after_frame_end``), under the engine lock (their destructors
+  free the engines).
 
 Threading: the worker owns loading, warming and freeing; the loop thread owns the live model and the swap.
 """
@@ -35,7 +36,7 @@ from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 from core.swipe import Candidate
 from core.swipe_runner import CandidateRunner, SwipeInput, install_capture_guards, no_graph_capture
-from runtime.swipe_controller import LiveSetting, make_pacer, say
+from runtime.swipe_controller import LiveSetting, after_frame_end, say
 
 
 # Gate (a), 26/11 on mgr-ran: switched to another input size between two frames (the tracker pinned to the old
@@ -363,9 +364,10 @@ class SeamlessSwitch:
                 or not self.ran_a_frame(proc):
             return False
         with self.engine_lock:
-            # right after the loop's next live pass (a TensorRT destructor holds the GIL some 50 ms): a pacer made
-            # now waits for one -- at most 0.2 s, none in STANDBY or with the loop stopped
-            make_pacer(proc, 0.0, self._stop, start=time.perf_counter())()
+            # right after the END of the loop's next live frame, its OSC out (a TensorRT destructor holds the GIL
+            # some 50-70 ms; after the network pass alone it delayed that frame's OSC) -- at most 0.2 s, none in
+            # STANDBY or with the loop stopped
+            after_frame_end(proc, self._stop)
             if extra is not None:
                 extra()
             n = len(self._drop)

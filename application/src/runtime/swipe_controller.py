@@ -209,9 +209,11 @@ def make_pacer(proc, interval_s: float, stop: Optional[threading.Event] = None,
     since -- about one candidate inference per live frame, in the loop's slack.  No wait for a live pass
     when the loop is not running YOLO (STANDBY, a model load), and at most 0.2 s for one.
 
-    ``start`` (a ``time.perf_counter()`` value): the first call too waits for a live pass after it -- an engine's
-    release right after the NEXT live frame (``make_pacer(proc, 0.0, stop, start=time.perf_counter())()``).
-    Without it the first call lets any earlier live pass count, and returns at once."""
+    ``start`` (a ``time.perf_counter()`` value): the first call too waits for a live pass after it (the release's
+    wait with a processor that has no ``frame_end``).  Without it the first call lets any earlier live pass count,
+    and returns at once.
+
+    ``pace.release()``: before an engine's release, not an inference -- ``after_frame_end``."""
     last = [0.0 if start is None else float(start)]
     stop = stop or threading.Event()
 
@@ -226,7 +228,30 @@ def make_pacer(proc, interval_s: float, stop: Optional[threading.Event] = None,
                 if float(proc.frame_done_t) <= last[0]:
                     ev.wait(0.2)
         last[0] = time.perf_counter()
+    pace.release = lambda: after_frame_end(proc, stop)
     return pace
+
+
+def after_frame_end(proc, stop: Optional[threading.Event] = None) -> None:
+    """Called right before an engine is let go (a TensorRT destructor holds the GIL some 50-70 ms): returns
+    right after the END of a live frame that ends after the call -- its OSC is out and the loop's tick is over
+    (``frame_end``, set by the loop) -- so the stall delays no frame's output, only the next frame's start.
+    Not the end of the network pass (``frame_done``): that frame's tracker and OSC are still to come, and a
+    release there delayed its OSC (the P6 re-read, 27/11: network -> OSC 57-74 ms instead of 8, in 5 releases
+    of 5).  At most 0.2 s; no wait when the loop is not running YOLO (no live pass in the last 0.25 s: STANDBY,
+    a model load, the loop stopped) or once ``stop`` is set.  A processor without ``frame_end``: the next live
+    pass, as before."""
+    ev = getattr(proc, "frame_end", None)
+    if ev is None:
+        make_pacer(proc, 0.0, stop, start=time.perf_counter())()
+        return
+    t0 = time.perf_counter()
+    if (stop is not None and stop.is_set()) or t0 - float(getattr(proc, "frame_done_t", 0.0)) > 0.25:
+        return
+    if float(proc.frame_end_t) <= t0:
+        ev.clear()
+        if float(proc.frame_end_t) <= t0:
+            ev.wait(0.2)
 
 
 def default_runner_factory(inp: SwipeInput, proc) -> CandidateRunner:

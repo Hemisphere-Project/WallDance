@@ -289,6 +289,10 @@ class MainLoop:
             self._on_failure("tick", exc, self._tick_fail_streak)
         else:
             self._tick_fail_streak = 0
+        finally:
+            # P6: the tick's live frame, if one ran, is over (its OSC out, its screen drawn): where an engine
+            # the switch lets go delays no output (``FrameProcessor.frame_ended``)
+            _safe(getattr(getattr(self.app, "processor", None), "frame_ended", None) or (lambda: None))
 
     def _startup(self) -> bool:
         """Bring the session up: camera -> GUI -> project -> recording UI ->
