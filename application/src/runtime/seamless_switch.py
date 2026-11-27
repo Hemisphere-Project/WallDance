@@ -99,6 +99,19 @@ LOAD_NEEDS = 1.5
 # what a failure is (``LoadFailure.kind``): the file shown bad / no room on the GPU / one of the two, not told /
 # another error
 FILE_BAD, ROOM, UNSURE, OTHER = "file", "room", "unsure", "other"
+# the reason the operator reads for an error the checks cannot name (OTHER): a few plain words -- the error's
+# type and message are for the log line, never for the toast, the red line, the readiness row or /status
+LOAD_ERROR = "an error, written in the log"           # the engine did not load
+WARM_FAILED = "its first frame failed"                # the warm-up: the loaded engine called once, before the swap
+LIVE_FAILED = "its first live frames failed"          # the swap's first frames on the wall (the old model took back)
+SWAP_FAILED = "the swap itself failed"                # the processor refused the swap (the old model kept)
+RUN_FAILED = "the engine stopped during a run"        # the automatic swipe's run on its second engine
+NOT_TENSORRT = "it would run PyTorch, not its TensorRT engine"
+# the one thing to do after an error the checks cannot name: trying again is not shown to help, the live model
+# runs -- the automatic swipe goes off (its ban already holds until Dismiss); the operator's Apply keeps the live
+# model (no Dismiss here: on a suggestion still on screen it means « not now »)
+OTHER_AUTO = "set the automatic swipe to off"
+OTHER_APPLY = "keep it for now"
 
 
 class LoadFailure(str):
@@ -114,18 +127,16 @@ class LoadFailure(str):
         return self
 
     def todo(self, cand: Candidate, *, apply: bool = False) -> str:
-        """What to do: for the automatic swipe (its ban holds until Dismiss), or for the operator's Apply."""
-        rebuild = f"rebuild {cand.engine_file} (extra/build_engines)"
-        if self.kind == ROOM:
+        """The one thing to do: for the automatic swipe (its ban holds until Dismiss), or for the operator's Apply.
+        "rebuild" only for a file shown bad; one of the two not told (UNSURE) is the GPU's room, the quick thing
+        to try (a rebuild if it fails again is in the log line: ``detail``)."""
+        if self.kind == FILE_BAD:
+            return _rebuild(cand) if apply else \
+                f"rebuild {cand.engine_file} (extra/build_engines), then Dismiss lets it try again"
+        if self.kind in (ROOM, UNSURE):
             return ("close what else uses the GPU before trying it again" if apply else
-                    "close what else uses the GPU, then Dismiss lets it try again, or set the automatic swipe to off")
-        if self.kind == UNSURE:                  # never a rebuild first: the GPU's room is the quick thing to try
-            return ("close what else uses the GPU before trying it again" if apply else
-                    "close what else uses the GPU, then Dismiss lets it try again") + f"; if it fails again, {rebuild}"
-        if apply:
-            return _rebuild(cand)
-        return (f"{rebuild}, then Dismiss lets it try again" if self.kind == FILE_BAD else
-                "Dismiss lets it try again, or set the automatic swipe to off")
+                    "close what else uses the GPU, then Dismiss lets it try again")
+        return OTHER_APPLY if apply else OTHER_AUTO
 
 
 def gpu_free_mb() -> Optional[float]:
@@ -211,19 +222,19 @@ def load_failure(exc: BaseException, path: Optional[str] = None, *,
     told apart: a file shown bad (``engine_file_fault``) is ``ENGINE_UNREADABLE`` (rebuild it); a file that looks
     whole on a GPU with less free memory than a load of it takes (``LOAD_NEEDS``) is ``NO_ROOM``, with the free
     MB; a file that looks whole with that room free now (the memory a failed load took is back: something else
-    may have held it) names both, a rebuild only if it fails again.  An out-of-memory error, or no execution
-    context (the engine was read), is NO_ROOM.  Anything else, the error itself.  ``free_mb``: the reading (else
-    ``gpu_free_mb()``, now).  Without ``path`` (the old call) nothing is read: no engine is ``ENGINE_UNREADABLE``,
-    the rest the error itself, as before."""
+    may have held it) names both, the GPU's room to try (a rebuild if it fails again: the log line, ``detail``).
+    An out-of-memory error, or no execution context (the engine was read), is NO_ROOM.  Anything else,
+    ``LOAD_ERROR`` (the error itself is the caller's log line).  ``free_mb``: the reading (else ``gpu_free_mb()``,
+    now).  Without ``path`` (the old call) nothing is read: no engine is ``ENGINE_UNREADABLE``, the rest
+    ``LOAD_ERROR``."""
     text = str(exc)
-    raw = f"{type(exc).__name__}: {text[:100]}"
     no_engine = (isinstance(exc, AttributeError) and "create_execution_context" in text) or "serializ" in text.lower()
     if path is None:
-        return LoadFailure(ENGINE_UNREADABLE, FILE_BAD) if no_engine else LoadFailure(raw)
+        return LoadFailure(ENGINE_UNREADABLE, FILE_BAD) if no_engine else LoadFailure(LOAD_ERROR)
     oom = out_of_memory(f"{type(exc).__name__}: {text}") or (
         isinstance(exc, AttributeError) and "'NoneType'" in text and any(a in text for a in _NO_CONTEXT))
     if not no_engine and not oom:
-        return LoadFailure(raw)
+        return LoadFailure(LOAD_ERROR)
     free = gpu_free_mb() if free_mb is None else free_mb
     seen = "free GPU memory not known" if free is None else f"{free:.0f} MB free on the GPU"
     fault, plan = engine_file_fault(path)
@@ -235,19 +246,26 @@ def load_failure(exc: BaseException, path: Optional[str] = None, *,
     detail = f" (the file looks whole: {plan / 2 ** 20:.0f} MB of engine, a load takes about {need:.0f} MB; {seen})"
     if free is not None and free < need:
         return no_room(free, need, detail)
+    # one of the two, not told: the operator reads the GPU's room (the quick thing to try), the log the rest
+    detail = detail[:-1] + f"; if it fails again with room free, rebuild {os.path.basename(path)})"
     return LoadFailure(f"{NO_ENGINE}: too little room on the GPU at that moment, or a damaged file" if free is None
                        else f"{NO_ENGINE}, {free:.0f} MB free on the GPU now: too little room at that moment, or a "
                             f"damaged file", UNSURE, detail)
 
 
-def run_failure(error: str, *, free_mb: Optional[float] = None) -> LoadFailure:
-    """Why a loaded engine's inference failed (``CandidateRun.error``: "inference failed: <type>: <message>"), in
-    the operator's words: out of memory is NO_ROOM, as for a load; anything else, what failed and the error's type
-    (its message is for the log)."""
+def run_failure(error: str, *, free_mb: Optional[float] = None, what: str = RUN_FAILED) -> LoadFailure:
+    """Why a loaded engine's inference failed (``CandidateRun.error``: "inference failed: <type>: <message>"; or
+    "<type>: <message>"), in the operator's words: out of memory is NO_ROOM, as for a load; anything else, ``what``
+    failed, in plain words -- the error's type and message are for the caller's log line."""
     if out_of_memory(error):
         return no_room(gpu_free_mb() if free_mb is None else free_mb)
-    parts = error.split(": ")
-    return LoadFailure(": ".join(parts[:2]) if len(parts) > 1 else error[:100])
+    return LoadFailure(what)
+
+
+def frame_failure(exc: BaseException, what: str, *, free_mb: Optional[float] = None) -> LoadFailure:
+    """An engine's frame that raised -- the Apply's warm-up, a swap's first live frames -- in ``run_failure``'s
+    words: no room on the GPU for an out-of-memory error, else ``what`` failed; never "rebuild" (the file loaded)."""
+    return run_failure(f"{type(exc).__name__}: {exc}", free_mb=free_mb, what=what)
 
 
 class SeamlessSwitch:
@@ -428,7 +446,8 @@ class SeamlessSwitch:
 
     def warm(self, prepared: Prepared, target: Candidate) -> Optional[str]:
         """``prepared`` called once with the arguments the live call takes at ``target``'s input; also the last
-        check that it runs at all and runs TensorRT.  None when ready, else why not."""
+        check that it runs at all and runs TensorRT.  None when ready, else why not: a ``LoadFailure`` (no room on
+        the GPU for an out-of-memory error, else its first frame failed; the error itself goes to the log)."""
         try:
             import torch
             kw = self.processor().live_infer_args()
@@ -439,10 +458,11 @@ class SeamlessSwitch:
                 z = torch.full((1, 3, th, tw), 0.5, device="cuda" if torch.cuda.is_available() else "cpu")
                 prepared.runner(z, **kw)
             if runs_tensorrt(prepared.model) is False:
-                return "it would run PyTorch, not its TensorRT engine"
+                return LoadFailure(NOT_TENSORRT, FILE_BAD)      # its engine is not what loaded: build it
             return None
         except Exception as exc:  # noqa: BLE001
-            return f"{type(exc).__name__}: {str(exc)[:120]}"
+            say(f"[Switch] {target.engine_file} failed its first frame: {type(exc).__name__}: {exc}")
+            return frame_failure(exc, WARM_FAILED)
 
     def _prepare(self) -> None:
         want, self._want = self._want, None
@@ -572,7 +592,8 @@ class SeamlessSwitch:
             except Exception as exc:  # noqa: BLE001 - the port put the old model back
                 if req["loaded_here"]:
                     self.release((prep.model, prep.runner))
-                self._fail(req, f"{type(exc).__name__}: {str(exc)[:100]}", old_cand, new_cand, before=False)
+                say(f"[Switch] the swap to {new_cand.label} failed: {type(exc).__name__}: {exc}")
+                self._fail(req, frame_failure(exc, SWAP_FAILED), old_cand, new_cand, before=False)
                 return True
             keep = False
             if self.on_switched is not None:
@@ -657,7 +678,8 @@ class SeamlessSwitch:
             self._drop = [d for d in self._drop if d[0] is not old_pair[0]]
         if failed_pair is not None:
             self.release(tuple(failed_pair))
-        self._fail(req, f"{type(exc).__name__}: {str(exc)[:100]}", req["old"], req["new"], before=False)
+        say(f"[Switch] {req['new'].engine_file} failed on its first live frames: {type(exc).__name__}: {exc}")
+        self._fail(req, frame_failure(exc, LIVE_FAILED), req["old"], req["new"], before=False)
 
     # ------------------------------------------------------------------ outcomes
     def _end(self, req: Dict[str, Any]) -> None:
@@ -674,7 +696,7 @@ class SeamlessSwitch:
             return self.why_not(req)
         except Exception as exc:  # noqa: BLE001
             say(f"[Switch] hold check failed: {type(exc).__name__}: {exc}")
-            return f"its check failed ({type(exc).__name__})"
+            return "its check failed"
 
     def _done(self, req: Dict[str, Any], ok: bool, text: str) -> None:
         cb = req.get("on_done")
@@ -697,9 +719,11 @@ class SeamlessSwitch:
     def _fail(self, req: Dict[str, Any], why: str, old: Candidate, new: Candidate, *, before: bool) -> None:
         what = "the automatic switch" if req.get("auto") else "the switch"
         # an automatic switch that failed is not tried again for that setting until Dismiss (the automatic swipe
-        # keeps the ban: ``on_failed``); suggestions go on
-        todo = (f"the automatic swipe will not try {new.engine_file} again until you press Dismiss"
-                if req.get("auto") else why.todo(new, apply=True) if isinstance(why, LoadFailure) else _rebuild(new))
+        # keeps the ban: ``on_failed``; it names the setting, never its file); suggestions go on.  The operator's
+        # Apply: the one thing to do for that failure -- "rebuild" only for a file shown bad (a plain reason is
+        # one the checks could not name)
+        todo = (f"the automatic swipe will not try {new.label} again until you press Dismiss" if req.get("auto")
+                else (why if isinstance(why, LoadFailure) else LoadFailure(why)).todo(new, apply=True))
         self._end(req)
         text = f"{what} to {new.label} failed{' before it began' if before else ''} ({why}): {old.label} still " \
                f"runs - {todo}"

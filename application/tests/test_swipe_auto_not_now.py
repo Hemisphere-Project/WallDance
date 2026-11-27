@@ -21,7 +21,7 @@ from test_swipe_auto_rollback import _first_frame_raises, _look, _next_runs, _se
 
 SNOOZE = 900                     # core.config.SWIPE_AUTO_SNOOZE_S: 15 min of the loop clock
 SNOOZE_SAYS = "the automatic swipe waits: l @ 1280 was dismissed - it looks again at "
-BAN = "the automatic swipe will not try yolo11l-pose_1280.engine again until you press Dismiss"
+BAN = "the automatic swipe will not try l @ 1280 again until you press Dismiss"
 
 
 def _events(bg):

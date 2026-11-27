@@ -19,26 +19,23 @@ from test_swipe_auto_live import _bg, _live, _look_frames, _LookRunner
 
 PLAN = 842393172          # TensorRT's part of yolo11l-pose_1920x1056.engine (mgr-ran, 25/11): a load takes ~1200 MB
 NO_ROOM_SAID = ("the automatic swipe could not load l @ 1280 (no room on the GPU: 312 MB free, a load of it takes "
-                "about 1200 MB): x @ 1280 still runs - close what else uses the GPU, then Dismiss lets it try again, "
-                "or set the automatic swipe to off")
+                "about 1200 MB): x @ 1280 still runs - close what else uses the GPU, then Dismiss lets it try again")
 NO_ROOM_WAITS = ("the automatic swipe waits: it could not load l @ 1280 (no room on the GPU: 312 MB free, a load of "
-                 "it takes about 1200 MB) - close what else uses the GPU, then Dismiss lets it try again, or set the "
-                 "automatic swipe to off")
+                 "it takes about 1200 MB) - close what else uses the GPU, then Dismiss lets it try again")
 UNSURE_SAID = ("the automatic swipe could not load l @ 1280 (TensorRT gave no engine, 5000 MB free on the GPU now: "
                "too little room at that moment, or a damaged file): x @ 1280 still runs - close what else uses the "
-               "GPU, then Dismiss lets it try again; if it fails again, rebuild yolo11l-pose_1280.engine "
-               "(extra/build_engines)")
+               "GPU, then Dismiss lets it try again")
 UNSURE_UNREAD = ("the automatic swipe could not load l @ 1280 (TensorRT gave no engine: too little room on the GPU "
                  "at that moment, or a damaged file): x @ 1280 still runs - close what else uses the GPU, then "
-                 "Dismiss lets it try again; if it fails again, rebuild yolo11l-pose_1280.engine (extra/build_engines)")
+                 "Dismiss lets it try again")
 RUN_ERROR = "inference failed: RuntimeError: TensorRT enqueue failed (injected)"
-RUN_SAID = ("the automatic swipe could not run l @ 1280 (inference failed: RuntimeError): x @ 1280 still runs - "
-            "Dismiss lets it try again, or set the automatic swipe to off")
-RUN_WAITS = ("the automatic swipe waits: it could not run l @ 1280 (inference failed: RuntimeError) - Dismiss lets "
-             "it try again, or set the automatic swipe to off")
+RUN_SAID = ("the automatic swipe could not run l @ 1280 (the engine stopped during a run): x @ 1280 still runs - "
+            "set the automatic swipe to off")
+RUN_WAITS = ("the automatic swipe waits: it could not run l @ 1280 (the engine stopped during a run) - set the "
+             "automatic swipe to off")
 RUN_OOM = "inference failed: OutOfMemoryError: CUDA out of memory. Tried to allocate 20.00 MiB"
 RUN_OOM_SAID = ("the automatic swipe could not run l @ 1280 (no room on the GPU: 312 MB free): x @ 1280 still runs - "
-                "close what else uses the GPU, then Dismiss lets it try again, or set the automatic swipe to off")
+                "close what else uses the GPU, then Dismiss lets it try again")
 
 
 @pytest.fixture(autouse=True)
@@ -131,7 +128,7 @@ def test_when_file_and_room_cannot_be_told_apart_it_names_both_and_no_rebuild_fi
     bg, proc, events, loader = _bg_on("auto", _engine(tmp_path / "yolo11l-pose_1280.engine"))
     assert bg.tick() == "banned"
     assert _faults(events) == [said]
-    assert said.index("close what else uses the GPU") < said.index("rebuild")
+    assert "rebuild" not in said             # one thing to do: the GPU's room (a rebuild if it fails again: the log)
     assert "could not be read" not in said
 
 
@@ -152,8 +149,7 @@ def test_the_operators_apply_reads_the_same_answer(tmp_path, _here):
                                            "again")
     _here["mb"] = 5000.0
     assert load_failure(none, _engine(tmp_path / "sound.engine")).todo(L1280, apply=True) == (
-        "close what else uses the GPU before trying it again; if it fails again, rebuild yolo11l-pose_1280.engine "
-        "(extra/build_engines)")
+        "close what else uses the GPU before trying it again")
     oom = load_failure(RuntimeError("CUDA out of memory. Tried to allocate 64.00 MiB"), "any.engine")
     assert oom == "no room on the GPU: 5000 MB free" and oom.kind == "room"
     assert load_failure(none) == ENGINE_UNREADABLE                        # the old call (no path): as before

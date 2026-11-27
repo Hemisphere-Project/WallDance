@@ -157,7 +157,7 @@ def test_key_on_readiness_row_is_p6s(real_app, swipe_auto_unlocked, mode):  # no
     app, _ = real_app
     _readiness(app, mode)
     assert app._swipe_readiness_row().detail == (
-        f"the automatic swipe will not try {L1920.engine_file} again until you press Dismiss")
+        f"the automatic swipe will not try {L1920.label} again until you press Dismiss")
     app.swipe_bg._banned.clear()
     assert app._swipe_readiness_row().detail == (
         "l @ 1280 covers 91 % of the dancers - press 'Apply l @ 1280' (under Try other settings): it switches "

@@ -91,10 +91,23 @@ WALL_WAIT = "the automatic swipe waits for an empty wall to load {}"
 # itself -- the alert, the readiness row -- since Dismiss on the suggestion means « not now »)
 AUTO_FAILED = "the last automatic switch failed"
 APPLY_FAILED = "the last Apply failed"
-# what the look and the readiness row say while an automatic switch's ban holds (the switch's fault says the same)
+# what the look and the readiness row say while an automatic switch's ban holds (the switch's fault says the same):
+# it names the setting (``l @ 1280``), never its engine file -- the file is named only where the instruction is about
+# the file (rebuild it)
 BAN_WAIT = "the automatic swipe will not try {} again until you press Dismiss"
 # what the look says while a setting the operator dismissed is put aside (the policy's snooze)
 SNOOZE_WAIT = "the automatic swipe waits: {} was dismissed - it looks again at {}"
+
+
+def _setting_name(key: str) -> str:
+    """A banned setting as the operator reads it (``Candidate.key`` ``yolo11l-pose@1760x960`` -> its label
+    ``l @ 1760 x 960``), the key itself when it cannot be read."""
+    model, _, size = key.partition("@")
+    first, _, second = size.partition("x")
+    try:
+        return Candidate(model, int(first), (int(first), int(second)) if second else None).label
+    except ValueError:
+        return key
 
 
 @dataclass
@@ -506,8 +519,7 @@ class BackgroundSwipe:
             wait, fault = failed
             self.last_look = self._record("look", look="none", t=now, frames=0, seconds=0.0, outcome=wait)
             if fault:
-                self._fault_why = (fault, f"the automatic swipe could not load {want.label}: Dismiss lets it "
-                                          f"try again")
+                self._fault_why = (fault, f"the automatic swipe could not load {want.label}")
                 self.switch.fail(fault)
             return "banned"
         self._end_wall_wait()
@@ -770,8 +782,8 @@ class BackgroundSwipe:
 
     def _ban_says(self, key: str) -> str:
         """Why the automatic swipe leaves a banned setting alone (the look's row, the readiness row): its load or
-        run failure and what to do, or the automatic switch to it that failed."""
-        return self._unloadable.get(key) or BAN_WAIT.format(self._banned.get(key, key))
+        run failure and what to do, or the automatic switch to it that failed (the setting by its name)."""
+        return self._unloadable.get(key) or BAN_WAIT.format(_setting_name(key))
 
     def _put_aside(self, cand: Candidate) -> None:
         """``cand`` is banned: a suggestion of it goes, without a word (the switch's fault says what happened)."""
@@ -897,8 +909,7 @@ class BackgroundSwipe:
                 ms_cand=round(speed[0], 1) if speed[0] is not None else None,     # what the « slower » rule
                 ms_live=round(speed[1], 1) if speed[1] is not None else None)     # compared
             if fault:                         # the same visible path as a failed automatic switch: THE fault
-                self._fault_why = (fault, f"the automatic swipe could not {verb} {other.label}: Dismiss lets it "
-                                          f"try again")
+                self._fault_why = (fault, f"the automatic swipe could not {verb} {other.label}")
                 self.switch.fail(fault)
 
     # ------------------------------------------------------------------ the advice

@@ -14,7 +14,7 @@ from core.swipe import Observation, SwipeFrame
 from test_seamless_switch import L1280, X1280, _live, _Port
 from test_swipe_auto_live import DANCER, ON_HER, _bg, _LookRunner
 
-BAN = "the automatic swipe will not try yolo11l-pose_1280.engine again until you press Dismiss"
+BAN = "the automatic swipe will not try l @ 1280 again until you press Dismiss"
 DWELL = "the setting changed a moment ago"
 
 

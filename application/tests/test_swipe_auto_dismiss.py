@@ -16,7 +16,7 @@ from test_seamless_switch_superseded import M1280
 from test_swipe_auto_failures import SAID, WAITS, _broken_bg
 from test_swipe_auto_rollback import _first_frame_raises, _setup, _two_looks_ask_the_switch
 
-UNBAN = "the automatic swipe will not try yolo11l-pose_1280.engine again until you press Dismiss"
+UNBAN = "the automatic swipe will not try l @ 1280 again until you press Dismiss"
 
 
 def _hold(gui, held):

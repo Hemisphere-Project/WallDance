@@ -21,7 +21,7 @@ WAITS = ("the automatic swipe waits: it could not load l @ 1280 (the engine file
          "yolo11l-pose_1280.engine (extra/build_engines), then Dismiss lets it try again")
 OOM = "CUDA out of memory. Tried to allocate 64.00 MiB"
 SAID_OOM = ("the automatic swipe could not load l @ 1280 (no room on the GPU: 312 MB free): x @ 1280 still runs - "
-            "close what else uses the GPU, then Dismiss lets it try again, or set the automatic swipe to off")
+            "close what else uses the GPU, then Dismiss lets it try again")
 AUTO_FAILED = "the last automatic switch failed"
 APPLY_FAILED = "the last Apply failed"
 SAYS = "l @ 1280 covers 100 % of the dancers, x @ 1280 33 %"
@@ -103,7 +103,7 @@ def test_a_load_that_fails_for_another_reason_says_it_and_what_to_do(monkeypatch
     assert _faults(events) == [SAID_OOM]
     assert bg.status()["last_look"]["outcome"] == (
         "the automatic swipe waits: it could not load l @ 1280 (no room on the GPU: 312 MB free) - close what else "
-        "uses the GPU, then Dismiss lets it try again, or set the automatic swipe to off")
+        "uses the GPU, then Dismiss lets it try again")
     assert set(_ticks(bg, proc, 5)) == {"banned"} and len(loader.loads) == 1
 
 

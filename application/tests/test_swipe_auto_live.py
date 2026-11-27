@@ -410,8 +410,8 @@ def test_a_failed_automatic_switch_is_not_tried_again_until_dismiss():
     bg.switch.service()
     assert bg.switch.drain()
     port.hooks[0](RuntimeError("the engine raised on its first frame"), None)       # its first live frame
-    text = ("the automatic switch to l @ 1280 failed (RuntimeError: the engine raised on its first frame): x @ 1280 "
-            "still runs - the automatic swipe will not try yolo11l-pose_1280.engine again until you press Dismiss")
+    text = ("the automatic switch to l @ 1280 failed (its first live frames failed): x @ 1280 "
+            "still runs - the automatic swipe will not try l @ 1280 again until you press Dismiss")
     assert bg.switch.health() == text and bg.status()["auto_banned"] == ["yolo11l-pose_1280.engine"]
     bg.switch.dismiss()                                   # the fault row goes ... but not the ban: the bg's Dismiss
     bg.resident = Resident(L1280, "l1280b", _Runner("l1280b"), bg._resident_key(live["v"]), 0.4)
