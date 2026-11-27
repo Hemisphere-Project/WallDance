@@ -16,6 +16,16 @@ only if the window is narrower still.  Only what is DRAWN is fitted: /status, th
 whole.
 
 Pure: the GUI hands ``measure`` (its own text metrics, gui.WallDanceGUI._text_measure) -- never a character count.
+
+H2c (27/11, the show laptop): a line that NAMES its cause -- « name: explanation - instruction » (« the empty-wall
+picture is not this wall: nothing in it lines up with the camera - the wall is empty now: STANDBY, then ... ») or
+« name - instruction » -- read « the...: nothing in it lines up ... »: the name was cut, its explanation kept.  Such
+a line now gives way in this order: the tail's names; the explanation's brackets, then the explanation; a lead-in
+of the instruction that only states (« the wall is empty now: »); the name's brackets -- each whole, never a word
+cut -- and then it wraps: the name and the instruction are never cut.  Separators inside brackets do not count.  A
+part that states opens with a determiner, a pronoun or a number (``_STATES``); one that says when (« when the wall
+is empty: », « at the next break: ») or what to do (the enhancement's « turn it on - Ctrl+Shift+E ... ») is the
+instruction's own: such a line (« fact: instruction ») is fitted as before.
 """
 from __future__ import annotations
 
@@ -42,18 +52,62 @@ class LineParts:
     rest: str           # everything after it, the instruction included -- kept
     tail: str = ""      # « (+3: camera stalls, light, points) » or the other alerts -- gives way first
     more: int = 0       # how many sources / alerts the tail stands for
+    # H2c: a line that names its cause (``named``): ``fact`` is the NAME, never cut; ``rest`` is
+    # [expl « - »] [lead « : »] ins
+    expl: str = ""      # « nothing in it lines up with the camera » -- gives way whole
+    lead: str = ""      # « the wall is empty now » (it only states) -- gives way whole, after ``expl``
+    ins: str = ""       # « STANDBY, then CALIBRATE (2 Calibrate) on it, then Save to project » -- kept
+    named: bool = False
 
     @property
     def whole(self) -> str:
         return self.head + self.fact + self.sep + self.rest + self.tail
 
 
+# H2c: the first word of a part that STATES (an explanation, « the wall is empty now: »), not one that says when
+# or what to do.
+_STATES = frozenset("the a an no nothing none only it its this that these those there some all every each both "
+                    "neither either one".split())
+
+
+def _top_seps(s: str, seps: Sequence[str] = _SEPS) -> List[tuple]:
+    """[(index, separator)] of ``seps`` in ``s`` outside brackets, in order."""
+    out, depth = [], 0
+    for i, ch in enumerate(s):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        elif depth == 0:
+            sep = next((x for x in seps if s.startswith(x, i)), None)
+            if sep and i > 0:
+                out.append((i, sep))
+    return out
+
+
+def _states(part: str) -> bool:
+    words = part.strip().split(" ", 1)
+    first = words[0].lower() if words and words[0] else ""
+    return first in _STATES or first[:1].isdigit()
+
+
 def _split_body(head: str, body: str, tail: str = "", more: int = 0) -> LineParts:
-    cut = [(body.find(s), s) for s in _SEPS if body.find(s) > 0]
-    if not cut:
+    seps = _top_seps(body)
+    if not seps:
         return LineParts(head, body, "", "", tail, more)
-    i, sep = min(cut)
-    return LineParts(head, body[:i], sep, body[i + len(sep):], tail, more)
+    i, sep = seps[0]
+    name, rest = body[:i], body[i + len(sep):]
+    expl, ins = "", rest
+    if sep == ": ":
+        dash = _top_seps(rest, (" - ",))
+        if not dash or not _states(rest[:dash[0][0]]):
+            return LineParts(head, name, sep, rest, tail, more)     # « fact: instruction »: as before
+        expl, ins = rest[:dash[0][0]], rest[dash[0][0] + 3:]
+    lead = ""
+    first = _top_seps(ins)
+    if first and first[0][1] == ": " and _states(ins[:first[0][0]]):
+        lead, ins = ins[:first[0][0]], ins[first[0][0] + 2:]
+    return LineParts(head, name, sep, rest, tail, more, expl=expl, lead=lead, ins=ins, named=True)
 
 
 def split_health_line(text: str) -> LineParts:
@@ -80,6 +134,8 @@ def split_alerts(messages: Sequence[str]) -> LineParts:
 def candidates(p: LineParts) -> List[str]:
     """Every text the line may show, in the order things give way (the first is the whole line)."""
     tail = f"{TAIL_GAP}(+{p.more}: {ELLIPSIS})" if p.tail else ""     # the tail's names go; its count stays
+    if p.named:
+        return _named_candidates(p, tail)
     keep = p.sep + p.rest + tail
     out = [p.whole, p.head + p.fact + keep]
     fact = _BRACKET.sub(f"({ELLIPSIS})", p.fact)
@@ -92,12 +148,32 @@ def candidates(p: LineParts) -> List[str]:
             out.append(p.head + cut + ELLIPSIS + keep)
     if p.fact:
         out.append(p.head + ELLIPSIS + keep)
+    return _unique(out)
+
+
+def _unique(out: List[str]) -> List[str]:
     seen, uniq = set(), []
     for c in out:
         if c not in seen:
             seen.add(c)
             uniq.append(c)
     return uniq
+
+
+def _named_candidates(p: LineParts, tail: str) -> List[str]:
+    """H2c: a line that names its cause -- the tail's names, the explanation's brackets, the explanation, a lead-in
+    that only states, the name's brackets give way, each whole; never a word of the name or of the instruction."""
+    lead = p.lead + ": " if p.lead else ""
+    out = [p.whole, p.head + p.fact + p.sep + p.rest + tail]
+    if p.expl:
+        expl = _BRACKET.sub(f"({ELLIPSIS})", p.expl)
+        out.append(p.head + p.fact + p.sep + expl + " - " + lead + p.ins + tail)
+        out.append(p.head + p.fact + " - " + lead + p.ins + tail)
+    if p.lead:
+        out.append(p.head + p.fact + " - " + p.ins + tail)
+    name = _BRACKET.sub(f"({ELLIPSIS})", p.fact)
+    out.append(p.head + name + " - " + p.ins + tail)
+    return _unique(out)
 
 
 def wrap(text: str, width: float, measure: Measure) -> List[str]:

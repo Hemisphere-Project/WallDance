@@ -147,10 +147,16 @@ def test_the_real_lines_keep_their_instruction_whole_on_screen(scale, tmp_path):
         allowed = [" ".join(x.split()) for x in candidates(parts)]
         drawn = " ".join(c["drawn"].split())
         assert drawn in allowed, (c["width"], c["case"], c["drawn"])            # only what may give way, in order
-        if c["cut"]:
-            assert ELLIPSIS in drawn, (c["width"], c["case"])                   # marked
+        if c["cut"]:      # marked -- H2c: or a line naming its cause that dropped whole clauses, name - instruction
+            assert ELLIPSIS in drawn or (parts.named and " ".join(parts.fact.split()) in drawn
+                                         and " ".join(parts.ins.split()) in drawn), (c["width"], c["case"])
         assert c["inside"], (c["width"], c["case"])                             # the whole drawn text on screen
-        assert c["lines"] <= (3 if c["kind"] == "alerts" else 2), (c["width"], c["case"], c["drawn"])
+        cap = 3 if c["kind"] == "alerts" else 2
+        if c["lines"] > cap and parts.named:   # H2c: never the name cut -- unless no candidate takes `cap` lines
+            px = round((c["text_rect"][2] - c["text_rect"][0]) / max(len(x) for x in c["drawn"].split("\n")))
+            w = c["band_rect"][2] - c["band_rect"][0] - 4 * c["scale"]
+            cap = max(cap, min(len(wrap(x, w, lambda s: len(s) * px)) for x in candidates(parts)))
+        assert c["lines"] <= cap, (c["width"], c["case"], c["drawn"])
     worst = [c for c in cases if c["case"].startswith("worst")]
     assert all(ENH_HOW in " ".join(c["drawn"].split()) for c in worst)
 
