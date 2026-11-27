@@ -306,6 +306,7 @@ class BackgroundSwipe:
 
     def _tick(self) -> str:
         proc = self.processor()
+        plate_pending = bool(getattr(proc, "plate_pending", False))   # read before the live setting: a load between
         live = self.live()
         self._free_pending(live)
         if self.auto.mode == MODE_OFF:
@@ -321,7 +322,7 @@ class BackgroundSwipe:
                 # that a run already used: the policy's memory of them is gone)
                 self.auto.reset()
                 self._fresh_after = float(proc.loop_clock())
-                self._clear_suggestion(PLATE_NOT_VALID if not live.plate_ok else
+                self._clear_suggestion(PLATE_NOT_VALID if not live.plate_ok and not plate_pending else
                                        "the scene changed (project, ROI, empty-wall plate or camera)")
             self._scene = scene
         if self._last_live is not None and live.candidate != self._last_live and live.candidate != self._expect:
@@ -336,6 +337,8 @@ class BackgroundSwipe:
             # a verdict on this plate is worth nothing: no frame read, no engine, no inference, nothing said
             self.state = "waiting"
             self.last_counts = (0, 0)
+            if plate_pending:
+                return "waiting"              # the plate is not loaded yet (start-up, a project load): not known
             if self.last_look is None or self.last_look.get("outcome") != PLATE_WAIT:
                 self.last_look = self._record("look", look="none", t=float(proc.loop_clock()), frames=0,
                                               seconds=0.0, outcome=PLATE_WAIT)

@@ -1725,7 +1725,6 @@ class FrameProcessor:
         path; a load failure is logged and leaves it None)."""
         path = self.settings.fg_plate_path or ""
         if path and path != self._fg_loaded_path:
-            self._fg_loaded_path = path
             try:
                 from core.foreground import CleanPlate
                 self.set_clean_plate(CleanPlate.load(path))
@@ -1733,6 +1732,7 @@ class FrameProcessor:
             except Exception as exc:  # noqa: BLE001
                 self._fg_detector = None
                 print(f"[Foreground] plate not loaded ({type(exc).__name__}: {exc})")
+            self._fg_loaded_path = path        # once tried (``plate_pending`` holds until then)
         return self._fg_detector
 
     def light_ratio(self, frame) -> Optional[float]:
@@ -1770,6 +1770,14 @@ class FrameProcessor:
         return (self._fg_detector is not None and not self._plate_invalid
                 and not self.plate_refusal
                 and not getattr(self._fg_detector, "stale_latched", False))
+
+    @property
+    def plate_pending(self) -> bool:
+        """A plate is named (``settings.fg_plate_path``) and not tried yet: the next frame or the ops tick's light
+        sample loads it (``_ensure_plate``) -- at start-up and after a project load.  Until then ``plate_usable``
+        may be False with nothing known against the plate."""
+        path = self.settings.fg_plate_path or ""
+        return bool(path) and path != self._fg_loaded_path
 
     @property
     def plate_stamp(self) -> str:
