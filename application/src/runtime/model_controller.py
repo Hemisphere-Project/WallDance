@@ -23,6 +23,7 @@ from typing import Callable, Optional, Protocol
 
 from core.config import MODELS_DIR, USE_TENSORRT, YOLO_IMGSZ, YOLO_MODEL
 from core.model_manager import ModelManager, ModelProgress, ModelStatus
+from core import gc_policy
 
 
 class ModelUiPort(Protocol):
@@ -495,6 +496,7 @@ class ModelController:
             return self._load_model_with_progress_impl(model_name, force_pt)
         finally:
             self.watchdog().pop_busy()
+            gc_policy.request("model load")     # U3 (#t-029): a full collection between the next two frames
 
     def _load_model_with_progress_impl(self, model_name: str, force_pt: bool = False) -> bool:
         """

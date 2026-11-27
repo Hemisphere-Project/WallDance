@@ -69,6 +69,7 @@ from core.config_store import PROJECTS_DIR
 from core.ops_monitor import Alert
 from core.version import app_version
 from services import crash_marker
+from core import gc_policy
 
 _REPO = Path(__file__).resolve().parents[3]
 
@@ -398,6 +399,9 @@ class MainLoop:
 
         # After the project load, so the toast lands on the live UI.
         self._toast_previous_crash()
+        # U3 (#t-029): the app is up, the live model warm -- no full collection by itself from here on; the
+        # start-up one now, before the first RUN frame (core/gc_policy.py).
+        gc_policy.start()
         return True
 
     def _shutdown(self):
@@ -1220,6 +1224,8 @@ class MainLoop:
                 app.timing["camera_read"] = t.camera_read_ms
         if t.log_timing:
             self._log_timing_spikes_if_any(app.timing)
+        # U3 (#t-029): a full collection only here, between two frames, never with a dancer on the wall.
+        gc_policy.app_tick(app, t.tracked)
 
     # ------------------------------------------------------------------
     # Loop-only helpers (moved verbatim from WallDanceApp in Phase 4)

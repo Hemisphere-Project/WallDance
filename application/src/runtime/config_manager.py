@@ -23,6 +23,7 @@ from typing import Callable, Dict, Optional, Protocol
 
 import core.config_schema as config_schema
 from core.config_store import ConfigStore, format_config_display, sanitize_project_name
+from core import gc_policy
 
 try:
     from camera.ids_camera import CameraSource
@@ -147,6 +148,7 @@ class ConfigManager:
             return self._execute_project_switch_impl(config_filepath)
         finally:
             self.watchdog().pop_busy()
+            gc_policy.request("project load")   # U3 (#t-029): a full collection between the next two frames
 
     def _execute_project_switch_impl(self, config_filepath: str):
         """Execute a full project switch with proper cleanup and initialization.
