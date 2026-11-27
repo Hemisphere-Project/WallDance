@@ -2003,6 +2003,15 @@ class WallDanceApp:
         plates/latest.npz (loaded with the project)."""
         plate_dir = self._plate_dir()
 
+        def stamp_camera(plate):
+            # X6 ②: the camera it was taken at, so a later exposure / gain / crop is refused, not scaled -- read as
+            # its capture ends: in ``done`` below, or by Calibrate's hold (A6 ②) that keeps ``done`` until Save
+            exp, gain = self.cameras.exposure_gain_now()
+            s = self.settings
+            plate.camera = {"exposure_us": exp, "gain_db": gain, "crop": list(plate.frame_size),
+                            "roi": ([int(s.roi_x), int(s.roi_y), int(s.roi_w), int(s.roi_h)]
+                                    if s.roi_enabled else None)}
+
         def done(plate, error):
             if plate is None:
                 print(f"[Foreground] plate capture failed: {error}")
@@ -2012,12 +2021,8 @@ class WallDanceApp:
                 return
             stamp = time.strftime("%Y%m%d_%H%M%S")
             plate.source = f"{source}:{self.configs._current_project}"
-            # X6 ②: the camera it was taken at, so a later exposure / gain / crop is refused, not scaled
-            exp, gain = self.cameras.exposure_gain_now()
-            s = self.settings
-            plate.camera = {"exposure_us": exp, "gain_db": gain, "crop": list(plate.frame_size),
-                            "roi": ([int(s.roi_x), int(s.roi_y), int(s.roi_w), int(s.roi_h)]
-                                    if s.roi_enabled else None)}
+            if not plate.camera:                       # its capture ended just now: nothing held this writer
+                stamp_camera(plate)
             try:
                 path = plate.save(os.path.join(plate_dir, f"plate_{stamp}.npz"))
                 latest = plate.save(os.path.join(plate_dir, "latest.npz"))
@@ -2031,6 +2036,7 @@ class WallDanceApp:
                 print(f"[Foreground] plate not saved ({type(exc).__name__}: {exc})")
             self._publish_plate_status()
 
+        done.stamp_camera = stamp_camera               # X6 follow-up: for the hold (runtime/calibration_flows.py)
         self.processor.start_plate_capture(int(frames), done)
         print(f"[Foreground] capturing the empty wall ({frames} frames, {source})")
         self.bus.publish(api.Toast("Capturing the empty wall (2 s): keep the wall empty",

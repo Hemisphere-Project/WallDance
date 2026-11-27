@@ -771,6 +771,12 @@ class CalibrationFlows:
 
         def hold(plate, error, _write=write):
             self._plate_hold = None
+            stamp = getattr(_write, "stamp_camera", None)   # X6: its camera facts now, as the capture ends, not at Save
+            if plate is not None and callable(stamp):
+                try:
+                    stamp(plate)
+                except Exception as exc:  # noqa: BLE001 - the plate is kept; the writer stamps it at Save
+                    print(f"[Foreground] empty wall's camera not recorded yet ({type(exc).__name__}: {exc})")
             if plate is None or self._plate_commit_requested:   # a failure is reported at once
                 self._plate_commit_requested = False
                 _write(plate, error)
