@@ -87,7 +87,7 @@ def calibrate_segment(scen_path, n, conf_grid=None):
     base_sets.append("motion_sensitivity=0.55")
 
     # The sweep scores vs N — rewrite the transient scenario's expected_count.
-    scen = json.loads(Path(scen_path).read_text())
+    scen = json.loads(Path(scen_path).read_text(encoding="utf-8"))
     scen["expected_count"] = int(n)
     scen["config"] = base   # pinned base for replay's scenario_config
     Path(scen_path).write_text(json.dumps(scen, indent=2))
@@ -181,7 +181,7 @@ def main():
 
     if a.scenario:
         scen_path = Path(a.scenario)
-        man = json.loads(scen_path.read_text())
+        man = json.loads(scen_path.read_text(encoding="utf-8"))
         # copy to temp so we can rewrite expected_count/config without touching the golden
         scen_path = build_transient_scenario(man["project"], man["slot"],
                                              man.get("start", 0), man.get("frames", 500),

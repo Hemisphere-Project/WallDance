@@ -48,7 +48,7 @@ DEFAULT_WEIGHTS = {
 # --------------------------------------------------------------------------- #
 def load_scenario(path: str | Path) -> dict:
     """Load and lightly validate a scenario manifest."""
-    m = json.loads(Path(path).read_text())
+    m = json.loads(Path(path).read_text(encoding="utf-8"))
     for req in ("project", "slot", "start", "frames", "expected_count"):
         if req not in m:
             raise ValueError(f"scenario {path}: missing required field '{req}'")

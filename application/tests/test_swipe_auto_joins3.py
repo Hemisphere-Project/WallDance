@@ -157,7 +157,7 @@ def test_a_frame_budget_of_0_is_none_and_the_default_is_the_apps(short):
 def test_the_replay_driver_passes_its_frame_budget_and_says_it():
     """Fails before: the looker of a bench run always ran under the app's 55 ms (in the author's GPU run the look
     due at 152 s stood down at its start), and the log did not say it."""
-    src = (TESTS / "switch_replay.py").read_text()
+    src = (TESTS / "switch_replay.py").read_text(encoding="utf-8")
     tree = ast.parse(src)
     opts = [c.args[0].value for c in ast.walk(tree) if isinstance(c, ast.Call)
             and getattr(c.func, "attr", "") == "add_argument" and c.args and isinstance(c.args[0], ast.Constant)]

@@ -113,3 +113,91 @@ def test_guard_fails_a_test_that_writes_the_pointer(tmp_path):
     assert "plates: a file in it was replaced" in out
     assert pointer.read_text() == "sentinel"                 # its content was put back each time
     assert _state(config_store.LAST_PROJECT_FILE) == real_before
+
+
+# A folder's mtime proves nothing about its entries: on NTFS it moves lazily and by coarse ticks
+# (the laptop, 27/11: a project folder added in the tick of the previous check PASSED, and the
+# guard blamed the next test that moved a folder). This plugin gives the lazy case on any OS: every
+# folder under the workspace's projects keeps, for os.stat, the mtime it had when first looked at.
+_LAZY_MTIME = '''
+import os, stat
+_real_stat = os.stat
+_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "projects")
+_first = {}
+
+def _lazy_stat(path, *args, **kwargs):
+    st = _real_stat(path, *args, **kwargs)
+    p = None if isinstance(path, int) or kwargs.get("dir_fd") is not None else os.fspath(path)
+    if not isinstance(p, str) or not stat.S_ISDIR(st.st_mode):
+        return st
+    p = os.path.abspath(p)
+    if p != _ROOT and not p.startswith(_ROOT + os.sep):
+        return st
+    ns = _first.setdefault(p, st.st_mtime_ns)
+    seq = list(st[:os.stat_result.n_sequence_fields])
+    seq[8] = ns // 10**9
+    named = {n: getattr(st, n) for n in dir(st) if n.startswith("st_")}
+    named.update(st_mtime=ns / 1e9, st_mtime_ns=ns)
+    return os.stat_result(seq, named)
+
+os.stat = _lazy_stat
+'''
+
+_LAZY_TESTS = '''
+import os
+from core.config_store import PROJECTS_DIR
+
+def test_clean():
+    pass
+
+def test_adds_project_folder():
+    before = os.stat(PROJECTS_DIR).st_mtime_ns
+    os.mkdir(os.path.join(PROJECTS_DIR, "new-proj"))
+    print("lazy mtime held:", os.stat(PROJECTS_DIR).st_mtime_ns == before)
+
+def test_removes_config():
+    os.remove(os.path.join(PROJECTS_DIR, "proj-a", "configs", "v1.json"))
+
+def test_replaces_plate():
+    plate = os.path.join(PROJECTS_DIR, "proj-a", "plates", "live.npz")
+    with open(plate + ".tmp", "wb") as f:
+        f.write(b"new")
+    os.replace(plate + ".tmp", plate)
+
+def test_after():
+    pass
+'''
+
+
+def test_guard_fails_the_test_that_added_an_entry_though_folder_mtimes_lag(tmp_path):
+    here = Path(__file__).resolve().parent
+    ws = tmp_path / "ws"
+    (ws / "application" / "tests").mkdir(parents=True)
+    (ws / "application" / "src" / "core").mkdir(parents=True)
+    shutil.copy(here / "conftest.py", ws / "application" / "tests" / "conftest.py")
+    shutil.copy(config_store.__file__, ws / "application" / "src" / "core" / "config_store.py")
+    (ws / "application" / "src" / "core" / "__init__.py").write_text("", encoding="utf-8")
+    (ws / "application" / "tests" / "test_lazy.py").write_text(textwrap.dedent(_LAZY_TESTS), encoding="utf-8")
+    (ws / "lazy_mtime.py").write_text(textwrap.dedent(_LAZY_MTIME), encoding="utf-8")
+    (ws / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    for sub, name, data in (("plates", "live.npz", b"old"), ("configs", "v1.json", b"{}")):
+        (ws / "projects" / "proj-a" / sub).mkdir(parents=True)
+        (ws / "projects" / "proj-a" / sub / name).write_bytes(data)
+    real_before = _state(config_store.LAST_PROJECT_FILE)
+
+    # -p loads the plugin before the conftest: the guard's first look already sees frozen mtimes
+    run = subprocess.run([sys.executable, "-m", "pytest", "-p", "lazy_mtime", "application/tests", "-q", "-rA",
+                          "-p", "no:cacheprovider", "-c", str(ws / "pytest.ini"), "--rootdir", str(ws)],
+                         cwd=ws, capture_output=True, text=True, timeout=180)
+    out = run.stdout + run.stderr
+    assert "lazy mtime held: True" in out, out              # the folder's mtime did not move
+    assert run.returncode == 1, out
+    for name in ("test_adds_project_folder", "test_removes_config", "test_replaces_plate"):
+        assert f"FAILED application/tests/test_lazy.py::{name}" in out, out
+        assert f"CAUGHT application/tests/test_lazy.py::{name} (call)" in out, out
+    for name in ("test_clean", "test_after"):               # a later test is not blamed
+        assert f"PASSED application/tests/test_lazy.py::{name}" in out, out
+    assert ".: added ['new-proj'] removed []" in out
+    assert "configs: added [] removed ['v1.json']" in out
+    assert "plates: a file in it was replaced" in out
+    assert _state(config_store.LAST_PROJECT_FILE) == real_before

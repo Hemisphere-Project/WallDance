@@ -173,7 +173,7 @@ class StallSentinel:
 
 def run_soak(args) -> dict:
     manifest_path = _HERE / "scenarios" / f"{args.scenario}.json"
-    manifest = json.loads(manifest_path.read_text())
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     config = replay.scenario_config(manifest)
     video = replay._find_recording(manifest["project"], manifest["slot"])
     if video is None:

@@ -101,7 +101,7 @@ def test_a_load_that_run_overtakes_is_said_once(capsys):
 def _quit_timeout() -> float:
     """The looker's join at quit, as ``App._cb_quit`` calls it (``self.swipe_bg.stop(<seconds>)``)."""
     src = Path(__file__).resolve().parent.parent / "src" / "app.py"
-    for node in ast.walk(ast.parse(src.read_text())):
+    for node in ast.walk(ast.parse(src.read_text(encoding="utf-8"))):
         if isinstance(node, ast.FunctionDef) and node.name == "_cb_quit":
             for call in ast.walk(node):
                 if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and call.func.attr == "stop" \

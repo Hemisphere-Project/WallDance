@@ -230,7 +230,7 @@ def main():
     if args.trt:
         print("\noutput-only A/B: skipped (TRT FP16 ≠ CPU golden; run without --trt)")
     elif gpath.exists():
-        golden = json.loads(gpath.read_text())
+        golden = json.loads(gpath.read_text(encoding="utf-8"))
         diffs = {k: (golden.get(k), summary.get(k))
                  for k in _LEAN_KEYS if golden.get(k) != summary.get(k)}
         ab_ok = not diffs

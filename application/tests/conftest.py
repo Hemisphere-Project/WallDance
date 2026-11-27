@@ -42,35 +42,48 @@ def _pointer_state():
 
 
 def _tree_state(depth=2):
-    """{folder: (mtime_ns, entry names)} for the projects folder and its folders ``depth``
-    levels down (links followed: on the laptop and in the snapshots the projects are links)."""
+    """{folder: (mtime_ns, entry names, {file: (inode, size, mtime_ns)})} for the projects folder and
+    its folders ``depth`` levels down (links followed: on the laptop and in the snapshots the projects
+    are links). The files' stats (not the pointer's: its own check watches it) show a file replaced or
+    rewritten whatever its folder's mtime says; they come with the listing (``DirEntry.stat``): no call
+    per file on Windows (st_ino is 0 there), one stat per file on Linux. One pass per folder: cost."""
     state, level = {}, [_PROJECTS]
     for k in range(depth + 1):
         nxt = []
         for d in level:
+            names, files, dirs = [], {}, []
             try:
                 mtime = os.stat(d).st_mtime_ns
                 with os.scandir(d) as it:
-                    entries = list(it)
+                    for e in it:
+                        names.append(e.name)
+                        if e.is_dir():
+                            dirs.append(e.path)
+                        elif e.path != _POINTER:
+                            try:
+                                st = e.stat()
+                                files[e.name] = (st.st_ino, st.st_size, st.st_mtime_ns)
+                            except OSError:
+                                files[e.name] = None
             except OSError:
-                state[d] = (None, frozenset())
+                state[d] = (None, frozenset(), {})
                 continue
-            state[d] = (mtime, frozenset(e.name for e in entries))
+            state[d] = (mtime, frozenset(names), files)
             if k < depth:
-                nxt += [e.path for e in entries if e.is_dir()]
+                nxt += dirs
         level = nxt
     return state
 
 
 def _tree_changes(before, after, pointer_written):
-    out = []
+    out, none = [], (None, frozenset(), {})
     for d in sorted(set(before) | set(after)):
-        (m0, n0), (m1, n1) = before.get(d, (None, frozenset())), after.get(d, (None, frozenset()))
-        rel = os.path.relpath(d, _PROJECTS)
-        if n0 != n1:
-            out.append(f"{rel}: added {sorted(n1 - n0)} removed {sorted(n0 - n1)}")
-        elif m0 is not None and m1 is not None and m0 != m1 and not (d == _PROJECTS and pointer_written):
-            out.append(f"{rel}: a file in it was replaced (same entries)")
+        (m0, n0, f0), (m1, n1, f1) = before.get(d, none), after.get(d, none)
+        if n0 != n1:   # relpath only for a change: it cost more than the stats, at every check
+            out.append(f"{os.path.relpath(d, _PROJECTS)}: added {sorted(n1 - n0)} removed {sorted(n0 - n1)}")
+        elif f0 != f1 or (m0 is not None and m1 is not None and m0 != m1
+                          and not (d == _PROJECTS and pointer_written)):
+            out.append(f"{os.path.relpath(d, _PROJECTS)}: a file in it was replaced (same entries)")
     return out
 
 
@@ -78,16 +91,6 @@ class _ProjectsGuard:
     def __init__(self):
         self.pointer = _pointer_state()
         self.tree = _tree_state()
-
-    def _moved(self):
-        for d, (mtime, _) in self.tree.items():
-            try:
-                now = os.stat(d).st_mtime_ns
-            except OSError:
-                now = None
-            if now != mtime:
-                return True
-        return False
 
     def check(self):
         """What changed since the last check (and put the pointer's content back)."""
@@ -109,8 +112,11 @@ class _ProjectsGuard:
                         os.replace(tmp, _POINTER)
                 except OSError as exc:
                     problems.append(f"could not put the pointer back: {exc}")
-        # after the put-back, so the next test starts clean; a full walk only when a folder moved
-        tree = _tree_state() if pointer != self.pointer or self._moved() else self.tree
+        # after the put-back, so the next test starts clean. The whole walk at every check: an entry
+        # added or removed is seen by the names, a file replaced by its stats, never only through a
+        # folder's mtime (NTFS moves it lazily, by coarse ticks: an entry added in the tick of the last
+        # check was blamed on the next test that moved a folder); the mtime stays a further hint
+        tree = _tree_state()
         changes = _tree_changes(self.tree, tree, pointer != self.pointer)
         if changes:
             problems.append(f"the real projects folder {_PROJECTS} was written: " + "; ".join(changes)

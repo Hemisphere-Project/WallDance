@@ -61,8 +61,8 @@ def main() -> int:
     # File variants of a scenario (``variant_of``, e.g. a clip cut from the
     # take) replay the same window and have no golden of their own either.
     long_span = {p.stem for p in SCEN_DIR.glob("*.json")
-                 if json.loads(p.read_text()).get("long_span")
-                 or json.loads(p.read_text()).get("variant_of")}
+                 if json.loads(p.read_text(encoding="utf-8")).get("long_span")
+                 or json.loads(p.read_text(encoding="utf-8")).get("variant_of")}
     if args.scenarios:
         names = [n.strip() for n in args.scenarios.split(",") if n.strip()]
         unknown = sorted(set(names) - set(all_names))

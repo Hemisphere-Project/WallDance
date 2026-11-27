@@ -26,7 +26,7 @@ def _calls(node, attr):
 
 def test_the_driver_ends_each_frame_after_its_output_as_the_app_does():
     """In the frame loop, ``proc.frame_ended()`` once, after ``proc.process`` and the frame's bookkeeping."""
-    play = _func(ast.parse(DRIVER.read_text()), "play")
+    play = _func(ast.parse(DRIVER.read_text(encoding="utf-8")), "play")
     loop = next(n for n in ast.walk(play) if isinstance(n, ast.While))
     ended, process = _calls(loop, "frame_ended"), _calls(loop, "process")
     assert len(ended) == 1, "the driver never ends a frame: every paced release waits its full 0.2 s"
@@ -36,7 +36,7 @@ def test_the_driver_ends_each_frame_after_its_output_as_the_app_does():
 
 def test_the_driver_can_set_the_mode_off_in_run():
     """``--mode-off-at-s``: one option, and ``set_mode("off")`` in the frame loop."""
-    tree = ast.parse(DRIVER.read_text())
+    tree = ast.parse(DRIVER.read_text(encoding="utf-8"))
     opts = [c.args[0].value for c in _calls(_func(tree, "main"), "add_argument") if c.args]
     assert "--mode-off-at-s" in opts, "no way to cause a release in RUN"
     loop = next(n for n in ast.walk(_func(tree, "play")) if isinstance(n, ast.While))

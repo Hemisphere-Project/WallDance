@@ -315,5 +315,5 @@ def test_the_corpus_manifests_pin_intermittent_off():
     # Their snapshots predate the key (absent meant OFF): pinned so the corpus
     # and its goldens do not move with the D33 default.
     for path in sorted((HERE / "scenarios").glob("*.json")):
-        cfg = json.loads(path.read_text())["config"]
+        cfg = json.loads(path.read_text(encoding="utf-8"))["config"]
         assert cfg.get("tracker_intermittent_confirm") is False, path.name

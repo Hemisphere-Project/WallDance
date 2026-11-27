@@ -89,7 +89,7 @@ def _track_samples(tracks):
 
 def calibrate_window(scenario_path: str, frames: Optional[int] = None) -> dict:
     """Re-derive one slot. Returns scene params + the SubjectRun for pooling."""
-    manifest = json.loads(Path(scenario_path).read_text())
+    manifest = json.loads(Path(scenario_path).read_text(encoding="utf-8"))
     base = replay.scenario_config(manifest)
     video = str(replay._find_recording(manifest["project"], manifest["slot"]))
     model = base.get("model", "yolo11x-pose")

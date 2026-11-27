@@ -164,7 +164,7 @@ def main():
         if a.frames:
             fa, fb = (int(v) for v in a.frames.split(":"))
         rows = strip_rows(scoring._load_timeline(tl), fa, fb)
-        m = json.loads(Path(man).read_text())
+        m = json.loads(Path(man).read_text(encoding="utf-8"))
         if fa is not None:
             m = dict(m, start=fa, frames=fb - fa)
         fx = {"name": name, "manifest": m, "max_dancers": a.max_dancers,
