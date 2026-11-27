@@ -191,14 +191,23 @@ class ReviewStartupOptions:
 class _CalibrationUiAdapter:
     """CalibrationUiPort publishing seam events; available mirrors GUI existence."""
 
+    # X2 follow-up (#t-054, 27/11): the card's « Wall light » line when there is no verdict to give (yet)
+    WALL_LIGHT_MEASURING = "Wall light: being measured - it will show here in a few seconds"
+    WALL_LIGHT_NO_PLATE = ("Wall light: no verdict - this Calibrate took no empty-wall picture"
+                           " - Calibrate on the empty wall")
+    WALL_LIGHT_FAILED = "Wall light: no verdict - the empty-wall picture failed - Calibrate on the empty wall"
+
     def __init__(self, app: "WallDanceApp"):
         self._app = app
+        self._card_waiting = None        # X2 follow-up: the card's text while its plate is still being taken
 
     @property
     def available(self) -> bool:
         return self._app.bus.ui_ready
 
     def set_calibrate_status(self, text):
+        if text:                         # X2 follow-up: a new Calibrate runs, the card that waited is gone
+            self._card_waiting = None
         self._app.bus.publish(api.CalibProgress(text))
 
     def show_toast(self, message: str, duration: float, color):
@@ -214,31 +223,62 @@ class _CalibrationUiAdapter:
         # on_save is always configs._cb_save_config (both flows); the adapter
         # wires the dialog's "Save to project" to a SaveConfig command, so the
         # event stays pure data (tablet-transportable, §4).
-        self._app.bus.publish(api.CalibReportCard(summary + self._wall_light_line()))
+        line = self._wall_light_line()
+        # X2 follow-up: a card built while this Calibrate's empty wall is still being taken is published
+        # again, the verdict in its last line, when the picture ends (calibrate_plate_ended)
+        self._card_waiting = summary if line == "\n" + self.WALL_LIGHT_MEASURING else None
+        self._app.bus.publish(api.CalibReportCard(summary + line))
         ended = getattr(self._app, "_readiness_calibrate_ended", None)   # H3: readiness once nothing is busy
         if ended is not None:
             ended()
 
-    def _wall_light_line(self, fresh_s: float = 600.0) -> str:
-        """X2 (#t-054): the light verdict of the empty wall this Calibrate just took, as the card's last
-        line -- "" while that capture runs, if it failed, or on any error (the readiness row carries it)."""
+    def calibrate_plate_ended(self, recorded: bool) -> None:
+        """X2 follow-up: Calibrate's empty-wall picture ended (``recorded``: a plate, else it failed); the card
+        that said « being measured » comes again with the verdict, or with why there is none."""
+        summary, self._card_waiting = self._card_waiting, None
+        if summary is None:
+            return
+        line = self._wall_light_line(just_taken=True) if recorded else "\n" + self.WALL_LIGHT_FAILED
+        if not recorded:
+            print(f"[Calibrate] {self.WALL_LIGHT_FAILED}")
+        self._app.bus.publish(api.CalibReportCard(summary + line))
+
+    def _wall_light_line(self, fresh_s: float = 600.0, just_taken: bool = False) -> str:
+        """X2 (#t-054): the card's last line, always one (X2 follow-up, 27/11): the light verdict of the empty
+        wall this Calibrate took, in the readiness row's words (core/ops_monitor.check_wall_light); « being
+        measured » while that picture is still being taken; « no verdict » and what to do when there is none.
+        ``just_taken``: the plate was installed this frame, before any frame judged it (it is « ready »)."""
         try:
             proc, s = self._app.processor, self._app.settings
+            flows = getattr(self._app, "calibration", None)
+            hold = getattr(flows, "_plate_hold", None)
+            if not just_taken and proc.plate_status == "capturing":
+                mine = hold is not None and getattr(proc, "_plate_capture_done", None) is hold
+                line = self.WALL_LIGHT_MEASURING if mine else self.WALL_LIGHT_NO_PLATE
+                print(f"[Calibrate] {line}")
+                return "\n" + line
             det = getattr(proc, "_fg_detector", None)
-            if det is None or proc.plate_status == "capturing":
-                return ""
-            plate = det.plate
-            age = (datetime.now() - datetime.fromisoformat(plate.created)).total_seconds()
-            if not str(plate.source).startswith("calibrate") or not 0 <= age <= fresh_s:
-                return ""
-            from core.light_verdict import plate_light_verdict
+            plate = det.plate if det is not None else None
+            pending = getattr(flows, "_pending_plate", None)
+            mine = plate is not None and pending is not None and pending[0] is plate   # A6 ②: held until Save
+            if plate is not None and not mine:
+                age = (datetime.now() - datetime.fromisoformat(plate.created)).total_seconds()
+                mine = str(plate.source).startswith("calibrate") and 0 <= age <= fresh_s
+            if not mine:
+                print(f"[Calibrate] {self.WALL_LIGHT_NO_PLATE}")
+                return "\n" + self.WALL_LIGHT_NO_PLATE
+            from core.light_verdict import LightVerdict
+            from core.ops_monitor import check_wall_light
             roi = ((s.roi_x, s.roi_y, s.roi_w, s.roi_h)
                    if s.roi_enabled and s.roi_w > 0 and s.roi_h > 0 else None)
-            line = plate_light_verdict(plate, roi).line()
-            print(f"[Calibrate] {line}")
-            return "\n" + line
-        except Exception:  # noqa: BLE001 - the card must show whatever happens here
-            return ""
+            row = check_wall_light(plate=plate, roi=roi,
+                                   plate_status="ready" if just_taken else str(proc.plate_status))
+            line = LightVerdict(row.status, row.detail).line()
+        except Exception as exc:  # noqa: BLE001 - the card must show whatever happens here
+            line = (f"Wall light: no verdict - not judged here ({type(exc).__name__})"
+                    " - read the wall light row of the readiness check")
+        print(f"[Calibrate] {line}")
+        return "\n" + line
 
     def show_calib2_dialog(self, rows, proposal: str):
         self._app.bus.publish(api.Calib2PoolChanged(rows, proposal))

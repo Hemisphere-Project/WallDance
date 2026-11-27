@@ -185,15 +185,20 @@ def test_calibrates_card_ends_with_the_light_line_of_its_own_plate():
 
     s = card()
     assert s.startswith("Brightness: 80\nWall light: RED - ") and "away from the left" in s
-    proc.plate_status = "capturing"                   # this Calibrate's capture still running: no line
-    assert card() == "Brightness: 80"
+    # X2 follow-up (27/11): never a card without its line -- a capture that is not this Calibrate's (no
+    # Calibrate holds it here), an old plate, another source, no plate: « no verdict » and what to do
+    # (the « being measured » card and its update: tests/test_x2b_card_wall_light.py)
+    none = "Brightness: 80\n" + app_mod._CalibrationUiAdapter.WALL_LIGHT_NO_PLATE
+    assert none.endswith(" - Calibrate on the empty wall")
+    proc.plate_status = "capturing"
+    assert card() == none
     proc.plate_status = "ready"
     hot.created = "2026-10-08T21:36:18"               # an old plate: not this Calibrate's
-    assert card() == "Brightness: 80"
+    assert card() == none
     hot.created, hot.source = time.strftime("%Y-%m-%dT%H:%M:%S"), "button:proj"
-    assert card() == "Brightness: 80"
+    assert card() == none
     proc._fg_detector = None
-    assert card() == "Brightness: 80"
+    assert card() == none
 
 
 # ------------------------------------------------------------------ the 08/10 plates

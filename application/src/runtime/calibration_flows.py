@@ -774,9 +774,12 @@ class CalibrationFlows:
             if plate is None or self._plate_commit_requested:   # a failure is reported at once
                 self._plate_commit_requested = False
                 _write(plate, error)
-                return
-            self._pending_plate = (plate, _write)
-            print("[Foreground] empty wall recorded for this session: written to the project at Save")
+            else:
+                self._pending_plate = (plate, _write)
+                print("[Foreground] empty wall recorded for this session: written to the project at Save")
+            ended = getattr(self.ui, "calibrate_plate_ended", None)   # X2: the card waiting for its verdict
+            if self.ui.available and callable(ended):
+                ended(plate is not None)
         proc._plate_capture_done = hold
         self._plate_hold = hold
 
