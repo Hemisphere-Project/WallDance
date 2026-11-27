@@ -353,7 +353,13 @@ class TrackingLogger:
         if emitted is not None:
             data["emitted"] = emitted
         # No auto-flush on this entry: the output stage may still annotate it
-        # (annotate_frame_summary); the next event / flush writes it.
+        # (annotate_frame_summary); the next event / flush writes it.  The
+        # entries before it (earlier frames', annotated already) go out on the
+        # flush clock here (U3, 27/11): on an empty wall no other event comes,
+        # and the summaries piled up in _pending for the whole show (5 live
+        # objects a frame), then went out in one write at the first dancer.
+        if time.time() - self._last_flush_time >= self.flush_interval:
+            self.flush()
         self._last_summary = self.log("FRAME_SUMMARY", data, _autoflush=False)
 
     def flush(self):
