@@ -84,14 +84,17 @@ POLICY: Dict[str, str] = {
     "LoadSafeDefaults": CONTROL, "SelectConfigVersion": CONTROL,
     "SetInputTransform": CONTROL,
     # P5 settings swipe: Run goes beside the show (paced, one engine at a time) during the warmup, in RUN by
-    # design (frames are kept while YOLO runs) -- so control.  P6: Apply is the seamless switch whenever the
-    # winner's engine is built (loaded beside, swapped between two frames: no pause) -- control; the app itself
-    # refuses in RUN the one Apply that reloads (an engine to build), as it does for the operator.  The
-    # automatic swipe's mode (off / suggest / switch): control.
-    "RunSettingsSwipe": CONTROL, "ApplySettingsSwipe": CONTROL, "SetSwipeAuto": CONTROL,
+    # design (frames are kept while YOLO runs) -- so control.  P6: the automatic swipe's mode (off / suggest /
+    # switch) is control, not heavy: setting it is the operator's deliberate act that opens P6, and setting it
+    # to off must stay possible in RUN -- the failure sentences tell the operator to do just that.
+    "RunSettingsSwipe": CONTROL, "SetSwipeAuto": CONTROL,
     # heavy: STANDBY only
     "RunDryRunReplay": HEAVY, "RunCalibSweep": HEAVY, "RunKnownNTune": HEAVY,
     "RebuildTrt": HEAVY, "LoadModel": HEAVY, "SetImgsz": HEAVY, "ToggleTrt": HEAVY,
+    # P5's Apply is the model reload LoadModel / SetImgsz run (camera closed, no OSC for seconds).  P6's Apply
+    # may be the seamless switch in RUN, for the operator, once the automatic swipe is on; a remote Apply stays
+    # STANDBY only whatever the key says -- the simplest rule, and the safe one during a show.
+    "ApplySettingsSwipe": HEAVY,
     "LaunchProject": HEAVY, "SelectProject": HEAVY, "LoadConfig": HEAVY,
     "ImportVideoToSlot": HEAVY,   # multi-GB disk copy / transcode
     # never: destructive, or a GUI dialog nobody is there to answer

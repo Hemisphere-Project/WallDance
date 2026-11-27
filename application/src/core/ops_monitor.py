@@ -323,7 +323,7 @@ def check_dancer_size(*, measured: Optional[Tuple[float, int, float]], lb_scale:
 
 
 def check_swipe(*, fault: Optional[str] = None, result=None, fault_recovered: bool = False,
-                seamless: bool = False) -> Optional[CheckResult]:
+                seamless: bool = False, swipe_auto: str = "off") -> Optional[CheckResult]:
     """P5 (Plan Cordee): the settings swipe's readiness row -- or None, its usual answer.  The swipe is advice,
     not a readiness condition: no row when there is nothing to say (no swipe yet, collecting, no verdict, a
     stale or too old verdict, « keep », no plate; the swipe's own line beside its button says those), so READY
@@ -337,7 +337,8 @@ def check_swipe(*, fault: Optional[str] = None, result=None, fault_recovered: bo
       model (a few seconds without tracking), so nothing here says to press it during a show; it names the Apply
       button by its label (pressing « Try other settings » again would start a new swipe and drop the advice) --
       unless ``seamless`` (P6: the winner's engine is built, Apply loads it beside the live model and switches
-      between two frames, the show runs on).
+      between two frames, the show runs on).  ``swipe_auto`` off (the project key, off by default): Apply is P5's
+      (STANDBY only, the reload), and so is this row, word for word -- ``seamless`` does not count then.
 
     The background (automatic) swipe never adds a row of its own except a ``fault``: a failed automatic switch or
     a failed seamless Apply (the caller passes it; the previous setting kept running: ``fault_recovered``)."""
@@ -349,6 +350,10 @@ def check_swipe(*, fault: Optional[str] = None, result=None, fault_recovered: bo
     if result is not None and getattr(result, "winner", None) is not None and getattr(result, "switch", False):
         reason = str(getattr(result, "reason", "") or "")
         win = getattr(getattr(result, "winner", None), "label", "")
+        if swipe_auto == "off":
+            # P5's row: the Apply button's label as the GUI shows it then
+            return CheckResult(name, "warn", f"{reason} - in STANDBY press 'Apply {win} (STANDBY)', under Try other "
+                                             f"settings")
         if seamless:
             return CheckResult(name, "warn", f"{reason} - press 'Apply {win}' (under Try other settings): it "
                                              f"switches between two frames, the show runs on")

@@ -134,6 +134,9 @@ class SeamlessSwitch:
         self.on_confirmed: Optional[Callable[[Dict[str, Any]], None]] = None
         self.on_failed: Optional[Callable[[Dict[str, Any]], None]] = None
         self.on_superseded: Optional[Callable[[Dict[str, Any]], None]] = None
+        # (request) -> why a switch asked earlier must not go on now, or None: asked before the load, before the
+        # warm-up and right before the swap (the app: the automatic swipe turned off meanwhile) -- abandoned then
+        self.why_not: Optional[Callable[[Dict[str, Any]], Optional[str]]] = None
         self._want: Optional[Dict[str, Any]] = None       # asked, for the worker
         self._request: Optional[Dict[str, Any]] = None    # prepared, for the loop
         self._probation: Optional[Dict[str, Any]] = None  # swapped in, its first frames not yet run
@@ -244,6 +247,10 @@ class SeamlessSwitch:
         if live is None or live.key != want["live_key"]:
             self._abandon(want, f"not switched to {winner.label}: the setting changed meanwhile")
             return
+        held = self._held(want)
+        if held:
+            self._abandon(want, f"not switched to {winner.label}: {held}")
+            return
         prep, loaded_here = want.get("prepared"), False
         if prep is None:
             self.state = "loading"
@@ -261,6 +268,12 @@ class SeamlessSwitch:
                     say(f"[Switch] {winner.engine_file} did not load: {type(exc).__name__}: {exc}")
                 self._failed_before(want, live, why)
                 return
+        held = self._held(want)                         # changed during the load
+        if held:
+            if loaded_here:
+                self.release((prep.model, prep.runner))
+            self._abandon(want, f"not switched to {winner.label}: {held}")
+            return
         err = self.warm(prep, winner)
         if err:
             if loaded_here:
@@ -328,6 +341,12 @@ class SeamlessSwitch:
                 if req["loaded_here"]:
                     self.release((prep.model, prep.runner))
                 self._abandon(req, f"not switched to {req['winner'].label}: the setting changed meanwhile")
+                return True
+            held = self._held(req)
+            if held:
+                if req["loaded_here"]:
+                    self.release((prep.model, prep.runner))
+                self._abandon(req, f"not switched to {req['winner'].label}: {held}")
                 return True
             old_cand, new_cand = live.candidate, prep.candidate
             take_t = self.processor().loop_clock()
@@ -428,6 +447,16 @@ class SeamlessSwitch:
         self._fail(req, f"{type(exc).__name__}: {str(exc)[:100]}", req["old"], req["new"], before=False)
 
     # ------------------------------------------------------------------ outcomes
+    def _held(self, req: Dict[str, Any]) -> Optional[str]:
+        """``why_not(req)``, None without it; when it raises, held (no switch: the live model runs on)."""
+        if self.why_not is None:
+            return None
+        try:
+            return self.why_not(req)
+        except Exception as exc:  # noqa: BLE001
+            say(f"[Switch] hold check failed: {type(exc).__name__}: {exc}")
+            return f"its check failed ({type(exc).__name__})"
+
     def _done(self, req: Dict[str, Any], ok: bool, text: str) -> None:
         cb = req.get("on_done")
         if cb is not None:

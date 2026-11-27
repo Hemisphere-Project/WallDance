@@ -1993,6 +1993,9 @@ class WallDanceGUI:
             for tag in tag_map[name]:
                 if dpg.does_item_exist(tag):
                     dpg.set_value(tag, value)
+        if name == 'swipe_auto' and dpg.does_item_exist("swipe_btn_tip"):   # P5's words while it is off
+            from gui_builder import SWIPE_BTN_TIP_OFF, SWIPE_BTN_TIP_ON
+            dpg.set_value("swipe_btn_tip", SWIPE_BTN_TIP_OFF if value == "Auto: off" else SWIPE_BTN_TIP_ON)
     
     def update_model_dropdown(self, model_name: str):
         """Update model dropdown to show current model."""
@@ -3076,8 +3079,10 @@ class WallDanceGUI:
         dpg.configure_item(tag, color=WARN_AMBER if r.get("switch") else TEXT_NORMAL)
         if r.get("switch") and r.get("winner") and dpg.does_item_exist("swipe_apply_btn"):
             label = r.get("apply_label") or f"Apply {r['winner']} (STANDBY: a few seconds without tracking)"
-            standby = " (STANDBY" in label                    # the panel is narrow: the STANDBY note under it
-            shown = label.replace(" (STANDBY", "\n(STANDBY", 1).replace(" a few seconds ", " a few seconds\n", 1)
+            standby = " (STANDBY:" in label                   # the panel is narrow: the STANDBY note under it
+            # (P5's « Apply ... (STANDBY) », the automatic swipe off, fits on one line, as it did)
+            shown = (label.replace(" (STANDBY", "\n(STANDBY", 1).replace(" a few seconds ", " a few seconds\n", 1)
+                     if standby else label)
             dpg.configure_item("swipe_apply_btn", label=shown, show=True,
                                width=scaled(240), height=scaled(58 if standby else 26))
             if r.get("apply_tip") and dpg.does_item_exist("swipe_apply_tip"):

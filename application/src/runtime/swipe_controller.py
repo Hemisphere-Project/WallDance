@@ -485,20 +485,21 @@ class SwipeController:
         return age is not None and age <= self.verdict_max_age_s
 
     def readiness(self, *, plate_ready: bool, live_now: Optional[LiveSetting], other_fault: Optional[str] = None,
-                  seamless: Optional[bool] = None):
+                  seamless: Optional[bool] = None, swipe_auto: str = "off"):
         """The swipe's readiness row, or None: the swipe is advice, not a readiness condition.  A ``warn`` row
         only while a swipe the operator ran recommends a switch (worded for STANDBY, or for the seamless Apply when
         ``seamless``); for a failed Apply a ``fail`` row while nothing sure runs and a ``warn`` one once the
         previous setting runs again -- this controller's reload, or a failed seamless switch (``other_fault``:
         ``SeamlessSwitch.health()``, the previous setting never stopped: ``warn``); no row otherwise (no swipe
         yet, collecting, no verdict, stale, too old, « keep », no plate; a background suggestion) -- the swipe's
-        own line beside its button says those."""
+        own line beside its button says those.  ``swipe_auto``: the project key (off: P5's row, P5's Apply)."""
         from core.ops_monitor import check_swipe
         result = self.outcome.result if self._advice_live(live_now) else None
         if self.fault:
             return check_swipe(fault=self.fault, fault_recovered=self.fault_recovered, result=result,
-                               seamless=bool(seamless))
-        return check_swipe(fault=other_fault, fault_recovered=True, result=result, seamless=bool(seamless))
+                               seamless=bool(seamless), swipe_auto=swipe_auto)
+        return check_swipe(fault=other_fault, fault_recovered=True, result=result, seamless=bool(seamless),
+                           swipe_auto=swipe_auto)
 
     def applicable(self, live_now: Optional[LiveSetting]) -> Tuple[Optional[str], Optional[Candidate],
                                                                     Optional[float]]:
