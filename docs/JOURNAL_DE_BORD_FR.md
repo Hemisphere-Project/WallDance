@@ -25,7 +25,7 @@ Il est écrit pour la compagnie, pour Nico, le technicien, et pour Thomas quand 
 
 ## Séance du 25 au 27 novembre 2026 (en cours) <!-- src: hub log 2026-11-25 ; hub log 2026-11-26 ; hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
 
-En bref : on a relu de près la répétition sur façade du 8 octobre. Le détecteur n'y voyait les danseurs qu'environ une fois sur deux, d'abord parce que l'image qu'on lui donnait était trop petite. On a corrigé cela dans la nuit. Puis on a commencé le « montage de répétition » : la version que Nico fera tourner à la répétition, puis seul au premier spectacle. Dans la nuit du 26 au 27, on a enfin trouvé d'où viennent les arrêts de la caméra. <!-- src: hub log 2026-11-25 ; hub log 2026-11-26 ; hub note 2026-11-27-camera-stalls-addendum.md -->
+En bref : on a relu de près la répétition sur façade du 8 octobre. Le détecteur n'y voyait les danseurs qu'environ une fois sur deux, d'abord parce que l'image qu'on lui donnait était trop petite. On a corrigé cela dans la nuit. Puis on a commencé le « montage de répétition » : la version que Nico fera tourner à la répétition, puis seul au premier spectacle. Dans la nuit du 26 au 27, on a enfin trouvé d'où viennent les arrêts de la caméra. Le 27 novembre, le montage complet a tourné sur le portable, devant la vraie caméra : il y a montré sept défauts, tous corrigés le jour même. <!-- src: hub log 2026-11-25 ; hub log 2026-11-26 ; hub note 2026-11-27-camera-stalls-addendum.md ; hub note 2026-11-26-rehearsal-build-status.md@9074e5c73 -->
 
 ### Où on en était
 
@@ -258,6 +258,58 @@ Ce qui a rejoint le montage, puis ce qui attend Thomas. Pour chaque pièce, dans
 - **Ce que reprend « New project ».** La correction telle quelle, la correction en gardant aussi l'adresse et le port OSC du lieu, ou rien. Recommandé : la deuxième.
 - **Le mode du balayage automatique le 7 décembre.** Aujourd'hui il ne peut pas tourner. Si le deuxième groupe est corrigé et relu à temps, « suggest » au plus ; « auto » pas avant le troisième. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@15eda96ad -->
 
+#### La journée du 27 novembre <!-- src: hub note 2026-11-26-rehearsal-build-status.md@9074e5c73 -->
+
+Le matin, Thomas a tranché les cinq décisions. Le montage a reçu sa dernière pièce, puis il a tourné sur le portable, devant la vraie caméra. Ce passage a montré ce qu'aucun essai sur la machine d'analyse ne pouvait montrer : c'est la leçon du jour.
+
+**Les cinq décisions du matin** (Thomas, 7 h 40), et ce que chacune est devenue : <!-- src: hub note 2026-11-26-rehearsal-build-status.md@9074e5c73 -->
+
+- **Le point maintenu sur un vrai corps : accepté, avec son objectif reformulé.** Il est entré dans le montage. Les points sur personne tombent à 3,0 % au lieu de 5,8 sur la machine d'analyse, à 3,5 % au lieu de 6,2 sur le portable. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@9074e5c73 ; commit feat(slots): a held slot sits on a foreground group [F4] -->
+- Le long point au-dessus du duo passe de 12,9 à 1,0 seconde. À la lettre, il reste au-dessus de l'objectif de 2 %, et un point sur personne de 6,0 secondes demeure sur une prise. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@9074e5c73 -->
+- **L'étape « un danseur » : acceptée, sa fenêtre de taille lue en pixels de l'image d'origine.** Elle est entrée à 9 h 15, avec sa carte et la bande : le montage avait alors toutes ses pièces. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@9074e5c73 ; commit feat(calibrate): the dancer step, 10 s, and the band [X4] -->
+- **Le lien de la caméra à 124 Mo/s : oui.** Il est réglé dans la copie de répétition du portable ; dans le logiciel, il reste éteint par défaut. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@9074e5c73 -->
+- **« New project » : la correction est entrée.** Un nouveau projet repart des réglages par défaut de l'app. Il ne garde, du dernier projet, que ceux du lieu : la caméra, l'adresse et le port OSC, la limite du lien de la caméra. <!-- src: commit fix(projects): a new project starts from the defaults and keeps only the place's set-up [A2] -->
+- **Le balayage automatique en « suggest », une fois justifié.** Sa relecture a occupé la journée : voir plus bas.
+
+**Le montage sur le portable : ce qui a tenu** (sur l'emplacement de test, de 9 h 20 à 11 h 05). <!-- src: hub note 2026-11-26-rehearsal-build-status.md@9074e5c73 -->
+
+- *Les quatre prises rejouées* donnent sur le portable la même détection que sur la machine d'analyse, à moins d'un point près. La danseuse a par exemple un point sur 95,1 % de ses images, contre 95,0. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@9074e5c73 -->
+- *Plus d'arrêt de la caméra.* Avec le lien à 124 Mo/s, aucun arrêt en 21 minutes de RUN, sur trois lancements. Au réglage d'avant, sur ce même bureau, on en comptait 7 à 9 par minute. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@9074e5c73 -->
+- *La mémoire se stabilise :* 3 660 objets de plus par minute sur les 12 premières minutes, 356 sur les 6 suivantes. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@9074e5c73 -->
+- *Ce qu'était la « fuite ».* Une vraie fuite a été trouvée et corrigée : le relevé du suivi gardait en mémoire chaque image d'un mur vide, environ un demi-million d'objets par heure. <!-- src: commit fix(log): the tracking log no longer keeps every frame of an empty wall in memory [U3] -->
+- Le reste, vu la nuit, n'en est pas une : l'historique des 2 000 derniers événements, que lit la veille à distance. Il se remplit en une vingtaine de minutes, puis ne grossit plus : quelques mégaoctets. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@9074e5c73 -->
+- *La batterie de tests du portable :* 2 146 tests réussis, aucun échec. *Calibrate est allé au bout sur la vraie caméra*, à 10 h 32, jusqu'à la carte et sa ligne « Wall light » et l'enregistrement dans le projet. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@9074e5c73 -->
+
+**Ce que seule la vraie caméra pouvait montrer.** En une matinée, faire tourner le montage sur le portable a montré sept défauts. Aucun ne se voyait sur la machine d'analyse : il fallait la vraie caméra, le vrai écran, Windows. Chacun a été corrigé le jour même.
+
+- **La bande rouge coupait le nom du problème.** Le jour de l'arrivée sur un lieu, l'app part avec l'image du mur vide d'un autre mur. La bande raccourcissait alors sa ligne du mauvais côté : la cause disparaissait. Elle garde maintenant la cause et la consigne entières. <!-- src: commit health band: the cause keeps its name when the line is shortened [H2] -->
+- **L'étape « un danseur » démarrait sur l'image d'un autre mur.** Elle refuse maintenant de partir avant un Calibrate sur le mur vide, et la bande dit « not measured », avec la raison. <!-- src: commit dancer step: not against an empty-wall picture that is not this wall [X4] -->
+- **Un objet pouvait bloquer Calibrate pour toujours**, alors que la fiche de Nico disait de le masquer. Calibrate juge maintenant le mur comme en RUN : un objet masqué (« Exclusion Mask ») ne l'arrête plus, un danseur hors du masque l'arrête toujours. Revers à connaître : une personne debout dans une zone masquée ne l'arrête plus non plus. <!-- src: commit Calibrate: the « someone in view » stop honours the Exclusion Mask [X3] -->
+- **Un point partait vers les visuels pendant une minute, alors que l'écran disait « personne ».** Dans la pièce vide, le détecteur a cru voir quelqu'un 4,2 secondes, et le point a gagné son maintien de 30 secondes sur une tache qui bougeait. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@9074e5c73 -->
+- Des images où seul le mouvement était vu ont relancé ce maintien : 59,8 secondes en tout, avec 0 danseur à l'écran. Le suivi n'a pas changé, mais l'écran compte et nomme maintenant un point maintenu : « Dancers: 1 (1 held) ». <!-- src: hub note 2026-11-26-rehearsal-build-status.md@9074e5c73 ; commit status, health, watch: a held point that is sent is counted and named [F4] -->
+- **Le bouton de Calibrate affichait « CANCEL » après un arrêt.** Après un arrêt pour quelqu'un dans l'image, il affiche de nouveau « CALIBRATE ». <!-- src: commit Calibrate page: four leftovers of today's reviews [W1] -->
+- **Deux tests faux sous Windows.** La batterie de tests du portable a d'abord compté 2 échecs : deux tests de la règle de nettoyage de la mémoire, faux sous Windows seulement. Ils sont corrigés ; l'app n'était pas en cause. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@9074e5c73 ; commit tests: the gc policy's two tests pass on the show laptop too [U3] -->
+- **L'outil d'installation a vidé l'emplacement de test pendant deux minutes.** C'est un incident de la session de montage elle-même. À 9 h 21, il a effacé les 779 fichiers de cet emplacement, sans rien écrire, et l'installation a été refaite deux minutes plus tard. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@9074e5c73 -->
+- La version du spectacle, les projets et les modèles n'ont pas été touchés. Lancé depuis une copie du code, l'outil voyait un dossier vide, et rien ne l'arrêtait. Il prend maintenant toujours le code entier, et refuse ce qui n'est pas l'app. À 11 h 02, une installation lancée de la même façon a écrit 13 fichiers et n'en a effacé aucun. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@9074e5c73 ; commit tools: a deploy can no longer empty the slot [W1] -->
+
+**Mesurer avant d'agir.** Avant de relancer la batterie de tests sur le portable, on a regardé ce qu'elle envoie : des messages « clear » (« plus personne sur le mur ») au port où écoutent les visuels. Elle n'a donc pas été lancée pendant que quelqu'un travaillait sur le portable. Un garde-fou est en cours.
+
+**Le balayage automatique : trois relectures à l'aveugle en un jour.**
+
+- *Vu :* la nuit, trois relecteurs avaient trouvé 14 défauts importants, en trois groupes ; le premier était corrigé (plus haut). Le matin, deux relecteurs ont relu à l'aveugle les corrections du deuxième groupe. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@9074e5c73 -->
+- Leur verdict : oui, avec des conditions, pour la répétition ; pas encore pour le spectacle. Deux points sont repartis chez la session du balayage, et un troisième tour, court, était en cours à midi.
+- Une invitation « Apply now » pouvait rester 30 minutes à l'écran sans confirmation. Et une alerte disait au technicien de fermer ce qui utilise la carte graphique : sur le portable, ce sont les visuels. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@9074e5c73 -->
+- *Où il en est :* le 27 novembre à midi, il est jugé justifié pour la répétition, sous des conditions d'emploi ; sa mise en service, par une mise à jour à part, reste à venir. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@9074e5c73 --> <!-- À la mise en service du mode « suggest », changer cette seule phrase : la date, et ce qui a été mis en service. -->
+- *Les conditions d'emploi à la répétition :* choisir le mode en STANDBY, avant la danse. Ne jamais appliquer une suggestion : la noter, cliquer « Dismiss », prévenir Thomas. À une alerte rouge du balayage : « Auto: off », ne rien fermer, ne rien reconstruire.
+- *Limites :* pas encore pour le spectacle. Le mode « auto », où l'app changerait de modèle seule, attend la correction du troisième groupe.
+
+**Ce qui reste dû, et pourquoi.**
+
+- *La troisième passe sur le portable :* les dernières corrections du jour n'ont pas encore été vues sur la vraie caméra. Le portable est occupé depuis 11 h 40 environ : quelqu'un y travaille. Rien n'y touche tant que Thomas ne le dit pas libre. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@9074e5c73 -->
+- *Les images du guide de Nico* sont à reprendre : plusieurs écrans ont changé dans la journée.
+- *Une mesure en cours :* ce qui peut relancer le maintien de 30 secondes d'un point. Sur les quatre prises, on compare la règle d'aujourd'hui à une autre, compter depuis le dernier squelette vu par le détecteur. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@9074e5c73 -->
+- *Les limites de cette journée :* rien n'a été vu sur un mur éclairé, avec un danseur ; la caméra du portable regardait une pièce. Les chiffres de détection viennent toujours des prises du 8 octobre, rejouées. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@9074e5c73 -->
+
 ### Ce que ça apporte
 
 - Sur la façade, le détecteur trouve un danseur neuf fois sur dix au lieu d'une fois sur deux. Le point envoyé aux visuels suit mieux et décroche moins.
@@ -268,6 +320,7 @@ Ce qui a rejoint le montage, puis ce qui attend Thomas. Pour chaque pièce, dans
 - On sait d'où viennent les arrêts de la caméra, et un réglage les supprime sur un bureau. L'app vérifie l'image du mur vide qu'elle charge, et le dit.
 - Pendant l'échauffement, un bouton conseille un meilleur réglage du détecteur ; rien ne change sans le technicien. La consigne de la ligne de santé n'est plus jamais coupée.
 - Changer de projet ou de caméra repart à neuf, et la boucle d'images ne marque plus de pause pendant le spectacle. La carte de Calibrate dit toujours la lumière du mur.
+- Le montage complet tourne sur le portable avec la vraie caméra : la même détection que sur la machine d'analyse, aucun arrêt de caméra à 124 Mo/s, une mémoire qui se stabilise. Et l'écran ne dit plus « personne » quand un point part vers les visuels. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@9074e5c73 -->
 
 ### Limites et ce qui reste
 
@@ -276,10 +329,11 @@ Ce qui a rejoint le montage, puis ce qui attend Thomas. Pour chaque pièce, dans
 - La veille à distance n'a pas encore été essayée sur une vraie 4G lente. <!-- src: commit fix(wdremote): run and pytest pass through only as the subcommand [S1] -->
 - **Un choix ouvert sur l'exposition.** Protéger l'ovale assombrit le reste du mur : avec la lumière du 8 octobre, la luminosité médiane du mur passerait de 65 à 36–41. L'autre option garde l'exposition d'alors et demande de reculer le projecteur. Une mesure est en cours. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@e577566b9 -->
 - **La ligne de santé rougit trop souvent.** Sur trois prises, 58 des 88 secondes de rouge tombent alors que chaque danseur a son point : une ombre, des corps au bord du toit. Elle sera mesurée à nouveau avec les pièces suivantes. <!-- src: commit feat(health): one health line during RUN, the worst state wins [H2] -->
-- **Les arrêts de caméra.** Ils viennent de l'app elle-même ; le lien ralenti à 124 Mo/s les supprime sur un bureau. Reste à le vérifier sur la façade et à côté de TouchDesigner, si Thomas retient ce réglage. <!-- src: hub note 2026-11-27-camera-stalls-addendum.md ; hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
+- **Les arrêts de caméra.** Ils viennent de l'app elle-même. Le lien ralenti à 124 Mo/s, retenu par Thomas, les supprime sur un bureau, et sur le portable : aucun en 21 minutes. Reste à le vérifier sur la façade. <!-- src: hub note 2026-11-27-camera-stalls-addendum.md ; hub note 2026-11-26-rehearsal-build-status.md@9074e5c73 -->
+- **Rien du 27 novembre n'a été vu sur un mur éclairé, avec un danseur** : la caméra du portable regardait une pièce. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@9074e5c73 -->
 - **Le capot.** Fermer le capot avec l'app ouverte met l'ordinateur en veille, et l'app s'arrête avec lui. À éviter pendant un spectacle. <!-- src: hub log 2026-11-25 -->
 - **Un message attendu.** Le 26 novembre à 13 h 02, la version de spectacle a été fermée de force, avec l'accord de Thomas, pour libérer la caméra. À sa prochaine ouverture, elle affichera une fois « Previous session crashed » : c'est normal. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@e577566b9 -->
-- **Reste à faire avant la répétition.** Trancher les cinq décisions en attente. Compléter la fiche de Nico, installer le montage sur le portable, choisir le modèle de chaque projet. Et Thomas doit vérifier à l'œil que la comparaison au mur vide voit bien les danseurs que le détecteur rate. <!-- src: hub note 2026-11-26-night-session-wrap.md ; hub project.md ; hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
+- **Reste à faire avant la répétition.** La troisième passe sur le portable, et les images du guide à reprendre. Compléter la fiche de Nico, installer le montage sur le portable, choisir le modèle de chaque projet. Et Thomas doit vérifier à l'œil que la comparaison au mur vide voit bien les danseurs que le détecteur rate. <!-- src: hub note 2026-11-26-night-session-wrap.md ; hub project.md ; hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
 - **Repoussé après le 12 décembre.** L'assistant de réglage pas à pas, le filtre des fausses détections et la refonte du suivi du Plan Cordée. <!-- src: hub note 2026-11-25-setup-and-detection-roadmap.md -->
 
 ## Séance du 18 novembre 2026 — l'audit et le « Plan Cordée » <!-- src: hub log 2026-11-18 -->
@@ -388,6 +442,8 @@ En bref : le portable devient joignable à distance, son contenu est copié, un 
 - **DEV** — l'emplacement de test du portable, où l'on essaie les nouvelles versions à côté de celle du spectacle.
 - **Release** — une version du logiciel. La « release 1 » est la première étape de la feuille de route de novembre ; le portable du spectacle tourne encore la version du 8 octobre. <!-- src: hub log 2026-11-26 ; hub log 2026-11-25 -->
 - **Swipe** (« Try other settings ») — l'essai d'autres réglages de détection sur quelques images.
+- **Suggest, auto** — les modes du balayage automatique : l'app conseille un autre modèle, ou en changerait seule.
+- **Exclusion Mask** — des cases de l'image que l'app ignore, pour masquer un objet fixe.
 - **Ligne de santé** — la bande sous l'image, pendant le spectacle : le pire souci du moment et sa consigne.
 - **Enhance lite** — une version légère du renforcement de contraste appliqué à l'image avant le détecteur.
 - **Point, maintien** — le point est la position envoyée aux visuels pour un danseur. Il est « maintenu » quand l'app le garde sans voir le danseur.
