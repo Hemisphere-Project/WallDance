@@ -154,6 +154,9 @@ def main(argv=None):
                     help="experiment: a size switch WITHOUT the pinned tracker space (what it would do)")
     ap.add_argument("--auto", choices=("suggest", "auto"), default=None)
     ap.add_argument("--look-s", type=float, default=None, help="--auto: the looker's period (wall seconds)")
+    ap.add_argument("--frame-budget-ms", type=float, default=None,
+                    help="--auto: no look while the live frames run over this (default: the app's, "
+                         "SWIPE_AUTO_FRAME_BUDGET_MS); 0 = no budget, for gate runs on a shared GPU")
     ap.add_argument("--mode-off-at-s", type=float, default=None,
                     help="--auto: the automatic mode set to off at this take time (a paced release in RUN)")
     ap.add_argument("--out", default=None)
@@ -201,6 +204,7 @@ def play(args):
     import cv2
     import torch
     import replay as R
+    from core.config import SWIPE_AUTO_FRAME_BUDGET_MS
     from core.ops_monitor import check_swipe
     from core.pipeline import FrameProcessor
     from core.swipe_runner import parse_candidate
@@ -212,8 +216,11 @@ def play(args):
     xf = R.input_transform_for(config)
     fps = float(args.fps)
     ep = S.engine_path_fn()
+    budget = SWIPE_AUTO_FRAME_BUDGET_MS if args.frame_budget_ms is None else float(args.frame_budget_ms)
     say(f"[p6] take {video.name}: live {current.label} ({source}), plate {plate.name if plate else 'NONE'}, "
-        f"{'real time' if args.realtime else 'back to back'}")
+        f"{'real time' if args.realtime else 'back to back'}"
+        + ("" if not args.auto else f", the looker's frame budget {budget:g} ms" if budget > 0 else
+           ", no frame budget for the looker"))
 
     class Port:
         """The model controller's swap_live / restore_live, for a processor without an app."""
@@ -292,6 +299,7 @@ def play(args):
         bg = BackgroundSwipe(processor=lambda: proc, live=live, engine_path=engine_path, busy=lambda: None,
                              switch=sw, notify=notify, mode=args.auto,
                              look_s=args.look_s if args.look_s else (5.0 if args.realtime else 2.5),
+                             frame_budget_ms=budget,
                              in_run=lambda: show["run"],  # the wall test of core.gc_policy (never imported here)
                              standby=lambda: not show["run"],     # no look in STANDBY, as the app's
                              wall_empty=lambda: not show["tracked"] and all(

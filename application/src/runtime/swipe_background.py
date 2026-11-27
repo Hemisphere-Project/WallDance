@@ -206,7 +206,9 @@ class LiveFrames:
     def late(self, since: float, budget_ms: float) -> Optional[float]:
         """The 95th percentile (nearest rank: one in twenty takes this or more) of the live frames seen in the last
         ``LATE_WINDOW_S`` and not before ``since``, when it is over ``budget_ms``; else None -- under it, or fewer
-        than ``LATE_MIN_FRAMES`` of them."""
+        than ``LATE_MIN_FRAMES`` of them, or no budget (``budget_ms`` 0)."""
+        if budget_ms <= 0:
+            return None
         t0 = max(float(since), time.perf_counter() - LATE_WINDOW_S)
         v = sorted(ms for t, ms in self.rows if t >= t0)
         if len(v) < LATE_MIN_FRAMES:
@@ -220,7 +222,8 @@ class PolicyPort:
     each look ``fresh`` -> the live setting's own scores on them -> ``room`` -> ``due``; on "run" the candidates
     scored on the newest ``run_frames`` fresh frames -> ``ran`` -> ``advise``; ``switched`` once a swap's first
     frames ran (or a change by hand); ``reset`` on a new scene; ``dismissed`` at the operator's Dismiss of a
-    suggestion, ``snoozed`` at each look, ``end_snooze`` at a project load, ``turned_off`` when the mode goes off.
+    suggestion, ``snoozed`` at each look, ``end_snooze`` at a project load, ``turned_off`` when the mode goes off,
+    ``put_aside`` when a setting is banned.
     A rename or a new argument costs one edit in this class."""
 
     def __init__(self, mode: str, params: Optional[AutoParams] = None):
@@ -301,6 +304,11 @@ class PolicyPort:
         """The mode went off: the snooze and the streak end (a mode set again starts fresh)."""
         self.policy.turned_off()
 
+    def put_aside(self) -> None:
+        """A setting was banned (a failed load, run or automatic switch): the streak ends -- once Dismiss lifts the
+        ban, a fresh pair of looks is needed before it is suggested again."""
+        self.policy._end_streak()
+
 
 class BackgroundSwipe:
     def __init__(self, *, processor: Callable[[], Any], live: Callable[[], Optional[LiveSetting]],
@@ -316,7 +324,7 @@ class BackgroundSwipe:
                  in_run: Callable[[], bool] = lambda: False, wall_empty: Callable[[], bool] = lambda: True,
                  empty_s: Optional[float] = None, gpu_used: Callable[[], Optional[int]] = _gpu_used_bytes,
                  snooze_s: Optional[float] = None, max_age_s: Optional[float] = None,
-                 standby: Callable[[], bool] = lambda: False):
+                 standby: Callable[[], bool] = lambda: False, frame_budget_ms: Optional[float] = None):
         from core.config import (SWIPE_AUTO_FRAME_BUDGET_MS, SWIPE_AUTO_LOAD_EMPTY_S, SWIPE_AUTO_LOOK_S,
                                  SWIPE_AUTO_PACE_S, SWIPE_AUTO_SNOOZE_S, SWIPE_VERDICT_MAX_AGE_S)
         self.processor = processor
@@ -336,7 +344,8 @@ class BackgroundSwipe:
         self.empty_s = float(SWIPE_AUTO_LOAD_EMPTY_S if empty_s is None else empty_s)
         self.snooze_s = float(SWIPE_AUTO_SNOOZE_S if snooze_s is None else snooze_s)    # Dismiss: not now, this long
         self.max_age_s = float(SWIPE_VERDICT_MAX_AGE_S if max_age_s is None else max_age_s)  # a suggestion's age
-        self.frame_budget_ms = float(SWIPE_AUTO_FRAME_BUDGET_MS)    # the live frames run late over it: no look
+        # the live frames run late over it: no look (0: no budget -- the bench's gate runs on a shared GPU)
+        self.frame_budget_ms = float(SWIPE_AUTO_FRAME_BUDGET_MS if frame_budget_ms is None else frame_budget_ms)
         self.in_run = in_run              # the app is in RUN (the show's output is live)
         self.standby = standby            # the app is in STANDBY: no look (out of RUN alone is when loads may go)
         self.wall_empty = wall_empty      # no track on screen, no identity slot held (core.gc_policy.wall_empty)
@@ -918,7 +927,9 @@ class BackgroundSwipe:
         return self._unloadable.get(key) or BAN_WAIT.format(_setting_name(key))
 
     def _put_aside(self, cand: Candidate) -> None:
-        """``cand`` is banned: a suggestion of it goes, without a word (the switch's fault says what happened)."""
+        """``cand`` is banned: a suggestion of it goes, without a word (the switch's fault says what happened), and
+        so does the streak that named it (after the ban, two looks in a row again)."""
+        self.auto.put_aside()
         if self.suggestion is not None and self.suggestion.get("winner_c") == cand:
             self._clear_suggestion(None)
 
@@ -1091,8 +1102,7 @@ class BackgroundSwipe:
         if adv.kind == "apply" and MODE_AUTO not in released_modes():
             held = (AUTO_NOT_RELEASED, "")         # the last guard: shown as a suggestion, nothing switches
         elif adv.kind == "apply" and self.switch.fault:
-            why = self._fault_why                  # whose switch the fault is (the request carried ``auto``)
-            why = why[1] if why is not None and why[0] == self.switch.fault else AUTO_FAILED
+            why = self._fault_held()
             held = (why, why)
         if held is not None:
             adv.kind, adv.why_not_auto, adv.held = "suggest", held[0], held[1]
@@ -1105,11 +1115,19 @@ class BackgroundSwipe:
         if sug is not None and adv.kind in ("seen", "suggest") and adv.winner == sug["winner_c"]:
             # named again: the same line, the figures and the time of this look -- no toast, no alert
             seen = int(sug.get("seen", 2)) + 1
-            hold = sug.get("held", "") if adv.kind == "seen" else adv.held    # « seen once » says nothing of it
+            hold, why = adv.held, adv.why_not_auto
+            if adv.kind == "seen":
+                # « seen once » in the policy's streak: the line says the reason that holds NOW (the dwell may be
+                # over, the fault dismissed since), the switch's fault as for « apply » above
+                if not hold and adv.seamless and adv.level == "definite" and self.auto.mode == MODE_AUTO \
+                        and MODE_AUTO in released_modes():
+                    hold = self._fault_held()
+                why = sug.get("why_not_auto")
+                if why == sug.get("held"):         # the reason the line said: the one that holds now, or none
+                    why = hold or adv.why_not_auto
             self.suggestion = {**sug, "text": suggestion_text(adv.said, seen, hold), "held": hold, "seen": seen,
                                "unconfirmed": 0, "reason": result.reason, "level": adv.level,
-                               "why_not_auto": sug.get("why_not_auto") if adv.kind == "seen" else adv.why_not_auto,
-                               "wall": self.wall(), "result": result}
+                               "why_not_auto": why, "wall": self.wall(), "result": result}
             self._record("confirmed", setting=adv.winner.label, seen=seen)
             self.notify("suggest", {**{k: v for k, v in self.suggestion.items() if k in a}, "again": True,
                                     "result": result_dict(result)})
@@ -1151,6 +1169,14 @@ class BackgroundSwipe:
             return
         self.state = "switching"
         self.notify("switching", {"text": adv.text, "to": adv.winner.label, "from": live.candidate.label})   # a toast
+
+    def _fault_held(self) -> str:
+        """What holds an automatic switch back while the switch holds a fault (said on the suggestion's line):
+        whose switch failed, or "" without a fault."""
+        if not self.switch.fault:
+            return ""
+        why = self._fault_why                      # whose switch the fault is (the request carried ``auto``)
+        return why[1] if why is not None and why[0] == self.switch.fault else AUTO_FAILED
 
     # ------------------------------------------------------------------ the switch's hooks (loop thread)
     def _on_switched(self, req, old_pair, old_cand: Candidate, new_cand: Candidate, take_t: float) -> bool:

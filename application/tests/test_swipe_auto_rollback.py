@@ -91,9 +91,19 @@ def _first_frame_raises(port):
     port.hooks[0](RuntimeError("the engine raised on its first frame"), None)
 
 
+_STREAK = ("_streak_winner", "_streak", "_definite", "_streak_at")
+
+
+def _but_the_streak(policy_vars) -> dict:
+    """The policy's memory but its streak, which ends when a setting is put aside (27/11: after the ban, two looks
+    in a row again)."""
+    return {k: v for k, v in policy_vars.items() if k not in _STREAK}
+
+
 def test_a_rolled_back_switch_starts_no_look_before_the_cadence():
-    """(a) The policy is as it was before the swap, and the next look comes when it would have come without the
-    switch (a pool of 150 frames kept after look 2), never right after the rollback."""
+    """(a) The policy is as it was before the swap (but the streak: the setting is put aside), and the next look
+    comes when it would have come without the switch (a pool of 150 frames kept after look 2), never right after the
+    rollback."""
     twin, tproc, _, _, _, ttap = _setup(mode="suggest")       # the same looks, no switch
     assert _look(twin, tproc, ttap, 150) == "run" and _look(twin, tproc, ttap, 300) == "run"
     (without, _), = _next_runs(twin, tproc, ttap, 300)
@@ -108,7 +118,8 @@ def test_a_rolled_back_switch_starts_no_look_before_the_cadence():
     assert first == without == 600, f"a look started by the failure itself, at {first} s (without the switch: " \
                                     f"{without} s)"
     assert len(loader.loads) == loads + 1 and loader.infers == infers + 150     # that look's own load and run only
-    assert after == before, "the rolled-back switch changed the policy"
+    assert _but_the_streak(after) == _but_the_streak(before), "the rolled-back switch changed the policy"
+    assert (after["_streak"], after["_streak_winner"]) == (0, None), "the streak survived the setting put aside"
 
 
 def test_a_rolled_back_switch_never_judges_again_the_frames_a_look_judged():
@@ -161,7 +172,8 @@ def test_a_look_during_the_probation_does_not_turn_the_rollback_into_a_change_by
     live["v"] = _live()                                  # the old model took the frame back
     did = _look(bg, proc, tap, 301)
     assert "manual-change" not in [h["kind"] for h in bg.history], "the rollback was taken for a change by hand"
-    assert did == "banned" and dict(vars(bg.auto.policy)) == before        # (the ban: no look for l @ 1280)
+    assert did == "banned" and _but_the_streak(vars(bg.auto.policy)) == _but_the_streak(before)   # (the ban: no
+    assert bg.auto.policy._streak == 0                                                           # look for l @ 1280)
 
 
 def test_a_switch_that_succeeds_starts_the_dwell_and_the_pool_as_before():

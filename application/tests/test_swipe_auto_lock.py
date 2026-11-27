@@ -25,7 +25,7 @@ TIP_ALL = ("The automatic swipe, while the show runs:\n"
            "           better on two looks in a row and is no slower (Apply now,\n"
            "           or Dismiss: not now, 15 min)\n"
            "  switch   the same, and when the other model is clearly better it\n"
-           "           switches between two frames, with an alert\n"
+           "           switches between two frames (an alert only if it fails)\n"
            "An empty wall costs no inference; the other model stays loaded\n"
            "while it is not off.  Saved with the project when not off.")
 

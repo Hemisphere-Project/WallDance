@@ -304,7 +304,9 @@ def main(argv=None) -> int:
     a_.add_argument("--gap-every-s", type=float, default=0.0)
     a_.add_argument("--gap-s", type=float, default=0.0)
     a_.add_argument("--no-prefilter", action="store_true")
-    a_.add_argument("--no-ms", action="store_true", help="no inference times: the « slower » rule off")
+    a_.add_argument("--no-ms", action="store_true",
+                    help="every setting given the same inference time: the « slower » rule passes them all "
+                         "(with no time it would refuse every verdict)")
     a_.add_argument("--splice-at-s", type=float, default=None,
                     help="SYNTHETIC: from this second each model plays the other model's record at its input")
     a_.add_argument("--set", dest="sets", action="append", default=[], metavar="KEY=VALUE",
@@ -328,7 +330,8 @@ def main(argv=None) -> int:
         for live in lives:
             rng = random.Random(a.seed)
             runs = [simulate(st, live, a.mode, ap, None, rng.randrange(len(st.order)), a.hours, a.live_conf,
-                             ms=None if a.no_ms else LAPTOP_MS, gap_every_s=a.gap_every_s, gap_s=a.gap_s,
+                             ms={c.label: 1.0 for c in st.take.cands} if a.no_ms else LAPTOP_MS,
+                             gap_every_s=a.gap_every_s, gap_s=a.gap_s,
                              prefilter=not a.no_prefilter, splice_at_s=a.splice_at_s)
                     for _ in range(a.starts)]
             row = _row(st, live, runs, a.expect if a.gate == "switch" else "")

@@ -134,9 +134,10 @@ def test_after_a_failed_automatic_switch_and_a_project_load_it_says_what_lifts_t
     _two_looks_ask_the_switch(bg, proc, tap)
     _first_frame_raises(port)
     bg.clear_bans()
-    (_, adv), = _next_runs(bg, proc, tap, 300)
+    (_, seen), (_, adv) = _next_runs(bg, proc, tap, 300, n=2)
+    assert seen["advice"] == "seen"                      # (27/11) the setting was put aside: two looks in a row again
     assert adv["advice"] == "suggest" and adv["why_not_auto"] == AUTO_FAILED
-    assert adv["text"] == f"{SAYS} (6 ms a frame against 6), seen 3 times: Apply now? ({AUTO_FAILED})"
+    assert adv["text"] == f"{SAYS} (6 ms a frame against 6), seen twice: Apply now? ({AUTO_FAILED})"
 
 
 @pytest.mark.parametrize("lift", ["dismiss", "clear_bans"])

@@ -368,6 +368,8 @@ class SwipeAuto:
         if self._streak < p.wins:
             self._look_now()              # seen once: the next look comes at once, to confirm it or not
             adv.why_not_auto = SEEN_ONCE
+            if self.mode == MODE_AUTO and same_input and definite:
+                adv.held = self._holds(now, winner)    # a suggestion on screen it confirms says what holds NOW
             return adv
         self._back_off(now)               # shown (or switched to): the looks back off while the operator reads it
         why = held = ""
@@ -379,10 +381,8 @@ class SwipeAuto:
             why = f"the gain is under {100 * p.definite_gain:.0f} points"
         elif self._definite < p.wins:
             why = f"{p.wins} looks in a row over {100 * p.definite_gain:.0f} points needed"
-        elif self._switched_at is not None and now - self._switched_at < p.dwell_s:
-            why = held = DWELL
-        elif winner == self._left and self._switched_at is not None and now - self._switched_at < p.back_s:
-            why = held = JUST_LEFT
+        else:
+            why = held = self._holds(now, winner)
         if why:
             adv.kind, adv.why_not_auto, adv.held = "suggest", why, held
             adv.text = suggestion_text(said, self._streak, held)
@@ -390,6 +390,16 @@ class SwipeAuto:
         adv.kind = "apply"
         adv.text = f"switching to {winner.label}: {said}"
         return adv
+
+    def _holds(self, now: float, winner: Candidate) -> str:
+        """What holds an automatic switch to ``winner`` back at ``now``, said on the suggestion's line: the dwell
+        after a switch, or the way back to the setting just left; "" when neither holds."""
+        p = self.params
+        if self._switched_at is not None and now - self._switched_at < p.dwell_s:
+            return DWELL
+        if winner == self._left and self._switched_at is not None and now - self._switched_at < p.back_s:
+            return JUST_LEFT
+        return ""
 
     # -- the operator's Dismiss ----------------------------------------------------------------------------
     def dismissed(self, now: float, winner: Candidate, for_s: float) -> None:

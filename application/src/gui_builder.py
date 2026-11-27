@@ -726,7 +726,7 @@ SWIPE_AUTO_TIP_LINES = {
                 "           better on two looks in a row and is no slower (Apply now,\n"
                 "           or Dismiss: not now, 15 min)\n"),
     "auto": ("  switch   the same, and when the other model is clearly better it\n"
-             "           switches between two frames, with an alert\n"),
+             "           switches between two frames (an alert only if it fails)\n"),
 }
 
 
