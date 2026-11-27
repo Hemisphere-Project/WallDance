@@ -27,8 +27,9 @@ and acts on its advice, on its own thread, without the operator:
 * **the switch** goes through ``runtime.seamless_switch`` (the operator's Apply's own path): the resident model
   becomes the live one between two frames and the old live model the resident one -- no camera close, no modal,
   the tracker and the slots untouched; never while a background inference is in flight on it (the switch's
-  ``guard`` is this thread's resident lock).  A switch that fails is the switch's fault, the one thing of the
-  swipe that belongs to the health line.
+  ``guard`` is this thread's resident lock).  The policy hears of it (the dwell, a new pool) once the switched-in
+  model's first frames ran: a switch rolled back leaves the policy and the pool as they were, plus the ban.  A
+  switch that fails is the switch's fault, the one thing of the swipe that belongs to the health line.
 
 Threading: the looker thread owns the resident model and its inferences; the loop thread owns the live model and
 the swap.  Every CUDA call here happens under ENGINE_LOAD_LOCK (a live load waits, and a running look stops at its
@@ -80,8 +81,9 @@ def other_model(live: Candidate, models=SWIPE_MODELS) -> Optional[Candidate]:
 class PolicyPort:
     """Every call into ``core.swipe_auto`` goes through here, in the order the policy asks (REPORT_P6, 66ddeaa): on
     each look ``fresh`` -> the live setting's own scores on them -> ``room`` -> ``due``; on "run" the candidates
-    scored on the newest ``run_frames`` fresh frames -> ``ran`` -> ``advise``; ``switched`` after a swap; ``reset``
-    on a new scene.  A rename or a new argument costs one edit in this class."""
+    scored on the newest ``run_frames`` fresh frames -> ``ran`` -> ``advise``; ``switched`` once a swap's first
+    frames ran (or a change by hand); ``reset`` on a new scene.  A rename or a new argument costs one edit in this
+    class."""
 
     def __init__(self, mode: str, params: Optional[AutoParams] = None):
         self.policy = SwipeAuto(parse_mode(mode), params)
@@ -166,6 +168,7 @@ class BackgroundSwipe:
         self.busy = busy
         self.switch = switch                  # the seamless switch (the operator's Apply's): it swaps, holds THE fault
         switch.on_switched = self._on_switched
+        switch.on_confirmed = self._on_switch_confirmed
         switch.on_failed = self._on_switch_failed
         self.notify = notify
         self.auto = PolicyPort(mode, auto_params)
@@ -524,11 +527,11 @@ class BackgroundSwipe:
     # ------------------------------------------------------------------ the switch's hooks (loop thread)
     def _on_switched(self, req, old_pair, old_cand: Candidate, new_cand: Candidate, take_t: float) -> bool:
         """A switch happened (the operator's Apply or ours).  The new live model is no longer the resident; the
-        old live one becomes it when it runs at the new input (the way back is as cheap): True = kept."""
+        old live one becomes it when it runs at the new input (the way back is as cheap): True = kept.  The policy
+        is told once its first frames ran (``_on_switch_confirmed``): until then it may still be rolled back."""
         if self.resident is not None and self.resident.model is req["prepared"].model:
             self.resident = None
         self._expect = new_cand
-        self.auto.switched(take_t, old_cand, new_cand)
         self._clear_suggestion(None)
         self.state = "watching" if self.auto.mode != MODE_OFF else "off"
         same_input = (int(old_cand.imgsz), old_cand.shape) == (int(new_cand.imgsz), new_cand.shape)
@@ -540,13 +543,20 @@ class BackgroundSwipe:
             return True
         return False
 
+    def _on_switch_confirmed(self, req) -> None:
+        """The switched-in model ran its first frames: now the setting changed -- the dwell starts at the swap, the
+        streak is over, the pool starts again."""
+        self.auto.switched(req["take_t"], req["old"], req["new"])
+
     def _on_switch_failed(self, req) -> None:
         """A switch that did not happen (it failed before it began, or its first frames raised): the old live model
-        is live again -- not our resident; an automatic one is not tried again for that setting until Dismiss."""
+        is live again -- not our resident; an automatic one is not tried again for that setting until Dismiss.  The
+        policy never heard of it: its dwell, streak and pool are as they were before the swap."""
         old = req.get("old_pair")
         if old is not None and self.resident is not None and self.resident.model is old[0]:
             self.resident = None
-        self._expect = None
+        self._expect = req.get("old")      # the setting live again is not a change by hand (a look in between saw
+                                           # the new one)
         if req.get("auto"):
             target = req.get("winner") or req.get("new")
             if target is not None:

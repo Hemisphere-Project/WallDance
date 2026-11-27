@@ -128,8 +128,10 @@ class SeamlessSwitch:
         self.last_switch: Optional[Dict[str, Any]] = None
         self.history: Deque[Dict[str, Any]] = deque(maxlen=200)
         # (request, old live pair, old candidate, new candidate, take time) -> True when the caller keeps the old
-        # live model (the automatic swipe: as its resident); (request) on any switch that did not happen
+        # live model (the automatic swipe: as its resident); (request) once its first frames ran well; (request)
+        # on any switch that did not happen
         self.on_switched: Optional[Callable[..., bool]] = None
+        self.on_confirmed: Optional[Callable[[Dict[str, Any]], None]] = None
         self.on_failed: Optional[Callable[[Dict[str, Any]], None]] = None
         self._want: Optional[Dict[str, Any]] = None       # asked, for the worker
         self._request: Optional[Dict[str, Any]] = None    # prepared, for the loop
@@ -363,6 +365,11 @@ class SeamlessSwitch:
         self.fault = None                       # a later switch succeeded
         if self.last_switch is not None:
             self.last_switch["confirmed"] = True
+        if self.on_confirmed is not None:
+            try:
+                self.on_confirmed(req)
+            except Exception as exc:  # noqa: BLE001
+                say(f"[Switch] confirmation handler failed: {type(exc).__name__}: {exc}")
         new = req["new"]
         text = f"switched to {new.label} at {time.strftime('%H:%M')}"
         self.notify("switched", {"text": text, "to": new.label, "from": req["old"].label, "auto": req["auto"]})
