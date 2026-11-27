@@ -144,7 +144,7 @@ def test_the_same_box_with_no_mask_stops_as_before_with_the_same_line_plus_the_a
     assert used == old_used <= PERSON_SETTLE + 10 and not flows._calibrating and plates == []
     assert flows.last_stop == old_flows.last_stop == (
         "Someone is in view, middle left of the wall (x 30, y 95): Calibrate stopped and changed nothing. " + ADVICE)
-    flows.ui.set_calibrate_status.assert_called_with("Stopped: someone in view, middle left of the wall (x 30, y 95)")
+    flows.ui.set_calibrate_note.assert_called_with("Stopped: someone in view, middle left of the wall (x 30, y 95)")
 
 
 def test_a_dancer_outside_the_mask_still_stops_calibrate_with_a_mask_elsewhere(monkeypatch, capsys):

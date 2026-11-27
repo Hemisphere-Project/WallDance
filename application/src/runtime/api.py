@@ -1014,6 +1014,7 @@ class CalibReportCard(Event):
     """Structured-enough for the desktop dialog today; 'Save to project'
     answers with a SaveConfig command."""
     summary: str
+    saved: bool = False  # W1e: the project was saved since this Calibrate ended: « Saved to project. », no Save
 
 
 @dataclass(frozen=True)

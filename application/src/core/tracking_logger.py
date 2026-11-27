@@ -339,7 +339,9 @@ class TrackingLogger:
 
         This single entry lets you reconstruct the full tracker state at
         any frame — essential for post-mortem debugging.  ``emitted`` is the
-        id list sent to OSC this frame (CONT-10).  A FRAME_SUMMARY is also
+        tracker's reported track ids this frame (CONT-10), not what OSC
+        sends: the points sent on OSC are the field ``sent`` (the output
+        stage's slots, ``annotate_frame_summary``).  A FRAME_SUMMARY is also
         the live-frame tick that opens/rolls the per-show live folder.
         """
         self._maybe_roll_live_session()

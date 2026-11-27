@@ -124,7 +124,8 @@ def test_someone_in_view_stops_calibrate_before_anything_is_measured_and_says_wh
     assert flows.settings.confidence == 0.15 and flows._snapshot is None
     # says where: the status line stays, a toast, the log
     assert "middle left of the wall (x 30, y 95)" in flows.last_stop
-    flows.ui.set_calibrate_status.assert_called_with("Stopped: someone in view, middle left of the wall (x 30, y 95)")
+    # W1e: Calibrate has ended -- the line is a note, its button reads CALIBRATE (test_gui_w1e_calibrate_after_stop)
+    flows.ui.set_calibrate_note.assert_called_with("Stopped: someone in view, middle left of the wall (x 30, y 95)")
     toast = flows.ui.show_toast.call_args_list[-1][0][0]
     assert toast == flows.last_stop and ("If it is a person: clear the wall. If it is an object: exclude it "
                                          "(1 Rig > Exclusion Mask) or move the Region of Interest off it. "

@@ -427,8 +427,9 @@ class DpgUiAdapter:
                 else self.gui.set_calibrate_status(e.text)),
             api.CalibReportCard: lambda e: (
                 None if self.wizard.on_report_card(e.summary)
-                else self.gui.show_calibration_result_dialog(
-                    e.summary, on_save=lambda: submit(api.SaveConfig()))),
+                else (self.gui.show_calibration_result_dialog(
+                    e.summary, on_save=lambda: submit(api.SaveConfig())),
+                    self.gui.mark_calibration_result_saved() if getattr(e, "saved", False) else None)),  # W1e
             api.Calib2PoolChanged: lambda e: (
                 None if self.wizard.on_pool_changed(e.rows, e.proposal)
                 else self.gui.show_calib2_dialog(e.rows, e.proposal)),

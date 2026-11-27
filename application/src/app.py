@@ -205,6 +205,7 @@ class _CalibrationUiAdapter:
     def __init__(self, app: "WallDanceApp"):
         self._app = app
         self._card_waiting = None        # X2 follow-up: the card's text while its plate is still being taken
+        self._card_saved = False         # W1e: the project was saved since that card's Calibrate ended
 
     @property
     def available(self) -> bool:
@@ -213,6 +214,7 @@ class _CalibrationUiAdapter:
     def set_calibrate_status(self, text):
         if text:                         # X2 follow-up: a new Calibrate runs, the card that waited is gone
             self._card_waiting = None
+            self._card_saved = False     # W1e: ... and a save before it is not this run's
         self._app.bus.publish(api.CalibProgress(text))
 
     def set_calibrate_note(self, text):
@@ -236,6 +238,7 @@ class _CalibrationUiAdapter:
         # X2 follow-up: a card built while this Calibrate's empty wall is still being taken is published
         # again, the verdict in its last line, when the picture ends (calibrate_plate_ended)
         self._card_waiting = summary if line == "\n" + self.WALL_LIGHT_MEASURING else None
+        self._card_saved = False         # W1e: a Calibrate just ended, nothing of it is saved yet
         self._app.bus.publish(api.CalibReportCard(summary + line))
         ended = getattr(self._app, "_readiness_calibrate_ended", None)   # H3: readiness once nothing is busy
         if ended is not None:
@@ -250,7 +253,14 @@ class _CalibrationUiAdapter:
         line = self._wall_light_line(just_taken=True) if recorded else "\n" + self.WALL_LIGHT_FAILED
         if not recorded:
             print(f"[Calibrate] {self.WALL_LIGHT_FAILED}")
-        self._app.bus.publish(api.CalibReportCard(summary + line))
+        # W1e: saved while it said « being measured »: the card comes again saved, with no « Save to project »
+        saved, self._card_saved = self._card_saved, False
+        self._app.bus.publish(api.CalibReportCard(summary + line, saved=saved))
+
+    def project_saved(self) -> None:
+        """W1e: the project was saved (the « Saved! » of a project save): the card waiting for its empty-wall
+        picture is saved; a new Calibrate (``set_calibrate_status``) or a new card forgets it."""
+        self._card_saved = True
 
     def _wall_light_line(self, fresh_s: float = 600.0, just_taken: bool = False) -> str:
         """X2 (#t-054): the card's last line, always one (X2 follow-up, 27/11): the light verdict of the empty
@@ -333,6 +343,10 @@ class _ConfigUiAdapter:
 
     def show_save_indicator(self, message: str):
         self._app.bus.publish(api.ConfigSaved(message))
+        if message == "Saved!":          # W1e: a project save -- the Calibrate card that waits is now saved
+            saved = getattr(getattr(getattr(self._app, "calibration", None), "ui", None), "project_saved", None)
+            if callable(saved):
+                saved()
 
     def show_toast(self, message: str, duration: float, color):
         self._app.bus.publish(api.Toast(message, duration, color))

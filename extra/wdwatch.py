@@ -710,29 +710,36 @@ def _health_spark(polls: List[Dict[str, Any]], since: float) -> str:
 
 _HELD_WORDS = {"fg": "held on the foreground", "belt": "held on the belt", "weak": "held on a weak detection",
                "coasting": "coasting", "live": "live"}   # core/points_report.SLOT_WORDS (this tool runs app-free)
+# W1e: the same states in the POINTS line's short words, when the long ones would pass the summary's width
+_HELD_SHORT = {"fg": "fg", "belt": "belt", "weak": "weak", "coasting": "coast", "live": "live"}
 
 
-def _points_line(oks: List[Dict[str, Any]], since: float, minutes: float) -> str:
+def _points_line(oks: List[Dict[str, Any]], since: float, minutes: float, width: int = 100) -> str:
     """F4h: « POINTS now 1 sent, 1 held: D1 held on the foreground 21.6s | 15 min: sent at 5 of 17 polls, held
     at 5 » -- the points OSC sends, from the build's StatsTick ``points``.  "" (no line, the screen as before)
-    when the build does not report them or no point was sent in the window."""
+    when the build does not report them or no point was sent in the window.  W1e: within ``width``, the counts
+    never cut -- the slots in short words past it (« D1 fg 10.7s, D2 belt 0.3s »), then without their ages, then
+    the counts alone."""
     win = [p for p in oks if p["t"] >= since and isinstance((p.get("health") or {}).get("points"), dict)]
     sent = [p for p in win if (p["health"]["points"].get("sent") or 0) > 0]
     if not sent:
         return ""
     held = [p for p in sent if (p["health"]["points"].get("held") or 0) > 0]
     pts = (oks[-1].get("health") or {}).get("points")
+    counts = f" | {minutes:.0f} min: sent at {len(sent)} of {len(win)} polls, held at {len(held)}"
     if not isinstance(pts, dict) or not pts.get("sent"):
-        now_s = "none sent"
-    else:
-        def one(s: Dict[str, Any]) -> str:
-            age = s.get("age_s")
-            tail = f" {age:.1f}s" if isinstance(age, (int, float)) and s.get("state") != "live" else ""
-            return f"D{s.get('id')} {_HELD_WORDS.get(s.get('state'), s.get('state'))}{tail}"
-        now_s = (f"{pts.get('sent')} sent, {pts.get('held') or 0} held: "
-                 + ", ".join(one(s) for s in pts.get("slots") or ()))
-    return (f"POINTS now {now_s} | {minutes:.0f} min: sent at {len(sent)} of {len(win)} polls, held at "
-            f"{len(held)}")
+        return f"POINTS now none sent{counts}"
+    head = f"POINTS now {pts.get('sent')} sent, {pts.get('held') or 0} held"
+
+    def one(s: Dict[str, Any], words: Dict[str, str], ages: bool) -> str:
+        age = s.get("age_s")
+        tail = f" {age:.1f}s" if ages and isinstance(age, (int, float)) and s.get("state") != "live" else ""
+        return f"D{s.get('id')} {words.get(s.get('state'), s.get('state'))}{tail}"
+    for words, ages in ((_HELD_WORDS, True), (_HELD_SHORT, True), (_HELD_SHORT, False)):   # W1e: fit, counts whole
+        line = f"{head}: " + ", ".join(one(s, words, ages) for s in pts.get("slots") or ()) + counts
+        if len(line) <= width:
+            return line
+    return head + counts
 
 
 def render_summary(records: List[Dict[str, Any]], now: float, minutes: float = 15.0,
@@ -772,7 +779,7 @@ def render_summary(records: List[Dict[str, Any]], now: float, minutes: float = 1
                    f"{' RECONNECTING' if h.get('camera_reconnecting') else ''} | recorder {rec.get('state')}"
                    f" | OSC {'on' if osc.get('enabled') else 'off'} {osc.get('target', '')}"
                    f"{' | GPU fallback: ' + str(h['gpu_fallback']) if h.get('gpu_fallback') else ''}")
-        pts_line = _points_line(oks, since, minutes)
+        pts_line = _points_line(oks, since, minutes, width)
         if pts_line:
             out.append(pts_line)
         out.append("HEALTH " + (_health_line(h["line"]) if "line" in h else "(no health line in this build)"))

@@ -715,7 +715,9 @@ class CalibrationFlows:
               + (f" ({sighting.hits}/{sighting.frames} frames, conf up to {sighting.conf:.2f}, "
                  f"h {sighting.h:.0f} px)" if sighting is not None else "") + self._masked_note())
         if self.ui.available:
-            self.ui.set_calibrate_status(f"Stopped: someone in view, {where}")
+            # W1e: Calibrate has ended -- the stop line is a note, the button reads CALIBRATE (a press starts it)
+            note = getattr(self.ui, "set_calibrate_note", None)
+            (note if callable(note) else self.ui.set_calibrate_status)(f"Stopped: someone in view, {where}")
             self.ui.show_toast(self.last_stop, duration=10.0, color=(255, 140, 70))
 
     @staticmethod

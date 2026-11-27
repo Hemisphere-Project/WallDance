@@ -91,7 +91,7 @@ FEED_SYNTHETIC = "synthetic"  # matched a cold motion-blob synthetic det
 FEED_BRIDGE = "bridge"        # relayed by the track-local motion bridge
 FEED_COAST = "coast"          # nothing fed it (predict only)
 
-EMIT_OK = "ok"                # emitted to OSC this frame
+EMIT_OK = "ok"                # reported by the tracker this frame (OSC sends the slots: the log's « sent »)
 EMIT_WARMUP = "warmup"        # not confirmed: warm-up integral (or min_hits) not met
 EMIT_FROZEN = "frozen"        # frozen-ghost gate: skeleton-stale AND slow
 EMIT_SLOW_DUP = "slow_dup"    # intermittent-only track too close to a kept one
@@ -165,7 +165,7 @@ class DormantSnapshot:
         self.was_occluded: bool = getattr(track, '_occluded', False)
         self.exited_from_edge: bool = exited_from_edge
         self.was_ghost: bool = was_ghost
-        # Was this id ever emitted to OSC?  Only such ids get their warm-up
+        # Was this id ever reported by the tracker?  Only such ids get their warm-up
         # restored on resurrect (CONT-1 / BUG-1): restoring it for never-
         # emitted scenery tracks re-emits ghosts (audit: ids 25 -> 29).
         self.was_reported: bool = bool(getattr(track, '_ever_reported', False))
@@ -3443,8 +3443,9 @@ class DancerTracker:
         """Emit the structured FRAME_SUMMARY event for the current frame.
 
         CONT-10 diagnostic fields, so a field log answers "why did id X
-        vanish" without a recording: ``emitted`` (the ids sent to OSC this
-        frame, in report order) and, per track, ``src`` (what fed it this
+        vanish" without a recording: ``emitted`` (the track ids this tracker
+        reports this frame, in report order -- not what OSC sends: that is the
+        log's ``sent``, the output stage's slots) and, per track, ``src`` (what fed it this
         frame: yolo / synthetic / bridge / coast), ``wu`` (warm-up integral),
         ``fss`` (frames since a real skeleton) and ``emit`` (ok / warmup /
         frozen / slow_dup / cap -- ``emission_gate`` + the report stage)."""
