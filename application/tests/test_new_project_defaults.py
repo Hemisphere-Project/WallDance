@@ -132,10 +132,12 @@ def _app(tmp_path, monkeypatch):
                            loads=loads, connects=connects, limits=limits)
 
 
-def _drive(tmp_path, monkeypatch, door, extra=None, switch=True):
+def _drive(tmp_path, monkeypatch, door, extra=None, switch=True, via_api=False):
     """Startup -> the previous project loaded through the real switch -> New project / Start
     blank (+ its first Save) -> (startup, previous, after-in-the-app, after-in-the-file).
-    switch=False: the previous project is only on disk, the last used one (the launch door)."""
+    switch=False: the previous project is only on disk, the last used one (the launch door).
+    via_api=True: New / Start blank as the picker's buttons send them (ui.adapter submits the
+    command; the app's handler runs the manager's door inside its own steps, P6's swipe reset)."""
     s = _app(tmp_path, monkeypatch)
     startup = _norm(s.app._get_saveable_config())
     previous = {k: _moved(k, v) for k, v in startup.items() if k not in CARRIED}
@@ -149,7 +151,13 @@ def _drive(tmp_path, monkeypatch, door, extra=None, switch=True):
         s.store.remember_last_project("previous")
     held = _norm(s.app._get_saveable_config())
     opens_before = len(s.connects)
-    if door == "new":
+    if via_api:
+        from runtime import api
+        s.app.api.submit(api.NewProject(name="fresh") if door == "new" else api.StartBlankProject())
+        s.app.api.drain()
+        if door == "blank":
+            s.mgr._cb_do_save_config("fresh")                           # the first Save
+    elif door == "new":
         assert s.mgr._cb_project_new("fresh")
     else:
         assert s.mgr._cb_project_blank()
@@ -261,21 +269,28 @@ def test_the_rig_list_is_short_and_named():
 
 
 # --------------------------------------------------------------------------- #
-# P6 (merged off and locked): the automatic swipe's key is saved only when it is not off, so the
-# startup state has no swipe_auto; locked, no session holds a mode but off -- a new project is off
+# P6 (« suggest » released 27/11, off the default, « switch » locked): the automatic swipe's key is
+# saved only when it is not off, so the startup state has no swipe_auto.  Whatever the last project
+# had and whatever this build releases, a new project starts with the swipe off and writes no key.
 # --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("released", [None, ("off",), ("off", "suggest")],
+                         ids=["shipped", "off-only", "off+suggest"])
+@pytest.mark.parametrize("last", ["off", "suggest", "auto"])     # absent (off), suggest, switch
 @pytest.mark.parametrize("door", ["blank", "new"])
-def test_a_new_project_has_the_automatic_swipe_off_and_no_key(tmp_path, monkeypatch, door):
+def test_a_new_project_has_the_automatic_swipe_off_and_no_key(tmp_path, monkeypatch, door, last,
+                                                              released):
+    pytest.importorskip("core.swipe_auto")                  # only a tree without P6 at all skips
+    from core import config as core_config
+    if released is not None:                                # else the list the build ships
+        monkeypatch.setattr(core_config, "SWIPE_AUTO_RELEASED", released)
+    held_mode = last if last in core_config.SWIPE_AUTO_RELEASED else "off"   # what a load accepts
+    # the picker's door: the swipe's reset is the app's command handler's (_swipe_project_start)
+    d = _drive(tmp_path, monkeypatch, door, extra=None if last == "off" else {"swipe_auto": last},
+               via_api=True)
     try:
-        import core.swipe_auto  # noqa: F401
-        from core import config as core_config
-        locked = not core_config.SWIPE_AUTO_UNLOCKED
-    except (ImportError, AttributeError):
-        pytest.skip("no automatic swipe (P6's core.swipe_auto / SWIPE_AUTO_UNLOCKED) in this tree")
-    assert locked, "this build ships the automatic swipe locked off"
-    d = _drive(tmp_path, monkeypatch, door, extra={"swipe_auto": "auto"})   # the previous asks for it
-    try:
-        assert "swipe_auto" not in d.startup and "swipe_auto" not in d.held
+        assert "swipe_auto" not in d.startup
+        # the previous project really set the session's mode (else the check below proves nothing)
+        assert d.held.get("swipe_auto", "off") == held_mode, (door, last, released, d.held.get("swipe_auto"))
         assert d.s.app.swipe_bg.mode == "off"
         assert "swipe_auto" not in d.live and "swipe_auto" not in d.saved
         _check(d, door + "+swipe")
