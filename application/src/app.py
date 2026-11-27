@@ -24,7 +24,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import cv2
 import numpy as np
@@ -848,6 +848,7 @@ class WallDanceApp:
             in_run=lambda: self.system_state == SystemState.RUN, wall_empty=self._swipe_wall_empty,
             standby=lambda: self.system_state == SystemState.STANDBY)    # no look there: the pool is frozen
         self._swipe_shown = ""          # which verdict the swipe line shows: "operator" | "background"
+        self._swipe_blank_start = False  # Start blank / New project under way: its clean start sets the default mode
         # the automatic swipe turned off: a switch asked before (the operator's seamless Apply, an automatic one)
         # and not yet swapped in does not happen -- the key-off build runs none
         self.swipe_switch.why_not = self._swipe_switch_held
@@ -1085,8 +1086,8 @@ class WallDanceApp:
         reg(api.LaunchProject, lambda c: self.configs._cb_project_launch(c.name))
         reg(api.RenameProject, lambda c: self.configs._cb_project_rename(c.old, c.new))
         reg(api.DeleteProject, lambda c: self.configs._cb_project_delete(c.name))
-        reg(api.StartBlankProject, lambda c: self.configs._cb_project_blank())
-        reg(api.NewProject, lambda c: self.configs._cb_project_new(c.name))
+        reg(api.StartBlankProject, lambda c: self._swipe_project_start(self.configs._cb_project_blank))
+        reg(api.NewProject, lambda c: self._swipe_project_start(lambda: self.configs._cb_project_new(c.name)))
         # recording / playback
         reg(api.PlaybackControl, self._cmd_playback_control)
         reg(api.SelectSlot,
@@ -2248,6 +2249,24 @@ class WallDanceApp:
         The same step starts a camera source switch (another view) and Start blank / New project."""
         self._cb_tracker_reset()
         self.processor.camera_not_live()
+        if getattr(self, "_swipe_blank_start", False):
+            self._swipe_start_off()
+
+    def _swipe_project_start(self, start: Callable[[], Any]) -> Any:
+        """Start blank / New project (the picker's commands): the new project starts with the automatic swipe at
+        the build's default (``core.config.SWIPE_AUTO``), set at its clean start (``_cb_project_start_clean``), so
+        before New's first Save -- their partial apply never names the key.  A start that fails keeps the mode;
+        a project switch or a camera switch (the same clean start) keeps it too."""
+        self._swipe_blank_start = True
+        try:
+            return start()
+        finally:
+            self._swipe_blank_start = False
+
+    def _swipe_start_off(self) -> None:
+        if self.swipe_bg.mode != parse_swipe_mode(SWIPE_AUTO):
+            self._cb_swipe_auto(SWIPE_AUTO, quiet=True)
+            say(f"[SwipeAuto] mode {self.swipe_bg.mode} (a new project starts with it at the default)")
 
     def _camera_preview_geometry(self, width: int, height: int):
         """Preview geometry + GUI layout follow-up after a camera (re)open."""
@@ -3118,6 +3137,17 @@ class WallDanceApp:
             result = {**result, **self._swipe_apply_hint(res.winner)}
         self.bus.publish(api.SettingsSwipeResult(result, error))
 
+    def _swipe_refresh_apply(self) -> None:
+        """The mode changed: the Apply button on screen for the operator's verdict says now which Apply a press
+        runs (``_swipe_apply_hint``: P5's with the key off, the seamless one on), not at the next verdict.
+        Nothing when no such button is on screen (no winner, applied, an Apply under way, the background's)."""
+        out = self.swipe.outcome
+        res = out.result if out is not None else None
+        if (self._swipe_shown != "operator" or res is None or not res.switch or res.winner is None
+                or self.swipe.applied is not None or self._swipe_pending_apply is not None):
+            return
+        self._swipe_on_result(out.to_dict(), "")
+
     def _swipe_apply_hint(self, winner) -> Dict:
         """The Apply button's label and tooltip: which Apply it will be.  The automatic swipe off: P5's."""
         if self.swipe_bg.mode == "off":
@@ -3357,10 +3387,13 @@ class WallDanceApp:
             self.bus.publish(api.Toast("Automatic swipe: not released in this build - it stays off",
                                        5.0, (255, 200, 100)))
             return
+        before = self.swipe_bg.mode
         m = self.swipe_bg.set_mode(mode)
         if m != "off":
             self.swipe_bg.start()
         self._sync("combo", "swipe_auto", self._SWIPE_AUTO_LABELS[m])
+        if m != before:
+            self._swipe_refresh_apply()
         if not quiet:
             say(f"[SwipeAuto] mode {m}")
             if m != "off" and not self.settings.swipe_collect:
