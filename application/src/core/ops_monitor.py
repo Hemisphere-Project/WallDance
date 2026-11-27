@@ -344,7 +344,8 @@ def check_empty_wall(*, status: str, detail: str = "", light_ratio: Optional[flo
 def check_dancer_size(*, measured: Optional[Tuple[float, int, float]], lb_scale: float, imgsz: int,
                       target_px: float = 100.0, sizes: Tuple[int, ...] = (960, 1280, 1536),
                       now: Optional[float] = None, max_age_s: float = 1800.0,
-                      shape: Optional[Tuple[int, int]] = None, roi_w: int = 0, roi_h: int = 0) -> CheckResult:
+                      shape: Optional[Tuple[int, int]] = None, roi_w: int = 0, roi_h: int = 0,
+                      not_measured: Optional[str] = None) -> CheckResult:
     """The dancers' height in YOLO's input (D29; Calib2's image-size rule without the dancers pass).
 
     ``measured`` = FrameProcessor.dancer_height (median px of the confident full skeletons, samples, wall
@@ -358,7 +359,7 @@ def check_dancer_size(*, measured: Optional[Tuple[float, int, float]], lb_scale:
     from core.input_shape import letterbox_scale, pick_shape, shape_str
     now = _time.time() if now is None else now
     if not measured or not lb_scale or now - measured[2] > max_age_s:
-        return CheckResult("dancer size", "skip",
+        return CheckResult("dancer size", "skip", not_measured or     # X4: the app names the dancer step
                            "not measured - have a dancer stand at the far wall for 10 s, then check again")
     h = float(measured[0])
     net = h * float(lb_scale)
@@ -497,7 +498,7 @@ def check_enhancement(*, enabled: bool, gamma: float, clahe: float, lite: bool =
             return CheckResult("enhancement", "ok", f"off; Calibrate chose none here ({which}, {calibrated})")
         return CheckResult("enhancement", "warn",
                            f"OFF, and Calibrate never chose one for this project ({which}): Calibrate on the empty "
-                           f"wall, then turn it on - {ENHANCE_ON_HOW}")
+                           f"wall, then the dancer step turns it on if it helps her (2 Calibrate > A DANCER, 10 s)")
     by = f"Calibrate {calibrated}" if calibrated else "not chosen by Calibrate on this project"
     if not changes:
         return CheckResult("enhancement", "ok", f"on, neutral ({which}, {by}): the picture goes to YOLO as it is")

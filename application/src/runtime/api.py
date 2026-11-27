@@ -615,6 +615,19 @@ class ViewAimCalibState(Command):
     pass
 
 
+@dataclass(frozen=True)
+class StartDancerStep(Command):
+    """X4: « A DANCER, 10 s » -- one dancer on the wall: her size, the enhancement on her, the belt glare (also
+    cancels a running step)."""
+    pass
+
+
+@dataclass(frozen=True)
+class DancerStepDecision(Command):
+    """X4: the dancer step's card -- keep (and save the project) or cancel (everything put back)."""
+    keep: bool
+
+
 # --- config / project -------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -1000,6 +1013,24 @@ class CalibReportCard(Event):
     """Structured-enough for the desktop dialog today; 'Save to project'
     answers with a SaveConfig command."""
     summary: str
+
+
+@dataclass(frozen=True)
+class DancerStepCard(Event):
+    """X4: the dancer step's result -- ``line`` says what it set (and the manual way), ``details`` how; the card
+    answers with a DancerStepDecision."""
+    line: str
+    details: str = ""
+
+
+@dataclass(frozen=True)
+class DancerBand(Event):
+    """#t-050 ②: the dancers' height at the network, live (core/dancer_step.py ``DancerBand``): ``state`` ok |
+    warn (orange: too small for this input) | note (large) | skip (not measured), the ``text`` the Live panel
+    shows."""
+    state: str
+    text: str
+    net_px: Optional[float] = None
 
 
 @dataclass(frozen=True)

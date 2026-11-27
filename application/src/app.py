@@ -285,6 +285,13 @@ class _CalibrationUiAdapter:
         print(f"[Calibrate] {line}")
         return "\n" + line
 
+    def sync_checkbox(self, name: str, value):
+        self._app.bus.publish(api.ControlSync("checkbox", name, value))
+
+    def show_dancer_card(self, line: str, details: str = ""):
+        """X4: the dancer step's card (Keep / Cancel answer with a DancerStepDecision)."""
+        self._app.bus.publish(api.DancerStepCard(line, details))
+
     def show_calib2_dialog(self, rows, proposal: str):
         self._app.bus.publish(api.Calib2PoolChanged(rows, proposal))
 
@@ -1066,6 +1073,8 @@ class WallDanceApp:
         reg(api.ClearCalib2Pool, lambda c: self.calibration._cb_calib2_clear())
         reg(api.ViewCalib2Pool, lambda c: self.calibration._cb_view_calib2_pool())
         reg(api.ViewAimCalibState, lambda c: self.calibration._cb_view_aim_state())
+        reg(api.StartDancerStep, lambda c: self.calibration._cb_dancer_step())                 # X4
+        reg(api.DancerStepDecision, lambda c: self.calibration._cb_dancer_decision(bool(c.keep)))
         # config / project
         reg(api.SaveConfig, lambda c: (self.configs._cb_do_save_config(c.name)
                                        if c.name else self.configs._cb_save_config(),
@@ -1528,6 +1537,8 @@ class WallDanceApp:
         # Enhancement
         if "enhance_enabled" in config:
             self.settings.enhance_enabled = config["enhance_enabled"]
+            _ds = (self.calibration.calibration_state or {}).get("dancer_step")      # X4: off by the step's choice
+            self._sync("checkbox", "enhance_none_chosen", isinstance(_ds, dict) and _ds.get("enh") == "none")
             self._sync("checkbox","enhance", config["enhance_enabled"])
         if "enhance_lite" in config:
             self.settings.enhance_lite = config["enhance_lite"]
@@ -2243,6 +2254,9 @@ class WallDanceApp:
         the tracker and the identity slots reset (the Reset button's path, OSC clear included)
         and the camera is not live (D34): the switch's silence is never bridged as a stall.
         The same step starts a camera source switch (another view) and Start blank / New project."""
+        stop = getattr(getattr(self, "calibration", None), "dancer_stop", None)   # X4: a dancer step ends first
+        if callable(stop):
+            stop("stopped by a change of camera or project")
         self._cb_tracker_reset()
         self.processor.camera_not_live()
 
@@ -2563,9 +2577,11 @@ class WallDanceApp:
             _roi_w, _roi_h = self.roi.state.stored_roi()[2:4]
         except Exception:
             _roi_w = _roi_h = 0
-        results.append(check_dancer_size(measured=getattr(self.processor, "dancer_height", None),
-                                         lb_scale=float(getattr(self.processor, "last_lb_scale", 0.0)),
-                                         imgsz=int(self.settings.imgsz),
+        _measured, _lb, _age = self._dancer_step_measure(_roi_w, _roi_h)   # X4: ok once the dancer step measured her
+        results.append(check_dancer_size(measured=_measured, lb_scale=_lb,
+                                         imgsz=int(self.settings.imgsz), max_age_s=_age,
+                                         not_measured="not measured - the dancer step: one dancer on the wall, "
+                                                      "2 Calibrate > A DANCER, 10 s",
                                          shape=self.settings.yolo_shape, roi_w=_roi_w, roi_h=_roi_h))
         try:
             row = self._swipe_readiness_row()
@@ -2672,7 +2688,8 @@ class WallDanceApp:
             cal, models, proc = self.calibration, self.models, self.processor
             calibrating = bool(getattr(cal, "_calibrating", False))
             busy = (bool(getattr(cal, "_calibrating2", False))
-                    or getattr(proc, "_plate_capture", None) is not None)
+                    or getattr(proc, "_plate_capture", None) is not None
+                    or bool(getattr(cal, "dancer_busy", False)))    # X4: the dancer step, or its card open
             ready = (bool(self.bus.ui_ready) and bool(models._model_loaded) and not models._model_loading
                      and getattr(self.configs, "_pending_project_switch", None) is None)
             flowing = bool((self.camera.state.is_open and not self.cameras._camera_reconnecting)
@@ -2688,6 +2705,65 @@ class WallDanceApp:
         if why:
             print(f"[Readiness] automatic check: {why}")
             self._cb_check_readiness(why=why)
+
+    # --- #t-050 ②: the band -- the dancers' height at the network, live, on the Live panel ------------------
+    def _dancer_band_tick(self, now: Optional[float] = None) -> None:
+        """Every main-loop tick (runtime/main_loop.py, beside the readiness tick): each newly processed frame feeds
+        the band (core/dancer_step.py ``DancerBand``: the boxes and the foreground groups, no keypoint gate); once
+        a second its state goes to the Live panel (api.DancerBand) when it changed.  It reads, never sets
+        anything, and never raises."""
+        try:
+            from core.dancer_step import DancerBand, larger_input, observe
+            proc, s = self.processor, self.settings
+            band = getattr(self, "_dancer_band", None)
+            if band is None:
+                band = self._dancer_band = DancerBand()
+            t = time.monotonic() if now is None else float(now)
+            boxes = getattr(proc, "last_raw_boxes", None)
+            if boxes is not None and boxes is not getattr(self, "_dancer_band_boxes", None):
+                self._dancer_band_boxes = boxes
+                band.feed(t, observe(list(boxes), getattr(proc, "last_fg", None), conf=float(s.confidence),
+                                     lb_scale=float(getattr(proc, "last_lb_scale", 0.0) or 0.0)))
+            if t - float(getattr(self, "_dancer_band_at", -1e9)) < 1.0:
+                return
+            self._dancer_band_at = t
+            shape = s.yolo_shape
+            where = f"{int(shape[0])}x{int(shape[1])}" if shape else f"{int(s.imgsz)}"
+            try:
+                roi_w, roi_h = (int(v) for v in self.roi.state.stored_roi()[2:4])
+            except Exception:  # noqa: BLE001
+                roi_w = roi_h = 0
+            med = band.median()
+            st = band.state(now=t, where=where, larger=larger_input(roi_w, roi_h, int(s.imgsz), shape, med))
+            if (st.state, st.text) != getattr(self, "_dancer_band_last", None):
+                self._dancer_band_last = (st.state, st.text)
+                self.bus.publish(api.DancerBand(st.state, st.text, st.net_px))
+        except Exception as e:  # noqa: BLE001 - the band must never disturb the loop
+            if not getattr(self, "_dancer_band_failed", False):
+                self._dancer_band_failed = True
+                print(f"[Band] off ({type(e).__name__}: {e})")
+
+    def _dancer_step_measure(self, roi_w: int = 0, roi_h: int = 0):
+        """X4: (measured, lb_scale, max_age_s) for the readiness « dancer size » row, from the dancer step's
+        result in the provenance (saved with the project): ((height px, samples, when), the scale of the input
+        that runs now, its validity) -- (None, scale, age) until the step has measured her.  The row is never
+        green on anything else: not on the RUN-time skeleton measure, not on a guess."""
+        from core.dancer_step import DANCER_STEP_VALID_S
+        from core.input_shape import letterbox_scale
+        st = (getattr(self.calibration, "calibration_state", None) or {}).get("dancer_step")
+        lb = 0.0
+        try:
+            if roi_w > 0 and roi_h > 0:
+                lb = letterbox_scale(int(roi_w), int(roi_h), int(self.settings.imgsz), self.settings.yolo_shape)
+        except Exception:  # noqa: BLE001
+            lb = 0.0
+        lb = lb or float(getattr(self.processor, "last_lb_scale", 0.0) or 0.0)
+        try:
+            measured = (float(st["height_px"]), int(st.get("samples") or 0), float(st["epoch"]))
+            lb = lb or float(st.get("lb_scale") or 0.0)
+        except (TypeError, KeyError, ValueError):
+            measured = None
+        return measured, lb, DANCER_STEP_VALID_S
 
     def _readiness_setup_rows(self):
         """H3 (#t-026 ④): the enhancement, the ROI and the plate's exposure (core/ops_monitor.py), each read here

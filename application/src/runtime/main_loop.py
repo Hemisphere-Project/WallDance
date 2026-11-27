@@ -522,6 +522,8 @@ class MainLoop:
         self._tick_remote()
         self._live_plate_minute()
         getattr(app, "_readiness_auto_tick", lambda: None)()   # H3: readiness at start and after Calibrate
+        getattr(app, "_dancer_band_tick", lambda: None)()      # #t-050 ②: the dancer's height at the network, live
+        getattr(getattr(app, "calibration", None), "dancer_watch", lambda: None)()   # X4: a step whose frames stop
         if self._tick_pumps():
             return
         self._tick_ui_input()

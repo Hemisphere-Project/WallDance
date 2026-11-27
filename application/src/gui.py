@@ -470,11 +470,14 @@ class WallDanceGUI:
         """X5: the enhancement's state in words -- muted when on, red when off (Advanced drawer and Live
         panel)."""
         from gui_builder import enhance_state_label
+        self._enhance_on = bool(enabled)
+        chosen = bool(getattr(self, "_enhance_none_chosen", False)) and not enabled   # X4: off by the step's choice
         if dpg.does_item_exist("enhance_state_text"):
-            dpg.set_value("enhance_state_text", enhance_state_label(enabled))
-            dpg.configure_item("enhance_state_text", color=TEXT_MUTED if enabled else ERROR_SOFT)
+            dpg.set_value("enhance_state_text", enhance_state_label(enabled, chosen))
+            dpg.configure_item("enhance_state_text", color=TEXT_MUTED if enabled or chosen else ERROR_SOFT)
         if dpg.does_item_exist("live_enhance_state"):
-            dpg.configure_item("live_enhance_state", show=not enabled)
+            dpg.set_value("live_enhance_state", enhance_state_label(enabled, chosen))
+            dpg.configure_item("live_enhance_state", show=not enabled and not chosen)
     
     def _on_enhance_lite_toggle(self, sender, value):
         if 'on_enhance_lite_toggle' in self.callbacks:
@@ -933,6 +936,50 @@ class WallDanceGUI:
         """Calibrate button → ask the app to run a Go-Live scene calibration."""
         if 'on_calibrate' in self.callbacks:
             self.callbacks['on_calibrate']()
+
+    def _on_dancer_step(self):
+        """X4: « A DANCER, 10 s » -> the dancer step (a second press cancels it)."""
+        if 'on_dancer_step' in self.callbacks:
+            self.callbacks['on_dancer_step']()
+
+    def show_dancer_step_card(self, line: str, details: str = ""):
+        """X4: the dancer step's card -- what it set (applied to this session already), Keep (saved to the
+        project) or Cancel (everything put back)."""
+        tag = "dancer_step_modal"
+        if dpg.does_item_exist(tag):
+            dpg.delete_item(tag)
+        w, h = scaled(520), scaled(300)
+
+        def decide(keep: bool):
+            if dpg.does_item_exist(tag):
+                dpg.delete_item(tag)
+            cb = self.callbacks.get('on_dancer_step_decision')
+            if cb:
+                cb(bool(keep))
+
+        with dpg.window(label="A dancer, 10 s", modal=True, autosize=True, tag=tag, width=w, height=h,
+                        pos=self._center_modal(tag, w, h), no_resize=True, no_move=True, no_close=True,
+                        no_collapse=True):
+            dpg.add_spacer(height=scaled(6))
+            dpg.add_text(line, wrap=scaled(490), color=TEXT_NORMAL)
+            if details:
+                dpg.add_spacer(height=scaled(6))
+                dpg.add_text(details, wrap=scaled(490), color=TEXT_DIM)
+            dpg.add_spacer(height=scaled(12))
+            with dpg.group(horizontal=True):
+                dpg.add_button(label="Keep and save", tag="dancer_step_keep_btn", width=scaled(150),
+                               callback=lambda: decide(True))
+                dpg.add_spacer(width=scaled(16))
+                dpg.add_button(label="Cancel - put back", tag="dancer_step_cancel_btn", width=scaled(170),
+                               callback=lambda: decide(False))
+
+    def show_dancer_band(self, state: str, text: str):
+        """#t-050 ②: the dancers' height at the network on the Live panel -- orange when too small for this
+        input, dim otherwise."""
+        if dpg.does_item_exist("live_dancer_band"):
+            color = {"warn": WARN_ORANGE, "note": TEXT_MUTED, "ok": TEXT_MUTED}.get(state, TEXT_DIM)
+            dpg.set_value("live_dancer_band", text)
+            dpg.configure_item("live_dancer_band", color=color)
 
     def _on_calibrate_all(self):
         """ALL button → open the guided Calibrate All wizard (GUI-local)."""
@@ -2097,6 +2144,9 @@ class WallDanceGUI:
         elif name == 'enhance':
             self._update_enhance_row_state(value, bypass=False)
             self.update_enhance_state(bool(value))      # X5
+        elif name == 'enhance_none_chosen':             # X4: the dancer step chose no enhancement
+            self._enhance_none_chosen = bool(value)
+            self.update_enhance_state(bool(getattr(self, "_enhance_on", self.config.get("enhance_enabled", False))))
     
     def sync_slider(self, name: str, value: float):
         """Sync slider state (when changed via keyboard or config load)."""

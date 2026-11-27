@@ -215,6 +215,8 @@ EVENT_SAMPLES = {
     api.IssueReportContext: dict(context={"frame": 12, "slot": 3}),
     api.QrDialog: dict(url="http://x", matrix=[[True, False]]),
     api.PreviewResize: dict(width=960, height=540),
+    api.DancerStepCard: dict(line="Set: person height 104 px", details="Her height: 104 px"),     # X4
+    api.DancerBand: dict(state="warn", text="dancer ~75 px at 1280: too small for this input", net_px=75.0),
 }
 
 

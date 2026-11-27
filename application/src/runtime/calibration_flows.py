@@ -36,6 +36,7 @@ from core.calibration import (ExposureServo, SceneCalibrator,
 from core.config import (AUTOCAL_BLUR_BUDGET_MS, AUTOCAL2_FRAME_SAMPLES,
                          AUTOCAL2_NOISE_REUSE_S, AUTOCAL2_WINDOW_FRAMES,
                          AUTOCAL_SERVO_GAIN_MAX_DB, EMPTY_WALL_CHECK, MODELS_DIR)
+from core.dancer_step import DancerStep, Enh, candidates as dancer_candidates, observe as dancer_observe
 from core.empty_wall import EmptyWallCheck, NEUTRAL_GAMMA, PERSON_SETTLE, PersonWatch
 
 try:
@@ -151,6 +152,14 @@ class CalibrationFlows:
         # target instead of re-reading a now-dancer-populated live motion model.
         self._last_calib1_noise_sigma: Optional[float] = None
         self._last_calib1_noise_ts: float = 0.0
+        # X4: the dancer step (one dancer, 10 s) -- it runs as a calibration (``_calibrating``: detection forced
+        # on, stepped by the main loop), then its card waits for Keep or Cancel; Cancel puts its snapshot back.
+        self._dancer: Optional[DancerStep] = None
+        self._dancer_snap: Optional[dict] = None
+        self._dancer_pending = None                      # (DancerResult, line) shown on the card, not decided
+        self.dancer_result = None                        # the last kept DancerResult (this session)
+        # One setup moment: called with the DancerResult when the step finishes (the warmup swipe, later).
+        self.on_dancer_step_done: Optional[Callable] = None
 
     def _stamp_calib_state(self, source: str, *knobs: str) -> None:
         """Record which calibration phase ('aim'/'dancers') set which knob, and
@@ -167,6 +176,7 @@ class CalibrationFlows:
         "imgsz": "imgsz", "blur_budget_ms": "blur",
         "ids_exposure_us": "exposure", "ids_gain_db": "gain",
         "enhancement_ceiling": "ceiling",
+        "dancer_step": "dancer step",
     }
 
     @staticmethod
@@ -221,6 +231,11 @@ class CalibrationFlows:
         recording playback) and measures person size, MOG2 noise and FPS.  The
         run loop feeds frames to ``self._calibrator`` and applies the result.
         """
+        if self._dancer is not None:            # X4: the button shows CANCEL while the dancer step runs
+            self._cancel_dancer_step()
+            return
+        if self._dancer_pending is not None:    # X4: a dancer card left open: Calibrate starts from before it
+            self._cb_dancer_decision(False)
         if self._calibrating:
             # Second press cancels a run that is still collecting (e.g. if
             # playback was paused before the window filled).
@@ -265,8 +280,8 @@ class CalibrationFlows:
         self._take_camera_line = ""
         # The project's calibrated enhancement, before the gamma seed below replaces it: the
         # empty-wall check tries it first and keeps it when YOLO sees nobody with it.
-        self._pre_enhancement = ((float(self.enhancer.gamma), float(self.enhancer.clahe_clip))
-                                 if "gamma" in (self.calibration_state or {}) else None)
+        self._pre_enhancement = (self._dancer_keep((float(self.enhancer.gamma), float(self.enhancer.clahe_clip)))
+                                 if "gamma" in (self.calibration_state or {}) else None)     # X4: the step's ceiling
         live_ids = (
             not self.recorder.is_playing
             and self._use_unified_camera
@@ -353,6 +368,9 @@ class CalibrationFlows:
 
     def _step_calibration(self, tracked, process_wall_ms):
         """Feed one processed frame to the active calibrator; finalize when ready."""
+        if self._dancer is not None:               # X4: the dancer step
+            self._step_dancer()
+            return
         if self._emptiness is not None:            # X3: emptiness first, before anything is measured
             self._step_emptiness()
             return
@@ -537,6 +555,7 @@ class CalibrationFlows:
             self._set_enhancement(*first)         # the project's calibrated enhancement goes first
         self._wall_conf = float(self.settings.confidence)
         self.settings.confidence = chk.conf_limit
+        self._dancer_wall_start()                 # X4: the enhancement on while the check tests its settings
         self._calibrating = True                  # YOLO stays forced on; the loop keeps stepping
         if self.ui.available:
             self.ui.set_calibrate_status("Checking the empty wall 0%")
@@ -565,6 +584,7 @@ class CalibrationFlows:
         if self._wall_conf is not None:
             self.settings.confidence = self._wall_conf
             self._wall_conf = None
+        self._dancer_wall_end(chk, cancelled)     # X4: the enhancement switch put back, or left on for the step
         if chk is None or cancelled or chk.result is None:
             if cancelled:
                 print("[EmptyWall] check cancelled: the scene pick is kept, unchecked")
@@ -683,6 +703,7 @@ class CalibrationFlows:
         cams = self.cameras
         return {
             "gamma": r(self.enhancer.gamma), "clahe": r(self.enhancer.clahe_clip),
+            "enhance": getattr(self.settings, "enhance_enabled", None),           # X4: the check may turn it on
             "confidence": r(self.settings.confidence),
             "exposure_us": r(getattr(cams, "ids_exposure_us", None)),
             "gain_db": r(getattr(cams, "ids_gain_db", None)),
@@ -707,6 +728,8 @@ class CalibrationFlows:
             return False
         if snap["gamma"] is not None and snap["clahe"] is not None:
             self._set_enhancement(snap["gamma"], snap["clahe"])
+        if snap.get("enhance") is not None and snap["enhance"] != getattr(self.settings, "enhance_enabled", None):
+            self._dancer_set_enabled(snap["enhance"])
         if snap["confidence"] is not None:
             self.settings.confidence = snap["confidence"]
         if snap["camera_touched"]:
@@ -822,6 +845,414 @@ class CalibrationFlows:
         """The result dialog's « Save to project »: the config, then the plate Calibrate recorded."""
         self.configs._cb_save_config()
         self.commit_pending_plate()
+
+    # ------------------------------------------------------------------
+    # X4 -- the dancer step: one dancer on the wall, 10 s (core/dancer_step.py)
+    # ------------------------------------------------------------------
+    DANCER_BY_HAND = ("by hand: expert mode (Ctrl+Shift+E), Advanced > Detection > Person Height "
+                      "and Advanced > Enhancement")
+
+    @property
+    def dancer_busy(self) -> bool:
+        """The step measures, or its card waits for Keep or Cancel: readiness waits (app._readiness_auto_tick)."""
+        return self._dancer is not None or self._dancer_pending is not None
+
+    def _dancer_ceiling(self):
+        """X3's clean ceiling from the provenance (``_record_ceiling``): ((gamma, CLAHE), kept_current) or
+        (None, False) when no empty-wall check found one."""
+        st = (self.calibration_state or {}).get("enhancement_ceiling")
+        try:
+            return (float(st["gamma"]), float(st["clahe"])), bool(st.get("kept_current"))
+        except (TypeError, KeyError, ValueError):
+            return None, False
+
+    def _cb_dancer_step(self) -> None:
+        """« A DANCER, 10 s »: start the step (one dancer standing on the wall), or cancel it on a second press.
+        It runs detection itself, as Calibrate does (no RUN needed) and never sets RUN / STANDBY (A4)."""
+        if self._dancer is not None:
+            self._cancel_dancer_step()
+            return
+        if self._calibrating or self._calibrating2:
+            if self.ui.available:
+                self.ui.show_toast("Finish or cancel the calibration first", duration=3.0, color=(255, 180, 80))
+            return
+        if getattr(self.processor, "_plate_capture", None) is not None:   # the empty-wall picture is being taken:
+            if self.ui.available:                  # no dancer on it, and Calibrate's card still waits for its verdict
+                self.ui.show_toast("The empty-wall picture is being taken (2 s): keep the wall empty, then "
+                                   "A DANCER, 10 s", duration=3.0, color=(255, 180, 80))
+            return
+        if self._dancer_pending is not None:       # a card left open: the new step starts from before it
+            self._cb_dancer_decision(False)
+        if not self.models._model_loaded or self.models.model is None:
+            if self.ui.available:
+                self.ui.show_toast("Load a model before calibrating", duration=3.0, color=(255, 180, 80))
+            return
+        cam_open = ((self.unified_camera is not None and self.unified_camera.is_open)
+                    or (self.camera is not None and self.camera.state.is_open))
+        if not cam_open and not self.recorder.is_playing:
+            if self.ui.available:
+                self.ui.show_toast("Start the camera or play a recording first", duration=3.0, color=(255, 180, 80))
+            return
+        ceiling, kept = self._dancer_ceiling()
+        self._dancer_snap = self._dancer_snapshot()
+        now = (Enh(True, float(self.enhancer.gamma), float(self.enhancer.clahe_clip))
+               if self.settings.enhance_enabled else None)
+        self._dancer = DancerStep(dancer_candidates(ceiling, now), ceiling=ceiling, kept_current=kept)
+        self._dancer_at = self._dancer_where()     # what it stands on (``dancer_watch``)
+        self._dancer_fed_at = time.monotonic()
+        first = self._dancer.current()
+        if first is not None:
+            self._dancer_apply_enh(first, sync=False)
+        self._calibrating = True                   # detection forced on; the loop steps us; readiness waits
+        if self.ui.available:
+            self.ui.set_calibrate_status("A dancer, 10 s: 0%")
+            self.ui.show_toast("A dancer, 10 s: ONE dancer standing on the wall, still, for 10 s",
+                               duration=4.0, color=(160, 200, 255))
+        print(f"[Dancer] step started: {len(self._dancer.cands)} enhancement(s) to try "
+              f"({', '.join(c.label for c in self._dancer.cands) or 'none: no clean empty-wall check on record'})")
+
+    def _dancer_snapshot(self) -> dict:
+        s = self.settings
+        return {"gamma": float(self.enhancer.gamma), "clahe": float(self.enhancer.clahe_clip),
+                "enabled": bool(s.enhance_enabled), "height": int(s.person_height_px),
+                "state": copy.deepcopy(self.calibration_state)}
+
+    def _dancer_set_enabled(self, on: bool) -> None:
+        self.settings.enhance_enabled = bool(on)
+        sync = getattr(self.ui, "sync_checkbox", None)
+        if self.ui.available and callable(sync):
+            sync("enhance", bool(on))
+
+    def _dancer_apply_enh(self, enh, sync: bool = True) -> None:
+        """One candidate of the step: the enhancement off, or on with its (gamma, CLAHE).  The sliders follow only
+        when ``sync`` (not on every block of the 10 s)."""
+        if enh.enabled:
+            self.enhancer.gamma = float(enh.gamma)
+            self.enhancer._update_gamma_lut()
+            self.enhancer.clahe_clip = float(enh.clahe)
+            self.enhancer._update_clahe()
+        self.settings.enhance_enabled = bool(enh.enabled)
+        if sync and self.ui.available:
+            if enh.enabled:
+                self.ui.sync_slider("gamma", float(enh.gamma))
+                self.ui.sync_slider("clahe", float(enh.clahe))
+            self._dancer_set_enabled(enh.enabled)
+
+    def _dancer_set_height(self, px: int) -> None:
+        self.settings.person_height_px = int(px)
+        self.tracker.set_person_height(int(px))
+        if self.ui.available:
+            self.ui.sync_slider("person_height", int(px))
+
+    def _dancer_restore(self) -> bool:
+        """Put back what the step changed: the enhancement (on/off, gamma, CLAHE), the person height, the
+        provenance.  The empty-wall plate and everything else are not the step's."""
+        snap, self._dancer_snap = self._dancer_snap, None
+        self._dancer_pending = None
+        if snap is None:
+            return False
+        self._set_enhancement(snap["gamma"], snap["clahe"])
+        self._dancer_set_enabled(snap["enabled"])
+        self._dancer_set_height(snap["height"])
+        self.calibration_state = snap["state"]
+        self._dancer_none_chosen()
+        self.request_reprocess()
+        print(f"[Dancer] put back: enhancement {'on' if snap['enabled'] else 'off'} (gamma {snap['gamma']:.2f} / "
+              f"CLAHE {snap['clahe']:.1f}), person height {snap['height']} px")
+        return True
+
+    def _dancer_none_chosen(self) -> None:
+        """Tell the panels whether the enhancement is off because the dancer step chose none (then the OFF
+        label is not a warning)."""
+        st = (self.calibration_state or {}).get("dancer_step")
+        none = isinstance(st, dict) and st.get("enh") == "none"
+        sync = getattr(self.ui, "sync_checkbox", None)
+        if self.ui.available and callable(sync):
+            sync("enhance_none_chosen", bool(none))
+
+    def _zone_ok(self):
+        proc, raw = self.processor, self.last_raw_frame()
+        fn = getattr(proc, "_zone_ok_fn", None)
+        if not callable(fn) or raw is None:
+            return None
+        try:
+            return fn(int(raw.shape[1]), int(raw.shape[0]))
+        except Exception:  # noqa: BLE001 - no excluded cells: every place counts
+            return None
+
+    def _step_dancer(self) -> None:
+        if self._dancer_moved():                   # never a frame of another project into this step
+            self._dancer_drop("the project changed")
+            return
+        self._dancer_fed_at = time.monotonic()
+        st, proc = self._dancer, self.processor
+        raw = self.last_raw_frame()
+        gray = raw[..., 0] if raw is not None and getattr(raw, "ndim", 0) == 3 else raw
+        try:
+            obs = dancer_observe(list(getattr(proc, "last_raw_boxes", None) or ()), getattr(proc, "last_fg", None),
+                                 conf=float(self.settings.confidence),
+                                 lb_scale=float(getattr(proc, "last_lb_scale", 0.0) or 0.0),
+                                 gray=gray, zone_ok=self._zone_ok())
+        except Exception as exc:  # noqa: BLE001 - a frame the step cannot read is skipped, never fatal
+            print(f"[Dancer] frame skipped ({type(exc).__name__}: {exc})")
+            return
+        nxt = st.feed(obs)
+        if nxt is not None:
+            self._dancer_apply_enh(nxt, sync=False)
+        if st.done:
+            self._finish_dancer_step()
+        elif self.ui.available:
+            self.ui.set_calibrate_status(f"A dancer, 10 s: {int(st.progress() * 100)}%")
+
+    def _cancel_dancer_step(self, why: str = "cancelled") -> None:
+        if self._dancer_moved():                   # the snapshot is another project's: never put back here
+            self._dancer_drop("the project changed")
+            return
+        self._dancer = None
+        self._calibrating = False
+        self._dancer_restore()
+        if self.ui.available:
+            self.ui.set_calibrate_status(None)
+            self.ui.show_toast(f"A dancer, 10 s: {why} - nothing changed", duration=3.0 if why == "cancelled" else 6.0,
+                               color=(255, 180, 80))
+        print(f"[Dancer] {why}")
+
+    def _dancer_line(self, r) -> str:
+        """The ONE line saying what the step set, and the manual way."""
+        if r.nobody and getattr(r, "unseen", False):
+            return (f"A dancer, 10 s: someone moves on the wall but the detector saw her in {r.n_box} of "
+                    f"{r.frames} frames - nothing set. Her whole body in the frame and lit, then A DANCER, 10 s "
+                    "again (or set the person height by hand, expert).")
+        if r.nobody:
+            return ("A dancer, 10 s: nobody seen on the wall - nothing set. One dancer standing on the wall, then "
+                    "A DANCER, 10 s again.")
+        if r.people >= 2:
+            return ("A dancer, 10 s: two people on the wall - nothing set. ONE dancer alone on the wall, then "
+                    "A DANCER, 10 s again.")
+        net = r.net_px
+        where = getattr(self.settings, "yolo_shape", None)
+        where = f"{int(where[0])}x{int(where[1])}" if where else f"{int(self.settings.imgsz)}"
+        size = (f"person height {r.height_px:.0f} px (~{net:.0f} px at the network, {where})" if net
+                else f"person height {r.height_px:.0f} px")
+        if r.chosen is None:
+            enh = ("enhancement unchanged (no clean empty-wall check: 2 Calibrate first)" if r.ceiling is None
+                   else "enhancement unchanged (too few frames of her to judge it)")
+        elif r.chosen.enabled:
+            enh = f"enhancement ON, {r.chosen.label}" + (" (the one running: no clean empty-wall check to go higher)"
+                                                         if r.ceiling is None else "")
+        else:
+            enh = "enhancement off (none helps her)"
+        return f"Set: {size}; {enh}; {r.glare.line()}. {self.DANCER_BY_HAND[0].upper()}{self.DANCER_BY_HAND[1:]}."
+
+    def _dancer_details(self, r) -> str:
+        if r.nobody or r.people >= 2:
+            return (f"Someone seen in {100 * r.present:.0f} % of {r.frames} frames"
+                    + (f", two people apart in {100 * r.two:.0f} %." if r.people >= 2 else "."))
+        lines = [f"Her height: {r.height_px:.0f} px from {r.samples} samples (boxes {r.height_box or 0:.0f} px "
+                 f"x{r.n_box}, foreground groups {r.height_group or 0:.0f} px x{r.n_group}; foreground in "
+                 f"{r.fg_frames}/{r.frames} frames)."]
+        if r.stats:
+            ceil = (f"up to the empty wall's clean ceiling gamma {r.ceiling[0]:.2f} / CLAHE {r.ceiling[1]:.1f}"
+                    + (" (the project's own: stronger ones not tried on the empty wall)" if r.kept_current else "")
+                    if r.ceiling else "")
+            lines.append(f"Enhancement on her, {ceil}:")
+            for s in r.stats:
+                lines.append(f"  {s.enh.label}: confidence {s.mean_conf:.2f}, seen in {100 * s.det:.0f} % "
+                             f"({s.frames} frames)" + ("  <- kept" if r.chosen == s.enh else ""))
+        lines.append(r.why)
+        return "\n".join(lines)
+
+    def _finish_dancer_step(self) -> None:
+        st, self._dancer = self._dancer, None
+        self._calibrating = False
+        r = st.result()
+        line = self._dancer_line(r)
+        print(f"[Dancer] {line}")
+        print("[Dancer] " + self._dancer_details(r).replace("\n", " | "))
+        if r.sets_nothing:                         # nobody, or two people: it says so and sets nothing
+            self._dancer_restore()
+            if self.ui.available:
+                self.ui.set_calibrate_status(None)
+                self.ui.show_toast(line, duration=8.0, color=(255, 180, 80))
+        else:
+            self._dancer_set_height(int(round(r.height_px)))
+            knobs = ["person_height_px", "dancer_step"]
+            if r.chosen is not None:
+                if r.chosen.enabled:
+                    self._dancer_apply_enh(r.chosen)
+                else:                              # none helps her: off, at neutral (readiness: « chose none »)
+                    self._set_enhancement(1.0, 1.0)
+                    self._dancer_set_enabled(False)
+                knobs += ["gamma", "clahe"]
+            else:
+                snap = self._dancer_snap or {}
+                self._set_enhancement(snap.get("gamma", self.enhancer.gamma), snap.get("clahe", self.enhancer.clahe_clip))
+                self._dancer_set_enabled(bool(snap.get("enabled", self.settings.enhance_enabled)))
+            self._stamp_calib_state("dancers", *knobs)
+            self.calibration_state["dancer_step"].update(
+                height_px=round(float(r.height_px), 1), net_px=round(float(r.net_px), 1) if r.net_px else None,
+                lb_scale=round(float(r.lb_scale), 5), samples=int(r.samples), people=int(r.people),
+                enh=r.chosen.key() if r.chosen is not None else None,
+                glare_blinds=bool(r.glare.blinds),
+                upper=next(([c.gamma, c.clahe] for c in st.cands if c.enabled), None))   # what it was offered
+            self._dancer_none_chosen()
+            self.request_reprocess()
+            self._dancer_pending = (r, line)
+            if self.ui.available:
+                self.ui.set_calibrate_status(None)
+                self.ui.update_aim_calib_state(self._aim_calib_line())
+                show = getattr(self.ui, "show_dancer_card", None)
+                if callable(show):
+                    show(line, self._dancer_details(r))
+        hook = self.on_dancer_step_done
+        if callable(hook):                         # one setup moment: the warmup swipe follows here, later
+            try:
+                hook(r)
+            except Exception as exc:  # noqa: BLE001 - the step's result stands whatever the hook does
+                print(f"[Dancer] after-step hook failed ({type(exc).__name__}: {exc})")
+
+    def _cb_dancer_decision(self, keep: bool) -> None:
+        """The card: Keep (the values stay and the project is saved) or Cancel (everything is put back)."""
+        pending = self._dancer_pending
+        if pending is None:
+            return
+        if self._dancer_moved():                   # a card of another project: neither saved nor put back here
+            self._dancer_drop("the project changed")
+            return
+        r, line = pending
+        if keep:
+            self._dancer_pending = None
+            self._dancer_snap = None
+            self.dancer_result = r
+            self.configs._cb_save_config()
+            self.commit_pending_plate()
+            print(f"[Dancer] kept and saved: {line}")
+            if self.ui.available:
+                self.ui.show_toast("A dancer, 10 s: kept and saved", duration=3.0, color=(120, 220, 140))
+        else:
+            self._dancer_restore()
+            print("[Dancer] cancelled at the card: put back")
+            if self.ui.available:
+                self.ui.show_toast("A dancer, 10 s: cancelled - put back as before", duration=3.0,
+                                   color=(255, 180, 80))
+
+    def _dancer_where(self):
+        """What the step stands on: the project's provenance (a project switched or loaded replaces it,
+        app._apply_config_without_model), the project, the lighting profile."""
+        c = self.configs
+        return self.calibration_state, getattr(c, "_current_project", None), getattr(c, "_active_profile", None)
+
+    def _dancer_moved(self) -> bool:
+        """The step, or its card, stands on another project or lighting profile than the one it started on."""
+        at = getattr(self, "_dancer_at", None)
+        if not self.dancer_busy or at is None:
+            return False
+        state, project, profile = self._dancer_where()
+        return state is not at[0] or project != at[1] or profile != at[2]
+
+    def _dancer_drop(self, why: str) -> None:
+        """End the step and its card on what they no longer stand on: nothing put back (the snapshot is the other
+        project's; the one now loaded is as its file says) and nothing set."""
+        if self._dancer is not None:
+            self._calibrating = False
+        self._dancer, self._dancer_snap, self._dancer_pending = None, None, None
+        if self.ui.available:
+            self.ui.set_calibrate_status(None)
+            self.ui.show_toast(f"A dancer, 10 s: stopped - {why}; nothing set", duration=6.0, color=(255, 180, 80))
+        print(f"[Dancer] stopped: {why} - nothing put back, nothing set")
+
+    def dancer_watch(self, now: Optional[float] = None) -> None:
+        """Every main-loop tick (runtime/main_loop.py): the step ends when what it stands on goes away.  The project
+        switched or loaded, or the lighting profile switched: the step and its card are dropped (``_dancer_drop``).
+        A project switch queued for the loop's pumps (they run after this watch, in the same tick): cancelled and
+        put back first (``dancer_stop``), so the switch loads the other project over the old one as it was.
+        No frame for ``STEP_STALL_S`` (a playback that ended or never started, a camera stopped): with
+        ``STEP_MIN_FRAMES`` fed it decides on them (``DancerStep.finish``), else it is cancelled (all put back)."""
+        if not self.dancer_busy:
+            return
+        if self._dancer_moved():
+            self._dancer_drop("the project changed")
+            return
+        pending = getattr(self.configs, "_pending_project_switch", None)
+        if isinstance(pending, str) and pending:   # a switch runs next (the loop's pumps): put back, then it loads
+            self.dancer_stop("stopped by a project switch")
+            return
+        st = self._dancer
+        if st is None:
+            return
+        from core.dancer_step import STEP_MIN_FRAMES, STEP_STALL_S
+        t = time.monotonic() if now is None else float(now)
+        if t - float(getattr(self, "_dancer_fed_at", t)) < STEP_STALL_S:
+            return
+        if st.i >= STEP_MIN_FRAMES:
+            print(f"[Dancer] no frame for {STEP_STALL_S:.0f} s: it decides on the {st.i} frames it has")
+            st.finish()
+            self._finish_dancer_step()
+        else:
+            self._cancel_dancer_step(f"no frames for {STEP_STALL_S:.0f} s ({st.i} of {st.frames} seen)")
+
+    def dancer_stop(self, why: str) -> None:
+        """A clean start (app._cb_project_start_clean: a project switch, a camera source change, Start blank / New
+        project) or a project switch about to run (``dancer_watch``): the step that measures, or its card, ends
+        here, before the tracker resets.  On what it started on, it is cancelled and everything is put back (its
+        frames were of the other view, its card was never kept); on another project already (the switch has
+        loaded it), it is dropped and nothing is put back (``_dancer_drop``)."""
+        if not self.dancer_busy:
+            return
+        if self._dancer is not None:
+            self._cancel_dancer_step(why)
+        elif self._dancer_moved():
+            self._dancer_drop("the project changed")
+        else:
+            self._dancer_restore()
+            if self.ui.available:
+                self.ui.show_toast(f"A dancer, 10 s: {why} - put back as before", duration=6.0,
+                                   color=(255, 180, 80))
+            print(f"[Dancer] {why}: the card's values put back")
+
+    def _dancer_keep(self, current):
+        """What Calibrate's empty-wall check tries first, and keeps when it is clean (``_pre_enhancement``).  When
+        the enhancement running is the one the dancer step set: the strongest the step was offered (the clean
+        ceiling, or the one running when there was none), not the one it kept on her -- a step that chose none
+        (1.0 / 1.0) or a lower rung would else become the next check's ceiling, and the enhancement could only go
+        down from one Calibrate to the next.  Set by hand since, or not by the step: ``current``."""
+        st = self.calibration_state or {}
+        ds, g = st.get("dancer_step"), st.get("gamma")
+        try:
+            if ds["epoch"] != g["epoch"] or ds["upper"] is None:
+                return current
+            upper = (float(ds["upper"][0]), float(ds["upper"][1]))
+            g0, c0 = (1.0, 1.0) if ds["enh"] == "none" else (float(v) for v in ds["enh"].split("/"))
+        except (TypeError, KeyError, ValueError, AttributeError, IndexError):
+            return current
+        same = abs(current[0] - g0) < 0.02 and abs(current[1] - c0) < 0.06
+        return upper if same else current
+
+    def _dancer_wall_start(self) -> None:
+        """Calibrate's empty-wall check tests enhancement settings, so it runs with the enhancement ON (off, each rung
+        is the same picture and the first one passes).  Off by hand: off again when the check ends.  Off by the
+        dancer step's choice of none: that choice stood on the old ceiling -- it stays on at the new one and the
+        next dancer step decides again (a cancelled Calibrate puts it back: A6's snapshot)."""
+        self._wall_enh = None
+        if getattr(self.settings, "enhance_enabled", True):
+            return
+        ds = (self.calibration_state or {}).get("dancer_step")
+        self._wall_enh = "step" if isinstance(ds, dict) and ds.get("enh") == "none" else "hand"
+        self._dancer_set_enabled(True)
+
+    def _dancer_wall_end(self, chk, cancelled: bool) -> None:
+        was, self._wall_enh = getattr(self, "_wall_enh", None), None
+        if was is None:
+            return
+        found = not cancelled and chk is not None and chk.result is not None and chk.result.person is None
+        if was == "step" and found:
+            ds = (self.calibration_state or {}).get("dancer_step")
+            if isinstance(ds, dict):
+                ds["enh"] = None                   # superseded: the next dancer step decides again
+            self._dancer_none_chosen()
+            print("[EmptyWall] the enhancement stays on at the check's setting: the dancer step decides again")
+            return
+        self._dancer_set_enabled(False)
 
     # ------------------------------------------------------------------
     # Calib2 — dancer evidence pool (UX_PLAN U4)

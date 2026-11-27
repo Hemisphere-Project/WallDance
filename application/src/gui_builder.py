@@ -870,6 +870,7 @@ def build_phase_wall(gui: Any):
         dpg.add_text("Last calibrated: --", tag="aim_last_calib_text", color=TEXT_HINT)
         dpg.add_text("Sets: exposure / gain -> gamma / CLAHE -> MOG2 -> YOLO check on the "
                      "empty wall -> clean plate.", color=TEXT_DIM, wrap=scaled(_PHASE_WRAP))
+        build_dancer_step(gui)                  # X4: the third step, after the empty wall
         dpg.add_spacer(height=scaled(10))
         dpg.add_separator()
         dpg.add_spacer(height=scaled(6))
@@ -950,6 +951,26 @@ def build_phase_wall(gui: Any):
         with dpg.group(tag="readiness_rows_container"):
             dpg.add_text("Press 'Check readiness' (or open this phase) to run "
                          "the checks.", color=TEXT_HINT, wrap=scaled(_PHASE_WRAP))
+
+
+DANCER_STEP_LABEL = "A DANCER, 10 s"
+
+
+def build_dancer_step(gui: Any):
+    """X4 (hub walldance#t-055): the dancer step -- ONE dancer standing on the wall for 10 s; the app measures her
+    size, chooses the enhancement on her and checks the belt glare, then a card: Keep (saved) or Cancel."""
+    dpg.add_spacer(height=scaled(8))
+    btn = dpg.add_button(label=DANCER_STEP_LABEL, tag="dancer_step_btn", width=scaled(160), height=scaled(30),
+                         callback=getattr(gui, "_on_dancer_step", None))
+    dpg.bind_item_theme(btn, gui._btn_standby_theme)
+    with dpg.tooltip(btn):
+        dpg.add_text("After CALIBRATE on the empty wall: ONE dancer stands on the wall,\n"
+                     "still, for 10 s (no RUN needed).  Sets her height and the\n"
+                     "enhancement that helps her, checks the belt glare, then a card:\n"
+                     "Keep (saved to the project) or Cancel (all put back).\n"
+                     "Press again to cancel.  Each value stays settable by hand\n"
+                     "in expert mode (Advanced > Detection, Enhancement).")
+    dpg.add_text("Then: one dancer on the wall, still, 10 s.", color=TEXT_DIM, wrap=scaled(_PHASE_WRAP))
 
 
 def build_dancer_tools(gui: Any):
@@ -1169,6 +1190,9 @@ def build_phase_live(gui: Any):
         # X5: the enhancement is worth ~18 points of recall on 08/10; off is shown, in red, where the show runs.
         dpg.add_text(enhance_state_label(False), tag="live_enhance_state", color=ERROR_SOFT,
                      show=not bool(gui.config.get("enhance_enabled", False)))
+        # #t-050 ②: the dancers' height at the network, live (orange when too small for this input)
+        dpg.add_text("dancer at the network: not measured", tag="live_dancer_band", color=TEXT_DIM,
+                     wrap=scaled(_PHASE_WRAP))
         dpg.add_spacer(height=scaled(12))
         build_visualization_toolbar(gui)    # promoted: View S/K/B/T/I
 
@@ -1701,11 +1725,14 @@ def build_model_section(gui: Any):
             )
 
 
-def enhance_state_label(enabled: bool) -> str:
-    """X5: the enhancement's state in words (the box itself is expert-only)."""
+def enhance_state_label(enabled: bool, none_chosen: bool = False) -> str:
+    """X5: the enhancement's state in words (the box itself is expert-only).  X4: the dancer step is what turns it
+    on; off because that step found none that helps her is a choice, not a warning."""
     if enabled:
         return "Enhancement ON (set by Calibrate)"
-    return "ENHANCEMENT OFF - run Calibrate (or tick it in expert mode)"
+    if none_chosen:
+        return "Enhancement off: the dancer step found none that helps her"
+    return "ENHANCEMENT OFF - run A DANCER, 10 s (2 Calibrate) or tick it in expert mode"
 
 
 def build_enhancement_section(gui: Any):

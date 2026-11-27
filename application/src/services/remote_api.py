@@ -97,6 +97,7 @@ POLICY: Dict[str, str] = {
     # switch) is control, not heavy: setting it is the operator's deliberate act that opens P6, and setting it
     # to off must stay possible in RUN -- the failure sentences tell the operator to do just that.
     "RunSettingsSwipe": CONTROL, "SetSwipeAuto": CONTROL,
+    "StartDancerStep": CONTROL, "DancerStepDecision": CONTROL,      # X4: the dancer step and its card
     # heavy: STANDBY only
     "RunDryRunReplay": HEAVY, "RunCalibSweep": HEAVY, "RunKnownNTune": HEAVY,
     "RebuildTrt": HEAVY, "LoadModel": HEAVY, "SetImgsz": HEAVY, "ToggleTrt": HEAVY,

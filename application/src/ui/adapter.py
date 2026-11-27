@@ -238,6 +238,8 @@ class DpgUiAdapter:
             "on_calibrate": lambda: submit(api.StartCalibration()),
             "on_calibrate_all": lambda: self.wizard and self.wizard.open(),
             "on_calib2": lambda: submit(api.StartDancersRun()),
+            "on_dancer_step": lambda: submit(api.StartDancerStep()),                       # X4
+            "on_dancer_step_decision": lambda keep: submit(api.DancerStepDecision(bool(keep))),
             "on_calib2_apply": lambda sel: submit(api.ApplyCalib2(list(sel))),
             "on_calib2_select": lambda sel: submit(api.ApplyCalib2(list(sel), quiet=True)),
             "on_calib2_clear": lambda: submit(api.ClearCalib2Pool()),
@@ -430,6 +432,8 @@ class DpgUiAdapter:
                 None if self.wizard.on_pool_changed(e.rows, e.proposal)
                 else self.gui.show_calib2_dialog(e.rows, e.proposal)),
             api.Calib2ProposalUpdated: lambda e: self.gui.update_calib2_proposal(e.proposal),
+            api.DancerStepCard: lambda e: self.gui.show_dancer_step_card(e.line, e.details),   # X4
+            api.DancerBand: lambda e: self.gui.show_dancer_band(e.state, e.text),              # #t-050 ②
             api.AimCalibStateChanged: lambda e: self.gui.update_aim_calib_state(e.text),
             api.ConfigSaved: lambda e: self.gui.show_save_indicator(e.message),
             api.ConfigList: lambda e: self.gui.update_config_list(
