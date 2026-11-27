@@ -38,6 +38,7 @@ from core.config import (AUTOCAL_BLUR_BUDGET_MS, AUTOCAL2_FRAME_SAMPLES,
                          AUTOCAL_SERVO_GAIN_MAX_DB, EMPTY_WALL_CHECK, MODELS_DIR)
 from core.dancer_step import DancerStep, Enh, candidates as dancer_candidates, observe as dancer_observe
 from core.empty_wall import EmptyWallCheck, NEUTRAL_GAMMA, PERSON_SETTLE, PersonWatch
+from core.empty_wall import MaskedBoxes, OBJECT_WAYS_OUT   # X3m: the Exclusion Mask honoured, as RUN does
 
 try:
     from camera.ids_camera import CameraSource
@@ -133,6 +134,7 @@ class CalibrationFlows:
         self._emptiness_resume = None                    # the enhancement the next phase expects
         self.enhancement_ceiling = None                  # X3: the strongest clean (gamma, CLAHE) of the last check
         self.last_stop: Optional[str] = None             # why the last Calibrate stopped (someone in view)
+        self._masked = None                              # X3m: (the watch or check fed, MaskedBoxes) left out
         # A6 ②: what Calibrate found, to put back when it is cancelled or stopped; the plate held until Save
         self._snapshot: Optional[dict] = None
         self._pending_plate = None                       # (plate, the app's writer) recorded, not yet written
@@ -564,7 +566,9 @@ class CalibrationFlows:
 
     def _step_wall_check(self) -> None:
         chk = self._wall_check
-        nxt = chk.feed(list(getattr(self.processor, "last_raw_dets", None) or ()))
+        nxt = chk.feed(self._wall_dets(chk))      # X3m: without the boxes RUN drops in the Exclusion Mask
+        if chk.done:
+            chk.result.masked = self._masked[1]
         if nxt is not None:
             self._set_enhancement(*nxt)
         if chk.done and chk.result.person is not None:     # X3: never lowered because of a person
@@ -599,8 +603,8 @@ class CalibrationFlows:
         self.request_reprocess()
         if not r.clean and self.ui.available:
             self.ui.show_toast("YOLO now and then sees a person on the EMPTY wall, even at the weakest "
-                               "setting: if an object there looks like a person, remove it or move the "
-                               "Region of Interest off it, then Calibrate again.",
+                               f"setting: if an object there looks like a person, {OBJECT_WAYS_OUT}, "
+                               "then Calibrate again.",
                                duration=8.0, color=(255, 140, 70))
 
     def _finish_calibration(self) -> None:
@@ -634,6 +638,32 @@ class CalibrationFlows:
         raw = self.last_raw_frame()
         return self._servo_roi(raw) if raw is not None else None
 
+    def _mask_zone_ok(self):
+        """X3m: the pipeline's own Exclusion Mask test on the current frame (``FrameProcessor._zone_ok_fn``:
+        an original-px point -> outside the excluded cells, over the ROI), else None (no mask to honour)."""
+        fn, raw = getattr(self.processor, "_zone_ok_fn", None), self.last_raw_frame()
+        if not callable(fn) or raw is None:
+            return None
+        try:
+            return fn(int(raw.shape[1]), int(raw.shape[0]))
+        except Exception:  # noqa: BLE001 - no mask read: every box counts, as before
+            return None
+
+    def _wall_dets(self, owner) -> list:
+        """X3m: this frame's raw boxes (``last_raw_dets``: conf, x, y, h) for the emptiness watch or the
+        ladder (``owner``), without those RUN drops because their centre sits in an excluded cell -- a fixed
+        thing the technician masked is no one in view and no ghost against an enhancement.  What is left out
+        is counted per owner (``self._masked``) for the log."""
+        if self._masked is None or self._masked[0] is not owner:
+            self._masked = (owner, MaskedBoxes())
+        dets = getattr(self.processor, "last_raw_dets", None) or ()
+        return self._masked[1].keep(dets, self._mask_zone_ok())
+
+    def _masked_note(self) -> str:
+        """X3m: ' -- ignored (Exclusion Mask): ...' when the last watch or check left a box out, else ''."""
+        note = self._masked[1].note() if self._masked is not None else ""
+        return f" -- {note}" if note else ""
+
     def _start_emptiness(self) -> None:
         """X3: before anything is measured, watch a few frames for someone in view, at gamma <= neutral so
         an enhancement ghost does not pass for a person (core/empty_wall.py)."""
@@ -651,7 +681,7 @@ class CalibrationFlows:
 
     def _step_emptiness(self) -> None:
         w = self._emptiness
-        w.feed(list(getattr(self.processor, "last_raw_dets", None) or ()))
+        w.feed(self._wall_dets(w))                 # X3m: without the boxes RUN drops in the Exclusion Mask
         if not w.done:
             return
         self._emptiness = None
@@ -661,7 +691,7 @@ class CalibrationFlows:
         resume, self._emptiness_resume = self._emptiness_resume, None
         if resume is not None:
             self._set_enhancement(*resume)
-        print(f"[Calibrate] the wall is empty: a person in {w.hits} of {w.seen} frames")
+        print(f"[Calibrate] the wall is empty: a person in {w.hits} of {w.seen} frames{self._masked_note()}")
         if self.ui.available:
             self.ui.set_calibrate_status("Calibrating exposure..." if self._servo is not None
                                          else "Calibrating 0%")
@@ -679,10 +709,11 @@ class CalibrationFlows:
         self._restore_snapshot()
         where = sighting.where(region) if sighting is not None else "in the picture"
         self.last_stop = (f"Someone is in view, {where}: Calibrate stopped and changed nothing. "
-                          "Clear the wall, then press Calibrate again.")
+                          f"If it is a person: clear the wall. If it is an object: {OBJECT_WAYS_OUT}. "
+                          "Then press Calibrate again.")
         print(f"[Calibrate] stopped: {self.last_stop}"
               + (f" ({sighting.hits}/{sighting.frames} frames, conf up to {sighting.conf:.2f}, "
-                 f"h {sighting.h:.0f} px)" if sighting is not None else ""))
+                 f"h {sighting.h:.0f} px)" if sighting is not None else "") + self._masked_note())
         if self.ui.available:
             self.ui.set_calibrate_status(f"Stopped: someone in view, {where}")
             self.ui.show_toast(self.last_stop, duration=10.0, color=(255, 140, 70))

@@ -317,6 +317,20 @@ def _fitted_alerts(gui) -> str:
         return "   ".join(msgs)
 
 
+def _toast_wrap(toast_x: float) -> int:
+    """X3m (27/11): where a toast's text wraps -- at the preview area's right edge, so a long toast (a Calibrate
+    stop and its advice: 257 characters, ~175 fit across the laptop's window) is drawn whole over the preview,
+    never off the window.  ImGui wraps at its own drawn metrics (the support band's way).  -1 (one line, as
+    before) only while there is no preview area to measure."""
+    try:
+        panel_w = float(dpg.get_item_width("video_panel") or 0) if dpg.does_item_exist("video_panel") else 0.0
+    except Exception:  # noqa: BLE001 - not built
+        panel_w = 0.0
+    if panel_w <= 0:
+        return -1
+    return int(max(scaled(200), panel_w - toast_x - scaled(16)))
+
+
 class WallDanceGUI:
     """Modern GUI for WallDance using DearPyGui."""
     
@@ -2409,6 +2423,24 @@ class WallDanceGUI:
         self._save_indicator_time = time.time()
         if dpg.does_item_exist("save_indicator"):
             dpg.configure_item("save_indicator", show=True, color=BRIGHT_GREEN)
+        if message == "Saved!":                    # X3m: the project is saved (Ctrl+S, a remote SaveConfig)
+            self.mark_calibration_result_saved()
+
+    def mark_calibration_result_saved(self):
+        """X3m (27/11): the project was saved while the Scene Calibration card is open -- by Ctrl+S or a remote
+        SaveConfig; the card's own button closes it first.  The card stays for its reading, but says it is
+        saved and offers Close, never « Save to project » again."""
+        if not dpg.does_item_exist("calibration_result_buttons"):
+            return
+        dpg.delete_item("calibration_result_buttons", children_only=True)
+
+        def on_close():
+            if dpg.does_item_exist("calibration_result_modal"):
+                dpg.delete_item("calibration_result_modal")
+        dpg.add_text("Saved to project.", color=BRIGHT_GREEN, parent="calibration_result_buttons")
+        dpg.add_spacer(width=scaled(16), parent="calibration_result_buttons")
+        dpg.add_button(label="Close", callback=on_close, width=scaled(120),
+                       parent="calibration_result_buttons", tag="calibration_result_close_btn")
     
     def set_current_project(self, project_name: str):
         """Set the current project in the top bar dropdown."""
@@ -3107,7 +3139,7 @@ class WallDanceGUI:
             dpg.add_spacer(height=scaled(6))
             dpg.add_text(summary, wrap=scaled(430))
             dpg.add_spacer(height=scaled(14))
-            with dpg.group(horizontal=True):
+            with dpg.group(horizontal=True, tag="calibration_result_buttons"):
                 dpg.add_button(
                     label="Save to project",
                     callback=on_save_project,
@@ -3218,7 +3250,7 @@ class WallDanceGUI:
             pos=(toast_x, toast_y),
             min_size=(10, 10),
         ):
-            dpg.add_text(message, tag="toast_text", color=color)
+            dpg.add_text(message, tag="toast_text", color=color, wrap=_toast_wrap(toast_x))
 
         # Expired by render_frame() on the main thread; deleting from a
         # background thread races the render loop (DPG is not thread-safe).

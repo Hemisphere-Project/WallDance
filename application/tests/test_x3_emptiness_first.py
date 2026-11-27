@@ -126,7 +126,9 @@ def test_someone_in_view_stops_calibrate_before_anything_is_measured_and_says_wh
     assert "middle left of the wall (x 30, y 95)" in flows.last_stop
     flows.ui.set_calibrate_status.assert_called_with("Stopped: someone in view, middle left of the wall (x 30, y 95)")
     toast = flows.ui.show_toast.call_args_list[-1][0][0]
-    assert toast == flows.last_stop and "Clear the wall, then press Calibrate again" in toast
+    assert toast == flows.last_stop and ("If it is a person: clear the wall. If it is an object: exclude it "
+                                         "(1 Rig > Exclusion Mask) or move the Region of Interest off it. "
+                                         "Then press Calibrate again.") in toast      # X3m: both ways out
     flows.ui.show_calibration_result_dialog.assert_not_called()
 
 

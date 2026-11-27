@@ -39,6 +39,11 @@ the live confidence.  Calibrate runs it first, at gamma <= ``NEUTRAL_GAMMA``, an
 there (``where`` says where); and the ladder runs it on a rung at or under neutral before stepping lower:
 it never goes under neutral because of a person -- a person there ends the check with ``person`` set,
 and the caller keeps the enhancement it had.  ``EmptyWallResult.ceiling`` records the strongest clean rung.
+
+X3m (27/11, the show laptop).  A shape of the room the detector took for a person stopped Calibrate, and kept
+stopping it once the technician had masked it (the Exclusion Mask): the watch and the ladder read the raw boxes
+from before RUN's exclusion step.  Calibrate now judges the wall as RUN will: the caller leaves out the boxes
+in an excluded cell (``MaskedBoxes``, with the pipeline's own test on the box's centre) and the log says so.
 """
 from __future__ import annotations
 
@@ -52,6 +57,45 @@ NEUTRAL_GAMMA = 1.0        # X3: the gamma the person watch runs at; the ladder 
 PERSON_FRAMES = 30         # X3: frames watched to tell a person (most frames) from a ghost (a stray frame)
 PERSON_MIN_FRAC = 0.2      # X3: ... of which this share holds a box at the live confidence = someone is there
 PERSON_SETTLE = 4          # X3: frames before the watch counts, after an enhancement change
+# X3m: the two ways out for an object the detector takes for a person, the mask first (the app's own words)
+OBJECT_WAYS_OUT = "exclude it (1 Rig > Exclusion Mask) or move the Region of Interest off it"
+
+
+@dataclass
+class MaskedBoxes:
+    """X3m (27/11, the show laptop): the raw boxes Calibrate leaves out because RUN drops them -- they sit in
+    an excluded cell of the Exclusion Mask.  ``zone_ok`` is the pipeline's own test
+    (``FrameProcessor._zone_ok_fn``: an original-px point -> outside the excluded cells), applied to the box's
+    centre as RUN's exclusion step does.  ``keep`` returns one frame's boxes without those and counts what it
+    left out, for the log (remote support can tell a box was ignored)."""
+    frames: int = 0                        # frames fed
+    hit_frames: int = 0                    # ... holding at least one box left out
+    boxes: int = 0                         # boxes left out
+    top: Optional[Tuple[float, float, float, float]] = None   # conf, x, y, h of the strongest one left out
+
+    def keep(self, dets: Iterable[Sequence[float]], zone_ok=None) -> list:
+        dets = list(dets)
+        self.frames += 1
+        if zone_ok is None:
+            return dets
+        kept, out = [], []
+        for d in dets:
+            (kept if zone_ok(float(d[1]), float(d[2])) else out).append(d)
+        if out:
+            self.hit_frames += 1
+            self.boxes += len(out)
+            s = max(out, key=lambda d: float(d[0]))
+            if self.top is None or float(s[0]) > self.top[0]:
+                self.top = tuple(float(v) for v in s[:4])
+        return kept
+
+    def note(self) -> str:
+        """'' when nothing was left out, else what and where (the log's words)."""
+        if not self.boxes or self.top is None:
+            return ""
+        c, x, y, h = self.top
+        return (f"ignored (Exclusion Mask): {self.boxes} box(es) in excluded cells in {self.hit_frames}/"
+                f"{self.frames} frames, strongest conf={c:.2f} at x={x:.0f} y={y:.0f} h={h:.0f}")
 
 
 @dataclass
@@ -158,6 +202,7 @@ class EmptyWallResult:
     kept_current: bool = False             # the project's calibrated enhancement passed: left as it was
     person: Optional[Sighting] = None      # X3: someone in view -- the check stopped there, nothing to keep
     region: Optional[Tuple[float, float, float, float]] = None   # the ROI, for ``where``
+    masked: Optional[MaskedBoxes] = None   # X3m: the boxes left out as RUN drops them (the caller's tally)
 
     @property
     def ceiling(self) -> Optional[Tuple[float, float]]:
@@ -174,7 +219,8 @@ class EmptyWallResult:
             lines.append(f"  {c.label}: {mark}{near}{watch}")
         if self.person is not None:
             lines.append(f"Someone is in view, {self.person.where(self.region)}: the check stopped there "
-                         f"and lowered nothing. Clear the wall, then Calibrate again.")
+                         f"and lowered nothing. If it is a person: clear the wall. If it is an object: "
+                         f"{OBJECT_WAYS_OUT}. Then Calibrate again.")
         elif self.clean and self.kept_current:
             lines.append(f"Kept the current gamma {self.gamma:.2f} / CLAHE {self.clahe:.1f}: YOLO sees nobody "
                          "on the empty wall with it")
@@ -184,21 +230,23 @@ class EmptyWallResult:
             w = max((c for c in self.tried if c.worst), key=lambda c: c.worst[0], default=None)
             where = f" near x={w.worst[1]:.0f}, y={w.worst[2]:.0f}" if w else ""
             lines.append(f"YOLO now and then sees a person on the EMPTY wall{where}, even at the weakest "
-                         "setting (kept): if an object there looks like a person, remove it or move the Region "
-                         "of Interest off it, then Calibrate again.")
+                         f"setting (kept): if an object there looks like a person, {OBJECT_WAYS_OUT}, "
+                         "then Calibrate again.")
         return "\n".join(lines)
 
     def log_line(self) -> str:
         tried = "; ".join(f"{c.gamma:.2f}/{c.clahe:.1f}:{c.ghost_frames}/{c.frames}@{c.max_conf:.2f}"
                           + (f"+watch {c.person_hits}/{c.watched}" if c.watched else "")
                           for c in self.tried)
+        masked = self.masked.note() if self.masked is not None else ""
+        masked = f"; {masked}" if masked else ""           # X3m: say when a box was left out as RUN drops it
         if self.person is not None:
             p = self.person
             return (f"[EmptyWall] stopped: person at x={p.x:.0f} y={p.y:.0f} h={p.h:.0f} conf={p.conf:.2f} "
                     f"({p.hits}/{p.frames} frames at gamma={self.gamma:.2f} clahe={self.clahe:.1f}) "
-                    f"limit={self.conf_limit:.2f} tried {tried}")
+                    f"limit={self.conf_limit:.2f} tried {tried}{masked}")
         return (f"[EmptyWall] kept gamma={self.gamma:.2f} clahe={self.clahe:.1f} clean={self.clean} "
-                f"limit={self.conf_limit:.2f} tried {tried}")
+                f"limit={self.conf_limit:.2f} tried {tried}{masked}")
 
 
 def ladder(gamma0: float, clahe0: float) -> List[Tuple[float, float]]:
