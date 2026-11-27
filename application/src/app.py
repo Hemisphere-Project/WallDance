@@ -3371,8 +3371,10 @@ class WallDanceApp:
         A background suggestion on the swipe line: « not now » -- it goes and its setting is put aside a while
         (``BackgroundSwipe.dismiss``); a failed Apply or automatic switch and the bans stay, and Dismiss with them
         for a second press.  No background suggestion on the line: a failed Apply or automatic switch is
-        acknowledged (its fail row goes) and the bans are lifted -- and a background suggestion behind the
-        operator's own verdict is « not now » too (its setting put aside, its streak over)."""
+        acknowledged (its fail row goes) and the bans are lifted -- and a background suggestion behind what the
+        line shows -- the operator's own verdict, a failed Apply's red line -- is « not now » too (its setting put
+        aside, its streak over): after a failed Apply of it, shown again minutes later it would invite a second
+        Apply that fails the same way."""
         self.swipe.dismiss()
         if self.swipe_bg.dismiss(not_now=self._swipe_shown == "background", behind=True):
             self.bus.publish(api.SettingsSwipeProgress("dismissed", "dismissed", 0.0))
@@ -3462,7 +3464,9 @@ class WallDanceApp:
         if kind == "suggest":
             self._swipe_shown = "background"
             res = dict(payload.get("result") or {})
-            res["switch"] = True
+            # a line that no longer invites (« ... - not confirmed at the last look (HH:MM) »: no winner) is
+            # information, in the normal colour, without Apply; Dismiss stays for « not now »
+            res["switch"] = payload.get("winner") is not None
             res["winner"] = payload.get("winner")
             res["auto"] = {k: payload.get(k) for k in ("kind", "level", "text", "seamless", "why_not_auto",
                                                        "winner")}

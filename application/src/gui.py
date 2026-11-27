@@ -3222,7 +3222,8 @@ class WallDanceGUI:
 
     def show_swipe_result(self, result, error=""):
         """P5 swipe verdict: the reason, one line per setting (best first), what was not tried, how long it
-        took; the Apply button when another setting is worth switching to."""
+        took; the Apply button when another setting is worth switching to.  P6: the background suggestion a look
+        no longer confirms (no winner) has no Apply, and Dismiss stays beside it for « not now »."""
         tag = "swipe_status_text"
         self._swipe_busy = False
         if dpg.does_item_exist("swipe_btn"):
@@ -3268,6 +3269,8 @@ class WallDanceGUI:
             if r.get("apply_tip") and dpg.does_item_exist("swipe_apply_tip"):
                 dpg.set_value("swipe_apply_tip", r["apply_tip"])
             _show_swipe_dismiss(self, True)
+        if auto and not r.get("winner"):
+            _show_swipe_dismiss(self, True)          # the line no longer invites: Dismiss says « not now »
 
     def show_swipe_hold(self, held):
         """P6: something waits for Dismiss (the switch's fault, a setting the automatic swipe leaves alone): its

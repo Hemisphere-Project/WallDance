@@ -4,7 +4,8 @@ It wrote « error: <Class>: <message> » into /status ``last_look`` and had no b
 the next tick ran another 150 inferences -- 1,410 looks in a two-hour fake evening.  Now the class and the message
 go to the log line, the status row says a plain sentence, the looks back off as after a « keep » (300 s, then
 600 s), and the third failure in a row puts the setting aside as a run that failed does (the same ban, the same
-sentences: ``BackgroundSwipe._not_run``).  CPU, with the fakes of ``test_swipe_auto_live``."""
+sentences: ``BackgroundSwipe._not_run``), with its own cause: « its looks keep failing, see the log », not « the
+engine stopped during a run ».  CPU, with the fakes of ``test_swipe_auto_live``."""
 from test_swipe_auto_rollback import _look, _Tap
 from test_swipe_auto_suggestion import _evening_bg
 
@@ -72,3 +73,27 @@ def test_a_look_that_completes_starts_the_count_over(monkeypatch):
                 break
     assert len(later) == 2 and bg.status()["auto_banned"] == [], "put aside after two failures in a row"
     assert bg.status()["last_look"]["outcome"] == LOOK_FAILED
+
+
+LOOKS_SAID = ("the automatic swipe could not run l @ 1280 (its looks keep failing, see the log): x @ 1280 still runs "
+              "- set Auto to off")
+LOOKS_ROW = ("the automatic swipe could not run l @ 1280 (its looks keep failing, see the log) and will not try it "
+             "again until you press Dismiss: x @ 1280 still runs - set Auto to off")
+LOOKS_WAITS = ("the automatic swipe waits: it could not run l @ 1280 (its looks keep failing, see the log) and will "
+               "not try it again until you press Dismiss - set Auto to off")
+
+
+def test_the_third_failed_look_in_a_row_says_its_own_cause_not_the_engines(monkeypatch, capsys):
+    """The setting put aside after three looks that raised: the alert and the red line, the readiness row and the
+    look's row say the looks' own failure -- « (its looks keep failing, see the log) » -- with the one thing to do,
+    Auto to off; the error itself stays for the log line and /status's detail.  Fails before: « (the engine stopped
+    during a run) », while the engine ran and the looker's own code raised."""
+    bg, proc, loader, live = _evening_bg()
+    _raising(monkeypatch)
+    tap = _Tap(range(3000))
+    assert [t for t in range(1, 1400) if _look(bg, proc, tap, t) == "run"] == [150, 450, 1050]
+    assert bg.switch.fault == LOOKS_SAID, bg.switch.fault
+    assert bg.switch.health() == LOOKS_ROW, bg.switch.health()
+    assert bg.status()["last_look"]["outcome"] == LOOKS_WAITS and bg.health() == LOOKS_WAITS
+    error = "AttributeError: '_BgProc' object has no attribute 'swipe_lost_share'"
+    assert error in bg.switch.fault.detail and error in capsys.readouterr().out

@@ -911,18 +911,21 @@ class BackgroundSwipe:
         say(f"[SwipeAuto] {other.engine_file} did not load: {why.more(other)}")
         return self._ban(other, live, "load", why, f"{type(exc).__name__}: {str(exc)[:160]}")
 
-    def _not_run(self, other: Candidate, live: LiveSetting, error: str) -> Tuple[str, str]:
+    def _not_run(self, other: Candidate, live: LiveSetting, error: str,
+                 what: Optional[str] = None) -> Tuple[str, str]:
         """A resident that loaded but whose inference failed (``run.error``): as one that cannot be loaded -- the
         setting is banned at the first failure, said once -- and the resident is handed to the release, so its
-        memory comes back (a run that failed for lack of it would only fail again beside it, at every look)."""
-        from runtime.seamless_switch import run_failure
+        memory comes back (a run that failed for lack of it would only fail again beside it, at every look).
+        ``what``: the cause the sentences say when it is not the engine (``LOOKS_FAIL``: the looks' own code
+        raised), out of memory staying « no room on the GPU »."""
+        from runtime.seamless_switch import RUN_FAILED, run_failure
         say(f"[SwipeAuto] {other.label} did not run: {error}")
         r = self.resident
         if r is not None and r.candidate == other:
             self.resident = None
             self.switch.release((r.model, r.runner))
             self._record("release", resident=r.candidate.label, purpose="its run failed")
-        return self._ban(other, live, "run", run_failure(error), error)
+        return self._ban(other, live, "run", run_failure(error, what=what or RUN_FAILED), error)
 
     def _stands_down(self, other: Optional[Candidate], now: float) -> Tuple[Optional[str], str]:
         """(what the look says, what the tick returns) while the looker leaves ``other`` alone: banned until
@@ -986,8 +989,10 @@ class BackgroundSwipe:
 
     # a look that raised (an error in the code around the engine: the scoring, the advice): what /status says -- its
     # class and message go to the log line only -- and the looks back off as after a « keep »; the LOOK_FAILURES-th
-    # in a row puts the setting aside as a run that failed does (``_not_run``: its ban, its sentences)
+    # in a row puts the setting aside as a run that failed does (``_not_run``: its ban, its sentences), with its own
+    # cause (``LOOKS_FAIL``: the looker's own code failed, not the engine)
     LOOK_FAILED = "the automatic swipe waits: its last look failed, see the log"
+    LOOKS_FAIL = "its looks keep failing, see the log"
     LOOK_FAILURES = 3
 
     def _run(self, kind: str, live: LiveSetting, other: Candidate, fresh: list, now0: float) -> None:
@@ -1102,7 +1107,7 @@ class BackgroundSwipe:
             self._look_failures += 1
             if self._look_failures >= self.LOOK_FAILURES:
                 self._look_failures = 0
-                (outcome, fault), verb = self._not_run(other, live, error), "run"
+                (outcome, fault), verb = self._not_run(other, live, error, self.LOOKS_FAIL), "run"
             else:
                 outcome = self.LOOK_FAILED
                 self.auto.failed(float(proc.loop_clock()))      # its frames stay fresh: no look for a while

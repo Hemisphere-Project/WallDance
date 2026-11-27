@@ -218,3 +218,56 @@ def test_the_tooltip_says_the_rules_15_percent():
     from gui_builder import SWIPE_AUTO_TIP_LINES
     assert AutoParams().slower == pytest.approx(1.15)
     assert "no more than 15 %\n           slower" in SWIPE_AUTO_TIP_LINES["suggest"]
+
+
+# ------------------------------------------------------------- 4. the line that no longer invites: information
+def test_the_line_that_no_longer_invites_is_in_the_normal_colour_without_apply_and_dismiss_says_not_now():
+    """The line of a look that did not confirm the suggestion (« ... - not confirmed at the last look (HH:MM) »,
+    the event's ``winner`` None) through the app's handler (``WallDanceApp._swipe_notify``) to the panel
+    (``WallDanceGUI.show_swipe_result``, headless): the verdict it publishes says ``switch`` only with a winner, so
+    the line is in the normal colour, not the suggestion's amber; no Apply; Dismiss on screen, and its press is
+    « not now » for that suggestion (``_cb_dismiss_swipe``: put aside, its streak over).  Fails before: ``switch``
+    True with no winner -- the line in amber -- and Dismiss went off the screen with the Apply button."""
+    dpg = pytest.importorskip("dearpygui.dearpygui")
+    import app as appmod
+    import gui_builder
+    from gui import WallDanceGUI
+    from gui_constants import TEXT_NORMAL, WARN_AMBER
+    bg, proc, loader, live = _evening_bg()
+    events = _events(bg)
+    tap = _Tap(range(3000))
+    _runs(bg, proc, tap, 1, 301)                         # shown
+    loader.infer_boxes = []
+    _runs(bg, proc, tap, 301, 601)                       # a look that does not confirm it: the line stops inviting
+    suggests = [e for e in events if e[0] == "suggest"]
+    assert len(suggests) == 2 and suggests[1][1]["winner"] is None and NOT_CONFIRMED in suggests[1][1]["text"]
+    published = []
+    fake = SimpleNamespace(bus=SimpleNamespace(publish=published.append), swipe_bg=bg, _swipe_shown="",
+                           swipe_switch=bg.switch, swipe=SimpleNamespace(dismiss=lambda: None))
+    fake._swipe_apply_hint = lambda w: appmod.WallDanceApp._swipe_apply_hint(fake, w)
+    dpg.create_context()
+    try:
+        noop = lambda *a, **k: None  # noqa: E731
+        mock = SimpleNamespace(config={}, _on_check_readiness=noop, _on_calibrate=noop, _on_capture_plate=noop,
+                               _on_dryrun=noop, _on_swipe=noop, _on_swipe_apply=noop, _on_swipe_auto=noop,
+                               _on_swipe_dismiss=noop, _btn_standby_theme=dpg.add_theme())
+        with dpg.window(label="no longer invites"):
+            gui_builder.build_phase_wall(mock)
+        g = SimpleNamespace()
+        seen = []
+        for kind, payload in suggests:
+            n = len(published)
+            appmod.WallDanceApp._swipe_notify(fake, kind, payload)
+            res = next(e.result for e in published[n:] if type(e).__name__ == "SettingsSwipeResult")
+            WallDanceGUI.show_swipe_result(g, res, "")
+            colour = tuple(round(255 * c) for c in dpg.get_item_configuration("swipe_status_text")["color"][:3])
+            seen.append((res["switch"], colour, dpg.get_item_configuration("swipe_apply_btn")["show"],
+                         dpg.get_item_configuration("swipe_dismiss_btn")["show"]))
+    finally:
+        dpg.destroy_context()
+    assert seen[0] == (True, WARN_AMBER, True, True), seen[0]                   # (regression guard) it invites
+    assert seen[1] == (False, TEXT_NORMAL, False, True), \
+        f"the line that no longer invites: (switch, colour, Apply, Dismiss) = {seen[1]}"
+    assert fake._swipe_shown == "background"
+    appmod.WallDanceApp._cb_dismiss_swipe(fake)          # the operator's Dismiss on that line
+    assert bg.suggestion is None and bg.auto.snoozed(proc.clock) == L1280 and bg.auto.policy._streak == 0
