@@ -12,14 +12,16 @@ and acts on its advice, on its own thread, without the operator:
   the boxes it already made (``SwipeFrame.boxes``: no inference), and the OTHER MODEL AT THE LIVE NETWORK INPUT,
   kept RESIDENT (under ``ENGINE_LOAD_LOCK`` and without a CUDA graph).  A load or a release stops the loop for
   some 50 ms, so they happen only at moments where that does not show: out of RUN, or in RUN on a wall empty for
-  ``SWIPE_AUTO_LOAD_EMPTY_S`` (no track, no identity slot held: the collector's own test) -- never on entering
-  RUN, never while a dancer is tracked.  So it loads once the mode is set, after a project or model load, in
-  STANDBY or on an empty wall; a look that falls due without it while a dancer is tracked waits for such a moment
-  (``WALL_WAIT``, in ``status``).  It is kept while the mode is on (no idle timer) and goes when the mode goes off
-  (at once out of RUN, right after a live frame in RUN), when the project, input or TensorRT state changes, and at
-  quit, never inside a run; the readiness report says what it holds on the GPU.  Its inferences are paced
-  ``pace_s`` apart right after a live network pass (150 x 0.2 s: about 30 s of gentle inference), judged at the
-  show's confidence.  A run without a verdict says nothing (the operator's swipe's ``no_verdict``);
+  ``SWIPE_AUTO_LOAD_EMPTY_S`` (no track, no identity slot held: the collector's own test) -- and at the operator's
+  own click: the first look after the mode is set to suggest or auto loads it, whatever is on the wall (once).
+  Never on entering RUN, never at a look that falls due later while a dancer is tracked.  So it loads when the
+  mode is set, after a project or model load, in STANDBY or on an empty wall; a look that falls due without it
+  while a dancer is tracked waits for such a moment (``WALL_WAIT``, in ``status``).  It is kept while the mode is
+  on (no idle timer) and goes when the mode goes off (at once out of RUN, right after a live frame in RUN), when
+  the project, input or TensorRT state changes, and at quit, never inside a run; the readiness report says what
+  it holds on the GPU.  Its inferences are paced ``pace_s`` apart right after a live network pass (150 x 0.2 s:
+  about 30 s of gentle inference), judged at the show's confidence.  A run without a verdict says nothing (the
+  operator's swipe's ``no_verdict``);
 * **the advice** (``SwipeAuto.advise``): ``none`` (it keeps the live setting), ``suggest`` (a warning with
   « Apply now » that stays until applied, dismissed or stale), ``apply`` (mode auto, a definite seamless winner:
   the switch, with an alert);
@@ -254,6 +256,7 @@ class BackgroundSwipe:
         self.last_advice: Optional[Dict[str, Any]] = None
         self.last_counts: Tuple[int, int] = (0, 0)      # fresh frames with dancers, of which lost
         self._quiet = True                              # this look's moment: a load or a release would not show
+        self._mode_set = False                          # the mode was just set (not off): the next look's moment
         self._quiet_since: Optional[float] = None       # loop clock since when the wall is seen empty in RUN
         self._was_run = False                           # RUN at the last look (entering RUN starts the count again)
         self._next_s: Optional[float] = None            # the next look sooner than look_s (an empty wall counted)
@@ -275,9 +278,11 @@ class BackgroundSwipe:
     def set_mode(self, mode: str) -> str:
         """Off ends the automatic swipe for the session: the looker frees its engine (at once out of RUN, right
         after a live frame in RUN) and its thread ends.  Another mode wakes the looker -- ``start`` starts it
-        again -- and the engine loads now if a pause does not show now, else at the next such moment."""
+        again -- and the engine loads at that next look, whatever is on the wall: the operator's click (or a
+        project load) is the moment, once.  Later, only where a pause does not show."""
         m = parse_mode(mode)
         self.auto.mode = m
+        self._mode_set = m != MODE_OFF    # the next look may load: the operator chose this pause
         if m == MODE_OFF:
             self._clear_suggestion("the automatic swipe is off")
             self.state = "off"
@@ -296,16 +301,24 @@ class BackgroundSwipe:
             self._thread = threading.Thread(target=self._loop, name="SwipeAuto", daemon=True)
             self._thread.start()
 
-    def stop(self, timeout: Optional[float] = 2.0) -> None:
-        """At quit: the looker ends, then its engine goes (the engine lock waited for ``timeout`` at most)."""
+    def stop(self, timeout: Optional[float] = 3.0) -> None:
+        """At quit (``_cb_quit``, on the loop thread, before the switch's ``stop``): the looker ends -- a load in
+        progress ends first (it cannot be cut short: about 3 s cold), and what it loaded is dropped there, never
+        kept (``_ensure_resident``) -- then the resident goes here, under the engine lock, unpaced: no frame is
+        coming, and nothing here waits for a frame's end.  At most ``timeout`` in all; past it nothing is freed
+        (said in the log)."""
         self._stop.set()
         self._wake.set()
+        t0 = time.perf_counter()
         t = self._thread
-        if t is not None:
+        if t is not None and t is not threading.current_thread():
             t.join(timeout)
             if t.is_alive():
-                return                    # still inside a look: the engine goes with the process
-        self._release_now("quit", timeout)
+                say("[SwipeAuto] still in a look at quit: nothing freed")
+                return
+        left = -1 if timeout is None else max(0.5, timeout - (time.perf_counter() - t0))
+        if not self._release_now("quit", left):
+            say("[SwipeAuto] the engine lock stayed taken at quit: nothing freed")
 
     def _loop(self) -> None:
         while not self._stop.is_set():
@@ -375,8 +388,10 @@ class BackgroundSwipe:
     def _observe(self, proc) -> None:
         """This look's moment (``_quiet``): a load here does not show -- out of RUN, or in RUN on a wall seen empty
         (no track, no identity slot held) for ``empty_s``, counted from the first look that saw it empty and never
-        from before RUN began."""
+        from before RUN began -- or it is the first look after the mode was set (``set_mode``), whatever is on the
+        wall: the operator's own click, used by that look only."""
         self._next_s = None
+        mode_set, self._mode_set = self._mode_set, False
         run = bool(self.in_run())
         entered, self._was_run = run and not self._was_run, run
         if not run:
@@ -391,7 +406,7 @@ class BackgroundSwipe:
             self._quiet_since = None
         elif self._quiet_since is None or entered:
             self._quiet_since = now
-        self._quiet = empty and now - self._quiet_since >= self.empty_s - 1e-6
+        self._quiet = mode_set or (empty and now - self._quiet_since >= self.empty_s - 1e-6)
 
     def _wanted(self, live: LiveSetting, other: Optional[Candidate]) -> Optional[Candidate]:
         """The second engine a look would run (the other model at the live input), or None: the mode off, the live
@@ -417,7 +432,8 @@ class BackgroundSwipe:
     def _load_when_quiet(self, proc, live: LiveSetting, other: Optional[Candidate], now: float) -> Optional[str]:
         """The second engine made ready for the looks, at a moment where its load does not show (``_quiet``); else
         nothing now (a look that falls due waits: ``WALL_WAIT``).  "banned" when it could not be loaded (said once,
-        as the switch's fault, like a run's failed load), else None."""
+        as the switch's fault, like a run's failed load), "off" when the app quit meanwhile (what loaded went at
+        once), else None."""
         want = self._wanted(live, other)
         if want is None:
             self._end_wall_wait()             # nothing to load for this setting: nothing waits
@@ -435,6 +451,8 @@ class BackgroundSwipe:
             if self._cancelled(live):
                 return None                   # a load or a switch began meanwhile: the next look
             failed = self._ensure_resident(proc, live, want, runner)
+        if self._stop.is_set():
+            return "off"                      # the app quits: nothing loaded is kept, nothing said
         if failed:
             wait, fault = failed
             self.last_look = self._record("look", look="none", t=now, frames=0, seconds=0.0, outcome=wait)
@@ -519,8 +537,10 @@ class BackgroundSwipe:
             if self.last_look is None or self.last_look.get("outcome") != wait:
                 self.last_look = self._record("look", look="none", t=now, frames=0, seconds=0.0, outcome=wait)
             return "banned"
-        if self._load_when_quiet(proc, live, other, now):
-            return "banned"                   # it could not be loaded just now: said once, as the switch's fault
+        got = self._load_when_quiet(proc, live, other, now)
+        if got:
+            return got                        # banned: it could not be loaded just now, said once as the switch's
+                                              # fault; off: the app quits
         if len(fresh) < self.auto.run_frames:
             self._end_wall_wait()             # no look is due any more
             return "idle"                     # a full pool of fresh frames with dancers first: nothing scored
@@ -570,8 +590,8 @@ class BackgroundSwipe:
                          runner: CandidateRunner) -> Optional[Tuple[str, str]]:
         """None once the resident is there, else (what the look says, the fault for the operator -- None while it
         only waits).  The caller holds the engine lock.  Loaded only at a moment where that does not show
-        (``_quiet``: out of RUN, or an empty wall), a stale one freed first, there too: never a load or a release
-        while a dancer is tracked."""
+        (``_quiet``: out of RUN, an empty wall, or the first look after the mode was set), a stale one freed first,
+        there too: never a load or a release at a look that falls due while a dancer is tracked."""
         r = self.resident
         if r is not None and r.candidate == other and r.key == self._resident_key(live):
             return None
@@ -585,6 +605,12 @@ class BackgroundSwipe:
             model, pose_runner, load_s = runner.load(self.engine_path(other), other)
         except Exception as exc:  # noqa: BLE001 - the live model runs on; this setting is not tried again
             return self._not_loaded(other, live, exc)
+        if self._stop.is_set():
+            # the app quits (``stop``): what was just loaded goes here, under the caller's lock -- never kept as a
+            # resident that nothing would free before CUDA is torn down
+            del model, pose_runner
+            self._record("release", resident=other.label, purpose="quit")
+            return "cancelled before it began", None
         used1 = self.gpu_used()
         mb = (int(round((used1 - used0) / 2 ** 20 / 10.0)) * 10
               if used0 is not None and used1 is not None and used1 >= used0 else None)

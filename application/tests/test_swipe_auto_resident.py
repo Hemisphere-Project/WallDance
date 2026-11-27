@@ -14,7 +14,9 @@ set on the object once it is built, so each test also runs on the build before t
 reason it names.
 """
 import inspect
+import threading
 import time
+import weakref
 from types import SimpleNamespace
 
 import pytest
@@ -100,11 +102,29 @@ def test_the_second_engine_has_no_idle_timer():
 
 
 # ------------------------------------------------------------------ the moments (review: loop findings 1-2)
-def test_mode_set_with_dancers_on_waits_for_an_empty_wall_then_loads_once():
-    """The mode set in RUN with dancers tracked, no engine yet: a look falls due, nothing loads, one row says why;
-    the wall empty for about 2 s: one load, the row goes, the look runs."""
+def test_the_mode_set_mid_show_loads_the_second_engine_at_once_whatever_is_on_the_wall():
+    """The operator sets the mode in RUN with dancers tracked: his click is the moment -- one load at the look it
+    wakes, the look runs; then no other load and no release while the dancers stay."""
     e = _setup(run=True, empty=False, frames=150)
     e.bg.set_mode("suggest")
+    assert e.bg.tick() == "run" and e.loader.loads == [L1280.engine_file], "the mode's click did not load it"
+    assert WAITS not in [h.get("outcome") for h in e.bg.history if h["kind"] == "look"]
+    for _ in range(40):
+        e.proc.clock += 5.0
+        e.proc.frames = _look_frames(150, t0=e.proc.clock - 160.0)
+        e.bg.tick()
+    assert _kinds(e, "load", "release") == ["load"] and len(e.loader.loads) == 1
+
+
+def test_run_entered_without_the_second_engine_and_a_dancer_tracked_waits_for_an_empty_wall():
+    """No engine when RUN begins (STANDBY's looks taken by a calibration), dancers tracked: a look falls due,
+    nothing loads -- entering RUN is not a moment, nor is the mode set long before -- one row says why; the wall
+    empty for about 2 s: one load, the row goes, the look runs."""
+    e = _setup(mode="suggest", frames=150)
+    e.bg.busy = lambda: "a calibration"
+    assert e.bg.tick() == "busy" and e.loader.loads == []
+    e.bg.busy = lambda: None
+    e.wall.run, e.wall.empty = True, False              # RUN begins with dancers on the wall
     assert e.bg.tick() == "waiting" and e.loader.loads == [], "loaded with a dancer tracked"
     assert e.bg.status()["last_look"]["outcome"] == WAITS and e.loader.infers == 0
     e.proc.clock += 5.0
@@ -123,8 +143,7 @@ def test_mode_set_with_dancers_on_waits_for_an_empty_wall_then_loads_once():
 
 
 def test_the_wait_row_goes_when_the_mode_goes_off():
-    e = _setup(run=True, empty=False, frames=150)
-    e.bg.set_mode("auto")
+    e = _setup(mode="auto", run=True, empty=False, frames=150)          # (the mode set long before: no moment)
     assert e.bg.tick() == "waiting" and e.bg.status()["last_look"]["outcome"] == WAITS
     e.bg.set_mode("off")
     assert e.bg.status()["last_look"] is None, "it still says it waits"
@@ -153,8 +172,8 @@ def test_standby_with_the_mode_on_loads_the_second_engine():
 
 
 def test_an_empty_wall_run_costs_one_load_at_the_mode_and_no_inference():
-    """120 s of RUN on an empty wall with the mode set at its start: one load (once the wall has been empty for
-    2 s), no inference, no release."""
+    """120 s of RUN on an empty wall with the mode set at its start: one load (at the mode), no inference, no
+    release."""
     e = _setup(run=True, empty=True)
     e.bg.set_mode("suggest")
     for _ in range(25):
@@ -203,6 +222,35 @@ def test_a_stale_resident_is_never_replaced_while_a_dancer_is_tracked():
     assert _kinds(e, "load", "release") == ["release", "load"]
 
 
+def test_after_the_modes_load_a_resident_made_stale_mid_show_waits_for_an_empty_wall():
+    """The mode's click is one moment, used once: the engine it loaded made stale later in the show (another
+    project, the live model not reloaded), a dancer tracked and a look due: no release, no load, the row says
+    why; on the empty wall: the old one goes, then the new one loads."""
+    from runtime.swipe_background import Resident
+    e = _setup(run=True, empty=False, frames=150)
+    e.proc._swipe_key = None                            # the switch's safe window shut
+    e.bg.set_mode("suggest")
+    assert e.bg.tick() == "run" and len(e.loader.loads) == 1          # the mode's moment
+    key = e.bg._resident_key(e.live["v"])
+    stale = Resident(L1280, "m-old", "r-old", ("another project",) + tuple(key[1:]), 0.4)
+    e.bg.resident = stale
+    outs = []
+    for _ in range(4):
+        e.proc.clock += 400.0
+        e.proc.frames = _look_frames(150, t0=e.proc.clock - 160.0)
+        outs.append(e.bg.tick())
+    assert "waiting" in outs and e.bg.status()["last_look"]["outcome"] == WAITS, outs
+    assert e.bg.resident is stale and len(e.loader.loads) == 1, "replaced with a dancer tracked"
+    assert _kinds(e, "load", "release") == ["load"]
+    e.wall.empty = True
+    e.proc.clock += 5.0
+    e.bg.tick()
+    e.proc.clock += 2.0
+    e.bg.tick()
+    assert e.bg.resident is not stale and e.bg.resident.key == key and len(e.loader.loads) == 2
+    assert _kinds(e, "load", "release") == ["load", "release", "load"]
+
+
 # ------------------------------------------------------------------ off ends P6 (reread 0c777dd nits 3-4)
 def test_mode_off_ends_the_looker_and_frees_the_engine_at_once_in_standby():
     """STANDBY after a hand reload (no frame of the new model yet): off frees the engine at once -- it stayed until
@@ -238,6 +286,76 @@ def test_mode_off_in_run_frees_the_engine_after_a_live_frame():
     e.bg.set_mode("off")
     assert e.bg.tick() == "off"
     assert e.bg.resident is None and calls and calls[0] is not None
+
+
+# ------------------------------------------------------------------ quit (the switch's note at e017a33)
+class _Engine:
+    """Stands for an engine: which thread frees it (the last reference goes)."""
+
+    def __init__(self, freed):
+        weakref.finalize(self, lambda: freed.append(threading.current_thread().name))
+
+
+@pytest.mark.parametrize("load_s, join_s", [(0.3, 3.0), (None, 0.2)])
+def test_a_load_in_progress_at_quit_is_dropped_not_kept(load_s, join_s, capsys):
+    """The app quits while the looker loads the second engine (it cannot be cut short).  The join outlasts the
+    load: the engine is gone when ``stop`` returns (before the switch's stop).  The load outlasts the join:
+    ``stop`` frees nothing and says so; the looker drops what it loaded instead of keeping it as the resident."""
+    from runtime.swipe_background import BackgroundSwipe
+    e = _setup(mode="suggest")                          # STANDBY: the first look loads
+    began, go, freed = threading.Event(), threading.Event(), []
+    real = e.loader.load
+
+    def slow_load(path, cand, model=None):
+        _, runner, s = real(path, cand, model)
+        began.set()
+        if load_s is None:
+            go.wait(5.0)                                # until the test lets it end
+        else:
+            time.sleep(load_s)
+        return _Engine(freed), runner, s
+    e.loader.load = slow_load
+    BackgroundSwipe.start(e.bg)
+    t = e.bg._thread
+    assert began.wait(3.0), "the first look did not load"
+    e.bg.stop(join_s)
+    if load_s is not None:
+        assert freed and e.bg.resident is None, "still held when stop returned"
+    else:
+        assert t.is_alive() and freed == [] and "still in a look at quit" in capsys.readouterr().out
+        go.set()                                        # the load ends after the quit
+        assert _until(lambda: not t.is_alive()) and freed, "what loaded after the quit was kept"
+    assert e.bg.resident is None and not t.is_alive()
+    assert [h.get("purpose") for h in e.bg.history if h["kind"] == "release"] == ["quit"]
+    assert _kinds(e, "load") == [], "kept as the resident before it went"
+
+
+def test_quit_frees_the_resident_at_once_never_waiting_for_a_frames_end():
+    """In RUN, a dancer on, the loop running (a frame's end would be waited for up to 0.2 s): ``stop`` -- called
+    on the loop thread -- frees the resident on its own thread, under the engine lock, at once; the switch's
+    paced window is not used."""
+    from runtime.swipe_background import BackgroundSwipe, Resident
+    e = _setup(mode="suggest", run=True, empty=False)
+    freed = []
+    e.bg.resident = Resident(L1280, _Engine(freed), "r", e.bg._resident_key(e.live["v"]), 0.4)
+    BackgroundSwipe.start(e.bg)
+    assert _until(lambda: e.bg.ticks >= 1)              # its first look: the resident fits, kept
+    assert e.bg.resident is not None and freed == []
+    e.proc.frame_end, e.proc.frame_end_t = threading.Event(), 0.0
+    e.proc.frame_done_t = time.perf_counter()           # a live pass just now: a frame's end is coming
+    paced = []
+    e.bg.switch.free_pending = lambda extra=None: paced.append(extra)
+    locked = []
+    lock = e.bg.engine_lock
+    e.bg.engine_lock = SimpleNamespace(acquire=lambda *a, **k: locked.append(1) or lock.acquire(*a, **k),
+                                       release=lock.release)
+    t0 = time.perf_counter()
+    e.bg.stop(3.0)
+    dt = time.perf_counter() - t0
+    assert e.bg.resident is None and freed == [threading.current_thread().name], "not freed here, at once"
+    assert dt < 0.1, f"stop took {1000 * dt:.0f} ms: it waited for a frame's end"
+    assert paced == [] and locked, "paced, or freed outside the engine lock"
+    assert e.bg.history[-1]["kind"] == "release" and e.bg.history[-1]["purpose"] == "quit"
 
 
 # ------------------------------------------------------------------ the cost, said once

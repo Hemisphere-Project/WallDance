@@ -467,9 +467,8 @@ class SeamlessSwitch:
                 self._record("load", model=winner.label, seconds=round(load_s, 2))
                 say(f"[Switch] {winner.label} loaded beside the live model ({load_s:.2f} s)")
             except Exception as exc:  # noqa: BLE001 - the engine never becomes live
-                why = load_failure(exc)
-                if why == ENGINE_UNREADABLE:            # the raw error for the log, plain words for the operator
-                    say(f"[Switch] {winner.engine_file} did not load: {type(exc).__name__}: {exc}")
+                why = load_failure(exc, self.engine_path(winner))   # the raw error for the log, plain words
+                say(f"[Switch] {winner.engine_file} did not load: {type(exc).__name__}: {exc}{why.detail}")
                 self._failed_before(want, live, why)
                 return
         if self._stop.is_set():                         # the app quits: no warm-up, no switch; ``stop`` frees it
@@ -700,7 +699,7 @@ class SeamlessSwitch:
         # an automatic switch that failed is not tried again for that setting until Dismiss (the automatic swipe
         # keeps the ban: ``on_failed``); suggestions go on
         todo = (f"the automatic swipe will not try {new.engine_file} again until you press Dismiss"
-                if req.get("auto") else _rebuild(new))
+                if req.get("auto") else why.todo(new, apply=True) if isinstance(why, LoadFailure) else _rebuild(new))
         self._end(req)
         text = f"{what} to {new.label} failed{' before it began' if before else ''} ({why}): {old.label} still " \
                f"runs - {todo}"

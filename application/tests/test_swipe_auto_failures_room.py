@@ -159,6 +159,51 @@ def test_the_operators_apply_reads_the_same_answer(tmp_path, _here):
     assert load_failure(none) == ENGINE_UNREADABLE                        # the old call (no path): as before
 
 
+class _NoEngine:
+    """A loader whose engine does not load, with the error TensorRT gives."""
+
+    def __init__(self, exc):
+        self.exc, self.loads = exc, []
+
+    def __call__(self, proc):
+        return self
+
+    def load(self, path, cand, model=None):
+        self.loads.append(path)
+        raise self.exc
+
+
+@pytest.mark.parametrize("how", ["no room", "not an engine"])
+def test_the_operators_seamless_apply_says_the_gpus_room_not_rebuild(how, tmp_path, _here, capsys):
+    """The operator's seamless Apply (``SeamlessSwitch._prepare``) whose load fails: on a full GPU with a sound file
+    it says the room and what to do, never "rebuild" (it said "the engine file could not be read ... rebuild");
+    an engine file shown bad still says the rebuild sentence.  The raw error and what was read go to the log."""
+    from test_seamless_switch import L1920, _Port, _sw
+    _here["mb"] = 312.0
+    none = AttributeError("'NoneType' object has no attribute 'create_execution_context'")
+    path = (_engine(tmp_path / "yolo11l-pose_1920x1056.engine") if how == "no room" else
+            _bad_file(tmp_path, "not an engine"))
+    live, port = {"v": _live()}, _Port()
+    sw, _, events = _sw(live, loader=_NoEngine(none), port=port)
+    sw.engine_path = lambda c: path
+    done = []
+    assert sw.request(L1920, "Apply", on_done=lambda ok, text: done.append((ok, text))) is None
+    sw.service()
+    assert port.calls == [] and sw._request is None and sw.busy() is None
+    if how == "no room":
+        text = ("the switch to l @ 1920 x 1056 failed before it began (no room on the GPU: 312 MB free, a load of it "
+                "takes about 1200 MB): x @ 1280 still runs - close what else uses the GPU before trying it again")
+        assert "rebuild" not in text
+    else:
+        text = ("the switch to l @ 1920 x 1056 failed before it began (the engine file could not be read): x @ 1280 "
+                f"still runs - rebuild {L1920.engine_file} (extra/build_engines) before trying it again")
+    assert sw.fault == text and sw.health() == text and done == [(False, text)]
+    assert ("fault", {"text": text}) in events
+    out = capsys.readouterr().out
+    assert "create_execution_context" in out                                   # the log keeps the raw error
+    assert ("the file looks whole" if how == "no room" else "not a TensorRT engine") in out   # and what was read
+
+
 # ---------------------------------------------------------------------------------------------- finding 2: a run
 class _RunFails(_LookRunner):
     """The resident loads and warms, its inference fails (``CandidateRunner.infer`` turns it into ``run.error``)."""

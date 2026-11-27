@@ -394,8 +394,9 @@ SWIPE_AUTO_UNLOCKED = False
 SWIPE_AUTO_LOOK_S = 5.0
 SWIPE_AUTO_PACE_S = 0.2
 # The other model at the live input (the second engine) stops the loop some 50 ms to load or release: it is loaded
-# and released only out of RUN, or in RUN once the wall has been empty this long (no track, no identity slot
-# held) -- never while a dancer is tracked -- and kept while the mode is on.
+# when the mode is set (the operator's click, whatever is on the wall), else loaded and released only out of RUN,
+# or in RUN once the wall has been empty this long (no track, no identity slot held) -- never on entering RUN,
+# never at a look due later while a dancer is tracked -- and kept while the mode is on.
 SWIPE_AUTO_LOAD_EMPTY_S = 2.0
 # Light changed since the empty-wall snapshot (Thomas 2026-10-07: "luminosity change is a killer"): the
 # raw ROI brightness over the snapshot's (core/foreground.ForegroundDetector.light_ratio), sampled at 1 Hz
