@@ -29,7 +29,11 @@ and acts on its advice, on its own thread, without the operator:
   the tracker and the slots untouched; never while a background inference is in flight on it (the switch's
   ``guard`` is this thread's resident lock).  The policy hears of it (the dwell, a new pool) once the switched-in
   model's first frames ran: a switch rolled back leaves the policy and the pool as they were, plus the ban.  A
-  switch that fails is the switch's fault, the one thing of the swipe that belongs to the health line.
+  switch that fails is the switch's fault, the one thing of the swipe that belongs to the health line;
+* **a resident that cannot be loaded** (a broken engine file, no GPU memory left beside TouchDesigner) is tried
+  once: that setting is banned like a failed automatic switch -- and more: no load, no inference, no look run for
+  it -- until Dismiss or a project load; it is said once, as the switch's fault, in plain words (the raw error
+  goes to the log), and while it holds, the look says why the swipe waits.
 
 Threading: the looker thread owns the resident model and its inferences; the loop thread owns the live model and
 the swap.  Every CUDA call here happens under ENGINE_LOAD_LOCK (a live load waits, and a running look stops at its
@@ -52,12 +56,16 @@ from core.swipe_auto import (MODE_AUTO, MODE_OFF, AutoParams, SwipeAuto, alike_m
                              headroom, parse_mode, referee_params)
 from core.swipe_runner import (SWIPE_MODELS, CandidateRunner, ExclusionCells, install_capture_guards,
                                live_run_from_boxes, no_graph_capture, result_dict, score_runs)
-from runtime.seamless_switch import Prepared, SeamlessSwitch, _runner_factory
+from runtime.seamless_switch import ENGINE_UNREADABLE, Prepared, SeamlessSwitch, _runner_factory, load_failure
 from runtime.swipe_controller import LiveSetting, make_pacer, say
 
 # the empty-wall plate is not usable (LiveSetting.plate_ok False): what the look says, and why a suggestion goes
 PLATE_NOT_VALID = "the empty-wall plate is not valid - Calibrate on the empty wall"
 PLATE_WAIT = f"the automatic swipe waits: {PLATE_NOT_VALID}"
+# why an automatic switch is only suggested: the same setting failed before (the ban), or the switch holds a fault
+BANNED_SAYS = "the automatic switch to it failed: Dismiss lets it try again"
+AUTO_FAILED = "the last automatic switch failed: Dismiss lets it try again"
+APPLY_FAILED = "the last Apply failed: Dismiss lets it switch by itself again"
 
 
 @dataclass
@@ -189,6 +197,9 @@ class BackgroundSwipe:
         self.referee = referee      # the plate watch's word (RefereeReport, fix6): the operator's swipe's, shared
         # settings an automatic switch failed to: no automatic attempt again until Dismiss or a project load
         self._banned: Dict[str, str] = {}
+        # ... of them, those whose resident could not be loaded: no look at all for them, and what the look says
+        self._unloadable: Dict[str, str] = {}
+        self._fault_why: Optional[Tuple[str, str]] = None   # (the switch's fault, why it holds an apply back)
         self.resident: Optional[Resident] = None
         self._resident_lock = switch.guard         # held while the looker infers on the resident: the swap waits
         self._scene: Optional[Tuple] = None
@@ -295,8 +306,8 @@ class BackgroundSwipe:
         return (live.project, int(c.imgsz), tuple(c.shape) if c.shape else None, bool(live.trt))
 
     def tick(self) -> str:
-        """One look.  Returns what it did: off | loading | waiting (the plate is not usable) | idle | busy | run |
-        probe | nothing-to-compare."""
+        """One look.  Returns what it did: off | loading | waiting (the plate is not usable) | idle | busy | banned
+        (the other model could not be loaded) | run | probe | nothing-to-compare."""
         t0 = time.perf_counter()
         try:
             return self._tick()
@@ -350,9 +361,15 @@ class BackgroundSwipe:
         why = self.busy() or self.switch.busy()
         if why:
             return "busy"
+        other = other_model(live.candidate, self.models)
+        wait = self._unloadable.get(other.key) if other is not None else None
+        if wait:
+            # its resident could not be loaded: no load, no inference, no look until Dismiss or a project load
+            if self.last_look is None or self.last_look.get("outcome") != wait:
+                self.last_look = self._record("look", look="none", t=now, frames=0, seconds=0.0, outcome=wait)
+            return "banned"
         if len(fresh) < self.auto.run_frames:
             return "idle"                     # a full pool of fresh frames with dancers first: nothing scored, loaded
-        other = other_model(live.candidate, self.models)
         cands = self.auto.candidates([other] if other is not None else [], live.candidate)
         why_not = ("the live model runs PyTorch" if not live.trt else
                    "no other model for this setting" if not cands else
@@ -381,18 +398,35 @@ class BackgroundSwipe:
         now = self.live()
         return now is None or now.key != live0.key
 
-    def _ensure_resident(self, proc, live: LiveSetting, other: Candidate, runner: CandidateRunner) -> Optional[str]:
+    def _ensure_resident(self, proc, live: LiveSetting, other: Candidate,
+                         runner: CandidateRunner) -> Optional[Tuple[str, str]]:
+        """None once the resident is there, else (what the look says, the fault for the operator)."""
         r = self.resident
         if r is not None and r.candidate == other and r.key == self._resident_key(live):
             return None
         try:
             model, pose_runner, load_s = runner.load(self.engine_path(other), other)
-        except Exception as exc:  # noqa: BLE001
-            return f"{other.label} could not be loaded: {type(exc).__name__}: {str(exc)[:120]}"
+        except Exception as exc:  # noqa: BLE001 - the live model runs on; this setting is not tried again
+            return self._not_loaded(other, live, exc)
         self.resident = Resident(other, model, pose_runner, self._resident_key(live), load_s)
         self._record("load", resident=other.label, seconds=round(load_s, 2))
         say(f"[SwipeAuto] {other.label} loaded beside the live model ({load_s:.2f} s)")
         return None
+
+    def _not_loaded(self, other: Candidate, live: LiveSetting, exc: BaseException) -> Tuple[str, str]:
+        """One attempt only: the setting is banned (no load, no inference, no look for it until Dismiss or a project
+        load), the raw error goes to the log, the operator reads plain words."""
+        why = load_failure(exc)
+        todo = (f"rebuild {other.engine_file} (extra/build_engines), then Dismiss lets it try again"
+                if why == ENGINE_UNREADABLE else "Dismiss lets it try again, or set the automatic swipe to off")
+        say(f"[SwipeAuto] {other.engine_file} did not load: {type(exc).__name__}: {exc}")
+        wait = f"the automatic swipe waits: it could not load {other.label} ({why}) - {todo}"
+        self._banned[other.key] = other.engine_file
+        self._unloadable[other.key] = wait
+        self._record("auto-banned", setting=other.label, engine=other.engine_file,
+                     error=f"{type(exc).__name__}: {str(exc)[:160]}")
+        return wait, (f"the automatic swipe could not load {other.label} ({why}): {live.candidate.label} still runs "
+                      f"- {todo}")
 
     def _run_params(self, proc) -> SwipeParams:
         """The referee's parameters for a background run (the policy's ``referee_params``: the collector's, at the
@@ -414,6 +448,7 @@ class BackgroundSwipe:
         live_ms: List[float] = []
         speed: Tuple[Optional[float], Optional[float]] = (None, None)
         outcome = ""
+        fault: Optional[str] = None              # the resident could not be loaded: said once, after the lock
         try:
             install_capture_guards()
             runner = self.runner_factory(proc)
@@ -421,9 +456,9 @@ class BackgroundSwipe:
                 if self._cancelled(live):
                     outcome = "cancelled before it began"
                     return
-                why = self._ensure_resident(proc, live, other, runner)
-                if why:
-                    outcome = why
+                failed = self._ensure_resident(proc, live, other, runner)
+                if failed:
+                    outcome, fault = failed
                     return
                 fh, fw = frames[0].image.shape[:2]
                 exclusion = ExclusionCells.from_processor(proc, runner.inp.roi(fw, fh))
@@ -486,6 +521,10 @@ class BackgroundSwipe:
                 ms_p50=round(run.ms_p50, 1) if run is not None and run.ms_p50 else None,
                 ms_cand=round(speed[0], 1) if speed[0] is not None else None,     # what the « slower » rule
                 ms_live=round(speed[1], 1) if speed[1] is not None else None)     # compared
+            if fault:                         # the same visible path as a failed automatic switch: THE fault
+                self._fault_why = (fault, f"the automatic swipe could not load {other.label}: Dismiss lets it "
+                                          f"try again")
+                self.switch.fail(fault)
 
     # ------------------------------------------------------------------ the advice
     def _act(self, adv, result, live: LiveSetting) -> None:
@@ -499,9 +538,11 @@ class BackgroundSwipe:
         banned = adv.winner is not None and adv.winner.key in self._banned
         if adv.kind == "apply" and (self.switch.fault or banned):
             adv.kind = "suggest"
-            adv.why_not_auto = ("the automatic switch to it failed: Dismiss lets it try again" if banned else
-                                "the last automatic switch failed")
-            adv.text = f"{adv.text.replace('switching to ', '', 1)}: clearly better - Apply now ({adv.why_not_auto})"
+            held = self._fault_why                # whose switch the fault is (the request carried ``auto``)
+            whose = held[1] if held is not None and held[0] == self.switch.fault else AUTO_FAILED
+            adv.why_not_auto = BANNED_SAYS if banned else whose
+            said = adv.text.removeprefix(f"switching to {adv.winner.label}: ")     # the apply text, without its verb
+            adv.text = f"{said}: clearly better - Apply now ({adv.why_not_auto})"
             a.update(kind="suggest", why_not_auto=adv.why_not_auto, text=adv.text)
         if adv.kind == "none" and result.winner is not None and result.winner == result.current:
             a["keeps"] = live.candidate.label
@@ -521,8 +562,10 @@ class BackgroundSwipe:
                else self.switch.request(adv.winner, adv.text, prepared=Prepared(r.candidate, r.model, r.runner),
                                         auto=True))
         if why:
-            self.switch.fail(f"the automatic switch to {adv.winner.label} failed before it began ({why}): "
-                             f"{live.candidate.label} still runs - set the automatic swipe to off")
+            text = (f"the automatic switch to {adv.winner.label} failed before it began ({why}): "
+                    f"{live.candidate.label} still runs - set the automatic swipe to off")
+            self._fault_why = (text, AUTO_FAILED)
+            self.switch.fail(text)
             return
         self.state = "switching"
         self.notify("switching", {"text": adv.text, "to": adv.winner.label, "from": live.candidate.label})
@@ -560,6 +603,8 @@ class BackgroundSwipe:
             self.resident = None
         self._expect = req.get("old")      # the setting live again is not a change by hand (a look in between saw
                                            # the new one)
+        if self.switch.fault:              # whose switch failed: what a later apply held back says
+            self._fault_why = (self.switch.fault, AUTO_FAILED if req.get("auto") else APPLY_FAILED)
         if req.get("auto"):
             target = req.get("winner") or req.get("new")
             if target is not None:
@@ -597,13 +642,16 @@ class BackgroundSwipe:
             self.notify("cleared", {"text": f"suggestion withdrawn: {why}"})
 
     def clear_bans(self) -> None:
-        """A project load: the settings an automatic switch failed to may be tried again."""
+        """A project load: the settings an automatic switch failed to (or whose resident did not load) may be tried
+        again."""
         self._banned.clear()
+        self._unloadable.clear()
 
     def dismiss(self) -> None:
         """The operator's Dismiss: the suggestion goes (a failed switch is the switch's to acknowledge) and the
-        settings an automatic switch failed to may be tried again."""
+        settings an automatic switch failed to (or whose resident did not load) may be tried again."""
         self._banned.clear()
+        self._unloadable.clear()
         if self.suggestion is not None:
             self.suggestion = None
             self.notify("cleared", {"text": "dismissed"})
