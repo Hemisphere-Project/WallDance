@@ -130,7 +130,7 @@ Une session de travail a tourné seule, la nuit, sur la machine d'analyse. Chaqu
 - **La suite.** Il a été renvoyé à sa session ; « Apply » est déjà refusé en RUN. Il n'entrera que si ses tests et une nouvelle relecture sont verts d'ici le 3 décembre. Sa version automatique, voulue par Thomas pour la répétition, attend derrière. Il est entré le soir même, comme conseil : voir plus bas. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@e577566b9 ; hub log 2026-11-26 -->
 - La session de montage recommande de s'en tenir à des suggestions le 7 décembre ; c'est à Thomas de trancher. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@e577566b9 -->
 
-#### Le soir du 26 et la nuit du 26 au 27 <!-- src: hub note 2026-11-26-rehearsal-build-status.md@05f992706 ; hub note 2026-11-26-rehearsal-build-status.md@f89e7065b ; hub note 2026-11-27-camera-stalls-addendum.md -->
+#### Le soir du 26 et la nuit du 26 au 27 <!-- src: hub note 2026-11-26-rehearsal-build-status.md@05f992706 ; hub note 2026-11-26-rehearsal-build-status.md@f89e7065b ; hub note 2026-11-27-camera-stalls-addendum.md ; hub note 2026-11-26-rehearsal-build-status.md@15eda96ad -->
 
 Ce qui a rejoint le montage, puis ce qui attend Thomas. Pour chaque pièce, dans le même ordre : ce qu'on a vu, ce qu'on a fait, ce que ça apporte, ses limites.
 
@@ -141,7 +141,7 @@ Ce qui a rejoint le montage, puis ce qui attend Thomas. Pour chaque pièce, dans
 - Il faut une vraie image du mur vide et des danseurs sur le mur. L'app repasse alors les images qu'elle vient de voir avec les autres modèles et tailles d'image, et en conseille un.
 - *Apporte :* un essai prend environ 19 secondes sur le portable du spectacle, TouchDesigner ouvert. Un mauvais réglage peut se repérer dès l'échauffement. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
 - *Limites :* c'est un conseil. Le nouveau réglage ne s'applique qu'en STANDBY, donc à une pause. Pendant l'essai, un tiers à la moitié des images du direct prennent plus de 50 millisecondes. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
-- Si l'image du mur vide n'est plus valable, le conseil est retiré : refaire Calibrate, puis relancer l'essai. Sa version automatique n'est pas dans le montage ; si elle y entre, son usage reste à décider par Thomas.
+- Si l'image du mur vide n'est plus valable, le conseil est retiré : refaire Calibrate, puis relancer l'essai. Sa version automatique est entrée dans le montage à la fin de la nuit, mais éteinte et verrouillée : voir plus bas.
 
 **L'image du mur vide sous surveillance.**
 
@@ -222,13 +222,41 @@ Ce qui a rejoint le montage, puis ce qui attend Thomas. Pour chaque pièce, dans
 - *Le guide a ses vraies images.* Le guide de Nico montre maintenant 13 vraies images de l'app, prises la nuit sur la machine d'analyse ; il fait 41 pages. Seule manque la photo du dispositif sur place. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@f89e7065b -->
 - Ces images ont forcé deux corrections : la vérification compte quatorze lignes, et les messages « Go-Live check » s'affichent en haut à gauche de la fenêtre.
 
-**En attente d'une décision de Thomas** (état au 27 novembre, 3 h 49) : <!-- src: hub note 2026-11-26-rehearsal-build-status.md@f89e7065b -->
+**Le balayage automatique : entré dans le montage, éteint et verrouillé.** C'est la version automatique de l'essai de réglages. En arrière-plan, pendant que les danseurs sont sur le mur, l'app essaie l'autre modèle ; elle peut le conseiller, ou en changer d'elle-même.
 
-- **Le point maintenu sur un vrai corps.** Il réduit presque de moitié les points envoyés sur personne : 3,14 % au lieu de 5,82 sur la machine d'analyse, 3,5 % au lieu de 6,2 sur le portable. L'objectif était 2 %. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
-- La session de montage recommande de l'accepter avec un objectif reformulé. En attendant, il reste hors du montage.
-- **L'étape « un danseur ».** Elle échoue à la lettre sur sa fenêtre de taille : 4 cas sur 6. Mais cette fenêtre reprend la taille des danseurs sur l'image d'origine ; lue ainsi, 5 sur 6, le sixième à 1 pixel près. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
-- Recommandé : l'accepter, lue en pixels de l'image d'origine.
-- **Le lien de la caméra à 124 Mo/s pour le projet de répétition.** Recommandé : une ligne dans la configuration du projet, qui s'enlève de la même façon. Mesuré sur un bureau seulement. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@05f992706 ; hub note 2026-11-27-camera-stalls-addendum.md -->
+- *Vu :* remis par la session du balayage dans la nuit, il a été relu à l'aveugle par trois relecteurs. La mécanique tient : le changement se fait entre deux images, un changement raté n'en perd aucune, et rien ne traîne derrière lui.
+- Ils ont aussi trouvé 14 défauts importants, en trois groupes. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@15eda96ad -->
+- *Fait :* le premier groupe est corrigé, et relu à nouveau. Éteint, le balayage ne fait rien tourner et ne charge aucun modèle : l'essai à la main redevient celui d'avant, mot pour mot.
+- Et il est verrouillé : dans ce montage, on ne peut l'allumer ni à l'écran ni à distance. Un projet qui le demanderait se charge avec le balayage éteint, et le dit.
+- *Apporte :* la pièce la plus risquée du montage y est entrée sans rien changer à ce qui tourne. Telle quelle, elle ne peut pas changer de modèle pendant la danse.
+- *Limites :* le deuxième groupe reste ouvert, chez la session du balayage. Allumé, le balayage libérerait puis rechargerait le second modèle pendant la danse, avec des images de 55 à 80 millisecondes. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@15eda96ad -->
+- Libérer un modèle retarde une image de 50 à 68 millisecondes. Un modèle en échec est réessayé sans fin, sans un mot. « Dismiss » ne vaut pas un refus. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@15eda96ad -->
+- Quand la mémoire de la carte graphique est pleine, la consigne dit à tort de reconstruire le fichier du modèle.
+- Le verrou ne sera levé qu'avec la correction de ce groupe, relue à l'aveugle. Le troisième groupe doit être corrigé avant que l'app puisse changer de modèle d'elle-même.
+
+**« New project » reprend presque tout du projet d'avant.**
+
+- *Vu :* en corrigeant un défaut relevé par cette relecture, on a vu que « New project » et « Start blank » reprennent 71 réglages sur 79 du projet ouvert avant. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@15eda96ad -->
+- La zone, le masque, l'état de Calibrate, l'adresse OSC suivent, alors que la fenêtre annonce « default settings, last camera setup ». La version du 8 octobre fait de même. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@15eda96ad -->
+- *Fait :* une correction est prête et passe ses tests, mais elle n'est pas mise. Un nouveau projet partirait des réglages par défaut de l'app, et ne garderait que ceux de la caméra.
+- *Apporte :* un Calibrate fait sur un autre mur ne passerait plus en silence dans le nouveau projet. C'est justement ce à quoi l'app ne doit plus se fier.
+- *Limites :* elle change ce que fait un bouton que le technicien connaît. Un nouveau projet n'aurait plus ni zone ni adresse OSC avant d'être réglé : c'est à Thomas de choisir.
+
+**L'étape « un danseur » et le point maintenu : prêts, en attente.**
+
+- *Fait :* tous deux ont été repris sur le montage de la nuit. L'étape « un danseur » se heurtait à deux corrections de la nuit, au changement de caméra ou de projet et pendant la prise du mur vide : c'est réglé.
+- Le point maintenu a été mesuré à nouveau sur les deux machines ; ses chiffres sont dans la liste ci-dessous.
+- *Apporte :* chacun entre dans le montage en quelques minutes, dès que Thomas dit oui.
+- *Limites :* le point maintenu reste au-dessus de son objectif de 2 %, et un point sur personne de 6,0 secondes demeure sur une prise. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@15eda96ad -->
+- Un changement d'éclairage au milieu de l'étape « un danseur » recopie son essai de renforcement dans les réglages de l'ancien éclairage.
+
+**En attente d'une décision de Thomas** (état au 27 novembre, 6 h 04 ; cinq décisions, chacune prête à entrer en quelques minutes) : <!-- src: hub note 2026-11-26-rehearsal-build-status.md@15eda96ad -->
+
+- **Le point maintenu sur un vrai corps.** Sur le montage de la nuit : 3,0 % de points sur personne au lieu de 5,8 sur la machine d'analyse, 3,5 % au lieu de 6,2 sur le portable. Recommandé : l'accepter avec un objectif reformulé. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@15eda96ad -->
+- **La fenêtre de taille de l'étape « un danseur ».** 4 cas sur 6 à la lettre ; 5 sur 6 lue en pixels de l'image d'origine, le sixième à 1 pixel près. Recommandé : l'accepter ainsi. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@15eda96ad -->
+- **Le lien de la caméra à 124 Mo/s pour le projet de répétition.** Recommandé : oui, une ligne dans la configuration du projet, qui s'enlève de la même façon. Mesuré sur un bureau seulement. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@15eda96ad ; hub note 2026-11-27-camera-stalls-addendum.md -->
+- **Ce que reprend « New project ».** La correction telle quelle, la correction en gardant aussi l'adresse et le port OSC du lieu, ou rien. Recommandé : la deuxième.
+- **Le mode du balayage automatique le 7 décembre.** Aujourd'hui il ne peut pas tourner. Si le deuxième groupe est corrigé et relu à temps, « suggest » au plus ; « auto » pas avant le troisième. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@15eda96ad -->
 
 ### Ce que ça apporte
 
@@ -251,7 +279,7 @@ Ce qui a rejoint le montage, puis ce qui attend Thomas. Pour chaque pièce, dans
 - **Les arrêts de caméra.** Ils viennent de l'app elle-même ; le lien ralenti à 124 Mo/s les supprime sur un bureau. Reste à le vérifier sur la façade et à côté de TouchDesigner, si Thomas retient ce réglage. <!-- src: hub note 2026-11-27-camera-stalls-addendum.md ; hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
 - **Le capot.** Fermer le capot avec l'app ouverte met l'ordinateur en veille, et l'app s'arrête avec lui. À éviter pendant un spectacle. <!-- src: hub log 2026-11-25 -->
 - **Un message attendu.** Le 26 novembre à 13 h 02, la version de spectacle a été fermée de force, avec l'accord de Thomas, pour libérer la caméra. À sa prochaine ouverture, elle affichera une fois « Previous session crashed » : c'est normal. <!-- src: hub note 2026-11-26-rehearsal-build-status.md@e577566b9 -->
-- **Reste à faire avant la répétition.** Trancher le point maintenu et l'étape « un danseur ». Compléter la fiche de Nico, installer le montage sur le portable, choisir le modèle de chaque projet. Et Thomas doit vérifier à l'œil que la comparaison au mur vide voit bien les danseurs que le détecteur rate. <!-- src: hub note 2026-11-26-night-session-wrap.md ; hub project.md ; hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
+- **Reste à faire avant la répétition.** Trancher les cinq décisions en attente. Compléter la fiche de Nico, installer le montage sur le portable, choisir le modèle de chaque projet. Et Thomas doit vérifier à l'œil que la comparaison au mur vide voit bien les danseurs que le détecteur rate. <!-- src: hub note 2026-11-26-night-session-wrap.md ; hub project.md ; hub note 2026-11-26-rehearsal-build-status.md@05f992706 -->
 - **Repoussé après le 12 décembre.** L'assistant de réglage pas à pas, le filtre des fausses détections et la refonte du suivi du Plan Cordée. <!-- src: hub note 2026-11-25-setup-and-detection-roadmap.md -->
 
 ## Séance du 18 novembre 2026 — l'audit et le « Plan Cordée » <!-- src: hub log 2026-11-18 -->
