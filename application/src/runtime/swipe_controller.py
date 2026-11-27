@@ -36,6 +36,7 @@ from __future__ import annotations
 import dataclasses
 import importlib
 import os
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -256,7 +257,16 @@ def after_frame_end(proc, stop: Optional[threading.Event] = None) -> None:
     release there delayed its OSC (the P6 re-read, 27/11: network -> OSC 57-74 ms instead of 8, in 5 releases
     of 5).  At most 0.2 s; no wait when the loop is not running YOLO (no live pass in the last 0.25 s: STANDBY,
     a model load, the loop stopped) or once ``stop`` is set.  A processor without ``frame_end``: the next live
-    pass, as before."""
+    pass, as before.
+
+    The collector policy (``core.gc_policy``): a tick in which it ran a full collection does not end its frame
+    (``MainLoop._guarded_tick``), and while it collects (120-175 ms on the show laptop) this thread cannot run.
+    So when the 0.2 s run out and the policy collected since the wait began, or is collecting right now, the
+    release would land right after that collection, in the same gap between frames: it waits once more for a
+    frame's end, 0.2 s at most again.  "Right now" counts: the policy's counter (``collected_n``) moves only once
+    its collection is over, and this thread wakes inside the collection's tail, before it moves (measured, 8 of
+    8: ``_ours`` is still set there).  The policy is read through ``sys.modules``, never imported here (the
+    replay drivers do not load it); without the policy, or without a collection, nothing changes."""
     ev = getattr(proc, "frame_end", None)
     if ev is None:
         make_pacer(proc, 0.0, stop, start=time.perf_counter())()
@@ -264,10 +274,31 @@ def after_frame_end(proc, stop: Optional[threading.Event] = None) -> None:
     t0 = time.perf_counter()
     if (stop is not None and stop.is_set()) or t0 - float(getattr(proc, "frame_done_t", 0.0)) > 0.25:
         return
-    if float(proc.frame_end_t) <= t0:
+
+    def policy() -> Optional[Tuple[int, bool]]:
+        """(full collections counted, one under way), or None without the policy."""
+        try:
+            pol = getattr(sys.modules.get("core.gc_policy"), "POLICY", None)
+            n = getattr(pol, "collected_n", None)
+            return None if n is None else (int(n), bool(getattr(pol, "_ours", False)))
+        except Exception:  # noqa: BLE001 - a broken policy changes nothing here
+            return None
+
+    def frame_end_after(t: float) -> bool:
+        """At most 0.2 s for the end of a live frame that ends after ``t``; False when the bound ran out."""
+        if float(proc.frame_end_t) > t:
+            return True
         ev.clear()
-        if float(proc.frame_end_t) <= t0:
-            ev.wait(0.2)
+        if float(proc.frame_end_t) > t:
+            return True
+        return ev.wait(0.2)
+
+    before = policy()
+    if frame_end_after(t0) or before is None:
+        return
+    now = policy()
+    if now is not None and (now[0] != before[0] or now[1]) and (stop is None or not stop.is_set()):
+        frame_end_after(time.perf_counter())
 
 
 def default_runner_factory(inp: SwipeInput, proc) -> CandidateRunner:
