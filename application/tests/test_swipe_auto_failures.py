@@ -126,7 +126,7 @@ def test_after_the_operators_failed_apply_the_held_back_switch_says_it_was_the_a
     assert bg.switch.fault and bg.status()["auto_banned"] == []
     (_, adv), = _next_runs(bg, proc, tap, 150)
     assert adv["advice"] == "suggest" and adv["why_not_auto"] == APPLY_FAILED
-    assert adv["text"] == f"{SAYS} (6 ms a frame against 6), seen twice: Apply now? ({APPLY_FAILED})"
+    assert adv["text"] == f"{SAYS} (6.0 ms a frame against 6.0), seen twice: Apply now? ({APPLY_FAILED})"
 
 
 def test_after_a_failed_automatic_switch_and_a_project_load_it_says_what_lifts_the_fault():
@@ -139,7 +139,7 @@ def test_after_a_failed_automatic_switch_and_a_project_load_it_says_what_lifts_t
     (_, seen), (_, adv) = _next_runs(bg, proc, tap, 300, n=2)
     assert seen["advice"] == "seen"                      # (27/11) the setting was put aside: two looks in a row again
     assert adv["advice"] == "suggest" and adv["why_not_auto"] == AUTO_FAILED
-    assert adv["text"] == f"{SAYS} (6 ms a frame against 6), seen twice: Apply now? ({AUTO_FAILED})"
+    assert adv["text"] == f"{SAYS} (6.0 ms a frame against 6.0), seen twice: Apply now? ({AUTO_FAILED})"
 
 
 @pytest.mark.parametrize("lift", ["dismiss", "clear_bans"])

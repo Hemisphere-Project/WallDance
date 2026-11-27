@@ -321,9 +321,9 @@ class PolicyPort:
         """The comparison a suggestion (or a streak) was made on no longer holds: the streak ends."""
         self.policy.withdrawn()
 
-    def failed(self, now: float) -> None:
-        """A look raised: the looks back off as after a « keep »."""
-        self.policy.failed(now)
+    def failed(self, now: float, newest_frame_t: Optional[float] = None) -> None:
+        """A look raised: the looks back off as after a « keep » (``newest_frame_t``: ``SwipeAuto.failed``)."""
+        self.policy.failed(now, newest_frame_t)
 
 
 class BackgroundSwipe:
@@ -978,7 +978,8 @@ class BackgroundSwipe:
         self._record("auto-banned", setting=other.label, engine=other.engine_file, error=error[:160])
         runs = f"{live.candidate.label} still runs - {todo}"
         return wait, Fault(f"the automatic swipe {said}: {runs}", row=f"the automatic swipe {said} and {BAN_UNTIL}: "
-                                                                      f"{runs}", detail=why.more(other))
+                                                                      f"{runs}", detail=why.more(other),
+                           background=True)       # Auto to off acknowledges it (``SeamlessSwitch.turned_off``)
 
     def _run_params(self, proc) -> SwipeParams:
         """The referee's parameters for a background run (the policy's ``referee_params``: the collector's, at the
@@ -990,10 +991,12 @@ class BackgroundSwipe:
     # a look that raised (an error in the code around the engine: the scoring, the advice): what /status says -- its
     # class and message go to the log line only -- and the looks back off as after a « keep »; the LOOK_FAILURES-th
     # in a row puts the setting aside as a run that failed does (``_not_run``: its ban, its sentences), with its own
-    # cause (``LOOKS_FAIL``: the looker's own code failed, not the engine)
+    # cause (``LOOKS_FAIL``: the looker's own code failed, not the engine).  While a suggestion is on screen it is
+    # also a look that does not confirm it (``_unconfirmed``), the reason under its line ``LOOK_RAISED``
     LOOK_FAILED = "the automatic swipe waits: its last look failed, see the log"
-    LOOKS_FAIL = "its looks keep failing, see the log"
+    LOOKS_FAIL = "its looks keep failing"
     LOOK_FAILURES = 3
+    LOOK_RAISED = "the last look failed (an error, written in the log)"
 
     def _run(self, kind: str, live: LiveSetting, other: Candidate, fresh: list, now0: float) -> None:
         proc = self.processor()
@@ -1110,7 +1113,14 @@ class BackgroundSwipe:
                 (outcome, fault), verb = self._not_run(other, live, error, self.LOOKS_FAIL), "run"
             else:
                 outcome = self.LOOK_FAILED
-                self.auto.failed(float(proc.loop_clock()))      # its frames stay fresh: no look for a while
+                # no suggestion on screen: its frames stay fresh, no look for a while.  A suggestion on screen: a
+                # look that does not confirm it, as any other -- its frames count as looked at, the line stops
+                # inviting and the next look comes on a full fresh pool (about 150 s); the second withdraws it.
+                # Each counts toward the LOOK_FAILURES too: the third in a row still puts the setting aside
+                sug = self.suggestion is not None
+                self.auto.failed(float(proc.loop_clock()),
+                                 newest_frame_t=max((float(f.t) for f in frames), default=None) if sug else None)
+                self._unconfirmed(None, reason=self.LOOK_RAISED)
         finally:
             seconds = time.perf_counter() - t_wall0
             if not ran:                       # cancelled, failed, not scored: its frames stay fresh
@@ -1308,9 +1318,10 @@ class BackgroundSwipe:
         return why
 
     # ------------------------------------------------------------------ the operator's side
-    def _unconfirmed(self, result=None, why: str = "", replaced: bool = False) -> None:
+    def _unconfirmed(self, result=None, why: str = "", replaced: bool = False, reason: str = "") -> None:
         """A look that did not confirm the suggestion on screen (``result``: its verdict, None for a look the
-        pre-filter skipped; ``why``: the policy's reason when it refused the suggestion's own winner).  The
+        pre-filter skipped or a look that raised -- ``reason``: what the line says under it then, else the look's
+        row; ``why``: the policy's reason when it refused the suggestion's own winner).  The
         ``UNCONFIRMED``-th in a row withdraws it.  Before that, the line stops inviting: no « Apply now? », its
         figures and « not confirmed at the last look (HH:MM) » (``unconfirmed_text``), and no Apply button -- the
         event's ``winner`` is None, and the app's line shows Apply only with a winner --; and the next look comes
@@ -1336,7 +1347,7 @@ class BackgroundSwipe:
                                                         "reason")}
         self.notify("suggest", {**shown, "again": True, "winner": None, "unconfirmed": sug["unconfirmed"],
                                 "result": (result_dict(result) if result is not None else
-                                           {"reason": (self.last_look or {}).get("outcome", "")})})
+                                           {"reason": reason or (self.last_look or {}).get("outcome", "")})})
 
     def _clear_suggestion(self, why: Optional[str]) -> None:
         if self.suggestion is None:

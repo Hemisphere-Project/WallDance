@@ -26,7 +26,7 @@ from test_swipe_auto_live import (_bg, _look_frames, _looking_bg, swipe_auto_sug
 from test_swipe_auto_rollback import _JudgingRunner, _look, _Tap
 
 TOAST = "A better model may be available - see 'Try other settings' (Apply now)"
-LINE = "l @ 1280 covers 100 % of the dancers, x @ 1280 33 % (6 ms a frame against 6), seen twice: Apply now?"
+LINE = "l @ 1280 covers 100 % of the dancers, x @ 1280 33 % (6.0 ms a frame against 6.0), seen twice: Apply now?"
 WITHDRAWN = "suggestion withdrawn: the last looks did not confirm it"
 
 
@@ -127,7 +127,7 @@ def test_a_slower_model_is_not_suggested_and_an_unknown_time_refuses():
         proc.clock, proc.frames = clock, _look_frames(150, t0=clock - 200.0)
         assert bg.tick() == "run"
         assert bg.suggestion is None
-        assert bg.last_advice["why_not_auto"] == "it is more than 15 % slower (30 ms a frame against 15)"
+        assert bg.last_advice["why_not_auto"] == "it is more than 15 % slower (30.0 ms a frame against 15.0)"
     bg, proc, events, loader, live = _looking_bg("auto")
     proc.timing = {}                                      # no live time sampled during the runs
     for clock in (200.0, 800.0):

@@ -209,5 +209,5 @@ def test_in_mode_suggest_the_line_says_what_the_mode_does():
     proc.frames = _look_frames(t0=150.0)                 # (27/11) shown at the second look
     assert bg.tick() == "run"
     assert bg.suggestion["why_not_auto"] == "Auto: suggest does not switch by itself"
-    assert bg.suggestion["text"] == ("l @ 1280 covers 100 % of the dancers, x @ 1280 33 % (6 ms a frame against 6), "
-                                     "seen twice: Apply now?")    # (27/11) one wording: the mode in /status only
+    assert bg.suggestion["text"] == ("l @ 1280 covers 100 % of the dancers, x @ 1280 33 % (6.0 ms a frame against "
+                                     "6.0), seen twice: Apply now?")    # (27/11) one wording: the mode in /status only

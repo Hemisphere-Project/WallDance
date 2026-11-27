@@ -93,7 +93,7 @@ def test_a_slower_candidate_is_still_held_and_the_sentence_shows_what_was_compar
     adv, look = bg.last_advice, bg.last_look
     assert adv["advice"] == "none" and bg.switch._want is None and bg.suggestion is None   # (since 27/11: not
     assert look["ms_cand"] > 1.15 * look["ms_live"]                                       # suggested either)
-    said = f"it is more than 15 % slower ({look['ms_cand']:.0f} ms a frame against {look['ms_live']:.0f})"
+    said = f"it is more than 15 % slower ({look['ms_cand']:.1f} ms a frame against {look['ms_live']:.1f})"
     assert adv["why_not_auto"] == said
 
 
@@ -117,3 +117,29 @@ def test_the_referees_bar_in_the_background_is_the_models_cost_not_their_times(l
         assert rows[live_c].ms_p50 is None and rows[cand_c].ms_p50 == pytest.approx(ms)
     assert bar_for(X1280, L1280, SwipeParams()) == pytest.approx(0.03)
     assert bar_for(L1280, X1280, SwipeParams()) == pytest.approx(0.03 + 0.05 * 0.6215, abs=1e-3)
+
+
+def test_the_two_times_are_said_to_a_tenth_of_a_ms():
+    """The checker's case: a candidate 14 % slower (6.84 ms against 6.0) is suggested, one 16 % slower (6.96 ms) is
+    refused, and both read « (7 ms a frame against 6) » -- next to a tooltip that says « no more than 15 % slower »,
+    the suggested one looks 17 % slower.  One decimal wherever the pair is said: the suggestion's line, its « not
+    confirmed » twin, the « switching to » toast, the refusal.  Fails before: whole ms."""
+    from core.swipe import SwipeResult, SwipeRow
+    from core.swipe_auto import MODE_AUTO, MODE_SUGGEST, SwipeAuto, unconfirmed_text
+    rows = [SwipeRow(L1280, 0.99, 0.0, None, gain=0.6), SwipeRow(X1280, 0.33, 0.0, None)]
+    said = "(6.8 ms a frame against 6.0)"
+    for mode in (MODE_SUGGEST, MODE_AUTO):
+        a = SwipeAuto(mode, AutoParams(definite_gain=0.05))
+        texts = []
+        for now in (0.0, 160.0):
+            adv = a.advise(now, SwipeResult(X1280, L1280, True, rows, "said"), newest_frame_t=now + 100.0,
+                           ms={L1280: 6.84, X1280: 6.0})
+            texts.append(adv.text)
+        assert adv.kind == ("apply" if mode == MODE_AUTO else "suggest"), adv
+        assert all(said in t for t in texts), f"{mode}: the line rounds to whole ms: {texts}"
+        if mode == MODE_AUTO:
+            assert adv.text.startswith("switching to l @ 1280: "), adv.text
+        assert said in unconfirmed_text(adv.said, "21:40")
+    adv = SwipeAuto(MODE_SUGGEST).advise(0.0, SwipeResult(X1280, L1280, True, rows, "said"), newest_frame_t=100.0,
+                                         ms={L1280: 6.96, X1280: 6.0})
+    assert adv.why_not_auto == "it is more than 15 % slower (7.0 ms a frame against 6.0)", adv.why_not_auto

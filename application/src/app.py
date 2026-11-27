@@ -852,6 +852,7 @@ class WallDanceApp:
         # "apply" (an Apply under way or its outcome, a fault's red line), "" (nothing: Dismiss, or nothing yet);
         # kept from what the app publishes to the line (``_swipe_line_drawn``)
         self._swipe_shown = ""
+        self._swipe_line_said = ""      # ... and the text of the last state that took it (a fault's red line)
         self.bus.subscribe(self._swipe_line_drawn)
         self._swipe_blank_start = False  # Start blank / New project under way: its clean start sets the default mode
         # the automatic swipe turned off: a switch asked before (the operator's seamless Apply, an automatic one)
@@ -3405,6 +3406,11 @@ class WallDanceApp:
         if m != "off":
             self.swipe_bg.start()
         self._sync("combo", "swipe_auto", self._SWIPE_AUTO_LABELS[m])
+        if m == "off":
+            self._swipe_off_acknowledges()
+        elif before == "off" and self.swipe_bg.held():
+            # the bans kept through off: the readiness row says them again, and Dismiss is back beside it
+            self.bus.publish(api.SettingsSwipeHold(True))
         if m != before:
             self._swipe_refresh_apply()
         if not quiet:
@@ -3412,6 +3418,20 @@ class WallDanceApp:
             if m != "off" and not self.settings.swipe_collect:
                 self.bus.publish(api.Toast("The automatic swipe needs the frame tap (project key swipe_collect)",
                                            5.0, (255, 200, 100)))
+
+    def _swipe_off_acknowledges(self) -> None:
+        """Auto set to off: the one thing a failure of the automatic swipe's own load or run tells him to do, so it
+        acknowledges that fault (``SeamlessSwitch.turned_off``: its cause stays in the log and in /status's
+        ``swipe.switch.last_fault``) -- its red line goes if the line still shows it, the readiness row with it,
+        and Dismiss leaves the screen unless something else waits for it.  The bans stay (``set_mode`` keeps them),
+        unsaid while off, as by the readiness row: they hold no Dismiss then.  A failed Apply or automatic switch is
+        not acknowledged here: it waits for Dismiss."""
+        fault = self.swipe_switch.fault
+        if not self.swipe_switch.turned_off():
+            return
+        if self._swipe_shown == "apply" and self._swipe_line_said == str(fault):
+            self.bus.publish(api.SettingsSwipeProgress("dismissed", "dismissed", 0.0))
+        self.bus.publish(api.SettingsSwipeHold(False))   # the switch holds one fault, and off the bans hold none
 
     def _swipe_switch_held(self, req) -> Optional[str]:
         """Why a seamless switch asked earlier must not go on now (``SeamlessSwitch.why_not``: asked before its
@@ -3450,6 +3470,7 @@ class WallDanceApp:
         published (``_swipe_on_result``, ``_swipe_notify``)."""
         if isinstance(event, api.SettingsSwipeProgress) and event.state in self._SWIPE_LINE_TAKEN:
             self._swipe_shown = self._SWIPE_LINE_TAKEN[event.state]
+            self._swipe_line_said = str(event.text)
 
     def _swipe_notify(self, kind: str, payload: Dict) -> None:
         """The seamless switch's and the background swipe's events -> the swipe line beside the button, a toast,

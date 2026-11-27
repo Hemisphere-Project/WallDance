@@ -130,8 +130,10 @@ def _switch_path(how):
     if how in ("its first live frames", "an automatic switch's first live frames"):
         assert sw.drain()
         port.hooks[0](RuntimeError("the engine raised on its first frame"), None)
-    told = [sw.fault, sw.health(), str({k: v for k, v in sw.status().items() if k != "fault_detail"})] + \
-        [p.get("text") for _, p in events] + [t for _, t in done]
+    # /status's detail is for Thomas: ``fault_detail``, and ``last_fault`` that keeps it (its text is the fault's)
+    st = sw.status()
+    told = [sw.fault, sw.health(), str({k: v for k, v in st.items() if k not in ("fault_detail", "last_fault")}),
+            (st["last_fault"] or {}).get("text")] + [p.get("text") for _, p in events] + [t for _, t in done]
     return sw, told
 
 

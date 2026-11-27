@@ -157,14 +157,18 @@ class Fault(str):
     """A fault's text -- what the alert and the swipe's red line say: what failed and why, what runs, the one thing
     to do -- with what goes beside it, never in it: ``row``, what the readiness row says when it says more (the
     automatic swipe's ban, until Dismiss), and ``detail``, for Thomas (the error, what the checks found, the file to
-    rebuild: the log line and /status's ``fault_detail``, never the screen).  It IS that text: a caller that reads a
-    string reads it as before."""
+    rebuild: the log line and /status's ``fault_detail``, never the screen).  ``background``: it came from the
+    automatic swipe's own load or run of its second model, whose one thing to do is Auto to off -- setting it off
+    acknowledges it (``turned_off``); a switch that failed (the operator's Apply, an automatic switch) waits for
+    Dismiss.  It IS that text: a caller that reads a string reads it as before."""
     row: Optional[str]
     detail: Optional[str]
+    background: bool
 
-    def __new__(cls, text: str, *, row: Optional[str] = None, detail: Optional[str] = None) -> "Fault":
+    def __new__(cls, text: str, *, row: Optional[str] = None, detail: Optional[str] = None,
+                background: bool = False) -> "Fault":
         self = super().__new__(cls, text)
-        self.row, self.detail = row or None, detail or None
+        self.row, self.detail, self.background = row or None, detail or None, bool(background)
         return self
 
 
@@ -328,6 +332,8 @@ class SeamlessSwitch:
         self._ask_lock = threading.Lock()         # one request at a time (the operator's, the automatic swipe's)
         self.state = "idle"                       # idle | loading | switching
         self.fault: Optional[str] = None
+        # the last fault's text and detail, kept once it is gone (Dismiss, Auto to off, a later switch): /status
+        self.last_fault: Optional[Dict[str, Any]] = None
         self.last_switch: Optional[Dict[str, Any]] = None
         self.history: Deque[Dict[str, Any]] = deque(maxlen=200)
         # (request, old live pair, old candidate, new candidate, take time) -> True when the caller keeps the old
@@ -774,6 +780,7 @@ class SeamlessSwitch:
         self.state = "idle"
         self._record("fault", text=str(text))
         detail = getattr(text, "detail", None)
+        self.last_fault = {"text": str(text), "detail": detail}
         say(f"[Switch] {text}" + (f" [detail: {detail}]" if detail else ""))
         self.notify("fault", {"text": str(text)})
 
@@ -783,6 +790,19 @@ class SeamlessSwitch:
             self.fault = None
             self.notify("cleared", {"text": "dismissed"})
 
+    def turned_off(self) -> bool:
+        """The automatic swipe was set to off: the one thing a failure of its own load or run asks
+        (``Fault.background``), so that fault is acknowledged -- it goes, its text and detail stay in the log and in
+        /status's ``last_fault``.  A switch that failed (the operator's Apply, an automatic switch) still waits for
+        Dismiss.  True when a fault went."""
+        fault = self.fault
+        if fault is None or not getattr(fault, "background", False):
+            return False
+        self.fault = None
+        self._record("acknowledged", text=str(fault), by="auto off")
+        say(f"[Switch] acknowledged, the automatic swipe set to off: {fault}")
+        return True
+
     def health(self) -> Optional[str]:
         """The fault for the readiness row (a switch that failed), or None: its own text, or what the row says
         beside it when it says more (``Fault.row``: the automatic swipe's ban).  No GUI import needed."""
@@ -790,7 +810,9 @@ class SeamlessSwitch:
 
     def status(self) -> Dict[str, Any]:
         """For /status.  ``fault``: the text on screen; ``fault_detail``: what is never on screen -- the error, what
-        the checks found, a file to rebuild (``Fault.detail``) -- or None."""
+        the checks found, a file to rebuild (``Fault.detail``) -- or None; both go with the fault.  ``last_fault``:
+        the last fault's text and detail, kept after it went (Dismiss, Auto to off, a later switch), or None."""
         return {"state": self.state, "fault": None if self.fault is None else str(self.fault),
-                "fault_detail": getattr(self.fault, "detail", None), "last_switch": self.last_switch,
+                "fault_detail": getattr(self.fault, "detail", None), "last_fault": self.last_fault,
+                "last_switch": self.last_switch,
                 "waiting_to_free": len(self._drop)}

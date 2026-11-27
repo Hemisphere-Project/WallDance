@@ -4,7 +4,7 @@ It wrote « error: <Class>: <message> » into /status ``last_look`` and had no b
 the next tick ran another 150 inferences -- 1,410 looks in a two-hour fake evening.  Now the class and the message
 go to the log line, the status row says a plain sentence, the looks back off as after a « keep » (300 s, then
 600 s), and the third failure in a row puts the setting aside as a run that failed does (the same ban, the same
-sentences: ``BackgroundSwipe._not_run``), with its own cause: « its looks keep failing, see the log », not « the
+sentences: ``BackgroundSwipe._not_run``), with its own cause: « its looks keep failing », not « the
 engine stopped during a run ».  CPU, with the fakes of ``test_swipe_auto_live``."""
 from test_swipe_auto_rollback import _look, _Tap
 from test_swipe_auto_suggestion import _evening_bg
@@ -75,17 +75,17 @@ def test_a_look_that_completes_starts_the_count_over(monkeypatch):
     assert bg.status()["last_look"]["outcome"] == LOOK_FAILED
 
 
-LOOKS_SAID = ("the automatic swipe could not run l @ 1280 (its looks keep failing, see the log): x @ 1280 still runs "
+LOOKS_SAID = ("the automatic swipe could not run l @ 1280 (its looks keep failing): x @ 1280 still runs "
               "- set Auto to off")
-LOOKS_ROW = ("the automatic swipe could not run l @ 1280 (its looks keep failing, see the log) and will not try it "
+LOOKS_ROW = ("the automatic swipe could not run l @ 1280 (its looks keep failing) and will not try it "
              "again until you press Dismiss: x @ 1280 still runs - set Auto to off")
-LOOKS_WAITS = ("the automatic swipe waits: it could not run l @ 1280 (its looks keep failing, see the log) and will "
+LOOKS_WAITS = ("the automatic swipe waits: it could not run l @ 1280 (its looks keep failing) and will "
                "not try it again until you press Dismiss - set Auto to off")
 
 
 def test_the_third_failed_look_in_a_row_says_its_own_cause_not_the_engines(monkeypatch, capsys):
     """The setting put aside after three looks that raised: the alert and the red line, the readiness row and the
-    look's row say the looks' own failure -- « (its looks keep failing, see the log) » -- with the one thing to do,
+    look's row say the looks' own failure -- « (its looks keep failing) » -- with the one thing to do,
     Auto to off; the error itself stays for the log line and /status's detail.  Fails before: « (the engine stopped
     during a run) », while the engine ran and the looker's own code raised."""
     bg, proc, loader, live = _evening_bg()
@@ -97,3 +97,39 @@ def test_the_third_failed_look_in_a_row_says_its_own_cause_not_the_engines(monke
     assert bg.status()["last_look"]["outcome"] == LOOKS_WAITS and bg.health() == LOOKS_WAITS
     error = "AttributeError: '_BgProc' object has no attribute 'swipe_lost_share'"
     assert error in bg.switch.fault.detail and error in capsys.readouterr().out
+
+
+def test_looks_that_raise_under_a_suggestion_stop_its_invitation_and_withdraw_it(monkeypatch):
+    """b3r/probe_raise_under_sug.py: shown at 300 s, confirmed at 600 s (the looks back off 600 s), then every look
+    raises.  The first that raises (1200 s) does not confirm it, as any other look: « Apply now? » and the Apply
+    button leave the line, the reason under it says the look failed (not the confirming look's verdict), and the
+    next look comes on a full fresh pool (150 s later), not after the keep's wait; that second one withdraws it.
+    Each still counts toward the three in a row: the third, after the keep's wait, puts the setting aside.  Fails
+    before: the raising looks sent nothing, the line kept « seen 3 times: Apply now? » and its button, and the
+    second look came 1,200 s after the first (the reviewer's « Apply now » from 700 s to 2,405 s)."""
+    import runtime.swipe_background as sb
+    from test_swipe_auto_suggestion import WITHDRAWN, _events
+    bg, proc, loader, live = _evening_bg()
+    events = _events(bg)
+    tap = _Tap(range(6000))
+    assert [t for t in range(1, 601) if _look(bg, proc, tap, t) == "run"] == [150, 300, 600]
+    assert bg.suggestion is not None and bg.suggestion["text"].endswith(", seen 3 times: Apply now?")
+    _raising(monkeypatch)
+    n = len(events)
+    first = next(t for t in range(601, 3000) if _look(bg, proc, tap, t) == "run")
+    assert first == 1200 and bg.status()["last_look"]["outcome"] == LOOK_FAILED
+    lines = [p for k, p in events[n:] if k == "suggest" and p.get("again")]
+    assert lines, "the look that raised left « Apply now? » on the line (no line sent)"
+    assert lines[-1].get("winner") is None, "the look that raised left the Apply button on the line"
+    text = lines[-1]["text"]
+    assert " - not confirmed at the last look (" in text and "Apply now" not in text, text
+    assert lines[-1]["result"]["reason"] == sb.BackgroundSwipe.LOOK_RAISED
+    assert bg.suggestion is not None and bg.suggestion["unconfirmed"] == 1
+    second = next(t for t in range(first + 1, 4000) if _look(bg, proc, tap, t) == "run")
+    assert second - first == 150, f"the second look came {second - first} s after the first"
+    assert bg.suggestion is None and [p["text"] for k, p in events if k == "cleared"] == [WITHDRAWN]
+    assert bg.status()["auto_banned"] == [] and not bg.switch.fault, "put aside after two failures"
+    third = next(t for t in range(second + 1, 6000) if _look(bg, proc, tap, t) == "run")
+    assert third - second >= 300, f"the third look came {third - second} s after the second (no keep's wait)"
+    assert bg.status()["auto_banned"] == ["yolo11l-pose_1280.engine"]
+    assert bg.switch.fault == LOOKS_SAID, bg.switch.fault

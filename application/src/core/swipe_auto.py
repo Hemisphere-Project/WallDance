@@ -189,7 +189,7 @@ NOT_CONFIRMED_AT = "not confirmed at the last look ({})"
 def unconfirmed_text(said: str, at: str, why: str = "") -> str:
     """The line of a suggestion the last look did not confirm: no « Apply now? », the figures of the looks that
     named it and when the last look was (``at``: HH:MM) -- « l @ 1280 covered 99 % of the dancers, x @ 1280 76 %
-    (6 ms a frame against 6) - not confirmed at the last look (21:40) »; ``why``: the reason the policy refused it
+    (6.0 ms a frame against 6.0) - not confirmed at the last look (21:40) »; ``why``: the reason the policy refused it
     at that look (the « slower » rule), after a colon."""
     said = said.replace(" covers ", " covered ", 1)     # ``said`` is advise's: those looks are over
     return f"{said} - {NOT_CONFIRMED_AT.format(at)}" + (f": {why}" if why else "")
@@ -359,7 +359,7 @@ class SwipeAuto:
         level = "definite" if definite else "marginal"
         mw, ml = (ms or {}).get(winner), (ms or {}).get(live)
         slow = ("its time or the live model's is not known" if not mw or not ml else
-                f"it is more than {100 * (p.slower - 1):.0f} % slower ({mw:.0f} ms a frame against {ml:.0f})"
+                f"it is more than {100 * (p.slower - 1):.0f} % slower ({mw:.1f} ms a frame against {ml:.1f})"
                 if mw > p.slower * ml else "")
         if slow:
             # the « slower » rule refuses it: neither suggested nor switched to, no streak; judged, nothing to say
@@ -377,7 +377,7 @@ class SwipeAuto:
         self._streak_at = float(now)
         same_input = seamless(winner, live)
         said = (f"{winner.label} covers {100 * (row.coverage if row else 0):.0f} % of the dancers, "
-                f"{live.label} {100 * (cur.coverage if cur else 0):.0f} % ({mw:.0f} ms a frame against {ml:.0f})")
+                f"{live.label} {100 * (cur.coverage if cur else 0):.0f} % ({mw:.1f} ms a frame against {ml:.1f})")
         adv = AutoAdvice(kind="seen", level=level, winner=winner, seamless=same_input, streak=self._streak,
                          text=said, said=said)
         if self._streak < p.wins:
@@ -432,10 +432,15 @@ class SwipeAuto:
         new comparison."""
         self._end_streak()
 
-    def failed(self, now: float) -> None:
+    def failed(self, now: float, newest_frame_t: Optional[float] = None) -> None:
         """A look raised: no look for ``keep_wait`` from now, as after a « keep » (doubled if the next one fails
-        too) -- its frames stay fresh, and the next look would run the same 150 inferences at once."""
+        too) -- its frames stay fresh, and the next look would run the same 150 inferences at once.
+        ``newest_frame_t``: the newest frame of a look that raised while a suggestion was on screen (``unconfirmed``
+        follows, which ends the wait): its frames count as looked at, so the next look waits for a full fresh pool
+        rather than run on them at once."""
         self._back_off(now)
+        if newest_frame_t is not None:
+            self._seen_until = max(self._seen_until or newest_frame_t, float(newest_frame_t))
 
     # -- the operator's Dismiss ----------------------------------------------------------------------------
     def dismissed(self, now: float, winner: Candidate, for_s: float) -> None:

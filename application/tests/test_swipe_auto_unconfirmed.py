@@ -121,7 +121,7 @@ def test_each_look_that_does_not_confirm_it_counts_and_brings_the_next_one_soon(
     (text, winner), = _lines(events[n:]) or [(None, "no line sent")]
     assert winner is None and NOT_CONFIRMED in text and "Apply now" not in text, (text, winner)
     if kind is _refuse_speed:
-        assert text.endswith("): it is more than 15 % slower (30 ms a frame against 15)"), text
+        assert text.endswith("): it is more than 15 % slower (30.0 ms a frame against 15.0)"), text
     for t in range(601, 751):
         _look(bg, proc, tap, t)
     assert bg.suggestion is None, "the second look that did not confirm it did not come 150 fresh frames later"
