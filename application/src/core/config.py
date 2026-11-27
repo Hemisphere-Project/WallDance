@@ -382,21 +382,37 @@ SWIPE_RUN_MAX_S = 60.0
 SWIPE_VERDICT_MAX_AGE_S = 1800.0
 # The autonomous swipe (Plan Cordee P6, core/swipe_auto.py + runtime/swipe_background.py): project key swipe_auto =
 # off | suggest | auto.  Off unless the project says otherwise (the key is written only when it is not off).  It
-# looks every SWIPE_AUTO_LOOK_S at the kept frames (an empty wall costs nothing); a background run's candidate
+# looks every SWIPE_AUTO_LOOK_S at the kept frames (an empty wall costs no inference); a background run's candidate
 # inferences are SWIPE_AUTO_PACE_S apart (at most one every four live frames at 20 fps), right after a live pass.
 SWIPE_AUTO = "off"
-# The automatic swipe is locked off in this build: no combo on screen, the mode stays off whoever asks (the
-# GUI, the remote SetSwipeAuto), a project's key that is not off is read as off.  False until the blind
-# review's second group of findings is fixed and read again; flipping it is the reviewed act that opens
-# "suggest".  Read when needed (core.config.SWIPE_AUTO_UNLOCKED), never copied at import: a test or a gate
-# driver sets it.
-SWIPE_AUTO_UNLOCKED = False
+# The modes of the automatic swipe this build lets anyone set (mode keys): the combo shows only these (its row is
+# hidden while off is the only one), any other mode is refused whoever asks (the GUI, the remote SetSwipeAuto)
+# and the mode stays what it was, a project's key that is not among them is read as off.  "off" always;
+# "suggest" is added by the commit that closes the blind review's second group of findings after its re-read;
+# "auto" by the one that closes the third.  Read when needed (core.swipe_auto.released_modes), never copied at
+# import: a test or a gate driver sets it.
+SWIPE_AUTO_RELEASED = ("off",)
 SWIPE_AUTO_LOOK_S = 5.0
 SWIPE_AUTO_PACE_S = 0.2
-# The other model at the live input is loaded only when a background run is due (a full pool of frames with
-# dancers the previous run did not use: two and a half minutes of dancing) and released after this long without
-# a run due -- an empty wall for hours holds one engine, the live one.
-SWIPE_AUTO_RESIDENT_IDLE_S = 600.0
+# The operator's Dismiss on a background suggestion means « not now »: that setting is neither suggested nor
+# switched to by itself, and no look runs for it, for this long of the loop clock (or until the scene changes);
+# after it, a new streak of verdicts.
+SWIPE_AUTO_SNOOZE_S = 900.0
+# Two verdicts are « in a row » (a suggestion is shown, a switch made, only on two in a row naming the same
+# setting) when the second comes at most this long after the first, on the loop clock, with no look skipped in
+# between for lack of room and no empty wall longer than the frame pool's age (SwipeParams.max_age_s).
+SWIPE_AUTO_STREAK_GAP_S = 900.0
+# The other model at the live input (the second engine) stops the loop some 50 ms to load or release: it is loaded
+# when the mode is set (the operator's click, whatever is on the wall), else loaded and released only out of RUN,
+# or in RUN once the wall has been empty this long (no track, no identity slot held) -- never on entering RUN,
+# never at a look due later while a dancer is tracked -- and kept while the mode is on.
+SWIPE_AUTO_LOAD_EMPTY_S = 2.0
+# A look's inferences share the GPU with the live frames: no look starts while the live frames run late, and a look
+# in flight stops at its next inference once they run late beside it (after its first seconds: they warm up), its
+# frames kept for a later look.  Late: one in twenty of the last 3 s of live frames (each frame's own time, the
+# frame in hand to its OSC out) over this.  After such a stand-down no look for the wait after a « keep »
+# (core/swipe_auto.py keep_wait_s, doubled at each stand-down in a row as there).
+SWIPE_AUTO_FRAME_BUDGET_MS = 55.0
 # Light changed since the empty-wall snapshot (Thomas 2026-10-07: "luminosity change is a killer"): the
 # raw ROI brightness over the snapshot's (core/foreground.ForegroundDetector.light_ratio), sampled at 1 Hz
 # in standby and RUN alike; when its median over LIGHT_CHANGE_S leaves [1/RATIO, RATIO] the operator is

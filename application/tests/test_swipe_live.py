@@ -1486,7 +1486,7 @@ def _apply_fixture(trt=True, mode="off"):
         system_state=SystemState.STANDBY, _swipe_shown="operator",
         # P6: no seamless switch here (the winner's engine is not built): Apply is the reload -- P5's with the
         # automatic swipe off, P6's reload path with it on
-        swipe_bg=SimpleNamespace(suggestion=None, dismiss=lambda: None, mode=mode),
+        swipe_bg=SimpleNamespace(suggestion=None, dismiss=lambda **k: None, mode=mode),
         swipe_switch=SimpleNamespace(can_switch=lambda w: f"its engine is not built ({w.engine_file})",
                                      dismiss=lambda: None),
         configs=SimpleNamespace(_current_project="jeudi0809_mur2"), settings=SimpleNamespace(imgsz=1280),
@@ -1668,10 +1668,12 @@ def test_quit_cancels_and_joins_the_swipe():
                                                  join=lambda t: calls.append(("join", t))),
                            swipe_bg=SimpleNamespace(stop=lambda t: calls.append(("bg-stop", t))),
                            swipe_switch=SimpleNamespace(stop=lambda t: calls.append(("switch-stop", t))),
-                           tracker=SimpleNamespace(logger=SimpleNamespace(close=lambda: None)),
+                           tracker=SimpleNamespace(logger=SimpleNamespace(close=lambda: calls.append("log"))),
                            recorder=SimpleNamespace(close=lambda: None), running=True)
     appmod.WallDanceApp._cb_quit(fake)
-    assert calls[:2] == ["cancel", ("join", 2.0)] and ("bg-stop", 2.0) in calls and ("switch-stop", 2.0) in calls
+    # P6: the looker -- its stop waits for a load in progress (about 3 s cold: 8 s, as the switch's) and frees its
+    # engine -- then the switch -- its stop waits for a load in progress and frees what it holds -- then the rest
+    assert calls == ["cancel", ("join", 2.0), ("bg-stop", 8.0), ("switch-stop", 8.0), "log"]
     assert fake.running is False
 
 

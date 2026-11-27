@@ -557,6 +557,10 @@ class FrameProcessor:
         # worker runs its inferences in the loop's slack, one per live frame.
         self.frame_done = threading.Event()
         self.frame_done_t: float = 0.0
+        # P6: set once that frame is over -- its OSC out, the loop's tick done (``frame_ended``): an engine let go
+        # then delays no frame's output
+        self.frame_end = threading.Event()
+        self.frame_end_t: float = 0.0
         # P6 seamless switch: the model just swapped in runs its first frames on probation -- if its call raises,
         # the previous model is put back for that very frame (``adopt_model``).
         self._swap_probation: Optional[dict] = None
@@ -942,12 +946,27 @@ class FrameProcessor:
         refereed against a plate that no longer fits, and a new plate lifts it -- either way the pool starts
         over.  The plate refused for its camera (X6, ``plate_refusal``) too: with the rest, every change of
         ``plate_usable``, either way, starts the pool over.  The confidence too: the live boxes kept with each frame
-        (the swipe's live row) are cut at it."""
-        s = self.settings
+        (the swipe's live row) are cut at it.  And what is done to the picture before the network pass
+        (``_sync_gpu_settings``): enhancement on / lite / forced, its brightness bypass, CLAHE, gamma, greyscale,
+        temporal denoise, background subtraction in effect and its sensitivity -- the live boxes kept were made on
+        that picture, a candidate is inferred on the picture of now."""
+        s, bg = self.settings, self.bg_subtractor
+        picture = (bool(s.enhance_enabled), bool(s.enhance_lite), bool(s.enhance_force),
+                   round(float(s.brightness_threshold), 1), round(float(self.enhancer.clahe_clip), 3),
+                   round(float(self.enhancer.gamma), 3), bool(getattr(s, "greyscale", False)),
+                   round(float(s.denoise_strength), 3),
+                   bool(s.bg_subtract_enabled and bg is not None and bg.has_reference), int(s.bg_subtract_sensitivity))
         return (id(self.model), int(s.imgsz), tuple(s.yolo_shape) if s.yolo_shape else None,
                 (bool(s.roi_enabled), int(s.roi_x), int(s.roi_y), int(s.roi_w), int(s.roi_h)),
                 self.plate_identity, self._plate_invalid, bool(self.plate_refusal),
-                bool(getattr(self._fg_detector, "stale_latched", False)), round(float(s.confidence or 0.0), 4))
+                bool(getattr(self._fg_detector, "stale_latched", False)), round(float(s.confidence or 0.0), 4),
+                picture)
+
+    def frame_ended(self) -> None:
+        """The loop, at the end of each tick: if the tick ran a live network pass, its frame is over now."""
+        if self.frame_done_t > self.frame_end_t:
+            self.frame_end_t = time.perf_counter()
+            self.frame_end.set()
 
     def loop_clock(self) -> float:
         """The loop's clock: the wall clock live, the take's frame clock in a replay (the swipe's time base)."""
@@ -1097,8 +1116,8 @@ class FrameProcessor:
             col = self.swipe_collector
             key = self._swipe_setting_key()
             if key != self._swipe_key:                # another model / input / ROI / plate in memory /
-                                                      # plate found stale (F2) or refused (X6) / confidence:
-                                                      # start over
+                                                      # plate found stale (F2) or refused (X6) / confidence /
+                                                      # picture enhancement: start over
                 with self._swipe_lock:
                     col.reset()
                     self._swipe_key = key

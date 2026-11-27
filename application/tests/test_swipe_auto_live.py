@@ -20,10 +20,17 @@ from test_seamless_switch import _BgProc as _SwitchProc
 
 @pytest.fixture
 def swipe_auto_unlocked(monkeypatch):
-    """The automatic swipe released (``core.config.SWIPE_AUTO_UNLOCKED``), for a test that turns it on through the
-    app's doors (the combo's callback, a project load).  The build ships it locked: never autouse."""
+    """Every mode of the automatic swipe released (``core.config.SWIPE_AUTO_RELEASED``), for a test that turns it on
+    through the app's doors (the combo's callback, a project load).  The build ships off only: never autouse."""
     import core.config
-    monkeypatch.setattr(core.config, "SWIPE_AUTO_UNLOCKED", True)
+    monkeypatch.setattr(core.config, "SWIPE_AUTO_RELEASED", ("off", "suggest", "auto"))
+
+
+@pytest.fixture
+def swipe_auto_suggest_only(monkeypatch):
+    """Off and suggest released, not auto: the build once the review's second group is closed."""
+    import core.config
+    monkeypatch.setattr(core.config, "SWIPE_AUTO_RELEASED", ("off", "suggest"))
 
 
 class _BgProc(_SwitchProc):
@@ -32,12 +39,15 @@ class _BgProc(_SwitchProc):
     def __init__(self):
         super().__init__()
         self.frames = []
+        self.timing = {"yolo": 6.0}     # the live call's time: the « slower » rule refuses a winner without it
 
     def swipe_fresh(self, after_t=None):
         return [f for f in self.frames if after_t is None or float(f.t) > after_t], self.clock
 
 
-def _bg(live, *, loader=None, port=None, busy=lambda: None, mode="off", engine_exists=lambda p: True, idle_s=None):
+def _bg(live, *, loader=None, port=None, busy=lambda: None, mode="off", engine_exists=lambda p: True, **kw):
+    """``kw``: more of BackgroundSwipe's arguments (``in_run``, ``wall_empty``, ``gpu_used``); without them the app
+    reads as out of RUN (STANDBY): the second engine loads at the first look."""
     pytest.importorskip("torch")
     from runtime.seamless_switch import SeamlessSwitch
     from runtime.swipe_background import BackgroundSwipe
@@ -52,12 +62,12 @@ def _bg(live, *, loader=None, port=None, busy=lambda: None, mode="off", engine_e
     bg = BackgroundSwipe(processor=lambda: proc, live=lambda: live["v"], engine_path=lambda c: c.engine_file,
                          busy=busy, switch=sw, notify=lambda k, p: events.append((k, p)),
                          mode=mode, look_s=999.0, runner_factory=loader or _Loader(),
-                         engine_exists=engine_exists, engine_lock=lock, idle_s=idle_s)
+                         engine_exists=engine_exists, engine_lock=lock, **kw)
     bg.start = lambda: None                              # the test drives the looker by hand (``tick``)
     return bg, proc, events
 
 
-def test_the_automatic_switch_keeps_the_old_live_model_beside_at_the_same_input():
+def test_the_automatic_switch_keeps_the_old_live_model_beside_at_the_same_input(swipe_auto_unlocked):  # (27/11) auto: released
     """mode auto: the resident (the other model at the live input) goes live, the old live model becomes the
     resident -- the way back is as cheap."""
     from runtime.swipe_background import Resident
@@ -169,16 +179,20 @@ def test_a_look_loads_the_other_model_once_and_suggests_it():
     assert loader.loads == [L1280.engine_file] and bg.resident.candidate == L1280      # the other model, here
     assert loader.infers == 150 and bg.inferences == 150
     assert bg.last_advice["kind"] == "advice" and bg.last_look["outcome"]
+    assert bg.suggestion is None and bg.last_advice["advice"] == "seen"            # (27/11) once: nothing shown
+    proc.frames = _look_frames(150, t0=150.0)
+    assert bg.tick() == "run" and loader.infers == 300
     assert bg.suggestion is not None and bg.suggestion["winner_c"] == L1280
     kind, payload = [e for e in events if e[0] == "suggest"][-1]
     assert payload["winner"] == "l @ 1280" and payload["result"]["switch"]
-    assert bg.tick() == "idle" and loader.infers == 150 and len(loader.loads) == 1    # its frames are used
+    assert bg.tick() == "idle" and loader.infers == 300 and len(loader.loads) == 1    # its frames are used
 
 
 def test_a_run_needs_a_full_pool_of_frames_the_last_run_did_not_use():
     bg, proc, events, loader, live = _looking_bg()
     proc.frames = _look_frames(149)
-    assert bg.tick() == "idle" and loader.loads == [] and loader.infers == 0           # 149: not yet, nothing loaded
+    assert bg.tick() == "idle" and loader.infers == 0                                  # 149: not yet, nothing run
+    assert len(loader.loads) == 1             # (the second engine: loaded at the mode's first quiet look, kept)
     proc.frames = _look_frames(150)
     assert bg.tick() == "run" and loader.infers == 150
     proc.clock = 1000.0                                  # long after: the policy would look again ...
@@ -201,7 +215,8 @@ def test_the_status_counts_say_what_they_hold():
 
 def test_a_run_without_a_verdict_says_nothing():
     """The referee's no verdict (here: the empty-wall picture is not trusted -- boxes on nobody everywhere): no
-    suggestion, no toast, a standing suggestion untouched."""
+    suggestion, no toast, a standing suggestion stays (since 27/11 its line no longer invites: one look that did
+    not confirm it, ``test_swipe_auto_unconfirmed``)."""
     from core.swipe import Observation, SwipeFrame
     import numpy as np
     bg, proc, events, loader, live = _looking_bg()
@@ -213,21 +228,7 @@ def test_a_run_without_a_verdict_says_nothing():
     n = len(events)
     assert bg.tick() == "run"
     assert bg.last_advice.get("no_verdict") and bg.last_advice["reason"].startswith("no verdict")
-    assert events[n:] == [] and bg.suggestion["text"] == "earlier"
-
-
-def test_the_second_engine_goes_after_an_idle_time():
-    bg, proc, events, loader, live = _looking_bg(idle_s=600.0)
-    proc.frames = _look_frames()
-    bg.tick()
-    assert bg.resident is not None
-    proc.frames = []                                     # the dancers leave: an empty wall
-    proc.clock = 200.0 + 599.0
-    bg.tick()
-    assert bg.resident is not None                       # kept between runs ...
-    proc.clock = 200.0 + 601.0
-    bg.tick()
-    assert bg.resident is None and bg.history[-1]["kind"] == "release"    # ... released after 600 s without a run
+    assert [k for k, p in events[n:] if not p.get("again")] == [] and bg.suggestion["unconfirmed"] == 1
 
 
 def test_the_run_judges_at_the_shows_confidence():
@@ -239,13 +240,14 @@ def test_the_run_judges_at_the_shows_confidence():
 # ----------------------------------------------------------------------------------------------------------
 # The looks: an empty wall, a busy app
 # ----------------------------------------------------------------------------------------------------------
-def test_an_empty_wall_costs_no_inference_and_no_engine():
+def test_an_empty_wall_costs_no_inference_and_one_load():
+    """No inference on an empty wall; the second engine loads there once (here out of RUN), and stays."""
     live = {"v": _live()}
     loader = _Loader()
     bg, proc, _ = _bg(live, loader=loader, mode="suggest")
     for _ in range(5):
         assert bg.tick() == "idle"
-    assert loader.loads == [] and bg.resident is None and bg.inferences == 0
+    assert loader.loads == [L1280.engine_file] and bg.resident.candidate == L1280 and bg.inferences == 0
 
 
 def test_a_busy_app_is_never_looked_at():
@@ -330,26 +332,27 @@ def test_a_change_by_hand_starts_the_dwell_and_a_switch_does_not_count_as_one():
     assert [h["kind"] for h in bg.history].count("manual-change") == 1 and bg._expect is None
 
 
-def test_no_room_for_a_gain_means_no_run_no_engine():
+def test_no_room_for_a_gain_means_no_run_no_inference():
     """The policy's free pre-filter: the live setting's own stored boxes already cover every dancer -- no run, no
-    engine loaded, no inference, and those frames count as looked at."""
+    inference (the second engine was loaded at the mode's quiet moment, not for this look), and those frames count
+    as looked at."""
     bg, proc, events, loader, live = _looking_bg()
     proc.frames = _look_frames(150, lost=0)              # a box on the dancer on every frame
     skipped = bg.auto.skipped
     assert bg.tick() == "idle" and bg.auto.skipped == skipped + 1
-    assert loader.loads == [] and loader.infers == 0 and bg.resident is None
+    assert len(loader.loads) == 1 and loader.infers == 0
     assert bg.last_look["look"] == "skipped"
     assert bg.tick() == "idle" and bg.auto.skipped == skipped + 1          # its frames are no longer fresh
 
 
-def test_two_definite_runs_on_disjoint_frames_switch_in_mode_auto():
+def test_two_definite_runs_on_disjoint_frames_switch_in_mode_auto(swipe_auto_unlocked):  # (27/11) auto: released
     """Mode auto, the policy's own rule: a definite winner at the same input twice in a row, on frames no earlier
     run looked at -- the first run suggests (why not yet), the second asks the switch for the resident."""
     bg, proc, events, loader, live = _looking_bg(mode="auto")
     proc.frames = _look_frames(150)
     assert bg.tick() == "run"
     first = bg.last_advice
-    assert first["advice"] == "suggest" and first["why_not_auto"] and bg.switch._want is None
+    assert first["advice"] == "seen" and first["why_not_auto"] and bg.switch._want is None
     assert bg.auto.policy.fresh(proc.frames) == []       # advise marked them looked at
     proc.frames = _look_frames(150, t0=150.0)
     assert bg.tick() == "run"
@@ -358,10 +361,10 @@ def test_two_definite_runs_on_disjoint_frames_switch_in_mode_auto():
     assert [k for k, _ in events].count("switching") == 1
 
 
-def test_a_background_refusal_is_told_to_the_plate_watch_with_the_operators(monkeypatch):
+def test_a_background_refusal_is_not_told_to_the_plate_watch_the_operators_press_is(monkeypatch):
     """fix6's RefereeReport, shared with the operator's swipe: the background run's refusal of the empty-wall plate
-    is told to the plate watch (core.reference_watch, a fake here) once, and the operator's swipe on the same pool
-    is not told again."""
+    is not told to the plate watch (core.reference_watch, a fake here: its alert is for the operator's presses),
+    and the operator's swipe on the same pool is told (the looker's refusal was never told)."""
     import sys
     import types
     from runtime.swipe_controller import RefereeReport
@@ -379,10 +382,12 @@ def test_a_background_refusal_is_told_to_the_plate_watch_with_the_operators(monk
     proc.frames = [SwipeFrame(float(i), img, Observation(groups=[DANCER]), i < 100, (nobody,)) for i in range(150)]
     loader.infer_boxes = [nobody, ON_HER]
     bg.tick()
-    assert [k for k, _r in calls] == ["refusal"]
-    assert calls[0][1].startswith("no verdict: every setting puts boxes where the empty-wall picture shows nobody")
-    refused = SimpleNamespace(winner=None, reason=calls[0][1])
-    assert shared.note(refused, proc.frames) is None and len(calls) == 1      # the operator's press, same pool
+    assert calls == []
+    waits = "the referee does not trust the empty-wall picture: the automatic swipe waits"
+    assert bg.last_look["outcome"] == waits
+    refused = SimpleNamespace(winner=None, reason="no verdict: every setting puts boxes where the empty-wall "
+                                                  "picture shows nobody")
+    assert shared.note(refused, proc.frames) == "refusal" and len(calls) == 1  # the operator's press, same pool
 
 
 def _apply_adv(winner=L1280):
@@ -391,10 +396,10 @@ def _apply_adv(winner=L1280):
                                 f"60 %", why_not_auto=None)
 
 
-def test_a_failed_automatic_switch_is_not_tried_again_until_dismiss():
+def test_a_failed_automatic_switch_is_not_tried_again_until_dismiss(swipe_auto_unlocked):  # (27/11) auto: released
     """An automatic switch that did not happen (here: the engine raises on its first live frame) -- the previous
     setting runs on (a warn row), the fault names the engine, and the automatic swipe stands down for that setting:
-    later definite verdicts are suggestions until Dismiss."""
+    a later definite verdict (a look that ran meanwhile) says nothing until Dismiss."""
     from runtime.swipe_background import Resident
     live = {"v": _live()}
     port = _Port()
@@ -410,14 +415,13 @@ def test_a_failed_automatic_switch_is_not_tried_again_until_dismiss():
     bg.switch.service()
     assert bg.switch.drain()
     port.hooks[0](RuntimeError("the engine raised on its first frame"), None)       # its first live frame
-    text = ("the automatic switch to l @ 1280 failed (RuntimeError: the engine raised on its first frame): x @ 1280 "
-            "still runs - the automatic swipe will not try yolo11l-pose_1280.engine again until you press Dismiss")
+    text = ("the automatic switch to l @ 1280 failed (its first live frames failed): x @ 1280 "
+            "still runs - the automatic swipe will not try l @ 1280 again until you press Dismiss")
     assert bg.switch.health() == text and bg.status()["auto_banned"] == ["yolo11l-pose_1280.engine"]
     bg.switch.dismiss()                                   # the fault row goes ... but not the ban: the bg's Dismiss
     bg.resident = Resident(L1280, "l1280b", _Runner("l1280b"), bg._resident_key(live["v"]), 0.4)
     bg._act(_apply_adv(), res, live["v"])
-    assert bg.last_advice["advice"] == "suggest" and bg.switch._want is None
-    assert bg.last_advice["why_not_auto"] == "the automatic switch to it failed: Dismiss lets it try again"
+    assert bg.last_advice["advice"] == "none" and bg.switch._want is None and bg.suggestion is None
     bg.dismiss()                                          # the operator's Dismiss (the app calls both)
     bg._act(_apply_adv(), res, live["v"])
     assert bg.last_advice["advice"] == "apply" and bg.switch._want is not None

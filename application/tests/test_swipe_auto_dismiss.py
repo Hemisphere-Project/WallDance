@@ -13,10 +13,15 @@ import pytest
 
 from test_seamless_switch import L1280
 from test_seamless_switch_superseded import M1280
-from test_swipe_auto_failures import SAID, WAITS, _broken_bg
+from test_swipe_auto_failures import ROW, SAID, WAITS, _broken_bg
 from test_swipe_auto_rollback import _first_frame_raises, _setup, _two_looks_ask_the_switch
+from test_swipe_auto_live import swipe_auto_unlocked  # noqa: E402,F401 - the fixture
 
-UNBAN = "the automatic swipe will not try yolo11l-pose_1280.engine again until you press Dismiss"
+# mode auto set on the BackgroundSwipe itself, past the app's doors: the release list must name it too (the
+# last guard before a switch, since 27/11); the build ships locked
+pytestmark = pytest.mark.usefixtures("swipe_auto_unlocked")
+
+UNBAN = "the automatic swipe will not try l @ 1280 again until you press Dismiss"
 
 
 def _hold(gui, held):
@@ -85,7 +90,7 @@ def test_the_app_tells_the_panel_when_something_waits_for_dismiss():
     fake = SimpleNamespace(bus=SimpleNamespace(publish=out.append), _swipe_shown="background",
                            swipe=SimpleNamespace(dismiss=lambda: None),
                            swipe_switch=SimpleNamespace(fault=None, dismiss=lambda: None),
-                           swipe_bg=SimpleNamespace(held=lambda: held["ban"], dismiss=lambda: None))
+                           swipe_bg=SimpleNamespace(held=lambda: held["ban"], dismiss=lambda **k: None))
     appmod.WallDanceApp._swipe_notify(fake, "fault", {"text": SAID})
     assert _holds(out) == [True], "the fault does not keep Dismiss on screen"
     held["ban"] = True                         # a later switch succeeded: the fault went, the ban holds
@@ -102,11 +107,11 @@ def test_a_ban_is_held_until_dismiss_and_said_by_the_readiness_row():
     """The broken resident: held (Dismiss has something to lift) and the row says the fault; Dismiss lifts both."""
     from core.ops_monitor import check_swipe
     bg, proc, events, loader = _broken_bg("auto")
-    assert bg.tick() == "run"
+    assert bg.tick() == "banned"                 # the load comes first now, at a quiet moment
     health = getattr(bg, "health", lambda: None)
     assert getattr(bg, "held", lambda: False)() and health() == WAITS
     row = check_swipe(fault=bg.switch.health() or health(), fault_recovered=True)
-    assert row.status == "warn" and row.detail == SAID
+    assert row.status == "warn" and row.detail == ROW
     bg.switch.dismiss()
     bg.dismiss()
     assert not bg.held() and health() is None

@@ -431,6 +431,17 @@ def check_swipe(*, fault: Optional[str] = None, result=None, fault_recovered: bo
     return None
 
 
+def check_swipe_resident(*, swipe_auto: str = "off", resident: Optional[str] = None,
+                         mb: Optional[int] = None) -> Optional[CheckResult]:
+    """P6: what the automatic swipe holds -- its second model (the other model at the live input), kept loaded
+    while the mode is on -- said once, as information (``ok``), with its GPU memory measured around its load
+    (``mb``, None: not measured).  None with the key off or nothing loaded."""
+    if swipe_auto == "off" or resident is None:
+        return None
+    size = f": about {int(mb)} MB" if mb is not None else ""
+    return CheckResult("auto swipe", "ok", f"the automatic swipe keeps a second model loaded{size}")
+
+
 def recording_gb_per_hour(codec: str = RECORDING_CODEC) -> Tuple[str, float]:
     """(codec actually used, estimated GB/h at the show resolution and fps).
 

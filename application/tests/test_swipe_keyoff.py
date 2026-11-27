@@ -2,16 +2,20 @@
 did before P6 -- P5's Apply (STANDBY only, the reload; in RUN P5's refusal), P5's words on the Apply button, its
 tooltip, the swipe button's tooltip and the readiness row, and a remote Apply STANDBY only.  Turning the key off
 in RUN leaves nothing of P6 under way: a seamless switch asked before and not yet swapped in does not happen.  A
-project that brings the key on says so, once.  On CPU with fakes.
-"""
-import inspect
+project that brings the key on says so, once; a full project load without the key runs off.
+
+The app's own doors on a real ``WallDanceApp`` (no GUI, no main loop, CPU): only what needs a camera or a model is
+faked -- the live model (loaded, TensorRT), the operator's verdict (``swipe.applicable`` / ``swipe.outcome``: it
+needs 150 kept frames), the engine files on disk, the reload itself (``models.request_setting``) and the switch's
+worker thread.  The switch's load, warm-up and swap need a model: those tests stay on the fakes of
+``test_swipe_auto_live`` with the app's own hold rule."""
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 
 from test_seamless_switch import L1280, L1920, X1280, _Loader, _Port, _live  # noqa: F401
 from test_swipe_auto_live import _bg, _looking_bg, _look_frames, swipe_auto_unlocked  # noqa: F401
+from test_swipe_auto_lock import _toasts, real_app  # noqa: F401 - the fixture
 
 P5_RUN_TOAST = "Apply: stop the show first - Apply reloads the model, a few seconds without tracking"
 P5_APPLY_TIP = ("STANDBY only: switches the model / network input to the swipe's\n"
@@ -19,6 +23,7 @@ P5_APPLY_TIP = ("STANDBY only: switches the model / network input to the swipe's
                 "when you change the model by hand.  Not saved: Save the project\n"
                 "to keep it.")
 P5_SWIPE_TIP_END = "nothing switches\nuntil you Apply, in STANDBY.  Press again to cancel."
+P5_ROW = "l @ 1280 covers 91 % of the dancers - in STANDBY press 'Apply l @ 1280 (STANDBY)', under Try other settings"
 
 
 def _app():
@@ -27,128 +32,134 @@ def _app():
     return appmod
 
 
-def _apply_fake(state, mode, *, seamless_why=None):
-    """An app around a real automatic swipe and seamless switch (in ``mode``), whose winner's engine is built and
-    runs at the live input: P6 would switch between two frames.  Every way into a switch is watched."""
-    appmod = _app()
-    from runtime import api
+def _live_model(app):
+    """The live model loaded as a model load leaves it: x @ 1280 on TensorRT, every engine built on disk."""
+    m = app.models
+    m.model, m._model_loaded, m._model_loading, m.current_model_name = object(), True, False, X1280.model
+    m.model_manager.is_using_tensorrt = lambda: True
+    app.settings.imgsz, app.settings.yolo_shape = 1280, None
+    app.swipe_switch.engine_exists = lambda path: True
+    live = app._swipe_live_setting()
+    assert live is not None and live.candidate == X1280 and live.trt
+    return live
+
+
+def _on(app, mode):
+    """The mode through the app's door (the looker thread never started)."""
+    app.swipe_bg.start = lambda: None
+    app._cb_swipe_auto(mode)
+    assert app.swipe_bg.mode == mode
+
+
+def _apply(app, state, *, verdict=L1280):
+    """The operator's Apply of a verdict that names ``verdict``, its engine built, at the live input: P6 would
+    switch between two frames.  Every way into a switch is watched; the reload itself is faked."""
     from runtime.api import SystemState
-    live = {"v": _live()}
-    loader = _Loader()
-    bg, proc, _ = _bg(live, loader=loader, mode=mode)
-    sw = bg.switch
-    started, asked, reloads, events = [], [], [], []
-    sw.start = lambda: started.append("worker")
-    real_request = bg.request_switch
-    bg.request_switch = lambda *a, **k: asked.append(a) or real_request(*a, **k)
-    if seamless_why is not None:
-        sw.can_switch = lambda w: seamless_why
-    fake = SimpleNamespace(
-        system_state=getattr(SystemState, state), bus=SimpleNamespace(publish=events.append),
-        _swipe_shown="operator", _swipe_live_setting=lambda: live["v"], _swipe_pending_apply=None,
-        swipe=SimpleNamespace(applicable=lambda lv: (None, L1280, None)), swipe_switch=sw, swipe_bg=bg,
-        configs=SimpleNamespace(_current_project="jeudi0809_mur2"),
-        models=SimpleNamespace(request_setting=lambda m, i, s, on_done=None: reloads.append((m, i, s)) or None,
-                               ui=SimpleNamespace(sync_model_combo=lambda n: None)),
-        _sync=lambda *a: None, _swipe_apply_done=lambda ok: None)
-    fake._apply_settings_swipe_p5 = lambda: appmod.WallDanceApp._apply_settings_swipe_p5(fake)
-    appmod.WallDanceApp._cb_apply_settings_swipe(fake)
-    return SimpleNamespace(api=api, events=events, asked=asked, started=started, reloads=reloads, loader=loader,
-                           sw=sw, bg=bg)
+    _live_model(app)
+    app.system_state = getattr(SystemState, state)
+    app._swipe_shown = "operator"
+    app.swipe.applicable = lambda live_now: (None, verdict, None)
+    started, asked, reloads = [], [], []
+    app.swipe_switch.start = lambda: started.append("worker")
+    real_request = app.swipe_bg.request_switch
+    app.swipe_bg.request_switch = lambda *a, **k: asked.append(a) or real_request(*a, **k)
+    app.models.request_setting = lambda m, i, s, on_done=None: reloads.append((m, i, s)) or None
+    app._cb_apply_settings_swipe()
+    return SimpleNamespace(asked=asked, started=started, reloads=reloads)
+
+
+def _no_switch(app, r):
+    sw = app.swipe_switch
+    assert r.asked == [] and r.started == [] and sw._thread is None and sw._request is None
+    assert sw.busy() is None and sw.state == "idle"
 
 
 # ----------------------------------------------------------------------------------------------------------
 # Apply
 # ----------------------------------------------------------------------------------------------------------
-def test_key_off_apply_in_run_is_p5s_refusal_and_starts_no_switch():
+def test_key_off_apply_in_run_is_p5s_refusal_and_starts_no_switch(real_app):  # noqa: F811
     """The winner's engine built at the live input, the show running, the key off: P5's refusal word for word, and
     no switch at all -- no request, no worker thread, no engine load."""
-    r = _apply_fake("RUN", "off")
-    assert [e.message for e in r.events if isinstance(e, r.api.Toast)] == [P5_RUN_TOAST]
-    assert r.asked == [] and r.started == [] and r.loader.loads == [] and r.reloads == []
-    assert r.sw.busy() is None and r.sw.state == "idle"
+    app, events = real_app
+    r = _apply(app, "RUN")
+    assert _toasts(events) == [P5_RUN_TOAST]
+    assert r.reloads == []
+    _no_switch(app, r)
 
 
-def test_key_off_apply_in_standby_is_p5s_reload(capsys):
+def test_key_off_apply_in_standby_is_p5s_reload(real_app, capsys):  # noqa: F811
     """STANDBY, the key off, the engine built: P5's reload (the model-switch path), never the seamless switch;
     P5's log line and progress line."""
-    r = _apply_fake("STANDBY", "off")
+    app, events = real_app
+    r = _apply(app, "STANDBY")
     assert r.reloads == [(L1280.model, L1280.imgsz, L1280.shape)]
-    assert r.asked == [] and r.started == [] and r.loader.loads == []
-    prog = [e for e in r.events if isinstance(e, r.api.SettingsSwipeProgress)]
+    _no_switch(app, r)
+    prog = [e for e in events if type(e).__name__ == "SettingsSwipeProgress"]
     assert [(p.state, p.text) for p in prog] == [("applying", "switching to l @ 1280...")]
     assert "[Swipe] applying l @ 1280\n" in capsys.readouterr().out
+    assert app._swipe_pending_apply[0] == L1280
 
 
 @pytest.mark.parametrize("mode", ["suggest", "auto"])
-def test_key_on_apply_in_run_is_p6s_seamless_switch(mode):
+def test_key_on_apply_in_run_is_p6s_seamless_switch(real_app, swipe_auto_unlocked, mode):  # noqa: F811
     """Regression guard: the key on, the same Apply is P6's -- loaded beside the live model, between two frames."""
-    r = _apply_fake("RUN", mode)
+    app, events = real_app
+    _on(app, mode)
+    r = _apply(app, "RUN")
     assert r.asked and r.asked[0][0] == L1280 and r.reloads == []
-    assert r.started == ["worker"] and r.sw.busy() == "a switch is already under way"
+    assert r.started == ["worker"] and app.swipe_switch.busy() == "a switch is already under way"
 
 
-def test_key_off_apply_button_label_and_tooltip_are_p5s():
+def test_key_off_apply_button_label_and_tooltip_are_p5s(real_app, swipe_auto_unlocked):  # noqa: F811
     """The Apply button the verdict shows: P5's label and tooltip with the key off, the engine built or not."""
-    appmod = _app()
-    live = {"v": _live()}
-    bg, _, _ = _bg(live, mode="off")
-    fake = SimpleNamespace(swipe_bg=bg, swipe_switch=bg.switch,
-                           swipe=SimpleNamespace(outcome=SimpleNamespace(result=SimpleNamespace(
-                               winner=L1280, switch=True))))
-    hint = appmod.WallDanceApp._swipe_apply_hint(fake, L1920)
-    assert hint == {"apply_seamless": False, "apply_label": "Apply l @ 1920 x 1056 (STANDBY)",
-                    "apply_tip": P5_APPLY_TIP}
-    assert appmod.WallDanceApp._swipe_seamless_winner(fake) is None        # the readiness row: P5's wording
-    bg.set_mode("suggest")                                                 # regression guard: P6's, the key on
-    hint = appmod.WallDanceApp._swipe_apply_hint(fake, L1920)
-    assert hint["apply_seamless"] and hint["apply_label"] == "Apply l @ 1920 x 1056"
-    assert appmod.WallDanceApp._swipe_seamless_winner(fake) == L1280
+    app, _ = real_app
+    _live_model(app)
+    app.swipe.outcome = SimpleNamespace(result=SimpleNamespace(winner=L1280, switch=True))
+    for winner in (L1920, L1280):
+        assert app._swipe_apply_hint(winner) == {"apply_seamless": False,
+                                                 "apply_label": f"Apply {winner.label} (STANDBY)",
+                                                 "apply_tip": P5_APPLY_TIP}
+    assert app._swipe_seamless_winner() is None                   # the readiness row: P5's wording
+    _on(app, "suggest")                                           # regression guard: P6's, the key on
+    hint = app._swipe_apply_hint(L1280)
+    assert hint["apply_seamless"] and hint["apply_label"] == "Apply l @ 1280"
+    assert app._swipe_seamless_winner() == L1280
 
 
-def _readiness_fake(mode):
-    """An app whose operator's verdict recommends l @ 1280 (its engine built, the live input: seamless with the key
-    on), with a ban the automatic swipe holds from earlier."""
-    appmod = _app()
-    from runtime.swipe_controller import SwipeController
-    live = {"v": _live()}
-    bg, _, _ = _bg(live, mode=mode)
-    bg._banned[L1920.key] = L1920.engine_file
-    result = SimpleNamespace(winner=L1280, switch=True, reason="l @ 1280 covers 91 % of the dancers")
-    ctrl = SimpleNamespace(outcome=SimpleNamespace(result=result), fault=None, fault_recovered=False,
-                           _advice_live=lambda live_now: True)
-    fake = SimpleNamespace(swipe_bg=bg, swipe_switch=bg.switch, _swipe_plate_ready=lambda: True,
-                           _swipe_live_setting=lambda: live["v"],
-                           swipe=SimpleNamespace(outcome=ctrl.outcome,
-                                                 readiness=lambda **kw: SwipeController.readiness(ctrl, **kw)))
-    fake._swipe_seamless_winner = lambda: appmod.WallDanceApp._swipe_seamless_winner(fake)
-    return appmod, fake, bg
+def _readiness(app, mode):
+    """The operator's verdict recommends l @ 1280 (its engine built, the live input: seamless with the key on), the
+    plate ready, with a ban the automatic swipe holds from earlier."""
+    _live_model(app)
+    if mode != "off":
+        _on(app, mode)
+    app._swipe_plate_ready = lambda: True
+    app.swipe_bg._banned[L1920.key] = L1920.engine_file
+    app.swipe.outcome = SimpleNamespace(result=SimpleNamespace(winner=L1280, switch=True,
+                                                               reason="l @ 1280 covers 91 % of the dancers"))
+    app.swipe.fault, app.swipe.fault_recovered = None, False
+    app.swipe._advice_live = lambda live_now: True
 
 
-def test_key_off_readiness_row_is_p5s():
+def test_key_off_readiness_row_is_p5s(real_app):  # noqa: F811
     """The readiness row of an operator's verdict that recommends a switch: P5's, word for word, with the key off
     -- the engine built, and a ban left from when the key was on (the automatic swipe tries nothing now)."""
-    appmod, fake, bg = _readiness_fake("off")
-    # the swipe's own readiness without the key: P5's (the engine built makes no difference)
-    row = fake.swipe.readiness(plate_ready=True, live_now=None, seamless=True)
-    assert row.detail == (
-        "l @ 1280 covers 91 % of the dancers - in STANDBY press 'Apply l @ 1280 (STANDBY)', under Try other settings")
-    row = appmod.WallDanceApp._swipe_readiness_row(fake)
-    assert row.status == "warn" and row.detail == (
-        "l @ 1280 covers 91 % of the dancers - in STANDBY press 'Apply l @ 1280 (STANDBY)', under Try other settings")
-    bg.switch.fail("the switch to l @ 1280 failed (RuntimeError: x): x @ 1280 still runs - rebuild it")
-    assert appmod.WallDanceApp._swipe_readiness_row(fake).detail.startswith("the switch to l @ 1280 failed")
+    app, _ = real_app
+    _readiness(app, "off")
+    row = app._swipe_readiness_row()
+    assert row.status == "warn" and row.detail == P5_ROW
+    app.swipe_switch.fail("the switch to l @ 1280 failed (RuntimeError: x): x @ 1280 still runs - rebuild it")
+    assert app._swipe_readiness_row().detail.startswith("the switch to l @ 1280 failed")
 
 
 @pytest.mark.parametrize("mode", ["suggest", "auto"])
-def test_key_on_readiness_row_is_p6s(mode):
-    """Regression guard: the key on, the ban says so, and without it the row is the seamless Apply's.  (It needs the
-    row's own method, new with the key-off fix: it cannot run before it.)"""
-    appmod, fake, bg = _readiness_fake(mode)
-    assert appmod.WallDanceApp._swipe_readiness_row(fake).detail == (
-        f"the automatic swipe will not try {L1920.engine_file} again until you press Dismiss")
-    bg._banned.clear()
-    assert appmod.WallDanceApp._swipe_readiness_row(fake).detail == (
+def test_key_on_readiness_row_is_p6s(real_app, swipe_auto_unlocked, mode):  # noqa: F811
+    """Regression guard: the key on, the ban says so, and without it the row is the seamless Apply's."""
+    app, _ = real_app
+    _readiness(app, mode)
+    assert app._swipe_readiness_row().detail == (
+        f"the automatic swipe will not try {L1920.label} again until you press Dismiss")
+    app.swipe_bg._banned.clear()
+    assert app._swipe_readiness_row().detail == (
         "l @ 1280 covers 91 % of the dancers - press 'Apply l @ 1280' (under Try other settings): it switches "
         "between two frames, the show runs on")
 
@@ -206,9 +217,17 @@ def _held_by_the_app(bg):
     return bg.switch
 
 
-def test_the_app_gives_the_switch_its_key_off_hold():
-    appmod = _app()
-    assert "self.swipe_switch.why_not = self._swipe_switch_held" in inspect.getsource(appmod.WallDanceApp.__init__)
+
+def test_regression_guard_the_apps_switch_holds_while_the_key_is_off(real_app, swipe_auto_unlocked):  # noqa: F811
+    """The real app's switch carries the app's hold (was: a grep of ``__init__``'s source): with the key off a switch
+    asked earlier does not go on (checked before its load, its warm-up and the swap), with the key on it does."""
+    app, _ = real_app
+    req = {"winner": L1280, "text": "switching to l @ 1280 (Apply)", "auto": False}
+    assert app.swipe_switch.why_not(req) == "the automatic swipe is off"
+    _on(app, "suggest")
+    assert app.swipe_switch.why_not(req) is None
+    app._cb_swipe_auto("off")
+    assert app.swipe_switch.why_not(req) == "the automatic swipe is off"
 
 
 def test_key_off_before_the_load_abandons_the_seamless_apply():
@@ -327,38 +346,55 @@ def test_key_off_stops_a_look_under_way():
 
 
 # ----------------------------------------------------------------------------------------------------------
-# A project load that brings the key on
+# A project load
 # ----------------------------------------------------------------------------------------------------------
+def _swipe_toasts(events):
+    return [t for t in _toasts(events) if t.startswith("Automatic swipe")]
+
+
 @pytest.mark.parametrize("mode,word", [("suggest", "suggest"), ("auto", "switch")])
-def test_a_project_load_that_turns_the_key_on_says_so_once(mode, word, capsys, swipe_auto_unlocked):
-    appmod = _app()
-    from runtime import api
-    live = {"v": _live()}
-    bg, _, _ = _bg(live, mode="off")
-    events = []
-    fake = MagicMock()
-    fake.swipe_bg, fake.bus = bg, SimpleNamespace(publish=events.append)
-    fake._SWIPE_AUTO_LABELS = appmod.WallDanceApp._SWIPE_AUTO_LABELS
-    fake._cb_swipe_auto = lambda m, quiet=False: appmod.WallDanceApp._cb_swipe_auto(fake, m, quiet=quiet)
-    appmod.WallDanceApp._apply_config_without_model(fake, {"swipe_auto": mode})
-    assert bg.mode == mode
-    toasts = [e.message for e in events if isinstance(e, api.Toast)]
-    assert toasts == [f"Automatic swipe: {word} (from the project)"]
+@pytest.mark.parametrize("full", [False, True], ids=["partial", "full"])
+def test_a_project_load_that_turns_the_key_on_says_so_once(real_app, swipe_auto_unlocked, mode, word,  # noqa: F811
+                                                           full, capsys):
+    app, events = real_app
+    app.swipe_bg.start = lambda: None
+    app._apply_config_without_model({"model": X1280.model, "swipe_auto": mode} if full else {"swipe_auto": mode})
+    assert app.swipe_bg.mode == mode
+    assert _swipe_toasts(events) == [f"Automatic swipe: {word} (from the project)"]
     assert capsys.readouterr().out.count(f"[SwipeAuto] mode {mode} (from the project)") == 1
 
 
-def test_a_project_load_with_the_key_off_says_nothing(capsys):
-    """Regression guard: off (or absent: a full project) -- silent, as before."""
-    appmod = _app()
-    from runtime import api
-    live = {"v": _live()}
-    bg, _, _ = _bg(live, mode="suggest")
-    events = []
-    fake = MagicMock()
-    fake.swipe_bg, fake.bus = bg, SimpleNamespace(publish=events.append)
-    fake._SWIPE_AUTO_LABELS = appmod.WallDanceApp._SWIPE_AUTO_LABELS
-    fake._cb_swipe_auto = lambda m, quiet=False: appmod.WallDanceApp._cb_swipe_auto(fake, m, quiet=quiet)
-    appmod.WallDanceApp._apply_config_without_model(fake, {"swipe_auto": "off"})
-    assert bg.mode == "off"
-    assert not [e for e in events if isinstance(e, api.Toast)]
+def test_a_project_load_with_the_key_off_says_nothing(real_app, swipe_auto_unlocked, capsys):  # noqa: F811
+    """Regression guard: off -- silent, as before."""
+    app, events = real_app
+    _on(app, "suggest")
+    capsys.readouterr()
+    events.clear()
+    app._apply_config_without_model({"swipe_auto": "off"})
+    assert app.swipe_bg.mode == "off"
+    assert _swipe_toasts(events) == []
     assert "SwipeAuto" not in capsys.readouterr().out
+
+
+def test_regression_guard_a_full_project_load_without_the_key_runs_off_and_lifts_the_bans(  # noqa: F811
+        real_app, swipe_auto_unlocked, capsys):
+    """A project file has a model (a full load) and no swipe_auto: the key is absent, so off -- silently.  The load
+    lifts the bans (``clear_bans``: failed automatic switches may retry) and tells the panel whether anything still
+    waits for Dismiss (``SettingsSwipeHold``).  None of the three was reached by the fakes (a partial config)."""
+    app, events = real_app
+    _on(app, "suggest")
+    app.swipe_bg._banned[L1920.key] = L1920.engine_file
+    cleared = []
+    clear = app.swipe_bg.clear_bans
+    app.swipe_bg.clear_bans = lambda: cleared.append("clear_bans") or clear()
+    capsys.readouterr()
+    events.clear()
+    app._apply_config_without_model({"model": X1280.model})
+    assert app.swipe_bg.mode == "off", "an absent key on a full project load left the automatic swipe on"
+    assert cleared == ["clear_bans"] and app.swipe_bg._banned == {}
+    assert [e.held for e in events if type(e).__name__ == "SettingsSwipeHold"] == [False]
+    assert _swipe_toasts(events) == [] and "SwipeAuto" not in capsys.readouterr().out
+    app.swipe_switch.fail("the switch to l @ 1280 failed (RuntimeError: x): x @ 1280 still runs - rebuild it")
+    events.clear()
+    app._apply_config_without_model({"model": X1280.model})
+    assert [e.held for e in events if type(e).__name__ == "SettingsSwipeHold"] == [True]   # a fault still waits

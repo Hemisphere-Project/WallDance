@@ -277,26 +277,33 @@ an existing row.
   `tests/swipe_replay.py` (a take through the real code). Gate: on mur2 6–8 the pick within 1.5 points of the
   best; never a setting worse than x @ 1280 on the corpus takes with a plate; ≤ 30 s on the laptop. What is
   measured, and where the gate as written is not met, in §5. — @est(2d) bench GPU + laptop — hub #t-058
-- **P6 · Autonomous swipe.** After: P5. (Thomas, 26/11: the swipe runs by itself.) Project key `swipe_auto` =
-  off | suggest | auto, off by default and absent from existing projects. In RUN, once 150 fresh frames with
-  dancers are kept and the live setting's own boxes leave room for a gain, the pair {live, the other model at
-  the live input} is compared in the background: the other model is loaded beside the live one (two engines at
-  most, the second released after 10 minutes without a look) and runs the kept frames at a gentle pace (one
-  inference every 0.2 s, 30 s a look); P5's referee gives the verdict. `suggest`: a line and a toast with «
-  Apply now ». `auto`: the switch itself, between two frames at the same network input (no camera close, the
-  tracker and the ids untouched, three frames of probation, the old model back if they raise), only after two
-  definite verdicts in a row on different frames (a gain of 5 points or more), a dwell of 5 minutes, never back
-  within 15, never to a slower model, with an alert toast. After a « keep » the next look waits 5 minutes,
-  doubling up to 30, unless the live setting loses 10 points more of its dancers. An empty wall costs nothing:
-  no frame with a dancer, no inference. While the empty-wall plate is not valid the swipe stands down (no frame
-  read, no engine, no inference) and its status says so; a setting whose switch or load failed is not tried
-  again until Dismiss or a project load. With the key on, the operator's Apply uses the same switch when the
-  input size does not change; with the key off, Apply and its words are P5's and nothing of P6 runs. Where:
-  `core/swipe_auto.py` (the policy), `runtime/swipe_background.py` (the looker, the second engine),
-  `runtime/seamless_switch.py` (the swap, its probation and rollback), `runtime/model_controller.py`
-  `swap_live`, `core/pipeline.py` (the swap point); driver `tests/switch_replay.py` (a take through the app's
-  loop in real time). Gate: frame time ≤ 55 ms at p95 with TouchDesigner; no switch on mur2 6–8 at l @ 1920 ×
-  1056; from x at the same input one switch with the ids unchanged; zero candidate inference on an empty take.
+- **P6 · Autonomous swipe.** After: P5. (Thomas, 26/11: the swipe runs by itself; 27/11: « suggest once
+  justified ».) Project key `swipe_auto` = off | suggest | auto, off by default, absent from existing projects,
+  off again in every new project; which modes a build lets anyone set is one list in the code
+  (`core.config.SWIPE_AUTO_RELEASED`). In RUN, once 150 fresh frames with dancers are kept and the live
+  setting's own boxes leave room for a gain, the pair {live, the other model at the live input} is compared in
+  the background: the other model runs the kept frames at a gentle pace (one inference every 0.2 s, 30 s a look)
+  and P5's referee gives the verdict. That second engine is loaded only where a pause does not show — when the
+  mode is set, at a project or model load, in STANDBY, or in RUN on a wall empty for 2 s — and stays loaded
+  while the mode is on (its GPU cost is a readiness row). A look does not start, and stops, while the live
+  frames run over 55 ms. `suggest`: when the same model wins two looks in a row (within 15 minutes) and is no
+  more than 15 % slower, one line and one toast with « Apply now »; the line is then updated silently and the
+  looks back off; a look that does not confirm it stops the line inviting and brings the next look at once, and
+  the second such look withdraws it; Dismiss means « not now » for 15 minutes. `auto`: the switch itself,
+  between two frames at the same network input (no camera close, the tracker and the ids untouched, three frames
+  of probation, the old model back if they raise), only after two definite verdicts in a row on different frames
+  (a gain of 5 points or more), a dwell of 5 minutes, never back within 15, never to a slower model, with a
+  toast. After a « keep » the next look waits 5 minutes, doubling up to 30, unless the live setting loses 10
+  points more of its dancers. An empty wall costs no inference, and nothing is judged in STANDBY. The swipe
+  stands down (no frame read, no inference) while the empty-wall plate is not valid or the reference watch holds
+  an alert, and starts its comparison over when the picture's enhancement changes; a setting whose switch, load
+  or run failed is put aside until Dismiss or a project load. With the key on, the operator's Apply uses the
+  same switch when the input size does not change; with the key off, Apply and its words are P5's and nothing of
+  P6 runs. Where: `core/swipe_auto.py` (the policy), `runtime/swipe_background.py` (the looker, the second
+  engine), `runtime/seamless_switch.py` (the swap, its probation and rollback), `runtime/model_controller.py`
+  `swap_live`, `core/pipeline.py` (the swap point, the frame's end); driver `tests/switch_replay.py` (a take
+  through the app's loop). Gate: frame time ≤ 55 ms at p95 with TouchDesigner; no switch on mur2 6–8 at l @ 1920
+  × 1056; from x at the same input one switch with the ids unchanged; zero candidate inference on an empty take.
   What is measured, and where the gate is not met, in §5. — @est(3d) laptop — hub #t-059
 
 Engine-only estimates on the laptop (pixel count against its measured 21.3 ms for x@1280 and 13.5 ms for
@@ -542,7 +549,7 @@ Rev 2 (release in the last column):
 | P3 | Model by the ratchet | bench GPU | P1, F3 | 0.5d | #t-049 | measured 26/11, choice open (§5) | 1 |
 | P4 | Dancer height at the network | bench ⚙ | P1 | 0.5d | #t-050 | landed 26/11; the live band open | 1 |
 | P5 | Warmup swipe | bench GPU + laptop | P1, F1 | 2d | #t-058 | built 26/11 on `cordee-swipe`; the review's findings answered, per-swipe gate in §5; re-review pending | – |
-| P6 | Autonomous swipe | bench GPU + laptop | P5 | 3d | #t-059 | built 26–27/11 on `cordee-swipe`, behind `swipe_auto` (off); gate in §5: green on the show's setting, 2 ms over during the looks from x @ 1920 × 1056, no switch on mur2 8; blind review 27/11: 14 findings in three groups, the first fixed (`dbeaa96`), the key locked off (`d5fe629`) until the second is | – |
+| P6 | Autonomous swipe | bench GPU + laptop | P5 | 3d | #t-059 | merged off and locked 27/11 (`de08e67`); gate in §5: green on the show's setting, 2 ms over during the looks from x @ 1920 × 1056, a switch from there that falls either side of the bar; the review's second group and its second round fixed on `cordee-swipe`, read a third time: good for the rehearsal with conditions of use, `suggest` opens with the release commit; a laptop hold owed before a show; `auto` behind the third | – |
 | X1 | Servo on the highlights | bench ⚙ | – | 1d | #t-027 ④ | todo | 2 |
 | X2 | Light verdict | bench ⚙ | – | 0.5d | #t-054 | todo | 2 |
 | X3 | Emptiness first | bench ⚙ | – | 1d | #t-027 ⑤ | todo | 2 |
@@ -774,8 +781,9 @@ Filled by the step named. Until then the cell says so.
     and now needs 6.1 points to be named.
     Three takes, one evening, one wall: the first take with a real plate on another wall is to be put through
     `tests/swipe_gate.py`.
-- **P6 — the autonomous swipe** (2026-11-26/27; `tests/switch_replay.py` plays a take through the app's loop in
-  real time, with the background swipe, the switch and the OSC sender's hook; outputs, summaries and the agents'
+- **P6 — the autonomous swipe** (2026-11-26/27; `tests/switch_replay.py` plays a take through the app's loop,
+  with the background swipe, the switch and the OSC sender's hook — on the bench frame after frame, the loop's
+  clock following the take (this block first said « real time » of those runs: only the laptop holds are paced); outputs, summaries and the agents'
   hand-overs in `tmp_analysis/swipe-1126/live/` and `laptop/` on mgr-ran). The gate runs below are on `48fdec1`.
   The ten commits after it (`a38418c` to `236a343`) change what happens when something fails, what the status
   says and what is kept in memory, not the pacing, the referee or the policy's thresholds; each has its tests,
@@ -797,7 +805,7 @@ Filled by the step named. Until then the cell says so.
   - *Gate, bench* (mgr-ran, a GPU shared with other jobs: decisions, ids and sentences are exact, frame times
     are not the laptop's).
 
-    | Run (mur2, real time, `48fdec1`) | Looks: take time, dancers covered by l / x | Result |
+    | Run (mur2, `48fdec1`) | Looks: take time, dancers covered by l / x | Result |
     |---|---|---|
     | l @ 1920 × 1056 live, auto, takes 6 / 7 / 8, 345 s | 1 / 2 / 2 looks (153–154 and 304–305 s), all « keep » at 97–99 % | no suggestion, no switch |
     | x @ 1920 × 1056 live, auto, take 6, 560 s | 154 s 97 / 92 % marginal · 304 s 97 / 88 % · 455 s 98 / 91 % | **one switch at 479.5 s**, ids [1, 2] → [1, 2] |
@@ -849,14 +857,14 @@ Filled by the step named. Until then the cell says so.
     first frame (injected): the old model is live again at the next frame, the stream equals the run without a
     switch over all 8,809 frames, no OSC gap, one alert (« the automatic switch to l @ 1280 failed (…): x @ 1280
     still runs - the automatic swipe will not try yolo11l-pose_1280.engine again until you press Dismiss »), no
-    second try; the policy and the frame pool stay as they were, so the next look comes at its normal time (116
-    s after the fault) and says the ban. An engine file that cannot be read: the operator's Apply fails before
-    it begins, in plain words (« the engine file could not be read … rebuild yolo11l-pose_1280.engine
-    (extra/build_engines) »); the automatic swipe tries its load once (16 times in 41 s before the fix), says it
-    once the same way and waits for Dismiss, with 0 inference. A model load during the three frames of probation
-    ends the switch as overtaken instead of leaving it busy for good. Dismiss stays on screen while a fault or a
-    ban waits for it. A plate that is only not loaded yet (start-up, a project load) is no longer called
-    invalid.
+    second try: the setting is put aside, with no look, no load and no inference for it until Dismiss or a
+    project load (the policy and the frame pool stay as they were before the swap). An engine file that cannot
+    be read: the operator's Apply fails before it begins, in plain words (« the engine file could not be read …
+    rebuild yolo11l-pose_1280.engine (extra/build_engines) »); the automatic swipe tries its load once (16 times
+    in 41 s before the fix), says it once the same way and waits for Dismiss, with 0 inference. A model load
+    during the three frames of probation ends the switch as overtaken instead of leaving it busy for good.
+    Dismiss stays on screen while a fault or a ban waits for it. A plate that is only not loaded yet (start-up,
+    a project load) is no longer called invalid.
   - *Found on the way.* The one frame of 190–220 ms seen in the laptop holds is not the swipe's: it is Python's
     full garbage collection (about 430,000 objects of torch, ultralytics and TensorRT; 89–177 ms on the laptop,
     100–160 ms on mgr-ran), every several minutes with or without the swipe. Evidence went to the rehearsal
@@ -867,41 +875,117 @@ Filled by the step named. Until then the cell says so.
     driver's own port could not show), and the operator swipe's own collection at its end goes through that
     policy once it is installed (`4c3ad8f`: what waits is 43 KB after five swipes, nothing on the GPU).
   - *Blind review* (`cordee-r2`, three reviewers on the merged tree, 27/11;
-    `tmp_analysis/r2-1126/gates/p6review/REVIEW_9326381.md`). It confirms the mechanics: with the key off the
-    frame path is what it was, the swap falls between two frames and a rollback loses no OSC frame, engines
-    leave by reference counting alone. It finds 14 points, in three groups. *Before any merge*, fixed in
-    `54769d7` and `dbeaa96`: with the key off the operator's Apply had become a switch in RUN (it is P5's Apply
-    again, STANDBY only, heavy over the remote API), and an engine was freed at a random moment of a live frame,
-    a stop of about 50 ms (it now goes right after the next live frame); a new project inheriting the session's
-    mode is fixed on the rehearsal build's side. *Before `suggest` at a rehearsal*, open: over a long show the
-    idle timer frees and reloads the second engine during the dancing about every 30 minutes, and a load slows 4
-    to 6 frames (slices of 54–80 ms) — no gate run above lasted long enough to hold one; a failing inference is
-    retried for ever; a GPU with no room is reported as a broken file; Dismiss neither vetoes nor snoozes; the
-    swipe does not stand down on the reference watch's verdicts; an enhancement change does not reset the
-    comparison. *Before `auto`*, open: « twice in a row » has no time bound; the 5-point bar was tuned on mur2
-    6–8, the gate's own takes, and the first look sits on it (the reviewer's re-run of the simulator: a first
-    switch at 347 s or at 4,220 s on take 7, by where the pool starts); the speed rule lets a switch through
-    when a time is missing. Until the second group is fixed and read again: key off.
-  - *Key off, and the lock.* In this build the key cannot be turned on: `core.config.SWIPE_AUTO_UNLOCKED` is
-    False (`d5fe629`) — the « Auto: » list is not on screen, the app and the remote API refuse any mode but off
-    (« Automatic swipe: not released in this build - it stays off »), and a project file that asks for a mode
-    loads off and says so. It is set to True in the commit that closes the review's second group, once that
-    group is read again: that commit is the reviewed act that opens `suggest`. With the key off, Apply and every
-    word around it are P5's and no thread, engine or inference of P6 exists; the frame path pays a few attribute
-    reads. Key off is still not byte for byte the build before P6, in two places. P5's own swipe: its pool of
-    kept frames starts again when the plate's refusal for this camera changes; the referee tells the reference
+    `tmp_analysis/r2-1126/gates/p6review/REVIEW_9326381.md`, re-read of the first group in
+    `REREAD_A_0c777dd.md`). It confirms the mechanics: with the key off the frame path is what it was, the swap
+    falls between two frames and a rollback loses no OSC frame, engines leave by reference counting alone. It
+    finds 14 points, in three groups. *Before any merge*, fixed and merged (`54769d7`, `dbeaa96`, `d5fe629`;
+    `de08e67`): with the key off the operator's Apply had become a switch in RUN (it is P5's Apply again,
+    STANDBY only, heavy over the remote API); the key was one click away with the other groups open (the build
+    is locked, next paragraph). *Before `suggest`*, fixed on `cordee-swipe` (`6dc89f7` to `0310ad8`), to be read
+    again: the second engine was loaded with dancers on the wall and, in a settled show, freed and reloaded
+    about every 30 minutes by an idle timer — it now loads only where a pause does not show and is never freed
+    on a timer (a settled two-hour night: 1 load, 0 release, where it read 4 and 4); an engine was freed 5 ms
+    after the network pass, inside the frame's own tracker and OSC work, and delayed that frame's OSC 5 times of
+    5 — it is now freed after the frame's end (0 of 5; the next frame starts 24–32 ms late), never in a tick
+    where the collector policy collected: when both are due at one frame's end the collection goes first and the
+    release one frame later; a second engine whose inference failed was retried every 5 s for ever (it is put
+    aside at once and said once); a GPU with no room was reported as a broken engine file with the order to
+    rebuild it (the file is now read without TensorRT and the free memory with it: « no room on the GPU: N MB
+    free », and a rebuild is asked only for a file shown bad); Dismiss neither vetoed nor snoozed (it is « not
+    now »: 15 minutes, the streak ended, and a setting put aside is no longer offered); the swipe kept judging
+    while the reference watch said the camera had moved or the wall was another one (it stands down on the
+    watch's confirmed alert, and a background look's refusal of the plate no longer counts toward that alert);
+    an enhancement change did not restart the comparison; a look could start in STANDBY; a new project inherited
+    the session's mode; a second switch could slip in while one was loading or being swapped. *The second group
+    read again* (two reviewers, `REREAD_B_5de60e5.md`, measured on the real loop with a real engine): « yes,
+    with conditions, for a rehearsal; not yet for a show ». It holds that 15 of 15 releases start within 4 ms
+    after a tick's end with no frame's OSC delayed, that three hours of dancing on a clock load once and free
+    nothing, that in `suggest` nothing swaps by itself and that the lock holds at every door. Its second round,
+    fixed (`911f495` to `921b295`), one read left: a suggestion left on screen was announced again at every look
+    (47 toasts in a two-hour evening where nobody presses: now 1) and appeared after a single verdict, often
+    withdrawn at the next — it now needs the same model on two looks in a row within 15 minutes and no slower,
+    is said once, backs the looks off, and goes when two looks no longer confirm it; nothing slowed a look when
+    the live frames ran late (it now does not start, and stops, over 55 ms at the 95th percentile of the last 3
+    s); the Apply's warm-up could still say « rebuild » for a full GPU; a background look still told the
+    reference watch its accepts (it tells it nothing now); Python class names stood in operator's sentences
+    (each now says a plain reason and one thing to do, the class in the log). *The second round read again* (one
+    reviewer, `REREAD_B2_4a30f39.md`): « yes, with conditions, for the rehearsal of 7–8/12 with the technician
+    alone; not yet for the show ». Six of its nine points hold by probe (the lock at every door, also with «
+    suggest » released; one toast and 14 looks in a two-hour evening; the watch left alone; the click's load
+    moment). Its third pass, fixed (`558e2c0` to `7db57f6`): a suggestion no look confirmed any more stayed on
+    screen 17 to 30 minutes, because the looks themselves had backed off — the first look that does not confirm
+    it now stops the line inviting (no Apply button) and brings the next look at once, and the second withdraws
+    it: 150 s in the reviewer's own probe; a failure of the background's own engine told the technician to «
+    close what else uses the GPU », which on the show laptop is TouchDesigner, or to rebuild an engine — every
+    such failure now ends in one instruction he can follow, « set Auto to off », the cause in parentheses and
+    the detail in the log and in /status; the line is no longer redrawn over a failed Apply or over the
+    operator's own swipe; Dismiss on a failed Apply's line also says « not now » to that suggestion; a look that
+    raises backs off and, at the third in a row, puts the setting aside. *The third pass checked*
+    (`CHECK_B3_c983cfa.md`, run on the real classes): it holds — the line stops inviting at the first look that
+    does not confirm and the next look withdraws the suggestion 150 s later, four times of four; ten failures of
+    the background of ten end in « set Auto to off », twelve of the operator's Apply of twelve in « keep the
+    current setting » — with a leftover closed in `18f2e89`: a look that raises counts as one that does not
+    confirm; setting Auto to off acknowledges the background's own fault (the red line and the readiness row go,
+    the cause stays in the log and in /status); the two times are shown to a tenth of a ms. *Before `auto`*,
+    open: the 5-point bar was tuned on mur2 6–8, the gate's own takes, and the first look sits on it (the
+    reviewer's re-run of the simulator: a first switch at 347 s or at 4,220 s on take 7, by where the pool
+    starts; and the bench row below); « twice in a row » and the speed rule's missing time, first listed here,
+    went into the second round because `suggest` uses them.
+  - *After the second group, bench* (mgr-ran, 27/11; `tmp_analysis/swipe-1126/live/d2/`, `d3/`, `f1/`). The
+    earlier no-switch references no longer fit: the rehearsal build's own live-path commits change the stream
+    from frame 144 on, so a fresh reference was recorded. The first four rows are on `0310ad8`, the next three
+    on `5de60e5`, the last on `921b295`.
+
+    | Run (mur2 7) | Second engine | Looks | Result |
+    |---|---|---|---|
+    | x @ 1280 live, auto, 420 s | loaded once, in STANDBY before frame 1 (760 MB); no load, no release after | 152 s and 302 s, both definite | one switch at 335.0 s, ids [1, 2] → [1, 2]; 5,674 of 5,674 frames identical to the reference before it; OSC on 71 of 71 frames around it |
+    | l @ 1920 × 1056 live, auto, 345 s | once, before frame 1 | 151 s and 303 s, both « keep » (99 and 98 %) | no suggestion, no switch |
+    | x @ 1280 live, auto, a first frame that raises, 520 s | once | 151 s, 304 s | the switch at 342.7 s rolled back, one fault, the setting put aside: no look, load or inference after; 8,809 of 8,809 frames identical |
+    | empty wall, auto, 120 s | once | none | 0 inference, 0 release |
+    | x @ 1920 × 1056 live, auto, 560 s | once (1,000 MB), before frame 1 | 151 s 99 / 94 % definite, 303 s definite | one switch at 333.8 s, ids [1, 2] → [1, 2] — at the SECOND look: the same 99 against 94 % read « under 5 points » on `48fdec1` and waited for the third |
+    | x @ 1280 live, suggest, Dismiss at 200 s, 420 s | once | 152 s, suggestion shown; then none | after the Dismiss no look, inference or suggestion; the status says when it looks again |
+    | l @ 1920 × 1056 live, auto, 1,500 s (the take three times) | once (1,550 MB) | four « keep » at 153, 305, 641 and 1,277 s | one load, no release, no suggestion |
+    | x @ 1280 live, suggest, the mode set to off at 480 s, 520 s (`921b295`) | once | 151 s seen once, nothing shown; 303 s | one suggestion at 332 s (« l @ 1280 covers 100 % of the dancers, x @ 1280 62 % (12 ms a frame against 16), seen twice: Apply now? »), no look after it; at 480 s the second engine freed in RUN, starting 0.4 ms after a frame's end |
+
+    The x @ 1920 × 1056 row is the review's point about the bar, on the bench itself: one take, one setting, two
+    builds whose streams differ by a hundredth of a pixel at first, and the switch comes at the second look or
+    at the third.
+  - *Key off, and the lock.* Which modes this build lets anyone set is one list,
+    `core.config.SWIPE_AUTO_RELEASED`, shipped as ("off",): the « Auto: » list is not on screen, the app and the
+    remote API refuse any other mode (« Automatic swipe: suggest is not released in this build - it stays off
+    »), and a project file that asks for one loads off and says so. "suggest" joins the list in the commit that
+    closes the review's second group, once that group is read again (Thomas, 27/11: « suggest once justified »);
+    "auto" in the one that closes the third. With the key off, Apply and every word around it are P5's and no
+    thread, engine or inference of P6 exists; the frame path pays a few attribute reads. Key off is still not
+    byte for byte the build before P6, in two places. P5's own swipe: its pool of kept frames starts again when
+    the plate's refusal for this camera or the picture's enhancement changes; the referee tells the reference
     watch nothing while the plate is not usable; « Try other settings » is refused on a plate that is ready but
-    not usable; the end of a swipe asks the collector policy for its collection instead of running it. Remote
-    clients: the schema gains the command SetSwipeAuto and the event SettingsSwipeHold (sent on every full
-    project load and on Dismiss), the `swipe` part of /status gains `switch` and `auto`, SettingsSwipeResult
-    gains its `apply_*` keys, and one line of DismissSwipeNotice's description changed.
-  - *Open.* From x @ 1920 × 1056 the looks put the laptop at 57 ms: starting each background inference right
-    after a live frame, instead of every 0.2 s, is the next thing to try. On mur2 8 the gain from x to l at 1920
-    × 1056 sits at the bar and no switch comes: l is also the faster model there, and a lower bar for a setting
-    that is both better and faster needs the simulation again. A switch at 1920 × 1056 is not timed on the
-    laptop. The toast, the line and Dismiss have been driven by tests and by the driver, not yet seen on the
-    real screen. Three takes, one evening, one wall, played from disk: a dusk take at the 7–8/12 rehearsal is
-    its real test.
+    not usable; the end of a swipe asks the collector policy for its collection instead of running it, and its
+    candidate engines are freed after the frame's end. Remote clients: the schema gains the command SetSwipeAuto
+    and the event SettingsSwipeHold (sent on every full project load and on Dismiss), the `swipe` part of
+    /status gains `switch` and `auto`, SettingsSwipeResult gains its `apply_*` keys, and one line of
+    DismissSwipeNotice's description changed.
+  - *Open.* Conditions of use for the rehearsal, set by the last reader and written for the technician in the
+    French text: « Auto: suggest » is set in STANDBY before the dancing, then the readiness line about the
+    second model is read and TouchDesigner checked; at this rehearsal no Apply on a suggestion — it is noted,
+    dismissed or left, and told to Thomas (with the show's l @ 1920 × 1056 the only candidate is the bigger x);
+    on any red alert of the automatic swipe, Auto to off, nothing closed, nothing rebuilt; the supervising
+    session watches the log for « [SwipeAuto] the live frames run late » and « [SwipeAuto] the look at ». Before
+    a show: the laptop has measured none of the commits after `48fdec1` — one hold on the final merged build
+    beside TouchDesigner, with a load on an empty wall, a look and a release in it, is owed; a switch at 1920 ×
+    1056 is not timed there either. Before `auto`: the bar and a held-out check for it (the dusk take of the
+    rehearsal is the first). Covered at the rehearsal by « no Apply »: after a shown suggestion the looks back
+    off 300, 600, 1,200 s, so the invitation can stand up to about 20 minutes with no look at all before the
+    first that could un-confirm it; with a gain hovering around the bar the Apply button can appear and
+    disappear silently a few times an evening. Left by the last reader, not blocking the rehearsal: the
+    late-frames stand-down sees nothing under 20 frames in 3 s (frames of 150 ms or more) nor right after a
+    stall; quit waits at most 8 s for a cold load. From x @ 1920 × 1056 the looks put the laptop at 57 ms: the
+    looker now stands down there by itself, and starting each background inference right after a live frame,
+    instead of every 0.2 s, is the next thing to try. A look that falls due with no second engine while a dancer
+    is tracked waits for an empty wall. A suggestion behind the operator's own verdict stays hidden until he
+    dismisses it. The probation's callbacks still run inside the third probation frame of an operator's Apply.
+    The toast, the line and Dismiss have been driven by tests on the real app object and by the driver, not yet
+    seen on the real screen. Three takes, one evening, one wall, played from disk.
 - **F1 — foreground** (2026-11-26, `tests/fg_eval.py`, mur2 with the 21:36 plate, every 3rd frame):
   foreground under 6,263 of 6,263 boxes a network gives at conf ≥ 0.5; a group on the dancer 94.7–100 % of
   dancer-frames; groups on nobody inside the wall 0.000–0.201 per frame; take 2 (empty) 0.0 and no stale frame (the

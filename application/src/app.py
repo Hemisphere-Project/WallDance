@@ -24,7 +24,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import cv2
 import numpy as np
@@ -110,13 +110,14 @@ from core.ops_monitor import (
 from core.enhancer import ImageEnhancer
 from core.input_shape import shape_str
 from core.swipe import Candidate
+from core.swipe_auto import LABELS as SWIPE_AUTO_LABELS, mode_word as swipe_auto_word
 from core.swipe_auto import parse_mode as parse_swipe_mode
+from core.swipe_auto import released_modes as swipe_auto_released   # core.config.SWIPE_AUTO_RELEASED, at each call
 from core.tracker import DancerTracker
 from core.tracking_logger import _json_default
 from core.video_recorder import VideoRecorder
 from core.version import app_version
 from core.input_transform import IDENTITY, InputTransform, remap_exclusion_bundle
-import core.config as core_config      # SWIPE_AUTO_UNLOCKED, read when needed (a test or a driver sets it)
 import core.config_schema as config_schema
 from runtime import api
 from runtime.api import SystemState
@@ -863,13 +864,22 @@ class WallDanceApp:
         _engine_path = lambda c: self.models.model_manager.get_engine_path(c.model, c.imgsz, c.shape)  # noqa: E731
         self.swipe_switch = SeamlessSwitch(processor=lambda: self.processor, live=self._swipe_live_setting,
                                            engine_path=_engine_path, port=self.models, notify=self._swipe_notify)
-        # P6 the autonomous swipe (runtime/swipe_background.py): a looker thread, started with the first mode
-        # that is not off; it switches through the seamless switch.
+        # P6 the autonomous swipe (runtime/swipe_background.py): a looker thread, started with a mode that is not
+        # off and ended by off; it switches through the seamless switch.  Its second engine loads and goes only
+        # where a pause does not show: out of RUN, or on an empty wall in RUN.
         self.swipe_bg = BackgroundSwipe(
             processor=lambda: self.processor, live=self._swipe_live_setting, engine_path=_engine_path,
             busy=self._swipe_bg_busy, switch=self.swipe_switch, notify=self._swipe_notify, mode=SWIPE_AUTO,
-            referee=self.swipe.referee)     # fix6: one plate-watch report for the operator's swipe and ours
-        self._swipe_shown = ""          # which verdict the swipe line shows: "operator" | "background"
+            referee=self.swipe.referee,     # fix6: one plate-watch report for the operator's swipe and ours
+            in_run=lambda: self.system_state == SystemState.RUN, wall_empty=self._swipe_wall_empty,
+            standby=lambda: self.system_state == SystemState.STANDBY)    # no look there: the pool is frozen
+        # what the swipe line shows: "operator" (his swipe: its run, its verdict), "background" (its suggestion),
+        # "apply" (an Apply under way or its outcome, a fault's red line), "" (nothing: Dismiss, or nothing yet);
+        # kept from what the app publishes to the line (``_swipe_line_drawn``)
+        self._swipe_shown = ""
+        self._swipe_line_said = ""      # ... and the text of the last state that took it (a fault's red line)
+        self.bus.subscribe(self._swipe_line_drawn)
+        self._swipe_blank_start = False  # Start blank / New project under way: its clean start sets the default mode
         # the automatic swipe turned off: a switch asked before (the operator's seamless Apply, an automatic one)
         # and not yet swapped in does not happen -- the key-off build runs none
         self.swipe_switch.why_not = self._swipe_switch_held
@@ -1109,8 +1119,8 @@ class WallDanceApp:
         reg(api.LaunchProject, lambda c: self.configs._cb_project_launch(c.name))
         reg(api.RenameProject, lambda c: self.configs._cb_project_rename(c.old, c.new))
         reg(api.DeleteProject, lambda c: self.configs._cb_project_delete(c.name))
-        reg(api.StartBlankProject, lambda c: self.configs._cb_project_blank())
-        reg(api.NewProject, lambda c: self.configs._cb_project_new(c.name))
+        reg(api.StartBlankProject, lambda c: self._swipe_project_start(self.configs._cb_project_blank))
+        reg(api.NewProject, lambda c: self._swipe_project_start(lambda: self.configs._cb_project_new(c.name)))
         # recording / playback
         reg(api.PlaybackControl, self._cmd_playback_control)
         reg(api.SelectSlot,
@@ -1679,20 +1689,20 @@ class WallDanceApp:
         if "swipe_auto" in config or full_config:            # P6: absent = off
             asked = config.get("swipe_auto", SWIPE_AUTO)
             asked_mode = parse_swipe_mode(asked)
-            if asked_mode != "off" and not core_config.SWIPE_AUTO_UNLOCKED:
-                # locked off in this build: the project's key is read as off, said once at this load
+            if asked_mode not in swipe_auto_released():
+                # not released in this build: the project's key is read as off, said once at this load
                 self._cb_swipe_auto("off", quiet=True)
                 say(f"[SwipeAuto] mode off - this project asks for {asked_mode}, "
                     "which is not released in this build")
-                word = self._SWIPE_AUTO_LABELS[asked_mode].removeprefix("Auto: ")
-                self.bus.publish(api.Toast(f"Automatic swipe: off - this project asks for {word}, which is not "
-                                           "released in this build", 6.0, (255, 200, 100)))
+                self.bus.publish(api.Toast(f"Automatic swipe: off - this project asks for "
+                                           f"{swipe_auto_word(asked_mode)}, which is not released in this build",
+                                           6.0, (255, 200, 100)))
             else:
                 self._cb_swipe_auto(asked, quiet=True)
             if self.swipe_bg.mode != "off":                  # the project turns it on: said once, never silent
                 say(f"[SwipeAuto] mode {self.swipe_bg.mode} (from the project)")
-                word = self._SWIPE_AUTO_LABELS[self.swipe_bg.mode].removeprefix("Auto: ")
-                self.bus.publish(api.Toast(f"Automatic swipe: {word} (from the project)", 6.0, (150, 200, 255)))
+                self.bus.publish(api.Toast(f"Automatic swipe: {swipe_auto_word(self.swipe_bg.mode)} (from the "
+                                           "project)", 6.0, (150, 200, 255)))
         if full_config:
             self.swipe_bg.clear_bans()                       # a project load: failed automatic switches may retry
             self.bus.publish(api.SettingsSwipeHold(bool(self.swipe_switch.fault)))
@@ -2277,6 +2287,24 @@ class WallDanceApp:
             stop("stopped by a change of camera or project")
         self._cb_tracker_reset()
         self.processor.camera_not_live()
+        if getattr(self, "_swipe_blank_start", False):
+            self._swipe_start_off()
+
+    def _swipe_project_start(self, start: Callable[[], Any]) -> Any:
+        """Start blank / New project (the picker's commands): the new project starts with the automatic swipe at
+        the build's default (``core.config.SWIPE_AUTO``), set at its clean start (``_cb_project_start_clean``), so
+        before New's first Save -- their partial apply never names the key.  A start that fails keeps the mode;
+        a project switch or a camera switch (the same clean start) keeps it too."""
+        self._swipe_blank_start = True
+        try:
+            return start()
+        finally:
+            self._swipe_blank_start = False
+
+    def _swipe_start_off(self) -> None:
+        if self.swipe_bg.mode != parse_swipe_mode(SWIPE_AUTO):
+            self._cb_swipe_auto(SWIPE_AUTO, quiet=True)
+            say(f"[SwipeAuto] mode {self.swipe_bg.mode} (a new project starts with it at the default)")
 
     def _camera_preview_geometry(self, width: int, height: int):
         """Preview geometry + GUI layout follow-up after a camera (re)open."""
@@ -2420,8 +2448,8 @@ class WallDanceApp:
     def _cb_quit(self):
         self.swipe.cancel()          # P5: stop a running settings swipe ...
         self.swipe.join(2.0)         # ... and let it drop its engine before the process tears CUDA down
-        self.swipe_bg.stop(2.0)      # P6: the background swipe's looker ...
-        self.swipe_switch.stop(2.0)  # ... and the seamless switch's worker
+        self.swipe_bg.stop(8.0)      # P6: the background swipe's looker (a load in progress ends, its engine goes) ...
+        self.swipe_switch.stop(8.0)  # ... and the seamless switch's worker: a load in progress ends, what it holds goes
         self.tracker.logger.close()  # Phase 0: flush and close tracking log
         self.running = False
         self.recorder.close()
@@ -2604,6 +2632,9 @@ class WallDanceApp:
         try:
             row = self._swipe_readiness_row()
             if row is not None:                 # advice, not a condition: usually no row at all
+                results.append(row)
+            row = self._swipe_resident_row()
+            if row is not None:                 # information: what the automatic swipe holds on the GPU
                 results.append(row)
         except Exception as e:  # noqa: BLE001 - one row must not sink the report
             print(f"[Readiness] swipe row failed: {e}")
@@ -3130,11 +3161,28 @@ class WallDanceApp:
         its bans say nothing then (it tries nothing), a failed switch still waits for Dismiss, as P5's failed Apply
         does."""
         bans = self.swipe_bg.health() if self.swipe_bg.mode != "off" else None
+        # the row names what the swipe line shows: once the background's suggestion (or its withdrawal) took the
+        # line, the operator's verdict and its Apply button are no longer on screen -- no row quotes them
+        on_line = self._swipe_shown != "background"
         return self.swipe.readiness(plate_ready=self._swipe_plate_ready(),
-                                    live_now=self._swipe_live_setting(),
+                                    live_now=self._swipe_live_setting() if on_line else None,
                                     other_fault=self.swipe_switch.health() or bans,
                                     seamless=self._swipe_seamless_winner() is not None,
                                     swipe_auto=self.swipe_bg.mode)
+
+    def _swipe_resident_row(self):
+        """P6: one information row while the automatic swipe keeps its second model loaded (what it holds on the
+        GPU); None with the key off or nothing loaded."""
+        from core.ops_monitor import check_swipe_resident
+        r = self.swipe_bg.resident
+        return check_swipe_resident(swipe_auto=self.swipe_bg.mode, resident=r.candidate.label if r else None,
+                                    mb=r.mb if r else None)
+
+    def _swipe_wall_empty(self) -> bool:
+        """No track on screen and no identity slot held -- the collector's own test (``core.gc_policy``), on the
+        loop's last tracked dancers: in RUN the automatic swipe loads or frees its second engine only then."""
+        from core.gc_policy import wall_empty
+        return wall_empty(self.last_tracked, self.processor)
 
     def _swipe_live_setting(self) -> Optional[LiveSetting]:
         """What the live loop runs now (model, the input it really runs, the loaded model object); None while
@@ -3151,24 +3199,34 @@ class WallDanceApp:
             frame = tuple(int(v) for v in self.roi.state.source_size)
         except Exception:  # noqa: BLE001
             frame = ()
+        # what the processor does to the picture before the network pass (``FrameProcessor._sync_gpu_settings``,
+        # the same list as the tap's key, ``_swipe_setting_key``): another value is another scene
+        bg = getattr(self.processor, "bg_subtractor", None)
         enhance = (bool(s.enhance_enabled), bool(s.enhance_lite), bool(s.enhance_force),
                    round(float(self.enhancer.clahe_clip), 3), round(float(self.enhancer.gamma), 3),
-                   bool(getattr(s, "greyscale", False)), bool(s.bg_subtract_enabled), int(s.bg_subtract_sensitivity),
-                   round(float(s.brightness_threshold), 1), round(float(s.denoise_strength), 3))
+                   bool(getattr(s, "greyscale", False)),
+                   bool(s.bg_subtract_enabled and bg is not None and getattr(bg, "has_reference", False)),
+                   int(s.bg_subtract_sensitivity), round(float(s.brightness_threshold), 1),
+                   round(float(s.denoise_strength), 3))
         try:
             grid, cells = self.processor.get_exclusion()
             exclusion = (tuple(int(v) for v in grid), tuple(sorted((int(c[0]), int(c[1])) for c in cells)))
         except Exception:  # noqa: BLE001
             exclusion = ()
+        # the plate the pipeline holds in memory (captured again = another scene), and that object itself: the one
+        # the reference watch keys its verdict on (``WATCH.current(plate)``) -- read together, so both are the same
+        det = getattr(self.processor, "_fg_detector", None)
+        plate_ref = getattr(det, "plate", None) if det is not None else None
+        plate = getattr(self.processor, "plate_identity", None)
+        if plate_ref is not None and (not plate or plate[0] != id(plate_ref)):
+            plate_ref = None              # swapped between the two reads: the next look reads the new one
         return LiveSetting(project=self.configs._current_project,
                            candidate=Candidate(self.models.current_model_name, int(s.imgsz),
                                                tuple(shape) if shape else None),
                            model_id=id(self.models.model), trt=trt,
                            roi=(bool(s.roi_enabled), int(s.roi_x), int(s.roi_y), int(s.roi_w), int(s.roi_h)),
-                           # the plate the pipeline holds in memory (captured again = another scene)
-                           plate=getattr(self.processor, "plate_identity", None),
-                           plate_ok=bool(getattr(self.processor, "plate_usable", True)), frame=frame,
-                           enhance=enhance, exclusion=exclusion)
+                           plate=plate, plate_ok=bool(getattr(self.processor, "plate_usable", True)), frame=frame,
+                           enhance=enhance, exclusion=exclusion, plate_ref=plate_ref)
 
     def _cb_run_settings_swipe(self):
         """Start the swipe (worker thread; the show runs on at the live setting)."""
@@ -3188,6 +3246,17 @@ class WallDanceApp:
         if not error and res is not None and res.switch and res.winner is not None:
             result = {**result, **self._swipe_apply_hint(res.winner)}
         self.bus.publish(api.SettingsSwipeResult(result, error))
+
+    def _swipe_refresh_apply(self) -> None:
+        """The mode changed: the Apply button on screen for the operator's verdict says now which Apply a press
+        runs (``_swipe_apply_hint``: P5's with the key off, the seamless one on), not at the next verdict.
+        Nothing when no such button is on screen (no winner, applied, an Apply under way, the background's)."""
+        out = self.swipe.outcome
+        res = out.result if out is not None else None
+        if (self._swipe_shown != "operator" or res is None or not res.switch or res.winner is None
+                or self.swipe.applied is not None or self._swipe_pending_apply is not None):
+            return
+        self._swipe_on_result(out.to_dict(), "")
 
     def _swipe_apply_hint(self, winner) -> Dict:
         """The Apply button's label and tooltip: which Apply it will be.  The automatic swipe off: P5's."""
@@ -3239,6 +3308,13 @@ class WallDanceApp:
         from_bg = sug is not None and self._swipe_shown == "background"
         live = self._swipe_live_setting()
         if from_bg:
+            # judged on another setting, scene or project than the live one, or too old: it goes, nothing switches
+            # (the looker would withdraw it at its next look, up to 5 s later -- after a project switch, too late)
+            stale = self.swipe_bg.withdraw_stale(live, setting=True)
+            if stale:
+                self.bus.publish(api.Toast(f"Swipe Apply: nothing switched - suggestion withdrawn: {stale}",
+                                           5.0, (255, 200, 100)))
+                return
             winner, conf = sug["winner_c"], None
         else:
             why, winner, conf = self.swipe.applicable(live)
@@ -3262,7 +3338,7 @@ class WallDanceApp:
                                        f"({seamless_why}), a few seconds without tracking", 5.0, (255, 200, 100)))
             return
         if from_bg:
-            self.swipe_bg.dismiss()
+            self.swipe_bg.dismiss(not_now=False)     # applied, not « not now »: it goes, the bans with it (as before)
         why = self.models.request_setting(winner.model, winner.imgsz, winner.shape,
                                           on_done=self._swipe_apply_done)
         if why:
@@ -3316,7 +3392,7 @@ class WallDanceApp:
         if conf is not None:
             self._swipe_set_confidence(float(conf))
         if from_bg:
-            self.swipe_bg.dismiss()
+            self.swipe_bg.dismiss(not_now=False)     # applied, not « not now » (as before)
         else:
             self.swipe.mark_applied(winner)
         self._sync("combo", "imgsz", str(int(winner.imgsz)))
@@ -3393,37 +3469,70 @@ class WallDanceApp:
         self.bus.publish(api.SettingsSwipeProgress("apply_failed", text, 0.0))
 
     def _cb_dismiss_swipe(self) -> None:
-        """Dismiss: the swipe's advice goes -- the operator's verdict (its readiness row too) or the background
-        suggestion -- and a failed Apply or automatic switch is acknowledged (its fail row goes)."""
+        """Dismiss, one press, one meaning.  The operator's own verdict goes (its readiness row too), as before.
+        A background suggestion on the swipe line: « not now » -- it goes and its setting is put aside a while
+        (``BackgroundSwipe.dismiss``); a failed Apply or automatic switch and the bans stay, and Dismiss with them
+        for a second press.  No background suggestion on the line: a failed Apply or automatic switch is
+        acknowledged (its fail row goes) and the bans are lifted -- and a background suggestion behind what the
+        line shows -- the operator's own verdict, a failed Apply's red line -- is « not now » too (its setting put
+        aside, its streak over): after a failed Apply of it, shown again minutes later it would invite a second
+        Apply that fails the same way."""
         self.swipe.dismiss()
+        if self.swipe_bg.dismiss(not_now=self._swipe_shown == "background", behind=True):
+            self.bus.publish(api.SettingsSwipeProgress("dismissed", "dismissed", 0.0))
+            self.bus.publish(api.SettingsSwipeHold(bool(self.swipe_switch.fault) or self.swipe_bg.held()))
+            return
         self.swipe_switch.dismiss()
-        self.swipe_bg.dismiss()
         self.bus.publish(api.SettingsSwipeProgress("dismissed", "dismissed", 0.0))
         self.bus.publish(api.SettingsSwipeHold(False))       # nothing waits for Dismiss any more
 
     # -- P6 the autonomous swipe ------------------------------------------------------------------------------
-    _SWIPE_AUTO_LABELS = {"off": "Auto: off", "suggest": "Auto: suggest", "auto": "Auto: switch"}
+    _SWIPE_AUTO_LABELS = SWIPE_AUTO_LABELS
 
     def _cb_swipe_auto(self, mode, quiet: bool = False) -> None:
-        """The operator's (or the project's) mode.  The looker thread starts with the first mode that is not
-        off and stays (it releases the resident model when the mode goes off).  Locked off in this build
-        (``core.config.SWIPE_AUTO_UNLOCKED`` False): any other mode is refused, whoever asks -- the combo, the
-        remote SetSwipeAuto -- and nothing of P6 starts; off is always accepted."""
-        if parse_swipe_mode(mode) != "off" and not core_config.SWIPE_AUTO_UNLOCKED:
-            self._sync("combo", "swipe_auto", self._SWIPE_AUTO_LABELS[self.swipe_bg.mode])
-            say(f"[SwipeAuto] {parse_swipe_mode(mode)} refused: not released in this build, it stays off")
-            self.bus.publish(api.Toast("Automatic swipe: not released in this build - it stays off",
-                                       5.0, (255, 200, 100)))
+        """The operator's (or the project's) mode.  The looker thread starts with a mode that is not off; off
+        ends it once it has freed its second model (at once out of RUN).  Only the modes this build releases
+        (``core.config.SWIPE_AUTO_RELEASED``) are accepted: any other is refused, whoever asks -- the combo, the
+        remote SetSwipeAuto --, the mode stays what it was and nothing more of P6 starts; off is always accepted."""
+        asked = parse_swipe_mode(mode)
+        if asked not in swipe_auto_released():
+            now = self.swipe_bg.mode
+            self._sync("combo", "swipe_auto", self._SWIPE_AUTO_LABELS[now])
+            say(f"[SwipeAuto] {asked} refused: not released in this build, it stays {now}")
+            self.bus.publish(api.Toast(f"Automatic swipe: {swipe_auto_word(asked)} is not released in this build "
+                                       f"- it stays {swipe_auto_word(now)}", 5.0, (255, 200, 100)))
             return
+        before = self.swipe_bg.mode
         m = self.swipe_bg.set_mode(mode)
         if m != "off":
             self.swipe_bg.start()
         self._sync("combo", "swipe_auto", self._SWIPE_AUTO_LABELS[m])
+        if m == "off":
+            self._swipe_off_acknowledges()
+        elif before == "off" and self.swipe_bg.held():
+            # the bans kept through off: the readiness row says them again, and Dismiss is back beside it
+            self.bus.publish(api.SettingsSwipeHold(True))
+        if m != before:
+            self._swipe_refresh_apply()
         if not quiet:
             say(f"[SwipeAuto] mode {m}")
             if m != "off" and not self.settings.swipe_collect:
                 self.bus.publish(api.Toast("The automatic swipe needs the frame tap (project key swipe_collect)",
                                            5.0, (255, 200, 100)))
+
+    def _swipe_off_acknowledges(self) -> None:
+        """Auto set to off: the one thing a failure of the automatic swipe's own load or run tells him to do, so it
+        acknowledges that fault (``SeamlessSwitch.turned_off``: its cause stays in the log and in /status's
+        ``swipe.switch.last_fault``) -- its red line goes if the line still shows it, the readiness row with it,
+        and Dismiss leaves the screen unless something else waits for it.  The bans stay (``set_mode`` keeps them),
+        unsaid while off, as by the readiness row: they hold no Dismiss then.  A failed Apply or automatic switch is
+        not acknowledged here: it waits for Dismiss."""
+        fault = self.swipe_switch.fault
+        if not self.swipe_switch.turned_off():
+            return
+        if self._swipe_shown == "apply" and self._swipe_line_said == str(fault):
+            self.bus.publish(api.SettingsSwipeProgress("dismissed", "dismissed", 0.0))
+        self.bus.publish(api.SettingsSwipeHold(False))   # the switch holds one fault, and off the bans hold none
 
     def _swipe_switch_held(self, req) -> Optional[str]:
         """Why a seamless switch asked earlier must not go on now (``SeamlessSwitch.why_not``: asked before its
@@ -3432,7 +3541,8 @@ class WallDanceApp:
         return "the automatic swipe is off" if self.swipe_bg.mode == "off" else None
 
     def _swipe_bg_busy(self) -> Optional[str]:
-        """Why the background swipe must not look now (None: it may)."""
+        """Why the background swipe must not look now (None: it may).  Not STANDBY: there the looker loads or frees
+        its second engine and runs no look (``BackgroundSwipe.standby``) -- a reason here would stop the load too."""
         if self.swipe.busy:
             return "the operator's swipe runs"
         m = self.models
@@ -3449,15 +3559,36 @@ class WallDanceApp:
             return "a project switch"
         return None
 
+    # the swipe line's states (gui.py ``show_swipe_progress``) that take it from the background's suggestion -- the
+    # operator's own swipe running, an Apply and its outcome (a failure's red line, the automatic swipe's own fault
+    # among them: something he must still read) -- and Dismiss, which leaves it free
+    _SWIPE_LINE_TAKEN = {"collecting": "operator", "running": "operator", "applying": "apply", "applied": "apply",
+                         "apply_failed": "apply", "dismissed": ""}
+
+    def _swipe_line_drawn(self, event) -> None:
+        """Bus subscriber: what the swipe line shows (``_swipe_shown``), from each state published to it, whoever
+        publishes it -- the operator's swipe, an Apply, the switch's fault, Dismiss.  A verdict sets it where it is
+        published (``_swipe_on_result``, ``_swipe_notify``)."""
+        if isinstance(event, api.SettingsSwipeProgress) and event.state in self._SWIPE_LINE_TAKEN:
+            self._swipe_shown = self._SWIPE_LINE_TAKEN[event.state]
+            self._swipe_line_said = str(event.text)
+
     def _swipe_notify(self, kind: str, payload: Dict) -> None:
         """The seamless switch's and the background swipe's events -> the swipe line beside the button, a toast,
-        an alert.  Never the health line: only a switch that failed is a fault (the readiness row,
+        an alert (a failure only).  Never the health line: only a switch that failed is a fault (the readiness row,
         ``swipe_switch.health()``)."""
         text = str(payload.get("text", ""))
+        if kind == "suggest" and payload.get("again") and self._swipe_shown not in ("background", ""):
+            # named again, said silently: redrawn on its own line or a free one, never over what the operator must
+            # still read -- his swipe running or its verdict, an Apply or its failure.  The suggestion stands
+            # (``swipe_bg.suggestion``): a later look that names it draws it once the line is free
+            return
         if kind == "suggest":
             self._swipe_shown = "background"
             res = dict(payload.get("result") or {})
-            res["switch"] = True
+            # a line that no longer invites (« ... - not confirmed at the last look (HH:MM) »: no winner) is
+            # information, in the normal colour, without Apply; Dismiss stays for « not now »
+            res["switch"] = payload.get("winner") is not None
             res["winner"] = payload.get("winner")
             res["auto"] = {k: payload.get(k) for k in ("kind", "level", "text", "seamless", "why_not_auto",
                                                        "winner")}
@@ -3465,11 +3596,13 @@ class WallDanceApp:
             if sug is not None:
                 res.update(self._swipe_apply_hint(sug["winner_c"]))
             self.bus.publish(api.SettingsSwipeResult(res, ""))
-            self.bus.publish(api.Toast("A better model may be available - see 'Try other settings' "
-                                       "(Apply now)", 6.0, (255, 200, 100)))
+            if not payload.get("again"):                  # said once: a look naming it again redraws the line only
+                self.bus.publish(api.Toast("A better model may be available - see 'Try other settings' "
+                                           "(Apply now)", 6.0, (255, 200, 100)))
         elif kind == "switching":
-            self.bus.publish(api.Alert("swipe_switch", text, {"from": payload.get("from"),
-                                                              "to": payload.get("to")}))
+            # an automatic switch: information, in the green of the operator's own Apply -- only a failure is an
+            # alert (red)
+            self.bus.publish(api.Toast(text, 6.0, (120, 220, 140)))
             self.bus.publish(api.SettingsSwipeProgress("auto_switching", text, 0.5))
         elif kind == "switched":
             if payload.get("auto"):                       # the operator's Apply has its own line (_swipe_switch_done)

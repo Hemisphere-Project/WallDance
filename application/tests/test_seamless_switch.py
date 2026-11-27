@@ -324,7 +324,7 @@ def test_an_engine_that_does_not_load_never_becomes_live(capsys):
     sw.service()
     assert port.calls == [] and sw._request is None
     text = ("the switch to l @ 1920 x 1056 failed before it began (the engine file could not be read): "
-            f"x @ 1280 still runs - rebuild {L1920.engine_file} (extra/build_engines) before trying it again")
+            f"x @ 1280 still runs - keep the current setting; the engine file needs a rebuild: {L1920.engine_file}")
     assert sw.fault == text and sw.health() == text and done == [(False, text)]
     assert ("fault", {"text": text}) in events
     assert "RuntimeError: Serialization assertion failed" in capsys.readouterr().out      # the log keeps it
@@ -339,9 +339,9 @@ def test_only_an_unreadable_engine_file_gets_the_plain_words():
     none = AttributeError("'NoneType' object has no attribute 'create_execution_context'")
     assert load_failure(none) == ENGINE_UNREADABLE == "the engine file could not be read"
     assert load_failure(RuntimeError("IRuntime::deserializeCudaEngine failed")) == ENGINE_UNREADABLE
-    assert load_failure(RuntimeError("CUDA out of memory")) == "RuntimeError: CUDA out of memory"
+    assert load_failure(RuntimeError("CUDA out of memory")) == "an error, written in the log"
     assert load_failure(AttributeError("'X' object has no attribute 'y'")) == \
-        "AttributeError: 'X' object has no attribute 'y'"
+        "an error, written in the log"
 
 
 def test_an_engine_that_would_run_pytorch_never_becomes_live():
@@ -370,8 +370,8 @@ def test_a_switch_that_raises_on_its_first_frame_is_the_fault_and_the_old_model_
     assert p._run_yolo(None) == []                        # that frame: no detection, the old input next
     assert p.model == "x1280" and (p.settings.yolo_shape, mc.current_model_name) == (None, "yolo11x-pose")
     assert p.tracker.tracks == ["t1", "t2"] and done == [False]
-    assert sw.fault.startswith("the switch to l @ 1920 x 1056 failed (RuntimeError: the engine raised on its "
-                               "first frame): x @ 1280 still runs - rebuild")
+    assert sw.fault.startswith("the switch to l @ 1920 x 1056 failed (its first live frames failed): x @ 1280 "
+                               "still runs - keep the current setting")
     assert p._run_yolo(None) == ["results of x1280"]
 
 

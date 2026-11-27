@@ -18,7 +18,7 @@ from core.config import (RECORDING_SLOTS, IDENTITY_SLOTS_ENABLED, IDENTITY_SLOTS
                          IDENTITY_SLOTS_STABILITY, IDENTITY_SLOTS_COAST_S,
                          IDENTITY_SLOTS_STATIC_GUARD, IDENTITY_SLOTS_SMART_HOLD, FOREGROUND_ENABLED,
                          IDENTITY_SLOTS_USE_IR_BELT, OSC_SEND_STATE, DETECTION_DEFAULTS)
-import core.config as core_config       # SWIPE_AUTO_UNLOCKED, read when the panel is built
+from core.swipe_auto import LABELS as SWIPE_AUTO_LABELS, released_modes   # read when the panel is built
 from gui_icons import Icons
 from gui_constants import (
     TEXT_NORMAL, TEXT_MUTED, TEXT_DIM, TEXT_HINT, TEXT_FAINT,
@@ -718,6 +718,16 @@ SWIPE_BTN_TIP_OFF = ("During the warmup, in RUN, with the empty-wall snapshot re
                      "that covers the dancers best.  The show runs on; nothing switches\n"
                      "until you Apply, in STANDBY.  Press again to cancel.")
 SWIPE_BTN_TIP_ON = SWIPE_BTN_TIP_OFF.replace("until you Apply, in STANDBY.", "until you Apply.")
+# The automatic swipe's combo tooltip: one paragraph per mode, only those of the modes the build releases.
+SWIPE_AUTO_TIP_LINES = {
+    "off": "  off      nothing in the background (the project's default)\n",
+    "suggest": ("  suggest  while dancers are on the wall, it tries the other model\n"
+                "           at the same network input and says so here when it does\n"
+                "           better on two looks in a row and is no more than 15 %\n"
+                "           slower (Apply now, or Dismiss: not now, 15 min)\n"),
+    "auto": ("  switch   the same, and when the other model is clearly better it\n"
+             "           switches between two frames (an alert only if it fails)\n"),
+}
 
 
 def build_phase_rig(gui: Any):
@@ -909,27 +919,25 @@ def build_phase_wall(gui: Any):
             dpg.bind_item_theme(swipe_btn, gui._btn_standby_theme)
             with dpg.tooltip(swipe_btn):
                 dpg.add_text(SWIPE_BTN_TIP_OFF, tag="swipe_btn_tip")
-        # P6 the automatic swipe: its mode, right under the swipe button (never in the health line).  Hidden while
-        # it is locked off in this build (core.config.SWIPE_AUTO_UNLOCKED): the panel is P5's; the combo is there
-        # all the same, so the app's syncs of it land on a hidden item
-        with dpg.group(horizontal=True, tag="swipe_auto_row", show=bool(core_config.SWIPE_AUTO_UNLOCKED)):
+        # P6 the automatic swipe: its mode, right under the swipe button (never in the health line).  Only the
+        # modes this build releases (core.config.SWIPE_AUTO_RELEASED), in the combo and in its tooltip; the row is
+        # hidden while off is the only one: the panel is P5's; the combo is there all the same, so the app's syncs
+        # of it land on a hidden item
+        released = released_modes()
+        with dpg.group(horizontal=True, tag="swipe_auto_row", show=len(released) > 1):
             dpg.add_spacer(width=scaled(160))
             swipe_auto = dpg.add_combo(
-                items=["Auto: off", "Auto: suggest", "Auto: switch"],
-                default_value="Auto: off",
+                items=[SWIPE_AUTO_LABELS[m] for m in released],
+                default_value=SWIPE_AUTO_LABELS["off"],
                 tag="swipe_auto_combo",
                 width=scaled(130),
                 callback=gui._on_swipe_auto,
             )
             with dpg.tooltip(swipe_auto):
                 dpg.add_text("The automatic swipe, while the show runs:\n"
-                             "  off      nothing in the background (the project's default)\n"
-                             "  suggest  each time two and a half minutes of dancing are kept, it\n"
-                             "           tries the other model at the same network input on them and\n"
-                             "           says so here when it does better (Apply now, or Dismiss)\n"
-                             "  switch   the same, and when the other model is clearly better it\n"
-                             "           switches between two frames, with an alert\n"
-                             "An empty wall costs nothing.  Saved with the project when not off.")
+                             + "".join(SWIPE_AUTO_TIP_LINES[m] for m in released)
+                             + "An empty wall costs no inference; the other model stays loaded\n"
+                             "while it is not off.  Saved with the project when not off.")
         dpg.add_text("", tag="swipe_status_text", color=TEXT_MUTED, wrap=scaled(_PHASE_WRAP))
         with dpg.group(horizontal=True):
             swipe_apply = dpg.add_button(label="Apply", tag="swipe_apply_btn", show=False,

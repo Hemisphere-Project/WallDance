@@ -511,7 +511,8 @@ class CandidateRunner:
             cancelled: Optional[Callable[[], bool]] = None, pace: Optional[Callable[[], None]] = None,
             on_frame: Optional[Callable[[int, int], None]] = None) -> CandidateRun:
         """Load ``engine_path``, warm it up, run every image, release it.  ``pace()`` is called before each
-        inference (the app waits there for the live loop to finish a frame); ``cancelled()`` stops early."""
+        inference (the app waits there for the live loop to finish a frame), ``pace.release()`` when it has one
+        (else ``pace()``) before the release; ``cancelled()`` stops early."""
         install_capture_guards()
         try:
             from core.model_manager import ENGINE_LOAD_LOCK
@@ -596,7 +597,9 @@ class CandidateRunner:
             return run
         finally:
             if pace is not None and model is not None and run.error != "cancelled":
-                pace()                                # the destructor's stall right after a live frame
+                # the destructor's stall right after the END of a live frame, its OSC out (the pacer's
+                # ``release``): right after its network pass alone it delayed that frame's tracker and OSC
+                getattr(pace, "release", pace)()
             t5 = self.clock()
             runner = model = None                     # frees the engine (refcount)
             run.release_s = self.clock() - t5

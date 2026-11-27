@@ -15,6 +15,11 @@ import pytest
 
 from test_seamless_switch import L1280, X1280
 from test_swipe_auto_live import _bg, _look_frames, _looking_bg
+from test_swipe_auto_live import swipe_auto_unlocked  # noqa: E402,F401 - the fixture
+
+# mode auto set on the BackgroundSwipe itself, past the app's doors: the release list must name it too (the
+# last guard before a switch, since 27/11); the build ships locked
+pytestmark = pytest.mark.usefixtures("swipe_auto_unlocked")
 
 WAIT = "the automatic swipe waits: the empty-wall plate is not valid - Calibrate on the empty wall"
 WITHDRAWN = "suggestion withdrawn: the empty-wall plate is not valid - Calibrate on the empty wall"
@@ -71,6 +76,8 @@ def test_an_unusable_plate_means_no_run_no_engine_no_inference_no_suggestion_no_
 def test_a_suggestion_shown_is_withdrawn_when_the_plate_goes():
     bg, proc, events, loader, live = _looking_bg()
     proc.frames = _look_frames(150)
+    assert bg.tick() == "run"
+    proc.frames = _look_frames(150, t0=150.0)            # (27/11) shown at the second look
     assert bg.tick() == "run" and bg.suggestion is not None
     _plate(live, False)
     assert bg.tick() == "waiting"
@@ -108,7 +115,7 @@ def test_a_plate_refused_after_a_look_never_runs_the_old_pool_again():
     assert bg.tick() == "idle" and loader.infers == 150
     proc.frames = _look_frames(150, t0=301.0)                            # a whole pool kept after it came back
     assert bg.tick() == "run" and loader.infers == 300
-    assert bg.last_advice["advice"] == "suggest" and bg.last_advice["streak"] == 1      # counted from one again
+    assert bg.last_advice["advice"] == "seen" and bg.last_advice["streak"] == 1         # counted from one again
 
 
 def test_a_run_in_progress_stops_when_the_plate_goes_and_its_verdict_is_dropped(watch):
@@ -239,10 +246,12 @@ def test_mode_off_and_an_empty_wall_cost_nothing_on_an_unusable_plate_too():
     bg.set_mode("suggest")
     for _ in range(3):
         assert bg.tick() == "waiting"
+    assert loader.loads == [] and bg.resident is None                    # no engine while the plate does not hold
     _plate(live, True)
     for _ in range(3):
         assert bg.tick() == "idle"                                       # an empty wall: nothing kept, nothing run
-    assert loader.loads == [] and bg.inferences == 0 and bg.resident is None and events == []
+    # ... and no inference: the second engine loads once there (out of RUN here), nothing said
+    assert loader.loads == [L1280.engine_file] and bg.inferences == 0 and events == []
 
 
 # ------------------------------------------------------------------ the tap: a plate refusal starts the pool over

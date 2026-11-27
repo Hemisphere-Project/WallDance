@@ -36,9 +36,10 @@ from __future__ import annotations
 import dataclasses
 import importlib
 import os
+import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 
 from core.swipe import Candidate, SwipeParams
@@ -75,13 +76,16 @@ class LiveSetting:
     model_id: int
     trt: bool = True
     roi: Tuple = ()                 # (enabled, x, y, w, h)
-    plate: Any = ""                 # the empty-wall plate the foreground holds
+    plate: Any = ""                 # the empty-wall plate the foreground holds (``plate_identity``)
     plate_ok: bool = True           # loaded, not invalidated by hand (X5), not refused for its camera (X6),
                                     # not found stale (F2's latch, where the build has it)
     frame: Tuple = ()               # the camera frame (width, height)
     enhance: Tuple = ()             # what the network sees: enhancement on / lite / forced, CLAHE, gamma,
                                     # greyscale, background subtraction and its sensitivity
     exclusion: Tuple = ()           # the operator's excluded cells (grid, cells): boxes the referee drops
+    # the plate object ``plate`` identifies -- the one the reference watch keys its verdict on (``WATCH.current``);
+    # not part of the key, nor compared: ``plate`` stands for it
+    plate_ref: Any = field(default=None, compare=False, repr=False)
 
     @property
     def key(self) -> Tuple:
@@ -133,6 +137,11 @@ def say(text: str) -> None:
 # against decide's real output)
 REFEREE_REFUSAL = "no verdict: every setting puts boxes where the empty-wall picture shows nobody"
 
+# the automatic swipe's own row (``status()["last_look"]["outcome"]``) after a background look the referee refused
+# the plate on: that refusal is not told to the plate watch (``RefereeReport.note(background=True)``), and the
+# looker waits as after any run without a verdict
+REFEREE_WAIT = "the referee does not trust the empty-wall picture: the automatic swipe waits"
+
 
 def referee_refused(result) -> bool:
     """The referee refused the empty-wall plate: no verdict, every setting puts boxes where it shows nobody."""
@@ -164,17 +173,25 @@ class RefereeReport:
     stale, invalidated, refused for its camera -- the referee judged against a plate that does not hold, its
     verdict is worth nothing: above all no accept).  A refusal is told only when its frames share none with the last refusal told (its
     oldest kept frame after that one's newest, or its newest before that one's oldest): the same pool pressed
-    three times is one refusal.  The watch counts; nothing here does."""
+    three times is one refusal.  The automatic swipe's background look (``background``) tells the watch nothing,
+    either way: the alert is for three deliberate presses of the operator's -- on a wall the referee refuses for
+    another reason than a wrong plate the looker alone would raise it in the middle of a show (its own row says it,
+    ``REFEREE_WAIT``), and its accepts, one every look, would start the operator's refusals over so the alert
+    hardly ever built.  The watch counts; nothing here does."""
 
     def __init__(self) -> None:
         self._last: Optional[Tuple[float, float]] = None    # (oldest, newest) frame time of the last refusal told
         self._lock = threading.Lock()
 
-    def note(self, result, frames: Sequence[Any] = (), plate_ok: bool = True) -> Optional[str]:
+    def note(self, result, frames: Sequence[Any] = (), plate_ok: bool = True,
+             background: bool = False) -> Optional[str]:
         """Returns what the watch was told: "refusal", "accept", or None (nothing, or no watch in this build).
         ``plate_ok``: the plate the verdict's frames were judged on was usable (the ``LiveSetting.plate_ok`` the
-        swipe ran on); False tells nothing."""
-        if not plate_ok:
+        swipe ran on); False tells nothing.  ``background``: the verdict is the automatic swipe's own look, not
+        the operator's press: it tells the watch nothing, either way -- a refusal would build the plate alert by
+        itself mid-show, an accept would start the operator's own refusals over at every look -- and nothing of
+        it is remembered as told."""
+        if not plate_ok or background:
             return None
         if referee_refused(result):
             ts = [float(f.t) for f in frames or ()]
@@ -209,9 +226,11 @@ def make_pacer(proc, interval_s: float, stop: Optional[threading.Event] = None,
     since -- about one candidate inference per live frame, in the loop's slack.  No wait for a live pass
     when the loop is not running YOLO (STANDBY, a model load), and at most 0.2 s for one.
 
-    ``start`` (a ``time.perf_counter()`` value): the first call too waits for a live pass after it -- an engine's
-    release right after the NEXT live frame (``make_pacer(proc, 0.0, stop, start=time.perf_counter())()``).
-    Without it the first call lets any earlier live pass count, and returns at once."""
+    ``start`` (a ``time.perf_counter()`` value): the first call too waits for a live pass after it (the release's
+    wait with a processor that has no ``frame_end``).  Without it the first call lets any earlier live pass count,
+    and returns at once.
+
+    ``pace.release()``: before an engine's release, not an inference -- ``after_frame_end``."""
     last = [0.0 if start is None else float(start)]
     stop = stop or threading.Event()
 
@@ -226,7 +245,60 @@ def make_pacer(proc, interval_s: float, stop: Optional[threading.Event] = None,
                 if float(proc.frame_done_t) <= last[0]:
                     ev.wait(0.2)
         last[0] = time.perf_counter()
+    pace.release = lambda: after_frame_end(proc, stop)
     return pace
+
+
+def after_frame_end(proc, stop: Optional[threading.Event] = None) -> None:
+    """Called right before an engine is let go (a TensorRT destructor holds the GIL some 50-70 ms): returns
+    right after the END of a live frame that ends after the call -- its OSC is out and the loop's tick is over
+    (``frame_end``, set by the loop) -- so the stall delays no frame's output, only the next frame's start.
+    Not the end of the network pass (``frame_done``): that frame's tracker and OSC are still to come, and a
+    release there delayed its OSC (the P6 re-read, 27/11: network -> OSC 57-74 ms instead of 8, in 5 releases
+    of 5).  At most 0.2 s; no wait when the loop is not running YOLO (no live pass in the last 0.25 s: STANDBY,
+    a model load, the loop stopped) or once ``stop`` is set.  A processor without ``frame_end``: the next live
+    pass, as before.
+
+    The collector policy (``core.gc_policy``): a tick in which it ran a full collection does not end its frame
+    (``MainLoop._guarded_tick``), and while it collects (120-175 ms on the show laptop) this thread cannot run.
+    So when the 0.2 s run out and the policy collected since the wait began, or is collecting right now, the
+    release would land right after that collection, in the same gap between frames: it waits once more for a
+    frame's end, 0.2 s at most again.  "Right now" counts: the policy's counter (``collected_n``) moves only once
+    its collection is over, and this thread wakes inside the collection's tail, before it moves (measured, 8 of
+    8: the policy's ``collecting`` is still true there).  The policy is read through ``sys.modules``, never imported here (the
+    replay drivers do not load it); without the policy, or without a collection, nothing changes."""
+    ev = getattr(proc, "frame_end", None)
+    if ev is None:
+        make_pacer(proc, 0.0, stop, start=time.perf_counter())()
+        return
+    t0 = time.perf_counter()
+    if (stop is not None and stop.is_set()) or t0 - float(getattr(proc, "frame_done_t", 0.0)) > 0.25:
+        return
+
+    def policy() -> Optional[Tuple[int, bool]]:
+        """(full collections counted, one under way), or None without the policy."""
+        try:
+            pol = getattr(sys.modules.get("core.gc_policy"), "POLICY", None)
+            n = getattr(pol, "collected_n", None)
+            return None if n is None else (int(n), bool(getattr(pol, "collecting", False)))
+        except Exception:  # noqa: BLE001 - a broken policy changes nothing here
+            return None
+
+    def frame_end_after(t: float) -> bool:
+        """At most 0.2 s for the end of a live frame that ends after ``t``; False when the bound ran out."""
+        if float(proc.frame_end_t) > t:
+            return True
+        ev.clear()
+        if float(proc.frame_end_t) > t:
+            return True
+        return ev.wait(0.2)
+
+    before = policy()
+    if frame_end_after(t0) or before is None:
+        return
+    now = policy()
+    if now is not None and (now[0] != before[0] or now[1]) and (stop is None or not stop.is_set()):
+        frame_end_after(time.perf_counter())
 
 
 def default_runner_factory(inp: SwipeInput, proc) -> CandidateRunner:

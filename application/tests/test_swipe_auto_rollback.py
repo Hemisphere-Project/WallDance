@@ -13,8 +13,14 @@ import numpy as np
 from core.swipe import Observation, SwipeFrame
 from test_seamless_switch import L1280, X1280, _live, _Port
 from test_swipe_auto_live import DANCER, ON_HER, _bg, _LookRunner
+import pytest  # noqa: E402
+from test_swipe_auto_live import swipe_auto_unlocked  # noqa: E402,F401 - the fixture
 
-BAN = "the automatic switch to it failed: Dismiss lets it try again"
+# mode auto set on the BackgroundSwipe itself, past the app's doors: the release list must name it too (the
+# last guard before a switch, since 27/11); the build ships locked
+pytestmark = pytest.mark.usefixtures("swipe_auto_unlocked")
+
+BAN = "the automatic swipe will not try l @ 1280 again until you press Dismiss"
 DWELL = "the setting changed a moment ago"
 
 
@@ -72,7 +78,7 @@ def _next_runs(bg, proc, tap, start, n=1, stop=1000, after=None):
 
 def _two_looks_ask_the_switch(bg, proc, tap):
     """Look 1 (frames 0..149) names l @ 1280 once, look 2 (150..299) twice: mode auto asks the switch."""
-    assert _look(bg, proc, tap, 150) == "run" and bg.last_advice["why_not_auto"] == "seen 1 time(s), 2 needed"
+    assert _look(bg, proc, tap, 150) == "run" and bg.last_advice["why_not_auto"] == "seen once, it looks again"
     assert _look(bg, proc, tap, 300) == "run" and bg.last_advice["advice"] == "apply"
     assert bg.switch._want is not None and bg.switch._want["auto"] is True
     before = dict(vars(bg.auto.policy))
@@ -85,9 +91,19 @@ def _first_frame_raises(port):
     port.hooks[0](RuntimeError("the engine raised on its first frame"), None)
 
 
+_STREAK = ("_streak_winner", "_streak", "_definite", "_streak_at")
+
+
+def _but_the_streak(policy_vars) -> dict:
+    """The policy's memory but its streak, which ends when a setting is put aside (27/11: after the ban, two looks
+    in a row again)."""
+    return {k: v for k, v in policy_vars.items() if k not in _STREAK}
+
+
 def test_a_rolled_back_switch_starts_no_look_before_the_cadence():
-    """(a) The policy is as it was before the swap, and the next look comes when it would have come without the
-    switch (a pool of 150 frames kept after look 2), never right after the rollback."""
+    """(a) The policy is as it was before the swap (but the streak: the setting is put aside), and the next look
+    comes when it would have come without the switch (a pool of 150 frames kept after look 2), never right after the
+    rollback."""
     twin, tproc, _, _, _, ttap = _setup(mode="suggest")       # the same looks, no switch
     assert _look(twin, tproc, ttap, 150) == "run" and _look(twin, tproc, ttap, 300) == "run"
     (without, _), = _next_runs(twin, tproc, ttap, 300)
@@ -97,11 +113,13 @@ def test_a_rolled_back_switch_starts_no_look_before_the_cadence():
     assert bg.switch.fault and bg.status()["auto_banned"] == [L1280.engine_file]
     after = dict(vars(bg.auto.policy))
     loads, infers = len(loader.loads), loader.infers
+    bg.dismiss()                                         # the ban stands the looker down: Dismiss lifts it
     (first, _), = _next_runs(bg, proc, tap, 300)
-    assert first == without == 450, f"a look started by the failure itself, at {first} s (without the switch: " \
+    assert first == without == 600, f"a look started by the failure itself, at {first} s (without the switch: " \
                                     f"{without} s)"
     assert len(loader.loads) == loads + 1 and loader.infers == infers + 150     # that look's own load and run only
-    assert after == before, "the rolled-back switch changed the policy"
+    assert _but_the_streak(after) == _but_the_streak(before), "the rolled-back switch changed the policy"
+    assert (after["_streak"], after["_streak_winner"]) == (0, None), "the streak survived the setting put aside"
 
 
 def test_a_rolled_back_switch_never_judges_again_the_frames_a_look_judged():
@@ -111,29 +129,27 @@ def test_a_rolled_back_switch_never_judges_again_the_frames_a_look_judged():
     look2 = {tap.t_of[i] for i in loader.judged[-1]}
     assert max(look2) == 299.0
     _first_frame_raises(port)
+    bg.dismiss()                                         # the ban stands the looker down: Dismiss lifts it
     _next_runs(bg, proc, tap, 300)
     again = sorted(look2 & {tap.t_of[i] for i in loader.judged[-1]})
     assert not again, f"{len(again)} frames judged again ({again[0]:.0f} .. {again[-1]:.0f} s)"
 
 
 def test_the_looks_after_a_failed_automatic_switch_say_the_ban_never_the_dwell():
-    """(c) The streak went on: the next definite verdict is a suggestion that says the ban, at once and after,
-    never « the setting changed a moment ago » (the setting did not change) nor « seen 1 time(s) »."""
+    """(c) The looker stands down for the banned setting: no look runs, the look's row says the ban, at once and
+    after, never « the setting changed a moment ago » (the setting did not change); nothing is suggested."""
     bg, proc, loader, live, port, tap = _setup()
     _two_looks_ask_the_switch(bg, proc, tap)
     _first_frame_raises(port)
-    runs = _next_runs(bg, proc, tap, 300, n=2)
-    whys = [a["why_not_auto"] for _, a in runs]
-    assert whys == [BAN, BAN], whys
-    assert [a["advice"] for _, a in runs] == ["suggest", "suggest"] and bg.switch._want is None
-    assert bg.status()["suggestion"]["text"].endswith(f"clearly better - Apply now ({BAN})")
+    assert _next_runs(bg, proc, tap, 300, n=2) == [] and bg.switch._want is None
+    assert bg.status()["last_look"]["outcome"] == BAN and bg.status()["suggestion"] is None
 
 
 def test_an_operators_failed_apply_leaves_the_policy_as_it_was():
     """(d) Mode auto, look 1 suggests l @ 1280 (seen once); the operator's Apply swaps it in, its first frame
     raises: no ban (it was not ours), and the policy, the pool and the cadence are as before the Apply."""
     bg, proc, loader, live, port, tap = _setup()
-    assert _look(bg, proc, tap, 150) == "run" and bg.suggestion is not None
+    assert _look(bg, proc, tap, 150) == "run" and bg.last_advice["advice"] == "seen"     # (27/11) nothing shown
     before = dict(vars(bg.auto.policy))
     assert bg.request_switch(L1280, "Apply now") is None
     bg.switch.service()
@@ -156,7 +172,8 @@ def test_a_look_during_the_probation_does_not_turn_the_rollback_into_a_change_by
     live["v"] = _live()                                  # the old model took the frame back
     did = _look(bg, proc, tap, 301)
     assert "manual-change" not in [h["kind"] for h in bg.history], "the rollback was taken for a change by hand"
-    assert did == "idle" and dict(vars(bg.auto.policy)) == before
+    assert did == "banned" and _but_the_streak(vars(bg.auto.policy)) == _but_the_streak(before)   # (the ban: no
+    assert bg.auto.policy._streak == 0                                                           # look for l @ 1280)
 
 
 def test_a_switch_that_succeeds_starts_the_dwell_and_the_pool_as_before():
@@ -172,6 +189,6 @@ def test_a_switch_that_succeeds_starts_the_dwell_and_the_pool_as_before():
     assert bg.switch.fault is None and bg.resident.candidate == X1280
     dense = _Tap([300.0 + 0.5 * j for j in range(1, 700)])     # two pools inside the dwell
     runs = _next_runs(bg, proc, dense, 300, n=2, after=300.0)
-    assert [a["why_not_auto"] for _, a in runs] == ["seen 1 time(s), 2 needed", DWELL]
+    assert [a["why_not_auto"] for _, a in runs] == ["seen once, it looks again", DWELL]
     assert runs[-1][0] - 300 < bg.auto.params.dwell_s
     assert "manual-change" not in [h["kind"] for h in bg.history]

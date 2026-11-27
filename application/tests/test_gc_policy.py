@@ -202,6 +202,53 @@ def test_a_full_collection_outside_the_policy_is_logged_between_frames():
     assert len(out) == 1 and "7 objects freed" in out[0]
 
 
+def test_the_collection_count_moves_by_one_per_full_collection_and_never_on_a_refused_or_deferred_request():
+    """``collected_n`` (the main loop compares it around a tick, P6): +1 at each full collection the policy runs;
+    unmoved by a request refused (before install, after uninstall) or deferred (busy, a dancer on the wall), by a
+    tick with nothing due, and by a collection the interpreter started by itself; never reset."""
+    p, fake, _ = _policy()
+    assert p.collected_n == 0
+    p.request("model load")                                     # before install: refused
+    assert p.tick(in_run=False, wall_empty=True) is None and p.collected_n == 0
+    p.start()
+    assert p.collected_n == 1                                   # the start-up collection
+    p.request("model load")
+    assert p.tick(in_run=False, wall_empty=True, busy=True) is None and p.collected_n == 1     # busy: deferred
+    for _ in range(5):
+        assert p.tick(in_run=True, wall_empty=False) is None    # a dancer: deferred
+    assert p.collected_n == 1
+    assert p.tick(in_run=True, wall_empty=True) == "model load" and p.collected_n == 2
+    assert p.tick(in_run=False, wall_empty=True) is None and p.collected_n == 2              # nothing due
+    fake.run(2, collected=7)                                    # not the policy's
+    p.collect("by hand")
+    assert p.collected_n == 3 and fake.collects == 3
+    p.uninstall()
+    p.request("STANDBY")                                        # after uninstall: refused
+    assert p.tick(in_run=False, wall_empty=True) is None and p.collected_n == 3
+
+
+
+def test_collecting_is_true_from_the_start_of_the_policys_full_collection_to_its_end():
+    """``collecting`` (read by an engine's release, P6): true inside a full collection the policy makes -- seen by
+    the gc callbacks at its start and its end --, false before and after, false after one that raised, never true
+    for a collection the interpreter started by itself."""
+    p, fake, _ = _policy()
+    seen = []
+    fake.callbacks.append(lambda phase, info: seen.append((phase, p.collecting)))
+    assert p.collecting is False
+    p.start()                                                   # the start-up collection
+    assert seen == [("start", True), ("stop", True)] and p.collecting is False
+    seen.clear()
+    fake.run(2)                                                 # not the policy's
+    assert seen == [("start", False), ("stop", False)]
+
+    def boom():
+        raise RuntimeError("gc failed")
+    fake.collect = boom
+    with pytest.raises(RuntimeError):
+        p.collect("by hand")
+    assert p.collecting is False
+
 # ------------------------------------------------------------------------------- the app's moments (hooks)
 def _app(state="RUN", calibrating=False, slots=()):
     return SimpleNamespace(last_fps_time=0.0, system_state=SimpleNamespace(name=state),
