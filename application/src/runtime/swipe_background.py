@@ -61,6 +61,7 @@ mode that is not off and ends once the mode is off and its engine freed.  Errors
 from __future__ import annotations
 
 import dataclasses
+import math
 import os
 import threading
 import time
@@ -102,6 +103,12 @@ NOT_CONFIRMED = "the last looks did not confirm it"
 BAN_WAIT = "the automatic swipe will not try {} again until you press Dismiss"
 # what the look says while a setting the operator dismissed is put aside (the policy's snooze)
 SNOOZE_WAIT = "the automatic swipe waits: {} was dismissed - it looks again at {}"
+# the live frames run late (``LiveFrames``): no look starts, one in flight stops -- what the look's row says, with the
+# time one in twenty of them takes or more; it stays until the wait after it is over (``_stand_down_late``)
+LATE_WAIT = "the automatic swipe waits: the live frames run late (one in twenty takes {} ms or more)"
+LATE_WINDOW_S = 3.0       # the recent live frames: those of the last this long ...
+LATE_MIN_FRAMES = 20      # ... at least this many, compared at their 95th percentile (one in twenty)
+LATE_WARMUP_S = 3.0       # a look's first inferences warm up: the live frames beside them are not counted
 
 
 def _setting_name(key: str) -> str:
@@ -157,6 +164,53 @@ def other_model(live: Candidate, models=SWIPE_MODELS) -> Optional[Candidate]:
         return None
     rest = [m for m in models if m != live.model]
     return Candidate(rest[0], live.imgsz, live.shape) if rest else None
+
+
+class LiveFrames:
+    """The live frames' own times as the looker sees them go by: ``FrameProcessor.timing["total"]``, the frame in
+    hand to its OSC out -- the live frame's own time, not the looker's (an inference beside it counts only by what
+    it adds to the live frame).  The processor keeps the last frame's alone (a new dict per frame), so the looker
+    reads it once per live network pass (``frame_done``: the frame before is over by then) while it waits:
+    between two inferences of a look, and for ``LATE_WINDOW_S`` before a look starts.  The looker's thread only."""
+
+    def __init__(self, maxlen: int = 400):
+        self.rows: Deque[Tuple[float, float]] = deque(maxlen=maxlen)   # (time.perf_counter() when seen, ms)
+        self._last: Any = None            # the timing dict counted last (held: its id is never reused meanwhile)
+
+    def see(self, proc) -> None:
+        """The last live frame's time, once."""
+        t = getattr(proc, "timing", None)
+        if not isinstance(t, dict) or t is self._last:
+            return
+        self._last = t
+        ms = t.get("total")
+        if isinstance(ms, (int, float)):
+            self.rows.append((time.perf_counter(), float(ms)))
+
+    def wait(self, proc, until: float, stop: threading.Event) -> None:
+        """Until ``until`` (``time.perf_counter()``), each live frame counted as it ends; at once when ``stop`` is
+        set or the loop runs no network (no live pass in the last 0.25 s: STANDBY, a model load, no frame_done)."""
+        ev = getattr(proc, "frame_done", None)
+        while ev is not None and not stop.is_set():
+            t = float(getattr(proc, "frame_done_t", 0.0) or 0.0)
+            now = time.perf_counter()
+            if now >= until or now - t > 0.25:
+                break
+            ev.clear()
+            if float(getattr(proc, "frame_done_t", 0.0) or 0.0) <= t:
+                ev.wait(min(until - now, 0.2))
+            self.see(proc)
+
+    def late(self, since: float, budget_ms: float) -> Optional[float]:
+        """The 95th percentile (nearest rank: one in twenty takes this or more) of the live frames seen in the last
+        ``LATE_WINDOW_S`` and not before ``since``, when it is over ``budget_ms``; else None -- under it, or fewer
+        than ``LATE_MIN_FRAMES`` of them."""
+        t0 = max(float(since), time.perf_counter() - LATE_WINDOW_S)
+        v = sorted(ms for t, ms in self.rows if t >= t0)
+        if len(v) < LATE_MIN_FRAMES:
+            return None
+        p95 = v[int(math.ceil(0.95 * len(v))) - 1]
+        return p95 if p95 > budget_ms else None
 
 
 class PolicyPort:
@@ -261,8 +315,8 @@ class BackgroundSwipe:
                  empty_s: Optional[float] = None, gpu_used: Callable[[], Optional[int]] = _gpu_used_bytes,
                  snooze_s: Optional[float] = None, max_age_s: Optional[float] = None,
                  standby: Callable[[], bool] = lambda: False):
-        from core.config import (SWIPE_AUTO_LOAD_EMPTY_S, SWIPE_AUTO_LOOK_S, SWIPE_AUTO_PACE_S, SWIPE_AUTO_SNOOZE_S,
-                                 SWIPE_VERDICT_MAX_AGE_S)
+        from core.config import (SWIPE_AUTO_FRAME_BUDGET_MS, SWIPE_AUTO_LOAD_EMPTY_S, SWIPE_AUTO_LOOK_S,
+                                 SWIPE_AUTO_PACE_S, SWIPE_AUTO_SNOOZE_S, SWIPE_VERDICT_MAX_AGE_S)
         self.processor = processor
         self.live = live
         self.engine_path = engine_path
@@ -280,6 +334,7 @@ class BackgroundSwipe:
         self.empty_s = float(SWIPE_AUTO_LOAD_EMPTY_S if empty_s is None else empty_s)
         self.snooze_s = float(SWIPE_AUTO_SNOOZE_S if snooze_s is None else snooze_s)    # Dismiss: not now, this long
         self.max_age_s = float(SWIPE_VERDICT_MAX_AGE_S if max_age_s is None else max_age_s)  # a suggestion's age
+        self.frame_budget_ms = float(SWIPE_AUTO_FRAME_BUDGET_MS)    # the live frames run late over it: no look
         self.in_run = in_run              # the app is in RUN (the show's output is live)
         self.standby = standby            # the app is in STANDBY: no look (out of RUN alone is when loads may go)
         self.wall_empty = wall_empty      # no track on screen, no identity slot held (core.gc_policy.wall_empty)
@@ -323,6 +378,10 @@ class BackgroundSwipe:
         self._next_s: Optional[float] = None            # the next look sooner than look_s (an empty wall counted)
         self._wall_wait: Optional[str] = None           # a look due waits for an empty wall: what its row says
         self._ref_wait: Optional[str] = None            # the look waits on the reference watch: what its row says
+        self.frames_ms = LiveFrames()                   # the live frames' own times, as the looker sees them go by
+        self._late_until: Optional[float] = None        # loop clock until which no look starts: the frames ran late
+        self._late_says: Optional[str] = None           # ... what the look's row says meanwhile
+        self._late_n = 0                                # looks stood down in a row for late frames
         self.history: Deque[Dict[str, Any]] = deque(maxlen=200)   # looks, advices, switches (bounded)
         self.inferences = 0                        # candidate inferences so far
         self.ticks = 0
@@ -614,6 +673,10 @@ class BackgroundSwipe:
         fresh = self.auto.fresh(frames)
         self.last_counts = (len(fresh), sum(1 for f in fresh if f.lost))
         self.state = "watching"
+        if self._late_until is not None and (now >= self._late_until or self._click_look):
+            self._end_late_wait()             # over (the operator's click: at once, and the series starts over)
+        if self._click_look:
+            self._late_n = 0
         why = self.busy() or self.switch.busy()
         if why:
             return "busy"
@@ -657,6 +720,12 @@ class BackgroundSwipe:
                 self.last_look = self._record("look", look="none", t=now, frames=len(fresh), seconds=0.0,
                                               outcome=wall_wait)
             return "waiting"
+        if self._late_until is not None:
+            # the live frames ran late beside a look: no look until the wait is over -- its row says so
+            if self.last_look is None or self.last_look.get("outcome") != self._late_says:
+                self.last_look = self._record("look", look="none", t=now, frames=len(fresh), seconds=0.0,
+                                              outcome=self._late_says)
+            return "waiting"
         sp = self._run_params(proc)
         skipped = self.auto.skipped
         kind = self.auto.due(now, fresh, busy=False, room=self.auto.room(live.candidate, cands, fresh, sp))
@@ -671,8 +740,45 @@ class BackgroundSwipe:
             self.last_look = self._record("look", look="none", t=now, frames=len(fresh), seconds=0.0,
                                           outcome=wall_wait)
             return "waiting"
+        late = self._late_before(proc)
+        if late is not None:
+            # the live frames run late already: a look would only add to them (its frames stay fresh)
+            self.last_look = self._record("look", look="none", t=now, frames=len(fresh), seconds=0.0,
+                                          outcome=self._stand_down_late(late, float(proc.loop_clock())))
+            return "waiting"
         self._run(kind, live, cands[0], fresh, now)
         return kind
+
+    # ------------------------------------------------------------------ the live frames' time
+    def _late_before(self, proc) -> Optional[float]:
+        """Right before a look starts: the live frames of the next ``LATE_WINDOW_S`` (the looker waits for them,
+        counting each as it ends); one in twenty of them takes this or more, over the budget -- or None: under it,
+        too few of them, or the loop runs no network."""
+        t0 = time.perf_counter()
+        self.frames_ms.wait(proc, t0 + LATE_WINDOW_S, self._stop)
+        return self.frames_ms.late(t0, self.frame_budget_ms)
+
+    def _stand_down_late(self, ms: float, now: float) -> str:
+        """The live frames run late (one in twenty takes ``ms`` or more): no look for the wait after a « keep »
+        (the policy's ``keep_wait_s``, doubled at each stand-down in a row up to ``keep_wait_max_s``, as its keeps
+        are), so a look cannot start and stop over and over; said in the look's row until the wait is over.
+        Returns that row's words."""
+        p = self.auto.params
+        self._late_n += 1
+        wait = min(float(p.keep_wait_s) * 2.0 ** (self._late_n - 1), max(float(p.keep_wait_max_s),
+                                                                         float(p.keep_wait_s)))
+        self._late_until = float(now) + wait
+        self._late_says = LATE_WAIT.format(int(round(ms)))
+        say(f"[SwipeAuto] the live frames run late (one in twenty takes {ms:.0f} ms or more, the budget is "
+            f"{self.frame_budget_ms:.0f} ms): no look for {wait:.0f} s")
+        return self._late_says
+
+    def _end_late_wait(self) -> None:
+        """The wait after late frames is over: its row leaves /status."""
+        if self._late_says is not None and self.last_look is not None \
+                and self.last_look.get("outcome") == self._late_says:
+            self.last_look = None
+        self._late_until = self._late_says = None
 
     # ------------------------------------------------------------------ the background run
     def _cancelled(self, live0: LiveSetting, look: bool = False) -> bool:
@@ -826,6 +932,7 @@ class BackgroundSwipe:
         t_wall0 = time.perf_counter()
         run = None
         live_ms: List[float] = []
+        late: List[Optional[float]] = [None]      # one in twenty of the live frames beside it took this or more
         speed: Tuple[Optional[float], Optional[float]] = (None, None)
         outcome = ""
         fault: Optional[str] = None              # the resident could not be loaded / run: said once, after the lock
@@ -844,17 +951,38 @@ class BackgroundSwipe:
                 fh, fw = frames[0].image.shape[:2]
                 exclusion = ExclusionCells.from_processor(proc, runner.inp.roi(fw, fh))
                 pace = make_pacer(proc, self.pace_s, self._stop)
+                t_next: List[float] = [0.0]             # when the pace lets the next inference go
+                t_warm: List[Optional[float]] = [None]  # the live frames count from then (the first ones warm up)
 
                 def paced() -> None:
+                    self.frames_ms.wait(proc, t_next[0], self._stop)   # the live frames ending meanwhile, counted
                     pace()
+                    self.frames_ms.see(proc)
+                    t = time.perf_counter()
+                    if t_warm[0] is None:
+                        t_warm[0] = t + LATE_WARMUP_S
+                    t_next[0] = t + self.pace_s
                     y = (getattr(proc, "timing", None) or {}).get("yolo")      # the live call, last frame
                     if isinstance(y, (int, float)):
                         live_ms.append(float(y))
+
+                def stopped() -> bool:
+                    """Before each inference: the look stops when cancelled, or once the live frames beside it run
+                    late (``late``, kept: the stand-down below)."""
+                    if self._cancelled(live, look=True):
+                        return True
+                    if late[0] is None and t_warm[0] is not None:
+                        late[0] = self.frames_ms.late(t_warm[0], self.frame_budget_ms)
+                    return late[0] is not None
                 res = self.resident                     # (an operator's Apply may take it off meanwhile)
                 with self._resident_lock:
-                    run = runner.infer([f.image for f in frames], other, res.runner,
-                                       cancelled=lambda: self._cancelled(live, look=True), pace=paced)
+                    run = runner.infer([f.image for f in frames], other, res.runner, cancelled=stopped, pace=paced)
                 self.inferences += len(run.ms)
+            if run.error == "cancelled" and late[0] is not None:
+                # the live frames ran late beside it: no verdict on part of the frames, which stay fresh, and no
+                # look for a while -- it would only make them late again
+                outcome = self._stand_down_late(late[0], float(proc.loop_clock()))
+                return
             if run.error:
                 outcome = run.error
                 if run.error != "cancelled":
@@ -866,6 +994,7 @@ class BackgroundSwipe:
             if len(run.boxes) < len(frames):
                 outcome = f"ran {len(run.boxes)} / {len(frames)} frames"     # never a verdict on part of them
                 return
+            self._late_n = 0                         # the live frames kept up beside a whole look
             # the operator's swipe's own scoring: the live row from the boxes the live pass stored with each frame
             result = score_runs([f.obs for f in frames],
                                 [live_run_from_boxes(live.candidate, [f.boxes for f in frames]), run],

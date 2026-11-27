@@ -407,6 +407,12 @@ SWIPE_AUTO_STREAK_GAP_S = 900.0
 # or in RUN once the wall has been empty this long (no track, no identity slot held) -- never on entering RUN,
 # never at a look due later while a dancer is tracked -- and kept while the mode is on.
 SWIPE_AUTO_LOAD_EMPTY_S = 2.0
+# A look's inferences share the GPU with the live frames: no look starts while the live frames run late, and a look
+# in flight stops at its next inference once they run late beside it (after its first seconds: they warm up), its
+# frames kept for a later look.  Late: one in twenty of the last 3 s of live frames (each frame's own time, the
+# frame in hand to its OSC out) over this.  After such a stand-down no look for the wait after a « keep »
+# (core/swipe_auto.py keep_wait_s, doubled at each stand-down in a row as there).
+SWIPE_AUTO_FRAME_BUDGET_MS = 55.0
 # Light changed since the empty-wall snapshot (Thomas 2026-10-07: "luminosity change is a killer"): the
 # raw ROI brightness over the snapshot's (core/foreground.ForegroundDetector.light_ratio), sampled at 1 Hz
 # in standby and RUN alike; when its median over LIGHT_CHANGE_S leaves [1/RATIO, RATIO] the operator is
