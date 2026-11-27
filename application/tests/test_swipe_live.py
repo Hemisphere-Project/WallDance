@@ -558,6 +558,85 @@ def test_candidates_are_dropped_without_a_collection_and_finalized_once(monkeypa
     assert gcmod.collect is not None
 
 
+def _gc_policy_module(installed, request=None, policy=True):
+    """A stand-in for the rehearsal build's ``core.gc_policy`` (not on this branch): ``POLICY.installed``
+    and ``request(reason)``."""
+    import types
+    mod = types.ModuleType("core.gc_policy")
+    asked = []
+    if policy:
+        mod.POLICY = SimpleNamespace(installed=installed)
+    mod.request = request or asked.append
+    return mod, asked
+
+
+def _finalize_with(monkeypatch, gc_policy, empty_cache=True):
+    """(finalize's dict, the collections it ran) with ``gc_policy`` as ``sys.modules["core.gc_policy"]``
+    (None: no such module)."""
+    import sys
+    import core.swipe_runner as sr
+    from core.swipe_runner import CandidateRunner
+    collects = []
+    monkeypatch.setattr(sr, "gc", SimpleNamespace(collect=lambda *a: collects.append(a) or 0))
+    if gc_policy is None:
+        monkeypatch.delitem(sys.modules, "core.gc_policy", raising=False)
+    else:
+        monkeypatch.setitem(sys.modules, "core.gc_policy", gc_policy)
+    runner = CandidateRunner(SwipeInput(half=False), device="cpu", loader=lambda p: _BrightBoxModel())
+    return runner.finalize(lambda: None, empty_cache=empty_cache), collects
+
+
+def test_an_installed_gc_policy_gets_the_end_of_swipe_collection_as_a_request(monkeypatch):
+    """The rehearsal build's gc policy installed (U3, #t-029: no full collection in RUN with a dancer on the
+    wall): the swipe's end asks it for one (served at its next invisible moment) instead of a 90-177 ms
+    collection right after a live frame.  The dict keeps its keys; nothing was collected: ``gc_s`` 0.0."""
+    pytest.importorskip("kornia")
+    mod, asked = _gc_policy_module(installed=True)
+    fin, collects = _finalize_with(monkeypatch, mod)
+    assert asked == ["swipe ended"] and collects == []
+    assert set(fin) == {"gc_s", "empty_cache_s"} and fin["gc_s"] == 0.0
+    fin, collects = _finalize_with(monkeypatch, mod, empty_cache=False)    # a cancelled swipe: the same
+    assert asked == ["swipe ended"] * 2 and collects == []
+
+
+@pytest.mark.parametrize("case", ["not installed", "no such module", "no POLICY", "request raises"])
+def test_without_an_installed_gc_policy_the_swipe_end_collects_as_before(monkeypatch, case):
+    """This branch (no ``core.gc_policy``), the replay drivers and the tests (the policy never installed),
+    a module without its policy object, a request that raises (it never escapes: the collection runs as
+    before): one ``gc.collect`` at the end of the swipe, as measured in tonight's gates."""
+    pytest.importorskip("kornia")
+
+    def boom(reason):
+        raise RuntimeError("the policy cannot take it")
+    mod = {"not installed": lambda: _gc_policy_module(installed=False)[0],
+           "no such module": lambda: None,
+           "no POLICY": lambda: _gc_policy_module(installed=True, policy=False)[0],
+           "request raises": lambda: _gc_policy_module(installed=True, request=boom)[0]}[case]()
+    fin, collects = _finalize_with(monkeypatch, mod)
+    assert len(collects) == 1
+    assert set(fin) == {"gc_s", "empty_cache_s"} and fin["gc_s"] >= 0.0
+
+
+def test_a_swipe_with_the_gc_policy_installed_requests_once_and_never_collects(monkeypatch):
+    """The whole swipe (two candidates, run_swipe's release_s sums finalize's dict): no full collection at
+    all, one request at its end."""
+    pytest.importorskip("kornia")
+    import sys
+    import core.swipe_runner as sr
+    from core.swipe_runner import CandidateRunner
+    collects = []
+    monkeypatch.setattr(sr, "gc", SimpleNamespace(collect=lambda *a: collects.append(a) or 0))
+    mod, asked = _gc_policy_module(installed=True)
+    monkeypatch.setitem(sys.modules, "core.gc_policy", mod)
+    runner = CandidateRunner(SwipeInput(half=False), device="cpu", loader=lambda p: _BrightBoxModel())
+    frames = [_facade_frame()] * 2
+    obs = [Observation(groups=[(460.0, 750.0, 5000.0)])] * 2
+    out = run_swipe(frames, obs, CandidatePlan([X1280, L1920]), X1280, runner, lambda c: c.engine_file,
+                    SwipeParams(min_groups=1))
+    assert collects == [] and asked == ["swipe ended"]
+    assert out.result is not None and out.timing["release_s"] >= 0.0
+
+
 def test_a_cancelled_swipe_makes_no_cuda_call_at_its_end():
     """Dropped because the live model reloads: its first RUN frame captures a graph outside any lock, so the
     end of a cancelled swipe calls no empty_cache (the engines are already freed, under the lock)."""

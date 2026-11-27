@@ -10,9 +10,13 @@ camera pixels -- without touching the live pipeline's state:
 * boxes kept down to ``LOW_CONF`` (0.02) so the scoring chooses its own threshold;
 * one engine at a time: load, warm up, time each inference, then drop it (a TensorRT model is freed by
   refcount the moment its last reference goes: ~1 GB back at once on mgr-ran) right after a live frame, before
-  the next.  One ``gc.collect`` and one ``torch.cuda.empty_cache`` at the very end of the swipe, also right
-  after a live frame (a full collection holds the GIL ~90 ms on mgr-ran and frees no GPU memory; per
-  candidate it stalled a live frame each time).  Never builds an engine.
+  the next.  One ``torch.cuda.empty_cache`` at the very end of the swipe, also right after a live frame, and
+  one ``gc.collect`` there -- or, when the app's gc policy is installed (``core.gc_policy``, the rehearsal
+  build), a request for one, served at the policy's next invisible moment (STANDBY, a frame with an empty
+  wall).  A full collection holds the GIL 90-177 ms (mgr-ran, the show laptop) and frees no GPU memory: per
+  candidate it stalled a live frame each time; at the swipe's end it frees 30-80 small objects (mgr-ran 27/11:
+  closures, the TensorRT backend's namedtuple class; five swipes in a row without it left 560 objects, 43 KB,
+  and not one more MB on the GPU).  Never builds an engine.
 
 Thread safety (measured on mgr-ran 26/11, ``tmp_analysis/swipe-1126/live/exp`` and ``runs``): ultralytics
 8.4.1xx captures a CUDA graph when it loads a TensorRT engine.  While one thread captures, another thread's
@@ -37,6 +41,7 @@ import copy
 import gc
 import inspect
 import math
+import sys
 import threading
 import time
 from dataclasses import dataclass, field, fields, is_dataclass
@@ -404,6 +409,20 @@ def install_capture_guards() -> bool:
 # ----------------------------------------------------------------------------------------------------
 # The runner
 # ----------------------------------------------------------------------------------------------------
+def _installed_gc_policy():
+    """``core.gc_policy`` when the app has installed it (the rehearsal build: no full collection in RUN with a
+    dancer on the wall), else None.  Looked up in ``sys.modules``, never imported: a policy can only be
+    installed in a process that imported it, and the replay drivers keep never importing it.  Never
+    raises."""
+    try:
+        mod = sys.modules.get("core.gc_policy")
+        if mod is not None and getattr(getattr(mod, "POLICY", None), "installed", False):
+            return mod
+    except Exception:  # noqa: BLE001 - a lookup error means today's collection
+        pass
+    return None
+
+
 @dataclass
 class CandidateRun:
     candidate: Candidate
@@ -588,20 +607,34 @@ class CandidateRunner:
 
     def finalize(self, pace: Optional[Callable[[], None]] = None, empty_cache: bool = True) -> Dict[str, float]:
         """End of the swipe: one full collection and one ``empty_cache`` (the swipe's cached blocks), right
-        after a live frame, under the engine-load lock.  ``empty_cache=False`` (a cancelled or dropped swipe:
-        the live model may be reloading, and its first RUN frame captures a graph outside any lock): the
-        collection only, no CUDA call -- the candidates' engines are already freed (refcount, under the lock)
+        after a live frame, under the engine-load lock.  With the app's gc policy installed (``core.gc_policy``,
+        the rehearsal build) no collection here: ``request("swipe ended")``, and the policy collects at its
+        next invisible moment, never in RUN with a dancer on the wall (``gc_s`` 0.0); what waits until then
+        is ~9 KB of small objects a swipe, nothing on the GPU (the engines went by refcount).  Without it (the
+        module absent, the policy not installed: the replay drivers, the tests), or if the request fails:
+        the collection, as before.  ``empty_cache=False`` (a cancelled or dropped swipe: the live model may
+        be reloading, and its first RUN frame captures a graph outside any lock): the collection (or the
+        request) only, no CUDA call -- the candidates' engines are already freed (refcount, under the lock)
         and the cached blocks stay in torch's cache for the live loop."""
         try:
             from core.model_manager import ENGINE_LOAD_LOCK
         except Exception:  # noqa: BLE001
             ENGINE_LOAD_LOCK = threading.RLock()
         t0 = t1 = t2 = self.clock()
+        requested = False
         with ENGINE_LOAD_LOCK:
             if pace is not None and empty_cache:
                 pace()
             t0 = self.clock()
-            gc.collect()
+            policy = _installed_gc_policy()
+            if policy is not None:
+                try:
+                    policy.request("swipe ended")
+                    requested = True
+                except Exception:  # noqa: BLE001 - a policy that cannot take it: today's collection
+                    pass
+            if not requested:
+                gc.collect()
             t1 = t2 = self.clock()
             if empty_cache and self.device.type == "cuda":
                 try:
@@ -609,7 +642,7 @@ class CandidateRunner:
                 except Exception:  # noqa: BLE001
                     pass
                 t2 = self.clock()
-        return {"gc_s": t1 - t0, "empty_cache_s": t2 - t1}
+        return {"gc_s": 0.0 if requested else t1 - t0, "empty_cache_s": t2 - t1}
 
 
 # ----------------------------------------------------------------------------------------------------
