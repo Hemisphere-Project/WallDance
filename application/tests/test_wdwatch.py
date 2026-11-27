@@ -607,7 +607,7 @@ def test_record_only_reader_cannot_send(fake):
 
 
 def test_record_only_the_source_has_no_way_to_send():
-    tree = ast.parse((_EXTRA / "wdwatch.py").read_text())
+    tree = ast.parse((_EXTRA / "wdwatch.py").read_text(encoding="utf-8"))
     consts = {n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
     assert not consts & {"POST", "PUT", "DELETE", "PATCH", "/api/v1/command", "/api/v1/clip"}
     names = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}

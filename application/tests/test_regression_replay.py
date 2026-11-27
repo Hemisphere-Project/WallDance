@@ -47,7 +47,7 @@ GOLDEN_SCENARIOS = ["hangar-floor", "hangar-aerial", "texture-aerial"]
 
 FIXTURES = []
 for _name in GOLDEN_SCENARIOS:
-    _m = json.loads((SCEN_DIR / f"{_name}.json").read_text())
+    _m = json.loads((SCEN_DIR / f"{_name}.json").read_text(encoding="utf-8"))
     FIXTURES.append({"name": _name, "scenario": SCEN_DIR / f"{_name}.json",
                      "project": _m["project"], "slot": _m["slot"],
                      "golden": f"{_name}.json"})
@@ -79,7 +79,7 @@ def _skip_reasons(fix):
     if not golden.exists():
         reasons.append(f"missing golden {golden.name}")
     else:
-        gj = json.loads(golden.read_text())
+        gj = json.loads(golden.read_text(encoding="utf-8"))
         model = gj.get("model", "yolo11x-pose")
         imgsz = gj.get("imgsz", 1280)
         # Track P: the golden is the TRT show path → needs the matching engine.
@@ -96,7 +96,7 @@ def test_replay_matches_golden(fix):
     if reasons:
         pytest.skip("; ".join(reasons))
 
-    golden = json.loads((GOLDEN_DIR / fix["golden"]).read_text())
+    golden = json.loads((GOLDEN_DIR / fix["golden"]).read_text(encoding="utf-8"))
 
     with tempfile.TemporaryDirectory() as td:
         out = Path(td) / "summary.json"

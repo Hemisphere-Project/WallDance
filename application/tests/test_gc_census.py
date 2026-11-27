@@ -143,7 +143,7 @@ def test_untraced_the_policy_reads_and_calls_nothing_of_the_census():
 
 
 def _census_code_lines():
-    src = Path(gc_policy.__file__).read_text().splitlines()
+    src = Path(gc_policy.__file__).read_text(encoding="utf-8").splitlines()
     start = next(i for i, ln in enumerate(src, 1) if ln.startswith("class TracedGcPolicy("))
     end = next(i for i, ln in enumerate(src, 1) if ln.startswith("POLICY = GcPolicy()"))
     return start, end

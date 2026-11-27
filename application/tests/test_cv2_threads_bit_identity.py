@@ -125,7 +125,7 @@ def _assert_identical(frames, **kw):
 # ---------------------------------------------------------------------------
 
 def _real_frames():
-    scen = json.loads(SCENARIO.read_text())
+    scen = json.loads(SCENARIO.read_text(encoding="utf-8"))
     cfg = scen["config"]
     rec_dir = REPO / "projects" / scen["project"] / "recordings"
     name = scen.get("recording_fingerprint", {}).get("file")

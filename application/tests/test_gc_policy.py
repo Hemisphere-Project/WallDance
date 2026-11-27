@@ -341,7 +341,13 @@ def test_the_render_stage_serves_a_request_between_frames(app_policy):
 # -------------------------------------------------------------------------------- the real interpreter
 def test_real_interpreter_third_threshold_and_no_automatic_full_collection():
     """On the real ``gc``: after start the third threshold is THRESHOLD2, and a heap churning well past CPython's
-    own trigger (pending >= total/4 and 11 gen-1 collections) sees gen-1 collections but no full one."""
+    own trigger (pending >= total/4 and 11 gen-1 collections) sees gen-1 collections but no full one.
+
+    The churn is sized from the heap the start-up collection measured (``p.total``), not fixed: the whole suite
+    in one process holds more long-lived objects than this file alone (the laptop's, 27/11: 492,127, where a
+    fixed 100,000 survivors stayed under a quarter of it).  The control at the end puts the stock threshold back
+    and churns the same garbage: CPython's own counter must start a full collection at once -- the churn did
+    pass the trigger, measured by the interpreter itself, not only by the policy's estimate."""
     saved = gc.get_threshold()
     lines = []
     p = GcPolicy(log=lines.append, trace=False)
@@ -350,18 +356,32 @@ def test_real_interpreter_third_threshold_and_no_automatic_full_collection():
     def watch(phase, info):
         if phase == "stop" and info["generation"] == 2:
             full.append(info)
+
+    def churn(n, keep=None):
+        for j in range(n):
+            x = [j]
+            x.append(x)                                         # cyclic garbage
+            if keep is not None and j % 4 == 0:
+                keep.append([j])                                # survivors: they reach gen 2
     try:
         p.start()
         assert gc.get_threshold() == (saved[0], saved[1], THRESHOLD2)
         gc.callbacks.append(watch)
+        goal = p.total // 4 + p.total // 16     # 25 % past the trigger: the estimate runs ~10 % above CPython's
+        cap = 2 * goal + 100_000                # survivors made: past this, the count is broken -- say so, stop
         keep = []
-        for j in range(400_000):
-            x = [j]
-            x.append(x)                                         # cyclic garbage
-            if j % 4 == 0:
-                keep.append([j])                                # survivors: they reach gen 2
+        while not (p.stats[1][0] > 11 and p.pending > goal):
+            assert len(keep) < cap, (f"churn cap hit: {len(keep)} survivors made, {p.stats[1][0]} gen-1 "
+                                     f"collections, ~{p.pending} waiting in gen 2 for a goal of {goal} (heap "
+                                     f"{p.total}; gc enabled {gc.isenabled()}, thresholds {gc.get_threshold()})")
+            churn(20_000, keep)
+        churn(4 * saved[0])                     # gen-0 collections past the trigger: each one a stock full one
         assert p.stats[1][0] > 11 and p.pending > p.total // 4
         assert full == []
+        p.uninstall()                           # the control: the stock threshold, the same garbage
+        churn(4 * saved[0])
+        assert full, (f"no full collection under the stock threshold {gc.get_threshold()}: the churn did not "
+                      f"reach CPython's own trigger (~{p.pending} for a heap of {p.total})")
     finally:
         if watch in gc.callbacks:
             gc.callbacks.remove(watch)
@@ -379,7 +399,7 @@ def test_import_has_no_effect_on_the_interpreter():
 def _local_imports(path: Path):
     """The repo modules a file imports (any depth of the file: lazy imports count), as files."""
     out = []
-    for node in ast.walk(ast.parse(path.read_text())):
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
         names = []
         if isinstance(node, ast.Import):
             names = [a.name for a in node.names]

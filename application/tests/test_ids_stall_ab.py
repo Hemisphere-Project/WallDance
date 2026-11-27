@@ -148,7 +148,7 @@ def test_an_uploaded_copy_finds_the_app_code_from_the_cwd(tmp_path, monkeypatch)
     scratch = tmp_path / "tmp_analysis" / "remote" / "20261008_120000"
     scratch.mkdir(parents=True)
     copy = scratch / "ids_stall_ab.py"
-    copy.write_text(_PATH.read_text())
+    copy.write_text(_PATH.read_text(encoding="utf-8"), encoding="utf-8")
     spec = importlib.util.spec_from_file_location("ids_stall_ab_copy", copy)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)                         # importing needs no app code

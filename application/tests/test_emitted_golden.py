@@ -16,7 +16,7 @@ FIXTURES = eg.fixtures()
 
 
 def _golden(name):
-    return json.loads((eg.DIR / f"{name}.golden.json").read_text())
+    return json.loads((eg.DIR / f"{name}.golden.json").read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize("name", FIXTURES)
