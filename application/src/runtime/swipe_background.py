@@ -656,6 +656,19 @@ class BackgroundSwipe:
             self.suggestion = None
             self.notify("cleared", {"text": "dismissed"})
 
+    def held(self) -> bool:
+        """A setting is banned: Dismiss has something to lift (its button stays on screen)."""
+        return bool(self._banned)
+
+    def health(self) -> Optional[str]:
+        """While a ban holds, why the automatic swipe leaves a setting alone (the readiness row, once the switch has
+        no fault left to say: a later switch succeeded); None without a ban."""
+        if not self._banned:
+            return None
+        key = sorted(self._banned)[0]
+        return self._unloadable.get(key) or (f"the automatic swipe will not try {self._banned[key]} again until "
+                                             f"you press Dismiss")
+
     def status(self) -> Dict[str, Any]:
         """For /status and the readiness row (JSON-ready).  ``counts``: of the fresh frames with dancers, ``lost``
         the ones the live setting left a dancer bare on, ``covered`` the others."""

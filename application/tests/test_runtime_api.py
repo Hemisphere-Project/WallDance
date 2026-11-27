@@ -198,6 +198,7 @@ EVENT_SAMPLES = {
     api.CalibSweepResult: dict(result={"best_clahe": 6.0, "best_conf": 0.5}),
     api.KnownNResult: dict(result={"baseline_score": 0.6, "tuned_score": 0.5}),
     api.SettingsSwipeProgress: dict(state="running", text="trying l @ 1920 x 1056 (3/6)", progress=0.6),
+    api.SettingsSwipeHold: dict(held=True),
     api.SettingsSwipeResult: dict(result={"current": "x @ 1280", "winner": "l @ 1920 x 1056",
                                           "switch": True, "rows": [{"label": "x @ 1280", "coverage": 0.51}]}),
     api.DialBVisible: dict(visible=False),

@@ -3020,15 +3020,14 @@ class WallDanceGUI:
         worker thread: set_value / configure_item only, like the dry-run result."""
         busy = state in ("collecting", "running")
         if state.startswith("auto_"):                  # P6 the switch's own line, never the button's
-            _show_swipe_switch_line(state, text)
+            _show_swipe_switch_line(state, text, self)
             return
         self._swipe_busy = busy
         if dpg.does_item_exist("swipe_btn"):
             dpg.configure_item("swipe_btn", label="Cancel swipe" if busy else "Try other settings")
         if state != "done" and dpg.does_item_exist("swipe_apply_btn"):
             dpg.configure_item("swipe_apply_btn", show=False)      # pressed, or a new swipe: nothing to apply
-        if dpg.does_item_exist("swipe_dismiss_btn"):                 # a failed Apply waits for its acknowledgement
-            dpg.configure_item("swipe_dismiss_btn", show=(state == "apply_failed"))
+        _show_swipe_dismiss(self, state == "apply_failed")          # a failed Apply waits for its acknowledgement
         if dpg.does_item_exist("swipe_status_text"):
             if busy:
                 dpg.set_value("swipe_status_text", f"{text} ({100 * float(progress):.0f} %)")
@@ -3045,9 +3044,9 @@ class WallDanceGUI:
         self._swipe_busy = False
         if dpg.does_item_exist("swipe_btn"):
             dpg.configure_item("swipe_btn", label="Try other settings")
-        for b in ("swipe_apply_btn", "swipe_dismiss_btn"):
-            if dpg.does_item_exist(b):
-                dpg.configure_item(b, show=False)
+        if dpg.does_item_exist("swipe_apply_btn"):
+            dpg.configure_item("swipe_apply_btn", show=False)
+        _show_swipe_dismiss(self, False)
         if not dpg.does_item_exist(tag):
             return
         if error:
@@ -3083,8 +3082,13 @@ class WallDanceGUI:
                                width=scaled(240), height=scaled(58 if standby else 26))
             if r.get("apply_tip") and dpg.does_item_exist("swipe_apply_tip"):
                 dpg.set_value("swipe_apply_tip", r["apply_tip"])
-            if dpg.does_item_exist("swipe_dismiss_btn"):
-                dpg.configure_item("swipe_dismiss_btn", show=True)
+            _show_swipe_dismiss(self, True)
+
+    def show_swipe_hold(self, held):
+        """P6: something waits for Dismiss (the switch's fault, a setting the automatic swipe leaves alone): its
+        button stays on screen whatever else the panel shows, until Dismiss or a project load lifts it."""
+        self._swipe_held = bool(held)
+        _show_swipe_dismiss(self, getattr(self, "_swipe_dismiss_wanted", False))
 
     def show_dryrun_result(self, summary, error=""):
         """Render the phase-⑤ dry-run replay summary into a single text widget.
@@ -3286,13 +3290,21 @@ class WallDanceGUI:
         return dpg.is_dearpygui_running()
 
 
-def _show_swipe_switch_line(state, text):
+def _show_swipe_dismiss(gui, wanted):
+    """The swipe panel's one rule for Dismiss: on screen while the panel's state asks for it (a failed Apply, a
+    verdict or a suggestion to apply) or while something waits for it (``show_swipe_hold``), whatever the state."""
+    gui._swipe_dismiss_wanted = bool(wanted)
+    if dpg.does_item_exist("swipe_dismiss_btn"):
+        dpg.configure_item("swipe_dismiss_btn", show=bool(wanted) or bool(getattr(gui, "_swipe_held", False)))
+
+
+def _show_swipe_switch_line(state, text, gui):
     """P6: the switch's line -- switching / switched / cleared, the seamless Apply's or the automatic swipe's
     (a failure is ``apply_failed``)."""
     if dpg.does_item_exist("swipe_apply_btn") and state in ("auto_switching", "auto_switched", "auto_cleared"):
         dpg.configure_item("swipe_apply_btn", show=False)
-    if dpg.does_item_exist("swipe_dismiss_btn") and state in ("auto_switched", "auto_cleared"):
-        dpg.configure_item("swipe_dismiss_btn", show=False)
+    if state in ("auto_switched", "auto_cleared"):
+        _show_swipe_dismiss(gui, False)
     if dpg.does_item_exist("swipe_status_text"):
         dpg.set_value("swipe_status_text", text)
         dpg.configure_item("swipe_status_text",

@@ -350,6 +350,7 @@ class DpgUiAdapter:
             api.SettingsSwipeProgress: lambda e: self.gui.show_swipe_progress(
                 e.state, e.text, e.progress),
             api.SettingsSwipeResult: lambda e: self.gui.show_swipe_result(e.result, e.error),
+            api.SettingsSwipeHold: lambda e: self.gui.show_swipe_hold(e.held),
             api.Alert: lambda e: (
                 self.gui.show_toast(f"/!\\ {e.message}", duration=8.0, color=(255, 80, 80)),
                 # a condition that lasts until the operator acts stays in the alerts strip

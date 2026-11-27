@@ -1556,6 +1556,7 @@ class WallDanceApp:
             self._cb_swipe_auto(config.get("swipe_auto", SWIPE_AUTO), quiet=True)
         if full_config:
             self.swipe_bg.clear_bans()                       # a project load: failed automatic switches may retry
+            self.bus.publish(api.SettingsSwipeHold(bool(self.swipe_switch.fault)))
         if full_config:
             self._load_project_plate()
         # Conditional Dial-B visibility (OPERATOR_V2 P3 / build #3): calibration
@@ -2376,7 +2377,8 @@ class WallDanceApp:
                                          shape=self.settings.yolo_shape, roi_w=_roi_w, roi_h=_roi_h))
         try:
             row = self.swipe.readiness(plate_ready=self._swipe_plate_ready(),
-                                       live_now=self._swipe_live_setting(), other_fault=self.swipe_switch.health(),
+                                       live_now=self._swipe_live_setting(),
+                                       other_fault=self.swipe_switch.health() or self.swipe_bg.health(),
                                        seamless=self._swipe_seamless_winner() is not None)
             if row is not None:                 # advice, not a condition: usually no row at all
                 results.append(row)
@@ -2891,6 +2893,7 @@ class WallDanceApp:
         self.swipe_switch.dismiss()
         self.swipe_bg.dismiss()
         self.bus.publish(api.SettingsSwipeProgress("dismissed", "dismissed", 0.0))
+        self.bus.publish(api.SettingsSwipeHold(False))       # nothing waits for Dismiss any more
 
     # -- P6 the autonomous swipe ------------------------------------------------------------------------------
     _SWIPE_AUTO_LABELS = {"off": "Auto: off", "suggest": "Auto: suggest", "auto": "Auto: switch"}
@@ -2951,9 +2954,12 @@ class WallDanceApp:
         elif kind == "switched":
             if payload.get("auto"):                       # the operator's Apply has its own line (_swipe_switch_done)
                 self.bus.publish(api.SettingsSwipeProgress("auto_switched", text, 1.0))
+            # the fault went with it; a ban may still hold: Dismiss stays on screen until it goes
+            self.bus.publish(api.SettingsSwipeHold(bool(self.swipe_switch.fault) or self.swipe_bg.held()))
         elif kind == "fault":
             self.bus.publish(api.Alert("swipe_failed", text))
             self.bus.publish(api.SettingsSwipeProgress("apply_failed", text, 0.0))
+            self.bus.publish(api.SettingsSwipeHold(True))         # Dismiss stays until it is pressed
         elif kind == "cleared":
             if self._swipe_shown == "background":         # never over the operator's own verdict
                 self.bus.publish(api.SettingsSwipeProgress("auto_cleared", text, 0.0))

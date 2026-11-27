@@ -855,6 +855,13 @@ class SettingsSwipeProgress(Event):
 
 
 @dataclass(frozen=True)
+class SettingsSwipeHold(Event):
+    """P6: something waits for the swipe's Dismiss -- the switch's fault, a setting the automatic swipe leaves
+    alone -- so its button stays on screen whatever else the panel shows."""
+    held: bool
+
+
+@dataclass(frozen=True)
 class SettingsSwipeResult(Event):
     """P5 swipe verdict (``SwipeOutcome.to_dict``: current, winner, switch, reason, rows best first with
     coverage / loose boxes / ms p50 / load s, skipped candidates, timing) or an error."""
