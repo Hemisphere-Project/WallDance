@@ -848,7 +848,11 @@ class WallDanceApp:
             referee=self.swipe.referee,     # fix6: one plate-watch report for the operator's swipe and ours
             in_run=lambda: self.system_state == SystemState.RUN, wall_empty=self._swipe_wall_empty,
             standby=lambda: self.system_state == SystemState.STANDBY)    # no look there: the pool is frozen
-        self._swipe_shown = ""          # which verdict the swipe line shows: "operator" | "background"
+        # what the swipe line shows: "operator" (his swipe: its run, its verdict), "background" (its suggestion),
+        # "apply" (an Apply under way or its outcome, a fault's red line), "" (nothing: Dismiss, or nothing yet);
+        # kept from what the app publishes to the line (``_swipe_line_drawn``)
+        self._swipe_shown = ""
+        self.bus.subscribe(self._swipe_line_drawn)
         self._swipe_blank_start = False  # Start blank / New project under way: its clean start sets the default mode
         # the automatic swipe turned off: a switch asked before (the operator's seamless Apply, an automatic one)
         # and not yet swapped in does not happen -- the key-off build runs none
@@ -3432,13 +3436,29 @@ class WallDanceApp:
             return "a project switch"
         return None
 
+    # the swipe line's states (gui.py ``show_swipe_progress``) that take it from the background's suggestion -- the
+    # operator's own swipe running, an Apply and its outcome (a failure's red line, the automatic swipe's own fault
+    # among them: something he must still read) -- and Dismiss, which leaves it free
+    _SWIPE_LINE_TAKEN = {"collecting": "operator", "running": "operator", "applying": "apply", "applied": "apply",
+                         "apply_failed": "apply", "dismissed": ""}
+
+    def _swipe_line_drawn(self, event) -> None:
+        """Bus subscriber: what the swipe line shows (``_swipe_shown``), from each state published to it, whoever
+        publishes it -- the operator's swipe, an Apply, the switch's fault, Dismiss.  A verdict sets it where it is
+        published (``_swipe_on_result``, ``_swipe_notify``)."""
+        if isinstance(event, api.SettingsSwipeProgress) and event.state in self._SWIPE_LINE_TAKEN:
+            self._swipe_shown = self._SWIPE_LINE_TAKEN[event.state]
+
     def _swipe_notify(self, kind: str, payload: Dict) -> None:
         """The seamless switch's and the background swipe's events -> the swipe line beside the button, a toast,
         an alert (a failure only).  Never the health line: only a switch that failed is a fault (the readiness row,
         ``swipe_switch.health()``)."""
         text = str(payload.get("text", ""))
-        if kind == "suggest" and payload.get("again") and self._swipe_shown != "background":
-            return                                        # named again: never over the operator's own verdict
+        if kind == "suggest" and payload.get("again") and self._swipe_shown not in ("background", ""):
+            # named again, said silently: redrawn on its own line or a free one, never over what the operator must
+            # still read -- his swipe running or its verdict, an Apply or its failure.  The suggestion stands
+            # (``swipe_bg.suggestion``): a later look that names it draws it once the line is free
+            return
         if kind == "suggest":
             self._swipe_shown = "background"
             res = dict(payload.get("result") or {})

@@ -39,9 +39,9 @@ def test_dismiss_on_the_suggestion_is_not_now_and_the_next_press_acknowledges(re
     app, events = real_app
     _on(app, "auto")
     bg = app.swipe_bg
-    _suggest(app, _live())
     bg._banned[L1920.key] = L1920.engine_file             # held from earlier: a failed automatic switch to it
     app.swipe_switch.fail(FAULT)
+    _suggest(app, _live())                                # then the suggestion took the line
     del events[:]
     app._cb_dismiss_swipe()                               # « not now »
     assert app.swipe_switch.fault == FAULT and bg.held(), \
