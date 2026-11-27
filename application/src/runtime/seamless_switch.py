@@ -129,10 +129,11 @@ class SeamlessSwitch:
         self.history: Deque[Dict[str, Any]] = deque(maxlen=200)
         # (request, old live pair, old candidate, new candidate, take time) -> True when the caller keeps the old
         # live model (the automatic swipe: as its resident); (request) once its first frames ran well; (request)
-        # on any switch that did not happen
+        # on any switch that did not happen; (request) when a model load replaced it during its first frames
         self.on_switched: Optional[Callable[..., bool]] = None
         self.on_confirmed: Optional[Callable[[Dict[str, Any]], None]] = None
         self.on_failed: Optional[Callable[[Dict[str, Any]], None]] = None
+        self.on_superseded: Optional[Callable[[Dict[str, Any]], None]] = None
         self._want: Optional[Dict[str, Any]] = None       # asked, for the worker
         self._request: Optional[Dict[str, Any]] = None    # prepared, for the loop
         self._probation: Optional[Dict[str, Any]] = None  # swapped in, its first frames not yet run
@@ -310,7 +311,10 @@ class SeamlessSwitch:
 
     # ------------------------------------------------------------------ the switch (loop thread)
     def drain(self) -> bool:
-        """On the loop thread, between two frames: the prepared switch, if any.  True when one was handled."""
+        """On the loop thread, between two frames: the prepared switch, if any.  True when one was handled.
+        First, a probation that a model load overtook ends here (``_superseded``)."""
+        if self._probation is not None:
+            self._superseded()
         req = self._request
         if req is None:
             return False
@@ -358,6 +362,39 @@ class SeamlessSwitch:
             return True
         finally:
             self.guard.release()
+
+    def _superseded(self) -> None:
+        """On the loop thread: is the model on probation still the processor's?  A model load (the operator changed
+        the model or the input, a STANDBY Apply, a project load) may have replaced it before its first frames ran:
+        neither ``on_ok`` nor ``on_fail`` comes then, and without this the switch stayed busy for good.  The
+        probation ends as superseded: not a fault, no ban, no rollback (the model loaded is the live one, the
+        operator chose it); the switched-in model joins the models to free (the old live one is there already,
+        or kept by the caller), the processor forgets it -- in STANDBY no frame comes to do it."""
+        req = self._probation
+        prep = req["prepared"]
+        proc = self.processor()
+        if getattr(proc, "model", None) is prep.model:
+            return                             # still live: its first frames decide
+        forget = getattr(proc, "end_probation", None)
+        if forget is not None:
+            forget(prep.model)
+        self.release((prep.model, prep.runner))
+        self._probation = None
+        self.state = "idle"
+        if self.last_switch is not None:
+            self.last_switch["superseded"] = True
+        live = self.live()
+        text = f"the switch to {req['new'].label} was overtaken by a model load during its first frames" + \
+               (f": {live.candidate.label} runs" if live is not None else "")
+        self._record("superseded", text=text)
+        say(f"[Switch] {text}")
+        if self.on_superseded is not None:
+            try:
+                self.on_superseded(req)
+            except Exception as exc:  # noqa: BLE001
+                say(f"[Switch] superseded handler failed: {type(exc).__name__}: {exc}")
+        self.notify("cleared", {"text": text})
+        self._done(req, False, text)
 
     def _swap_ok(self, req: Dict[str, Any]) -> None:
         self._probation = None

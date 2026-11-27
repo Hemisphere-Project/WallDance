@@ -1063,6 +1063,16 @@ class FrameProcessor:
                                 "old_pin": old_pin}
         return old
 
+    def end_probation(self, model) -> bool:
+        """The switch's probation of ``model`` is over without a verdict: a model load replaced it before its first
+        frames ran (``SeamlessSwitch._superseded``).  Forgotten here, its handlers not called -- nothing of it stays
+        held (in STANDBY no frame comes to drop it, ``_run_yolo``).  True when it was still here."""
+        pb = self._swap_probation
+        if pb is None or pb["model"] is not model or self.model is model:
+            return False
+        self._swap_probation = None
+        return True
+
     def revert_swap(self) -> None:
         """Undo the last ``adopt_model`` before its first frame (the caller's bookkeeping failed): the previous
         model, runner, input and pin, without calling its handlers."""
@@ -1149,6 +1159,7 @@ class FrameProcessor:
         pb = self._swap_probation
         if pb is not None and pb["model"] is not self.model:
             pb = self._swap_probation = None               # a reload replaced the switched-in model meanwhile
+                                                           # (the switch ends its probation: SeamlessSwitch.drain)
         if pb is None:
             return runner(yolo_tensor, **kw)
         try:                                       # P6: a model swapped in a moment ago (adopt_model)
