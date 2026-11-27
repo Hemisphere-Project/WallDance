@@ -276,6 +276,145 @@ def test_a_second_message_waits_its_turn_and_each_is_acknowledged_with_its_time(
     assert f"acknowledgement of {b} ignored" in log
 
 
+# -- the three stamps of a message (hub walldance#t-061, follow-up: the flaky test of 26-27/11) ------------------
+# sent_at <= shown_at <= acked_at by construction: one clock (the line's), one rounding (the millisecond), and a
+# stamp that would read earlier than the one before it is set equal to it. The whole-suite failure: a show inside
+# the same millisecond as the send read EARLIER than it (1795760040.0929558 >= 1795760040.093 is False).
+
+def _instants(n=1000):
+    """n wall-clock instants of 27/11, their sub-millisecond parts spread over the whole millisecond (the instant
+    of the 27/11 failure first)."""
+    return [1795760040.0929558] + [1795760040.0 + 61.0 * k + 0.001 * ((7 * k) % 1000)
+                                   + 0.001 * ((0.6180339887 * k) % 1.0) for k in range(1, n)]
+
+
+def _stamps_wrong(acked, shown=None):
+    """What is wrong with one message's record ('' when nothing): the order, the durations, the one rounding, and
+    the shown_at of its SupportMessageShown event against its record's."""
+    wrong = []
+    if not acked.sent_at <= acked.shown_at <= acked.acked_at:
+        wrong.append("order")
+    if acked.seconds < 0 or acked.on_screen_s < 0:
+        wrong.append("negative duration")
+    if (acked.seconds, acked.on_screen_s) != (round(acked.acked_at - acked.sent_at, 1),
+                                              round(acked.acked_at - acked.shown_at, 1)):
+        wrong.append("durations not read from the stamps")
+    if any(t != round(t, 3) for t in (acked.sent_at, acked.shown_at, acked.acked_at)):
+        wrong.append("not one rounding")
+    if shown is not None and shown.shown_at != acked.shown_at:
+        wrong.append("shown event and record differ")
+    return ", ".join(wrong) + (f": {acked.sent_at!r} {acked.shown_at!r} {acked.acked_at!r} "
+                               f"{acked.seconds!r} {acked.on_screen_s!r}" if wrong else "")
+
+
+def _tally(bad, what):
+    kinds = ("order", "negative duration", "durations not read", "not one rounding", "differ", "drain")
+    counts = ", ".join(f"{k}: {sum(k in w for w in bad)}" for k in kinds if any(k in w for w in bad))
+    return f"{len(bad)} of 1000 {what} with wrong stamps ({counts}), first: {bad[0]}"
+
+
+def _stamp_line():
+    bus, clock = api.EventBus(), _Clock()
+    bus.ui_ready = True
+    return SupportLine(bus, enabled=True, clock=clock), clock, _events(bus)
+
+
+def _sent(line, clock, t, text="relance Calibrate"):
+    clock.t = t
+    code, ready = line.prepare({"text": text})
+    assert code == 200
+    line.show(api.SupportMessage(ready["text"], ready["msg_id"], ready["sent_at"]))
+    return ready["msg_id"]
+
+
+@pytest.mark.parametrize("gap", [0.0, 0.0004])
+def test_the_stamps_of_a_message_shown_at_once_are_ordered_whatever_the_millisecond(gap):
+    line, clock, seen = _stamp_line()
+    bad = []
+    for i, t in enumerate(_instants()):
+        seen.clear()
+        clock.t = t
+        code, ready = line.prepare({"text": "relance Calibrate"})
+        clock.t = t + gap                                            # the drain: the same instant, or 0.4 ms on
+        line.show(api.SupportMessage(ready["text"], ready["msg_id"], ready["sent_at"]))
+        clock.t = t + 2 * gap                                        # the click, its own time or none
+        line.ack(api.AckSupportMessage(ready["msg_id"], clicked_at=(t + 2 * gap) if i % 2 else 0.0))
+        shown, acked = seen
+        wrong = _stamps_wrong(acked, shown)
+        if not wrong and line.status()["read"][-1]["acked_at"] != acked.acked_at:
+            wrong = "status and event differ"
+        if wrong:
+            bad.append(wrong)
+    assert not bad, _tally(bad, "messages")
+
+
+@pytest.mark.parametrize("gap", [0.0, 0.0004])
+def test_the_stamps_of_a_queued_message_are_ordered_whatever_the_millisecond(gap):
+    line, clock, seen = _stamp_line()
+    bad = []
+    for i, t in enumerate(_instants()):
+        seen.clear()
+        a = _sent(line, clock, t, "premier")
+        b = _sent(line, clock, t + gap, "deuxième")                   # waits behind a
+        clock.t = t + 2 * gap
+        line.ack(api.AckSupportMessage(a, clicked_at=t + 2 * gap))    # b comes on screen at this drain
+        clock.t = t + 3 * gap
+        line.ack(api.AckSupportMessage(b, clicked_at=(t + 3 * gap) if i % 2 else 0.0))
+        names = [(type(e).__name__, e.msg_id) for e in seen]
+        assert names == [("SupportMessageShown", a), ("SupportMessageQueued", b), ("SupportMessageAcked", a),
+                         ("SupportMessageShown", b), ("SupportMessageAcked", b)]
+        wrong = _stamps_wrong(seen[2], seen[0]) or _stamps_wrong(seen[4], seen[3])
+        if wrong:
+            bad.append(wrong)
+    assert not bad, _tally(bad, "queued pairs")
+
+
+@pytest.mark.parametrize("skew", [0.0004, 2.0])
+@pytest.mark.parametrize("gap", [0.0, 0.0004])
+def test_a_click_time_before_the_message_came_on_screen_is_not_believed(gap, skew, capsys):
+    """The GUI's click time earlier than shown_at (a clock behind the line's, a stepped wall clock): the click
+    cannot have come before the band, so the drain's own time stands (when the runtime took the click, on the
+    line's clock), never earlier than shown_at; the log says so. Compared at the stamps' millisecond: a click that
+    rounds into shown_at's millisecond is not earlier than it, and is kept (acked_at == shown_at)."""
+    line, clock, seen = _stamp_line()
+    bad = []
+    for t in _instants():
+        seen.clear()
+        msg = _sent(line, clock, t)
+        clock.t = t + gap
+        line.ack(api.AckSupportMessage(msg, clicked_at=t - skew))
+        shown, acked = seen
+        wrong = _stamps_wrong(acked, shown)
+        click = round(t - skew, 3)
+        expected = click if click >= acked.shown_at else max(round(t + gap, 3), acked.shown_at)
+        if not wrong and acked.acked_at != expected:
+            wrong = f"not the drain's time: {acked.acked_at!r} {expected!r}"
+        if wrong:
+            bad.append(wrong)
+    assert not bad, _tally(bad, "acknowledgements")
+    assert "before the message came on screen: the drain's time counts" in capsys.readouterr().out
+
+
+def test_a_stepped_back_clock_sets_a_stamp_equal_to_the_one_before_and_a_second_ack_changes_nothing():
+    line, clock, seen = _stamp_line()
+    a = _sent(line, clock, 1000.0004)                                 # sent_at 1000.0
+    b = _sent(line, clock, 1000.0)
+    clock.t = 999.5                                                   # the wall clock stepped back (NTP)
+    line.ack(api.AckSupportMessage(a))
+    clock.t = 999.0
+    line.ack(api.AckSupportMessage(b, clicked_at=999.0))
+    shown_a, queued_b, acked_a, shown_b, acked_b = seen
+    assert (shown_a.sent_at, shown_a.shown_at, acked_a.acked_at, acked_a.seconds, acked_a.on_screen_s) == (
+        1000.0, 1000.0, 1000.0, 0.0, 0.0)
+    assert (shown_b.sent_at, shown_b.shown_at, acked_b.acked_at, acked_b.seconds, acked_b.on_screen_s) == (
+        1000.0, 1000.0, 1000.0, 0.0, 0.0)
+    assert _stamps_wrong(acked_a, shown_a) == _stamps_wrong(acked_b, shown_b) == ""
+    read = line.status()["read"]
+    clock.t = 1010.0
+    line.ack(api.AckSupportMessage(b, clicked_at=1009.0))             # acknowledged twice: the record stays
+    assert len(seen) == 5 and line.status()["read"] == read
+
+
 def test_the_queue_has_a_limit_and_nothing_shows_without_a_window_or_with_the_key_off():
     bus = api.EventBus()
     line = SupportLine(bus, enabled=True, max_waiting=2)

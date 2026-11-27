@@ -135,6 +135,16 @@ def _coerce_on(value: Any) -> bool:
     return isinstance(value, str) and value.strip().lower() in ("true", "1", "yes", "on")
 
 
+def _stamp(t: Any, after: Optional[float] = None) -> float:
+    """One rounding for the three stamps of a message (sent_at, shown_at, acked_at): the millisecond, read on the
+    line's one clock. A stamp that would read earlier than the one before it (``after``, already a stamp: a
+    wall clock stepped back, a click time behind) is set equal to it, so sent_at <= shown_at <= acked_at holds
+    by construction and the durations read from them (``seconds``, ``on_screen_s``) are never negative.
+    (hub walldance#t-061: a show inside the send's millisecond read earlier than it, sent_at rounded, shown_at not.)"""
+    s = round(float(t), 3)
+    return after if after is not None and s < after else s
+
+
 class SupportLine:
     """The runtime side of the support line: the project key, the message on screen, the queue, the history.
 
@@ -186,7 +196,7 @@ class SupportLine:
             self._n += 1
             self._pending += 1
             msg_id = f"{time.strftime('%H%M%S', time.localtime(now))}-{self._n}"
-        return 200, {"text": text, "msg_id": msg_id, "sent_at": round(now, 3), "notes": notes}
+        return 200, {"text": text, "msg_id": msg_id, "sent_at": _stamp(now), "notes": notes}
 
     # -- RuntimeAPI handlers (main loop) -----------------------------------------------------------------
     def show(self, c: api.SupportMessage) -> None:
@@ -206,11 +216,11 @@ class SupportLine:
             if not c.msg_id:
                 self._n += 1
             entry = {"id": c.msg_id or f"{time.strftime('%H%M%S', time.localtime(now))}-{self._n}",
-                     "text": text, "sent_at": float(c.sent_at or now)}
+                     "text": text, "sent_at": _stamp(c.sent_at or now)}
             if self._showing is None:
-                entry["shown_at"] = now
+                entry["shown_at"] = _stamp(now, entry["sent_at"])
                 self._showing = entry
-                event: api.Event = api.SupportMessageShown(entry["id"], text, entry["sent_at"], now,
+                event: api.Event = api.SupportMessageShown(entry["id"], text, entry["sent_at"], entry["shown_at"],
                                                            len(self._waiting))
             else:
                 self._waiting.append(entry)
@@ -231,19 +241,29 @@ class SupportLine:
                 stale = c.msg_id
                 cur = None
             else:
-                acked_at = float(c.clicked_at) if cur["shown_at"] <= (c.clicked_at or 0) <= now + 1.0 else now
-                rec = dict(cur, acked_at=round(acked_at, 3),
+                # The click's own time (the GUI's, rounded like every stamp) when it falls between the message's
+                # coming on screen and a second after this drain; else this drain's time, on the line's clock.
+                # A click time earlier than shown_at is not believed (the band was not up yet: a clock behind
+                # the line's, a stepped wall clock); the drain's time is when the runtime took the click.
+                click = _stamp(c.clicked_at) if c.clicked_at else None
+                believed = click is not None and cur["shown_at"] <= click <= now + 1.0
+                acked_at = click if believed else _stamp(now, cur["shown_at"])
+                early = click is not None and click < cur["shown_at"]
+                rec = dict(cur, acked_at=acked_at,
                            seconds=round(max(0.0, acked_at - cur["sent_at"]), 1),
                            on_screen_s=round(max(0.0, acked_at - cur["shown_at"]), 1))
                 self._read.append(rec)
                 nxt = self._waiting.popleft() if self._waiting else None
                 if nxt is not None:
-                    nxt["shown_at"] = now
+                    nxt["shown_at"] = _stamp(now, nxt["sent_at"])
                 self._showing = nxt
                 left = len(self._waiting)
         if cur is None:
             print(f"[Support] acknowledgement of {stale} ignored: it is not the message on screen")
             return
+        if early:
+            print(f"[Support] message {rec['id']}: click time {click:.3f} is before the message came on screen: "
+                  f"the drain's time counts ({rec['acked_at']:.3f})")
         print(f"[Support] message {rec['id']} acknowledged after {rec['seconds']:.1f} s "
               f"({rec['on_screen_s']:.1f} s on screen)")
         self.bus.publish(api.SupportMessageAcked(rec["id"], rec["text"], rec["sent_at"], rec["shown_at"],
@@ -251,7 +271,7 @@ class SupportLine:
                                                  left + (1 if nxt is not None else 0)))
         if nxt is not None:
             print(f"[Support] message {nxt['id']} on screen: {nxt['text']!r}")
-            self.bus.publish(api.SupportMessageShown(nxt["id"], nxt["text"], nxt["sent_at"], now, left))
+            self.bus.publish(api.SupportMessageShown(nxt["id"], nxt["text"], nxt["sent_at"], nxt["shown_at"], left))
 
     # -- observation -------------------------------------------------------------------------------------
     def _showing_id(self) -> Optional[str]:
