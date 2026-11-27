@@ -91,6 +91,8 @@ class GcPolicy:
         self.total = 0                # gen 2's size after our last full collection (long_lived_total), 0 = unknown
         self.stats = {0: [0, 0.0, 0.0], 1: [0, 0.0, 0.0], 2: [0, 0.0, 0.0]}   # gen -> [n, total ms, max ms]
         self.collections: List[tuple] = []       # (reason, ms, freed) of each full collection we ran
+        self.collected_n = 0                     # full collections we ran this session, never reset: the main
+                                                 # loop compares it around a tick (P6, an engine's release)
         self._requests: List[str] = []
         self._valve = False
         self._ours = False
@@ -153,6 +155,7 @@ class GcPolicy:
             freed = self.gc.collect()
         finally:
             self._ours = False
+            self.collected_n += 1                # counted even if it raised: its pause was spent
         ms = (self.clock() - t0) * 1000.0
         try:
             self.total = len(self.gc.get_objects(2))   # every survivor is in gen 2 now: the valve's measure

@@ -202,6 +202,31 @@ def test_a_full_collection_outside_the_policy_is_logged_between_frames():
     assert len(out) == 1 and "7 objects freed" in out[0]
 
 
+def test_the_collection_count_moves_by_one_per_full_collection_and_never_on_a_refused_or_deferred_request():
+    """``collected_n`` (the main loop compares it around a tick, P6): +1 at each full collection the policy runs;
+    unmoved by a request refused (before install, after uninstall) or deferred (busy, a dancer on the wall), by a
+    tick with nothing due, and by a collection the interpreter started by itself; never reset."""
+    p, fake, _ = _policy()
+    assert p.collected_n == 0
+    p.request("model load")                                     # before install: refused
+    assert p.tick(in_run=False, wall_empty=True) is None and p.collected_n == 0
+    p.start()
+    assert p.collected_n == 1                                   # the start-up collection
+    p.request("model load")
+    assert p.tick(in_run=False, wall_empty=True, busy=True) is None and p.collected_n == 1     # busy: deferred
+    for _ in range(5):
+        assert p.tick(in_run=True, wall_empty=False) is None    # a dancer: deferred
+    assert p.collected_n == 1
+    assert p.tick(in_run=True, wall_empty=True) == "model load" and p.collected_n == 2
+    assert p.tick(in_run=False, wall_empty=True) is None and p.collected_n == 2              # nothing due
+    fake.run(2, collected=7)                                    # not the policy's
+    p.collect("by hand")
+    assert p.collected_n == 3 and fake.collects == 3
+    p.uninstall()
+    p.request("STANDBY")                                        # after uninstall: refused
+    assert p.tick(in_run=False, wall_empty=True) is None and p.collected_n == 3
+
+
 # ------------------------------------------------------------------------------- the app's moments (hooks)
 def _app(state="RUN", calibrating=False, slots=()):
     return SimpleNamespace(last_fps_time=0.0, system_state=SimpleNamespace(name=state),

@@ -282,6 +282,7 @@ class MainLoop:
         stage outside frame processing (pumps, preview, events, record,
         render) is reported and the rest of the tick skipped; only a
         persistent streak ends the session (cleanly)."""
+        collected = _safe(lambda: gc_policy.POLICY.collected_n)     # P6: see the finally
         try:
             self._tick()
         except Exception as exc:  # noqa: BLE001 - the boundary is the point
@@ -291,8 +292,11 @@ class MainLoop:
             self._tick_fail_streak = 0
         finally:
             # P6: the tick's live frame, if one ran, is over (its OSC out, its screen drawn): where an engine
-            # the switch lets go delays no output (``FrameProcessor.frame_ended``)
-            _safe(getattr(getattr(self.app, "processor", None), "frame_ended", None) or (lambda: None))
+            # the switch lets go delays no output (``FrameProcessor.frame_ended``).  Not after a tick in which the
+            # collector policy ran a full collection (core/gc_policy.py, 120-175 ms at this same tail): the two
+            # would stack in one gap between frames; the release goes at the end of the next tick without one
+            if collected is None or _safe(lambda: gc_policy.POLICY.collected_n) == collected:
+                _safe(getattr(getattr(self.app, "processor", None), "frame_ended", None) or (lambda: None))
 
     def _startup(self) -> bool:
         """Bring the session up: camera -> GUI -> project -> recording UI ->
