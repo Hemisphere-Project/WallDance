@@ -21,12 +21,14 @@ pytestmark = pytest.mark.usefixtures("swipe_auto_unlocked")
 
 RAW = "'NoneType' object has no attribute 'create_execution_context'"
 SAID = ("the automatic swipe could not load l @ 1280 (the engine file could not be read): x @ 1280 still runs - "
-        "rebuild yolo11l-pose_1280.engine (extra/build_engines), then Dismiss lets it try again")
-WAITS = ("the automatic swipe waits: it could not load l @ 1280 (the engine file could not be read) - rebuild "
-         "yolo11l-pose_1280.engine (extra/build_engines), then Dismiss lets it try again")
+        "set Auto to off")
+ROW = ("the automatic swipe could not load l @ 1280 (the engine file could not be read) and will not try it again "
+       "until you press Dismiss: x @ 1280 still runs - set Auto to off")
+WAITS = ("the automatic swipe waits: it could not load l @ 1280 (the engine file could not be read) and will not try "
+         "it again until you press Dismiss - set Auto to off")
 OOM = "CUDA out of memory. Tried to allocate 64.00 MiB"
 SAID_OOM = ("the automatic swipe could not load l @ 1280 (no room on the GPU: 312 MB free): x @ 1280 still runs - "
-            "close what else uses the GPU, then Dismiss lets it try again")
+            "set Auto to off")
 AUTO_FAILED = "the last automatic switch failed"
 APPLY_FAILED = "the last Apply failed"
 SAYS = "l @ 1280 covers 100 % of the dancers, x @ 1280 33 %"
@@ -75,7 +77,7 @@ def test_a_resident_that_cannot_be_loaded_is_tried_once_and_said_once(mode, caps
     assert bg.tick() == "banned"                 # loaded before any look now (STANDBY here): it fails there
     assert loader.loads == [L1280.engine_file] and loader.infers == 0 and bg.inferences == 0
     assert _faults(events) == [SAID], "said once, as the switch's fault (the visible path of a failed switch)"
-    assert bg.switch.fault == SAID and bg.switch.health() == SAID
+    assert bg.switch.fault == SAID and bg.switch.health() == ROW
     assert [k for k, _ in events] == ["fault"]                       # no suggestion, no switch
     assert RAW in capsys.readouterr().out                            # the raw error: the log only
     st = bg.status()
@@ -107,8 +109,8 @@ def test_a_load_that_fails_for_another_reason_says_it_and_what_to_do(monkeypatch
     assert bg.tick() == "banned"
     assert _faults(events) == [SAID_OOM]
     assert bg.status()["last_look"]["outcome"] == (
-        "the automatic swipe waits: it could not load l @ 1280 (no room on the GPU: 312 MB free) - close what else "
-        "uses the GPU, then Dismiss lets it try again")
+        "the automatic swipe waits: it could not load l @ 1280 (no room on the GPU: 312 MB free) and will not try it "
+        "again until you press Dismiss - set Auto to off")
     assert set(_ticks(bg, proc, 5)) == {"banned"} and len(loader.loads) == 1
 
 

@@ -18,24 +18,26 @@ from test_swipe_auto_failures import SAID, WAITS, _broken_bg, _faults
 from test_swipe_auto_live import _bg, _live, _look_frames, _LookRunner
 
 PLAN = 842393172          # TensorRT's part of yolo11l-pose_1920x1056.engine (mgr-ran, 25/11): a load takes ~1200 MB
-NO_ROOM_SAID = ("the automatic swipe could not load l @ 1280 (no room on the GPU: 312 MB free, a load of it takes "
-                "about 1200 MB): x @ 1280 still runs - close what else uses the GPU, then Dismiss lets it try again")
-NO_ROOM_WAITS = ("the automatic swipe waits: it could not load l @ 1280 (no room on the GPU: 312 MB free, a load of "
-                 "it takes about 1200 MB) - close what else uses the GPU, then Dismiss lets it try again")
+NO_ROOM_SAID = ("the automatic swipe could not load l @ 1280 (no room on the GPU: 312 MB free): x @ 1280 still runs - "
+                "set Auto to off")
+NO_ROOM_ROW = ("the automatic swipe could not load l @ 1280 (no room on the GPU: 312 MB free) and will not try it "
+               "again until you press Dismiss: x @ 1280 still runs - set Auto to off")
+NO_ROOM_WAITS = ("the automatic swipe waits: it could not load l @ 1280 (no room on the GPU: 312 MB free) and will "
+                 "not try it again until you press Dismiss - set Auto to off")
 UNSURE_SAID = ("the automatic swipe could not load l @ 1280 (TensorRT gave no engine, 5000 MB free on the GPU now: "
-               "too little room at that moment, or a damaged file): x @ 1280 still runs - close what else uses the "
-               "GPU, then Dismiss lets it try again")
+               "too little room at that moment, or a damaged file): x @ 1280 still runs - set Auto to off")
 UNSURE_UNREAD = ("the automatic swipe could not load l @ 1280 (TensorRT gave no engine: too little room on the GPU "
-                 "at that moment, or a damaged file): x @ 1280 still runs - close what else uses the GPU, then "
-                 "Dismiss lets it try again")
+                 "at that moment, or a damaged file): x @ 1280 still runs - set Auto to off")
 RUN_ERROR = "inference failed: RuntimeError: TensorRT enqueue failed (injected)"
 RUN_SAID = ("the automatic swipe could not run l @ 1280 (the engine stopped during a run): x @ 1280 still runs - "
-            "set the automatic swipe to off")
-RUN_WAITS = ("the automatic swipe waits: it could not run l @ 1280 (the engine stopped during a run) - set the "
-             "automatic swipe to off")
+            "set Auto to off")
+RUN_ROW = ("the automatic swipe could not run l @ 1280 (the engine stopped during a run) and will not try it again "
+           "until you press Dismiss: x @ 1280 still runs - set Auto to off")
+RUN_WAITS = ("the automatic swipe waits: it could not run l @ 1280 (the engine stopped during a run) and will not "
+             "try it again until you press Dismiss - set Auto to off")
 RUN_OOM = "inference failed: OutOfMemoryError: CUDA out of memory. Tried to allocate 20.00 MiB"
 RUN_OOM_SAID = ("the automatic swipe could not run l @ 1280 (no room on the GPU: 312 MB free): x @ 1280 still runs - "
-                "close what else uses the GPU, then Dismiss lets it try again")
+                "set Auto to off")
 
 
 @pytest.fixture(autouse=True)
@@ -96,7 +98,7 @@ def _looks(bg, proc, n, every=5.0):
 # ---------------------------------------------------------------------------------------------- finding 1: a load
 @pytest.mark.parametrize("how", ["not an engine", "zeroed", "cut short", "another TensorRT", "missing"])
 def test_an_engine_file_shown_bad_keeps_the_rebuild_sentence_even_on_a_full_gpu(how, tmp_path, _here):
-    """As today (pinned): a file shown bad is the one case told to rebuild -- whatever the GPU's room."""
+    """A file shown bad, whatever the GPU's room: said as the file (the rebuild is for the log and /status)."""
     _here["mb"] = 100.0
     bg, proc, events, loader = _bg_on("auto", _bad_file(tmp_path, how))
     assert bg.tick() == "banned"                 # loaded before any look now (STANDBY here): it fails there
@@ -109,7 +111,7 @@ def test_a_sound_engine_file_on_a_gpu_without_room_is_said_as_no_room(mode, tmp_
     bg, proc, events, loader = _bg_on(mode, _engine(tmp_path / "yolo11l-pose_1280.engine"))
     assert bg.tick() == "banned"
     assert _faults(events) == [NO_ROOM_SAID], "the GPU's room and what to do -- not a rebuild"
-    assert bg.switch.health() == NO_ROOM_SAID and "rebuild" not in NO_ROOM_SAID
+    assert bg.switch.health() == NO_ROOM_ROW and "rebuild" not in NO_ROOM_SAID
     assert bg.status()["last_look"]["outcome"] == NO_ROOM_WAITS and bg.health() == NO_ROOM_WAITS
     out = capsys.readouterr().out
     assert "create_execution_context" in out and "the file looks whole" in out          # the log keeps the rest
@@ -139,17 +141,17 @@ def test_the_operators_apply_reads_the_same_answer(tmp_path, _here):
     none = AttributeError("'NoneType' object has no attribute 'create_execution_context'")
     _here["mb"] = 312.0
     room = load_failure(none, _engine(tmp_path / "sound.engine"))
-    assert room == "no room on the GPU: 312 MB free, a load of it takes about 1200 MB"
-    assert room.todo(L1280, apply=True) == "close what else uses the GPU before trying it again"
+    assert room == "no room on the GPU: 312 MB free"
+    assert room.todo(L1280, apply=True) == "keep the current setting"
     no_context = AttributeError("'NoneType' object has no attribute 'set_input_shape'")    # the engine was read
     assert load_failure(no_context, _engine(tmp_path / "sound.engine")) == room
     bad = load_failure(none, _bad_file(tmp_path, "not an engine"))
     assert bad == ENGINE_UNREADABLE and "not a TensorRT engine" in bad.detail
-    assert bad.todo(L1280, apply=True) == ("rebuild yolo11l-pose_1280.engine (extra/build_engines) before trying it "
-                                           "again")
+    assert bad.todo(L1280, apply=True) == ("keep the current setting; the engine file needs a rebuild: "
+                                           "yolo11l-pose_1280.engine")
     _here["mb"] = 5000.0
     assert load_failure(none, _engine(tmp_path / "sound.engine")).todo(L1280, apply=True) == (
-        "close what else uses the GPU before trying it again")
+        "keep the current setting")
     oom = load_failure(RuntimeError("CUDA out of memory. Tried to allocate 64.00 MiB"), "any.engine")
     assert oom == "no room on the GPU: 5000 MB free" and oom.kind == "room"
     assert load_failure(none) == ENGINE_UNREADABLE                        # the old call (no path): as before
@@ -187,12 +189,12 @@ def test_the_operators_seamless_apply_says_the_gpus_room_not_rebuild(how, tmp_pa
     sw.service()
     assert port.calls == [] and sw._request is None and sw.busy() is None
     if how == "no room":
-        text = ("the switch to l @ 1920 x 1056 failed before it began (no room on the GPU: 312 MB free, a load of it "
-                "takes about 1200 MB): x @ 1280 still runs - close what else uses the GPU before trying it again")
+        text = ("the switch to l @ 1920 x 1056 failed before it began (no room on the GPU: 312 MB free): x @ 1280 "
+                "still runs - keep the current setting")
         assert "rebuild" not in text
     else:
         text = ("the switch to l @ 1920 x 1056 failed before it began (the engine file could not be read): x @ 1280 "
-                f"still runs - rebuild {L1920.engine_file} (extra/build_engines) before trying it again")
+                f"still runs - keep the current setting; the engine file needs a rebuild: {L1920.engine_file}")
     assert sw.fault == text and sw.health() == text and done == [(False, text)]
     assert ("fault", {"text": text}) in events
     out = capsys.readouterr().out
@@ -235,7 +237,7 @@ def test_a_resident_whose_run_fails_is_banned_at_the_first_failure_and_released(
     bg, proc, events, loader, released = _run_fails_bg(mode)
     assert bg.tick() == "run" and loader.runs == 1 and len(loader.loads) == 1
     assert _faults(events) == [RUN_SAID], "said once, as the switch's fault"
-    assert bg.switch.health() == RUN_SAID
+    assert bg.switch.health() == RUN_ROW
     assert "TensorRT enqueue failed (injected)" in capsys.readouterr().out          # the raw error: the log only
     st = bg.status()
     assert st["last_look"]["outcome"] == RUN_WAITS and "injected" not in str(st)

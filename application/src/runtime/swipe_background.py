@@ -102,6 +102,9 @@ NOT_CONFIRMED = "the last looks did not confirm it"
 # it names the setting (``l @ 1280``), never its engine file -- the file is named only where the instruction is about
 # the file (rebuild it)
 BAN_WAIT = "the automatic swipe will not try {} again until you press Dismiss"
+# ... and a setting whose second engine could not be loaded or run (``_ban``): its ban, said by the look's row and
+# the readiness row before the one thing to do -- never by the alert, which says only that (Auto to off)
+BAN_UNTIL = "will not try it again until you press Dismiss"
 # what the look says while a setting the operator dismissed is put aside (the policy's snooze)
 SNOOZE_WAIT = "the automatic swipe waits: {} was dismissed - it looks again at {}"
 # the live frames run late (``LiveFrames``): no look starts, one in flight stops -- what the look's row says, with the
@@ -905,7 +908,7 @@ class BackgroundSwipe:
         load), the raw error goes to the log, the operator reads plain words -- "rebuild" only for an engine file
         shown bad, the free MB when the GPU had no room for it (``load_failure``)."""
         why = load_failure(exc, self.engine_path(other))
-        say(f"[SwipeAuto] {other.engine_file} did not load: {type(exc).__name__}: {exc}{why.detail}")
+        say(f"[SwipeAuto] {other.engine_file} did not load: {why.more(other)}")
         return self._ban(other, live, "load", why, f"{type(exc).__name__}: {str(exc)[:160]}")
 
     def _not_run(self, other: Candidate, live: LiveSetting, error: str) -> Tuple[str, str]:
@@ -957,16 +960,22 @@ class BackgroundSwipe:
 
     def _ban(self, other: Candidate, live: LiveSetting, verb: str, why, error: str) -> Tuple[str, str]:
         """The setting ``other`` is banned (``_unloadable``: no load, no inference, no look for it until Dismiss or
-        a project load): (what the look says while it waits, the fault for the operator).  ``why``: a
-        ``LoadFailure``, which says what to do."""
+        a project load): (what the look and the readiness row say while it waits, the fault for the operator).
+        ``why``: a ``LoadFailure``, the cause in plain words.  Whatever the cause, ONE thing to do, Auto to off
+        (``LoadFailure.todo``): the alert and the red line say only that; the readiness row and the look's row say
+        the ban beside it (``BAN_UNTIL``); the detail -- the error, what the checks found, a file to rebuild -- goes
+        to the log line and /status (``Fault.detail``: the switch's ``fault_detail``)."""
+        from runtime.seamless_switch import Fault
         todo = why.todo(other)
-        wait = f"the automatic swipe waits: it could not {verb} {other.label} ({why}) - {todo}"
+        said = f"could not {verb} {other.label} ({why})"
+        wait = f"the automatic swipe waits: it {said} and {BAN_UNTIL} - {todo}"
         self._banned[other.key] = other.engine_file
         self._unloadable[other.key] = wait
         self._put_aside(other)
         self._record("auto-banned", setting=other.label, engine=other.engine_file, error=error[:160])
-        return wait, (f"the automatic swipe could not {verb} {other.label} ({why}): {live.candidate.label} still "
-                      f"runs - {todo}")
+        runs = f"{live.candidate.label} still runs - {todo}"
+        return wait, Fault(f"the automatic swipe {said}: {runs}", row=f"the automatic swipe {said} and {BAN_UNTIL}: "
+                                                                      f"{runs}", detail=why.more(other))
 
     def _run_params(self, proc) -> SwipeParams:
         """The referee's parameters for a background run (the policy's ``referee_params``: the collector's, at the

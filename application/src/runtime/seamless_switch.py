@@ -82,7 +82,8 @@ def _runner_factory(proc) -> CandidateRunner:
 
 
 def _rebuild(cand: Candidate) -> str:
-    return f"rebuild {cand.engine_file} (extra/build_engines) before trying it again"
+    """What fixes an engine file shown bad: for Thomas (the log line, /status), never the thing to do now."""
+    return f"rebuild {cand.engine_file} (extra/build_engines)"
 
 
 # an engine file TensorRT could not deserialize (truncated, another TensorRT, not an engine): the operator reads
@@ -107,36 +108,64 @@ LIVE_FAILED = "its first live frames failed"          # the swap's first frames 
 SWAP_FAILED = "the swap itself failed"                # the processor refused the swap (the old model kept)
 RUN_FAILED = "the engine stopped during a run"        # the automatic swipe's run on its second engine
 NOT_TENSORRT = "it would run PyTorch, not its TensorRT engine"
-# the one thing to do after an error the checks cannot name: trying again is not shown to help, the live model
-# runs -- the automatic swipe goes off (its ban already holds until Dismiss); the operator's Apply keeps the live
-# model (no Dismiss here: on a suggestion still on screen it means « not now »)
-OTHER_AUTO = "set the automatic swipe to off"
-OTHER_APPLY = "keep it for now"
+# the one thing to do after a failure, whatever its cause: words a technician alone can follow, that cost the show
+# nothing -- never « close what else uses the GPU » (on the show laptop that is TouchDesigner), never a rebuild as
+# the thing to do now.  The cause stays in the sentence's parentheses for Thomas; the detail (the error, the MB a
+# load takes, the file to rebuild) goes to the log line and /status (``LoadFailure.more``, ``Fault.detail``).
+# The automatic swipe's own load or run of its second engine: Auto to off, as the combo says it -- the tracking
+# goes on with the live model (its ban holds until Dismiss: the readiness row says so, never the alert).  The
+# operator's Apply: the live setting stays (no Dismiss here: on a suggestion still on screen it means « not now »);
+# a file shown bad is named after it, as information
+AUTO_TODO = "set Auto to off"
+APPLY_TODO = "keep the current setting"
+REBUILD_NOTE = "the engine file needs a rebuild: {}"
 
 
 class LoadFailure(str):
     """``load_failure``'s answer: the reason in the operator's words -- it IS that string, so a caller that reads
     a string reads it as before -- with ``kind`` (FILE_BAD, ROOM, UNSURE, OTHER), what the checks found
-    (``detail``, for the log) and the one thing to do (``todo``)."""
+    (``detail``), the error itself (``error``: its type and message) and the one thing to do (``todo``).  The
+    detail, the error and a rebuild of a file shown bad are for Thomas: the log line and /status (``more``)."""
     kind: str
     detail: str
+    error: str
 
-    def __new__(cls, why: str, kind: str = OTHER, detail: str = "") -> "LoadFailure":
+    def __new__(cls, why: str, kind: str = OTHER, detail: str = "", error: str = "") -> "LoadFailure":
         self = super().__new__(cls, why)
-        self.kind, self.detail = kind, detail
+        self.kind, self.detail, self.error = kind, detail, error
         return self
 
     def todo(self, cand: Candidate, *, apply: bool = False) -> str:
-        """The one thing to do: for the automatic swipe (its ban holds until Dismiss), or for the operator's Apply.
-        "rebuild" only for a file shown bad; one of the two not told (UNSURE) is the GPU's room, the quick thing
-        to try (a rebuild if it fails again is in the log line: ``detail``)."""
+        """The one thing to do, whatever the cause: for the automatic swipe, Auto to off (``AUTO_TODO``); for the
+        operator's Apply, keep the current setting -- a file shown bad named after it, as information."""
+        if not apply:
+            return AUTO_TODO
         if self.kind == FILE_BAD:
-            return _rebuild(cand) if apply else \
-                f"rebuild {cand.engine_file} (extra/build_engines), then Dismiss lets it try again"
-        if self.kind in (ROOM, UNSURE):
-            return ("close what else uses the GPU before trying it again" if apply else
-                    "close what else uses the GPU, then Dismiss lets it try again")
-        return OTHER_APPLY if apply else OTHER_AUTO
+            return f"{APPLY_TODO}; {REBUILD_NOTE.format(cand.engine_file)}"
+        return APPLY_TODO
+
+    def more(self, cand: Candidate) -> str:
+        """For Thomas, never the screen (the log line, /status's ``fault_detail``): the error, what the checks
+        found (the free MB, what a load takes), and for a file shown bad what fixes it."""
+        text = f"{self.error}{self.detail}".strip()
+        if self.kind == FILE_BAD:
+            text = f"{text}; {_rebuild(cand)}" if text else _rebuild(cand)
+        return text
+
+
+class Fault(str):
+    """A fault's text -- what the alert and the swipe's red line say: what failed and why, what runs, the one thing
+    to do -- with what goes beside it, never in it: ``row``, what the readiness row says when it says more (the
+    automatic swipe's ban, until Dismiss), and ``detail``, for Thomas (the error, what the checks found, the file to
+    rebuild: the log line and /status's ``fault_detail``, never the screen).  It IS that text: a caller that reads a
+    string reads it as before."""
+    row: Optional[str]
+    detail: Optional[str]
+
+    def __new__(cls, text: str, *, row: Optional[str] = None, detail: Optional[str] = None) -> "Fault":
+        self = super().__new__(cls, text)
+        self.row, self.detail = row or None, detail or None
+        return self
 
 
 def gpu_free_mb() -> Optional[float]:
@@ -194,12 +223,11 @@ def engine_file_fault(path: str) -> Tuple[Optional[str], int]:
     return None, plan
 
 
-def no_room(free_mb: Optional[float], need_mb: Optional[float] = None, detail: str = "") -> LoadFailure:
-    """The GPU had no room: with the free MB when they can be read, and what a load takes when it is known."""
+def no_room(free_mb: Optional[float], detail: str = "", error: str = "") -> LoadFailure:
+    """The GPU had no room: the reason the operator reads, with the free MB when they can be read; what a load of
+    it takes is in ``detail`` (the log line, /status)."""
     why = NO_ROOM if free_mb is None else f"{NO_ROOM}: {free_mb:.0f} MB free"
-    if free_mb is not None and need_mb is not None:
-        why += f", a load of it takes about {max(100.0, round(need_mb, -2)):.0f} MB"
-    return LoadFailure(why, ROOM, detail)
+    return LoadFailure(why, ROOM, detail, error)
 
 
 # the engine was read but TensorRT gave no execution context (the memory it works in): ultralytics then fails on
@@ -228,29 +256,32 @@ def load_failure(exc: BaseException, path: Optional[str] = None, *,
     now).  Without ``path`` (the old call) nothing is read: no engine is ``ENGINE_UNREADABLE``, the rest
     ``LOAD_ERROR``."""
     text = str(exc)
+    error = f"{type(exc).__name__}: {text}"         # for the log line and /status (``LoadFailure.more``)
     no_engine = (isinstance(exc, AttributeError) and "create_execution_context" in text) or "serializ" in text.lower()
     if path is None:
-        return LoadFailure(ENGINE_UNREADABLE, FILE_BAD) if no_engine else LoadFailure(LOAD_ERROR)
-    oom = out_of_memory(f"{type(exc).__name__}: {text}") or (
+        return LoadFailure(ENGINE_UNREADABLE, FILE_BAD, error=error) if no_engine else \
+            LoadFailure(LOAD_ERROR, error=error)
+    oom = out_of_memory(error) or (
         isinstance(exc, AttributeError) and "'NoneType'" in text and any(a in text for a in _NO_CONTEXT))
     if not no_engine and not oom:
-        return LoadFailure(LOAD_ERROR)
+        return LoadFailure(LOAD_ERROR, error=error)
     free = gpu_free_mb() if free_mb is None else free_mb
     seen = "free GPU memory not known" if free is None else f"{free:.0f} MB free on the GPU"
     fault, plan = engine_file_fault(path)
     need = None if fault is not None else plan * LOAD_NEEDS / 2 ** 20
     if oom:
-        return no_room(free, need, f" ({seen})")
+        took = "" if need is None else f", a load of it takes about {max(100.0, round(need, -2)):.0f} MB"
+        return no_room(free, f" ({seen}{took})", error)
     if fault is not None:
-        return LoadFailure(ENGINE_UNREADABLE, FILE_BAD, f" (the file: {fault})")
+        return LoadFailure(ENGINE_UNREADABLE, FILE_BAD, f" (the file: {fault})", error)
     detail = f" (the file looks whole: {plan / 2 ** 20:.0f} MB of engine, a load takes about {need:.0f} MB; {seen})"
     if free is not None and free < need:
-        return no_room(free, need, detail)
-    # one of the two, not told: the operator reads the GPU's room (the quick thing to try), the log the rest
+        return no_room(free, detail, error)
+    # one of the two, not told: the operator reads both in the reason, the log the rest
     detail = detail[:-1] + f"; if it fails again with room free, rebuild {os.path.basename(path)})"
     return LoadFailure(f"{NO_ENGINE}: too little room on the GPU at that moment, or a damaged file" if free is None
                        else f"{NO_ENGINE}, {free:.0f} MB free on the GPU now: too little room at that moment, or a "
-                            f"damaged file", UNSURE, detail)
+                            f"damaged file", UNSURE, detail, error)
 
 
 def run_failure(error: str, *, free_mb: Optional[float] = None, what: str = RUN_FAILED) -> LoadFailure:
@@ -258,8 +289,8 @@ def run_failure(error: str, *, free_mb: Optional[float] = None, what: str = RUN_
     "<type>: <message>"), in the operator's words: out of memory is NO_ROOM, as for a load; anything else, ``what``
     failed, in plain words -- the error's type and message are for the caller's log line."""
     if out_of_memory(error):
-        return no_room(gpu_free_mb() if free_mb is None else free_mb)
-    return LoadFailure(what)
+        return no_room(gpu_free_mb() if free_mb is None else free_mb, error=error)
+    return LoadFailure(what, error=error)
 
 
 def frame_failure(exc: BaseException, what: str, *, free_mb: Optional[float] = None) -> LoadFailure:
@@ -488,7 +519,7 @@ class SeamlessSwitch:
                 say(f"[Switch] {winner.label} loaded beside the live model ({load_s:.2f} s)")
             except Exception as exc:  # noqa: BLE001 - the engine never becomes live
                 why = load_failure(exc, self.engine_path(winner))   # the raw error for the log, plain words
-                say(f"[Switch] {winner.engine_file} did not load: {type(exc).__name__}: {exc}{why.detail}")
+                say(f"[Switch] {winner.engine_file} did not load: {why.more(winner)}")
                 self._failed_before(want, live, why)
                 return
         if self._stop.is_set():                         # the app quits: no warm-up, no switch; ``stop`` frees it
@@ -720,14 +751,15 @@ class SeamlessSwitch:
         what = "the automatic switch" if req.get("auto") else "the switch"
         # an automatic switch that failed is not tried again for that setting until Dismiss (the automatic swipe
         # keeps the ban: ``on_failed``; it names the setting, never its file); suggestions go on.  The operator's
-        # Apply: the one thing to do for that failure -- "rebuild" only for a file shown bad (a plain reason is
-        # one the checks could not name)
+        # Apply: one thing to do whatever the cause, keep the current setting (``LoadFailure.todo``); the cause in
+        # the parentheses, the detail for the log line and /status (``fault_detail``)
+        failure = why if isinstance(why, LoadFailure) else LoadFailure(why)
         todo = (f"the automatic swipe will not try {new.label} again until you press Dismiss" if req.get("auto")
-                else (why if isinstance(why, LoadFailure) else LoadFailure(why)).todo(new, apply=True))
+                else failure.todo(new, apply=True))
         self._end(req)
         text = f"{what} to {new.label} failed{' before it began' if before else ''} ({why}): {old.label} still " \
                f"runs - {todo}"
-        self.fail(text)
+        self.fail(Fault(text, detail=failure.more(new)))
         if self.on_failed is not None:
             try:
                 self.on_failed(req)
@@ -736,12 +768,14 @@ class SeamlessSwitch:
         self._done(req, False, text)
 
     def fail(self, text: str) -> None:
-        """THE swipe fault (plain ASCII: what failed, what runs, the one thing to do)."""
+        """THE swipe fault (plain ASCII: what failed, what runs, the one thing to do).  A ``Fault`` also carries what
+        the readiness row says beside it (``health``) and the detail for /status (``fault_detail``) and the log."""
         self.fault = text
         self.state = "idle"
-        self._record("fault", text=text)
-        say(f"[Switch] {text}")
-        self.notify("fault", {"text": text})
+        self._record("fault", text=str(text))
+        detail = getattr(text, "detail", None)
+        say(f"[Switch] {text}" + (f" [detail: {detail}]" if detail else ""))
+        self.notify("fault", {"text": str(text)})
 
     def dismiss(self) -> None:
         """The operator's acknowledgement: the fault goes."""
@@ -750,9 +784,13 @@ class SeamlessSwitch:
             self.notify("cleared", {"text": "dismissed"})
 
     def health(self) -> Optional[str]:
-        """The fault for the health line (a switch that failed), or None.  No GUI import needed."""
-        return self.fault
+        """The fault for the readiness row (a switch that failed), or None: its own text, or what the row says
+        beside it when it says more (``Fault.row``: the automatic swipe's ban).  No GUI import needed."""
+        return getattr(self.fault, "row", None) or self.fault
 
     def status(self) -> Dict[str, Any]:
-        return {"state": self.state, "fault": self.fault, "last_switch": self.last_switch,
+        """For /status.  ``fault``: the text on screen; ``fault_detail``: what is never on screen -- the error, what
+        the checks found, a file to rebuild (``Fault.detail``) -- or None."""
+        return {"state": self.state, "fault": None if self.fault is None else str(self.fault),
+                "fault_detail": getattr(self.fault, "detail", None), "last_switch": self.last_switch,
                 "waiting_to_free": len(self._drop)}

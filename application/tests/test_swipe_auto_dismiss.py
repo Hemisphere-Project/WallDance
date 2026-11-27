@@ -13,7 +13,7 @@ import pytest
 
 from test_seamless_switch import L1280
 from test_seamless_switch_superseded import M1280
-from test_swipe_auto_failures import SAID, WAITS, _broken_bg
+from test_swipe_auto_failures import ROW, SAID, WAITS, _broken_bg
 from test_swipe_auto_rollback import _first_frame_raises, _setup, _two_looks_ask_the_switch
 from test_swipe_auto_live import swipe_auto_unlocked  # noqa: E402,F401 - the fixture
 
@@ -111,7 +111,7 @@ def test_a_ban_is_held_until_dismiss_and_said_by_the_readiness_row():
     health = getattr(bg, "health", lambda: None)
     assert getattr(bg, "held", lambda: False)() and health() == WAITS
     row = check_swipe(fault=bg.switch.health() or health(), fault_recovered=True)
-    assert row.status == "warn" and row.detail == SAID
+    assert row.status == "warn" and row.detail == ROW
     bg.switch.dismiss()
     bg.dismiss()
     assert not bg.held() and health() is None

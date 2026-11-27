@@ -74,7 +74,7 @@ def test_an_apply_whose_warm_up_runs_out_of_gpu_memory_says_no_room_never_rebuil
     done = _apply(sw)
     assert "rebuild" not in sw.fault, f"an out-of-memory warm-up sends the technician to rebuild: {sw.fault!r}"
     text = ("the switch to l @ 1920 x 1056 failed before it began (no room on the GPU: 312 MB free): x @ 1280 still "
-            "runs - close what else uses the GPU before trying it again")
+            "runs - keep the current setting")
     assert sw.fault == text and sw.health() == text and done == [(False, text)] and _faults(events) == [text]
     assert port.calls == [] and sw.busy() is None                       # the live model never stopped
     assert f"RuntimeError: {OOM}" in capsys.readouterr().out              # the raw error: the log
@@ -87,7 +87,7 @@ def test_an_apply_whose_warm_up_raises_another_error_never_says_rebuild(capsys):
     done = _apply(sw)
     assert "rebuild" not in sw.fault, f"an unknown warm-up error sends the technician to rebuild: {sw.fault!r}"
     text = ("the switch to l @ 1920 x 1056 failed before it began (its first frame failed): x @ 1280 still runs - "
-            "keep it for now")
+            "keep the current setting")
     assert sw.fault == text and done == [(False, text)] and port.calls == []
     assert "ValueError: shape mismatch (injected)" in capsys.readouterr().out
 
@@ -108,8 +108,8 @@ def test_an_apply_whose_load_fails_on_a_file_shown_bad_still_says_rebuild(_free,
     sw.engine_path = lambda c: str(bad)
     _apply(sw)
     assert sw.fault == ("the switch to l @ 1920 x 1056 failed before it began (the engine file could not be read): "
-                        f"x @ 1280 still runs - rebuild {L1920.engine_file} (extra/build_engines) before trying it "
-                        "again")
+                        f"x @ 1280 still runs - keep the current setting; the engine file needs a rebuild: "
+                        f"{L1920.engine_file}")
 
 
 # ------------------------------------------------------------- 2. no class name reaches the operator (b2 finding 6)
@@ -130,7 +130,8 @@ def _switch_path(how):
     if how in ("its first live frames", "an automatic switch's first live frames"):
         assert sw.drain()
         port.hooks[0](RuntimeError("the engine raised on its first frame"), None)
-    told = [sw.fault, sw.health(), str(sw.status())] + [p.get("text") for _, p in events] + [t for _, t in done]
+    told = [sw.fault, sw.health(), str({k: v for k, v in sw.status().items() if k != "fault_detail"})] + \
+        [p.get("text") for _, p in events] + [t for _, t in done]
     return sw, told
 
 
@@ -180,7 +181,7 @@ def test_an_unknown_load_error_of_the_automatic_swipe_says_plain_words_and_one_t
     bg, proc, events, _ = _broken_bg("suggest", RuntimeError(ILLEGAL))
     assert bg.tick() == "banned"
     assert _faults(events) == ["the automatic swipe could not load l @ 1280 (an error, written in the log): x @ 1280 "
-                               "still runs - set the automatic swipe to off"]
+                               "still runs - set Auto to off"]
 
 
 # ---------------------------------------------------------------------- 3. the ban names the setting, not the file
@@ -202,4 +203,4 @@ def test_each_failure_says_one_thing_to_do_and_rebuild_only_for_a_file_shown_bad
     from runtime.seamless_switch import LoadFailure
     todo = LoadFailure("why", kind).todo(L1280, apply=apply)
     assert ", or " not in todo and "if it fails again" not in todo, f"two things to do: {todo!r}"
-    assert ("rebuild" in todo) == (kind == "file"), f"{kind}: {todo!r}"
+    assert ("rebuild" in todo) == (kind == "file" and apply), f"{kind}: {todo!r}"
