@@ -161,6 +161,17 @@ def main(argv=None):
     return play(args)
 
 
+def press_dismiss(sw, bg) -> bool:
+    """The app's Dismiss (``App._cb_dismiss_swipe``; the take has no operator's verdict on the swipe line).  A
+    background suggestion on screen: « not now » -- it goes and its setting is put aside a while; the switch's
+    fault and the bans stay.  None: the swipe's bans are lifted and the switch's fault is acknowledged.  True for
+    « not now »."""
+    if bg is not None and bg.dismiss(not_now=bg.suggestion is not None):
+        return True
+    sw.dismiss()
+    return False
+
+
 def play(args):
     import swipe_replay as S                 # re-execs once (CUDA libs) before torch loads
     import cv2
@@ -232,6 +243,7 @@ def play(args):
                              switch=sw, notify=notify, mode=args.auto,
                              look_s=args.look_s if args.look_s else (5.0 if args.realtime else 2.5),
                              in_run=lambda: show["run"],  # the wall test of core.gc_policy (never imported here)
+                             standby=lambda: not show["run"],     # no look in STANDBY, as the app's
                              wall_empty=lambda: not show["tracked"] and all(
                                  s[1] == "lost" for s in (proc.slot_states() or [])))
         bg.start()
@@ -287,9 +299,7 @@ def play(args):
                 + f"; fault before: {fault_before!r}")
         if args.dismiss_at_s is not None and not dismissed and i >= int(round(args.dismiss_at_s * fps)):
             dismissed.append((health(), i))
-            sw.dismiss()                                # the app's Dismiss: the switch's fault and the swipe's bans
-            if bg is not None:
-                bg.dismiss()
+            press_dismiss(sw, bg)                       # the app's Dismiss: « not now », else the fault and the bans
             say(f"[p6] {clock['t']:7.1f} s  Dismiss: fault {dismissed[0][0]!r} -> {health()!r}")
         if target is not None and requested_at is None and i >= int(round(args.swap_at_s * fps)):
             why = (bg.request_switch if bg is not None else sw.request)(

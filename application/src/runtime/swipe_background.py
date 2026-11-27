@@ -914,7 +914,11 @@ class BackgroundSwipe:
                 self._clear_suggestion(f"the last look keeps {live.candidate.label}")
             return
         if adv.kind == "suggest":
-            self.suggestion = {**a, "winner_c": adv.winner, "live_key": live.key, "live": live, "wall": self.wall(),
+            # the setting it was judged on, for what_changed's words -- without the plate object (``plate_ref``,
+            # in no word and no key): a suggestion that outlives its plate (no live model to see the scene change)
+            # does not keep it in memory up to its max age
+            self.suggestion = {**a, "winner_c": adv.winner, "live_key": live.key,
+                               "live": dataclasses.replace(live, plate_ref=None), "wall": self.wall(),
                                "result": result}
             self.notify("suggest", {**a, "result": result_dict(result)})
             return
