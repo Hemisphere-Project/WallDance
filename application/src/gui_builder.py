@@ -721,9 +721,10 @@ SWIPE_BTN_TIP_ON = SWIPE_BTN_TIP_OFF.replace("until you Apply, in STANDBY.", "un
 # The automatic swipe's combo tooltip: one paragraph per mode, only those of the modes the build releases.
 SWIPE_AUTO_TIP_LINES = {
     "off": "  off      nothing in the background (the project's default)\n",
-    "suggest": ("  suggest  each time two and a half minutes of dancing are kept, it\n"
-                "           tries the other model at the same network input on them and\n"
-                "           says so here when it does better (Apply now, or Dismiss)\n"),
+    "suggest": ("  suggest  while dancers are on the wall, it tries the other model\n"
+                "           at the same network input and says so here when it does\n"
+                "           better on two looks in a row and is no slower (Apply now,\n"
+                "           or Dismiss: not now, 15 min)\n"),
     "auto": ("  switch   the same, and when the other model is clearly better it\n"
              "           switches between two frames, with an alert\n"),
 }
