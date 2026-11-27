@@ -202,12 +202,17 @@ class RefereeReport:
         return told
 
 
-def make_pacer(proc, interval_s: float, stop: Optional[threading.Event] = None) -> Callable[[], None]:
+def make_pacer(proc, interval_s: float, stop: Optional[threading.Event] = None,
+               start: Optional[float] = None) -> Callable[[], None]:
     """Called before each candidate inference: at least ``interval_s`` after the previous one started, and,
     while the loop runs YOLO (a live network pass in the last 0.25 s), right after a live pass that came
     since -- about one candidate inference per live frame, in the loop's slack.  No wait for a live pass
-    when the loop is not running YOLO (STANDBY, a model load)."""
-    last = [0.0]
+    when the loop is not running YOLO (STANDBY, a model load), and at most 0.2 s for one.
+
+    ``start`` (a ``time.perf_counter()`` value): the first call too waits for a live pass after it -- an engine's
+    release right after the NEXT live frame (``make_pacer(proc, 0.0, stop, start=time.perf_counter())()``).
+    Without it the first call lets any earlier live pass count, and returns at once."""
+    last = [0.0 if start is None else float(start)]
     stop = stop or threading.Event()
 
     def pace() -> None:

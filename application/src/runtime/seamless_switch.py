@@ -213,7 +213,9 @@ class SeamlessSwitch:
                 or not self.ran_a_frame(proc):
             return False
         with self.engine_lock:
-            make_pacer(proc, 0.0, self._stop)()            # right after a live frame
+            # right after the loop's next live pass (a TensorRT destructor holds the GIL some 50 ms): a pacer made
+            # now waits for one -- at most 0.2 s, none in STANDBY or with the loop stopped
+            make_pacer(proc, 0.0, self._stop, start=time.perf_counter())()
             if extra is not None:
                 extra()
             n = len(self._drop)
