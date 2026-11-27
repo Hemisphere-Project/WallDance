@@ -69,7 +69,10 @@ def resolve_ref(ref: str) -> Tuple[str, str]:
 def tree_files(commit: str) -> Dict[str, str]:
     """{path: blob sha} of every tracked file at ``commit`` (minus SLOT_EXCLUDE)."""
     out: Dict[str, str] = {}
-    for rec in _git("ls-tree", "-r", "-z", commit).split(b"\0"):
+    # --full-tree: the WHOLE tree, wherever wr.REPO sits. Without it, tools run from a
+    # plain export nested in a clone listed only that sub-folder of the commit (empty):
+    # « 0 file(s) to write, 779 to delete » emptied the DEV slot on 27/11 09:21.
+    for rec in _git("ls-tree", "--full-tree", "-r", "-z", commit).split(b"\0"):
         if not rec:
             continue
         meta, path = rec.split(b"\t", 1)
@@ -108,6 +111,65 @@ def plan_sync(new: Dict[str, str], old: Dict[str, str]) -> Tuple[Dict[str, str],
     changed = {p: s for p, s in new.items() if old.get(p) != s}
     removed = sorted(p for p in old if p not in new)
     return changed, removed
+
+
+# A deploy refused by the guard below exits with this code, the slot untouched.
+DEPLOY_REFUSED = 3
+
+
+def _app_missing(paths, win: bool) -> List[str]:
+    """What a slot needs to start that ``paths`` lack: the start script `slot run`
+    calls (run.bat on Windows, run.sh elsewhere) and the app's Python source."""
+    paths = set(paths)
+    missing = [] if ("run.bat" if win else "run.sh") in paths else ["run.bat" if win else "run.sh"]
+    if not any(p.startswith("application/src/") and p.endswith(".py") for p in paths):
+        missing.append("application/src/*.py")
+    return missing
+
+
+def deploy_refusal(files: Dict[str, str], win: bool, changed: Optional[Dict[str, str]] = None,
+                   removed: Sequence[str] = (), old: Optional[Dict[str, str]] = None) -> str:
+    """Why this deploy must not touch the slot, in one line ('' = go ahead).
+    Called on the tree alone (before the laptop is asked anything), then on the plan."""
+    keep = "nothing written, nothing deleted"
+    if not files:
+        return (f"the commit's tree lists no file to deploy - {keep}. Check the ref, and run "
+                f"wdremote from a WallDance clone")
+    missing = _app_missing(files, win)
+    if missing:
+        return (f"the commit's tree is not the WallDance app (no {', '.join(missing)}) - {keep}. "
+                f"Deploy a WallDance commit")
+    if changed is not None:
+        after = (set(old or {}) - set(removed)) | set(changed)
+        missing = _app_missing(after, win)
+        if missing:
+            return (f"the plan would leave the slot without the app (no {', '.join(missing)}) - "
+                    f"{keep}. Redeploy with --full")
+    return ""
+
+
+def repo_problem(ref: str) -> str:
+    """One plain line when ``ref`` cannot be read from the repository the tools sit in."""
+    try:
+        top = _git("rev-parse", "--show-toplevel").decode().strip()
+    except (subprocess.CalledProcessError, OSError):
+        return (f"the tools sit in {wr.REPO}, which is not inside a git clone - nothing written, "
+                f"nothing deleted. Run extra/wdremote.py from a WallDance clone "
+                f"(or set GIT_DIR=<clone>/.git)")
+    return (f"{ref} is not a commit of the clone at {top} - nothing written, nothing deleted. "
+            f"Fetch it there, or name another ref")
+
+
+def repo_note() -> str:
+    """A line when the tools sit below the top of the clone they read (else '')."""
+    try:
+        top = _git("rev-parse", "--show-toplevel").decode().strip()
+    except (subprocess.CalledProcessError, OSError):
+        return ""
+    if not top or Path(top).resolve() == Path(wr.REPO).resolve():
+        return ""
+    return (f"note: the tools sit in {wr.REPO}, a sub-folder of the clone {top}: the ref "
+            f"resolves in that clone and its whole tree is deployed")
 
 
 # ---------------------------------------------------------------------------
@@ -268,15 +330,30 @@ def _slot_remote(remote, slot: str):
 
 def cmd_deploy(tr, remote, a) -> int:
     """Incrementally sync a git ref into the DEV slot."""
-    commit, desc = resolve_ref(a.ref)
+    try:
+        commit, desc = resolve_ref(a.ref)
+    except subprocess.CalledProcessError:
+        print(f"[deploy] refused: {repo_problem(a.ref)}")
+        return DEPLOY_REFUSED
     files = tree_files(commit)
     droot = dev_root(remote)
+    note, why = repo_note(), deploy_refusal(files, remote.win)
+    if why:                                   # before the laptop is asked anything
+        print(f"[deploy] {a.ref} = {desc}")
+        print(f"[deploy] refused: {why}")
+        return DEPLOY_REFUSED
     old = run_slot_agent(tr, remote, "manifest", {"slot_root": droot})
     old_files = {} if a.full else (old.get("files") or {})
     changed, removed = plan_sync(files, old_files)
     print(f"[deploy] {a.ref} = {desc}")
+    if note:
+        print(f"[deploy] {note}")
     print(f"[deploy] dev slot {droot}: was {old.get('commit', 'empty')[:12]} "
           f"({old.get('ref', '-')}) -> {len(changed)} file(s) to write, {len(removed)} to delete")
+    why = deploy_refusal(files, remote.win, changed, removed, old_files)
+    if why:                                   # dry run or not: nothing sent, nothing applied
+        print(f"[deploy] refused: {why}")
+        return DEPLOY_REFUSED
     if a.dry_run:
         for p in sorted(changed)[:40]:
             print(f"   + {p}")
