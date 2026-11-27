@@ -12,8 +12,15 @@ thread loads, the switch is drained between two frames exactly as the main loop 
 * ``--auto suggest|auto``: the automatic swipe (``BackgroundSwipe``) over the take: looks, advices, switches (take
   time, frame, the frame times of the switch frame and the 5 after, emitted ids before/after), live frame times
   while a background run is in progress and outside, inferences, GPU memory with the resident.
+* ``--mode-off-at-s T`` (with ``--auto``): the automatic mode set to off at take time T, in RUN -- the second
+  engine then goes through the paced release (right after a live frame's end).
 * ``--realtime``: pace the take at ``--fps`` (the frame times beside a load or a run are then the show's);
   otherwise frames go back to back (the take clock still runs at ``--fps``: the policy's windows are take time).
+
+Each frame that ran the network ends as in the app (``FrameProcessor.frame_ended`` after its output, where
+``MainLoop._guarded_tick`` calls it), so a paced release lands where it would live.  Every paced release (the
+switch's ``free_pending``: the old live engine, the second engine) is recorded in ``releases``: its take time, the
+frame it followed, and the ms from that frame's end to the release's start and to its end.
 
     python tests/switch_replay.py --project jeudi0809_mur2 --slot 7 --max-s 120 --out ref.json
     python tests/switch_replay.py --project jeudi0809_mur2 --slot 7 --max-s 120 --realtime \\
@@ -147,6 +154,8 @@ def main(argv=None):
                     help="experiment: a size switch WITHOUT the pinned tracker space (what it would do)")
     ap.add_argument("--auto", choices=("suggest", "auto"), default=None)
     ap.add_argument("--look-s", type=float, default=None, help="--auto: the looker's period (wall seconds)")
+    ap.add_argument("--mode-off-at-s", type=float, default=None,
+                    help="--auto: the automatic mode set to off at this take time (a paced release in RUN)")
     ap.add_argument("--out", default=None)
     args = ap.parse_args(argv)
     if args.compare:
@@ -170,6 +179,21 @@ def press_dismiss(sw, bg) -> bool:
         return True
     sw.dismiss()
     return False
+
+
+def release_rows(releases, ends):
+    """The paced releases as the driver reports them: for each, the frame it followed -- the last frame whose end
+    (``ends``: (frame, ``frame_end_t``) in order) came before the release's start --, whether that is the end its
+    wait returned on, and the ms from that end to the release's start and to its end."""
+    rows = []
+    for r in releases:
+        f, end_t = next(((f, t) for f, t in reversed(ends) if t <= r["start"]), (None, None))
+        rows.append({
+            "t": r["t"], "what": r["what"], "thread": r["thread"], "in_take": r["in_take"], "after_frame": f,
+            "waited_for_that_end": end_t == r["frame_end_t"],
+            "start_ms_after_frame_end": round((r["start"] - end_t) * 1000.0, 2) if end_t is not None else None,
+            "end_ms_after_frame_end": round((r["end"] - end_t) * 1000.0, 2) if end_t is not None else None})
+    return rows
 
 
 def play(args):
@@ -235,6 +259,32 @@ def play(args):
         engine_path = lambda c: args.broken_engine  # noqa: E731
     sw = SeamlessSwitch(processor=lambda: proc, live=live, engine_path=engine_path, port=port, notify=notify,
                         period_s=0.5, size_change=args.size_change)
+    # every paced release: when its wait for a frame's end returned (its start), which frame's end that was, when
+    # the release was over (the switch's ``free_pending``, on whichever thread calls it)
+    import runtime.seamless_switch as SSW
+    import threading
+    releases, ends, playing, rel = [], [], [True], threading.local()
+    real_after_frame_end, real_free_pending = SSW.after_frame_end, sw.free_pending
+
+    def after_frame_end(p, stop=None):
+        real_after_frame_end(p, stop)
+        rel.start, rel.end_t = time.perf_counter(), float(getattr(p, "frame_end_t", 0.0) or 0.0)
+
+    def free_pending(extra=None):
+        rel.start = None
+        had = bg is not None and bg.resident is not None     # (a bool: no reference kept to the engine)
+        n_drop = len(sw._drop)
+        ok = real_free_pending(extra)
+        t_end = time.perf_counter()
+        dropped = had and bg.resident is None
+        if ok and getattr(rel, "start", None) is not None and (dropped or n_drop):
+            releases.append({"t": round(clock["t"], 2), "start": rel.start, "end": t_end, "frame_end_t": rel.end_t,
+                             "what": ("second engine" if dropped else "") + (" + " if dropped and n_drop else "")
+                             + (f"{n_drop} switch model(s)" if n_drop else ""),
+                             "thread": threading.current_thread().name, "in_take": playing[0]})
+        return ok
+    SSW.after_frame_end = after_frame_end
+    sw.free_pending = free_pending
     bg = None
     show = {"run": False, "tracked": []}                # STANDBY until the take plays, as the app before the show
     if args.auto:                                       # the automatic swipe beside the take
@@ -275,6 +325,7 @@ def play(args):
     again, dismissed, seams, rows = [], [], [], []
     resident_seen = False
     n_max = int(round(args.max_s * fps))
+    mode_off = []
 
     def health():                                       # the app's readiness row: the switch's fault, else a ban
         return sw.health() or (bg.health() if bg is not None else None)
@@ -297,6 +348,11 @@ def play(args):
                              on_done=lambda ok_, text: done.append((ok_, text, i)))
             say(f"[p6] {clock['t']:7.1f} s  Apply {target.label} again: " + (why or "under way")
                 + f"; fault before: {fault_before!r}")
+        if bg is not None and args.mode_off_at_s is not None and not mode_off \
+                and i >= int(round(args.mode_off_at_s * fps)):
+            mode_off.append(i)
+            bg.set_mode("off")                          # the operator's combo: the looker frees its engine, paced
+            say(f"[p6] {clock['t']:7.1f} s  the automatic swipe set to off (frame {i}, RUN)")
         if args.dismiss_at_s is not None and not dismissed and i >= int(round(args.dismiss_at_s * fps)):
             dismissed.append((health(), i))
             press_dismiss(sw, bg)                       # the app's Dismiss: « not now », else the fault and the bans
@@ -351,6 +407,8 @@ def play(args):
         frames.append({"f": i, "t": round(clock["t"], 3), "ms": round(ms, 2), "yolo_ms": round(timing.get("yolo", 0.0), 2),
                        "xy": xy, "h": hh, "pool": pool, "label": port.current.label, "bg_running": running,
                        "tracker_input": list(proc.tracker_input) if proc.tracker_input else None})
+        proc.frame_ended()                              # the frame is over, its output out: as MainLoop._guarded_tick
+        ends.append((i, float(proc.frame_end_t)))
         i += 1
         if args.realtime:
             nxt += period
@@ -360,6 +418,7 @@ def play(args):
             else:
                 nxt = time.perf_counter()
     cap.release()
+    playing[0] = False
     if bg is not None:
         bg.stop(5.0)
     sw.stop(5.0)
@@ -375,7 +434,8 @@ def play(args):
                                        key=lambda h: h.get("wall", 0))],
            "inferences": bg.inferences if bg else 0, "fault": sw.fault, "live_at_end": port.current.label,
            "dismissed": dismissed, "again_frame": again[0] if again else None, "loop_seams": seams,
-           "readiness_rows": rows}
+           "readiness_rows": rows, "mode_off_frame": mode_off[0] if mode_off else None}
+    out["releases"] = release_rows(releases, ends)
     if switch is not None:
         s = switch["frame"]
         switch.pop("_row")
@@ -412,6 +472,10 @@ def play(args):
         if h.get("kind") in ("look", "advice", "switch", "load", "release", "free", "fault", "manual-change"):
             say("[p6]   " + ", ".join(f"{k}={v}" for k, v in h.items() if k != "wall" and v is not None))
     say(f"[p6] GPU used MB: {mem}")
+    for r in out["releases"]:
+        say(f"[p6] release at {r['t']:7.1f} s ({r['what']}, {r['thread']}{'' if r['in_take'] else ', after the take'})"
+            f": after frame {r['after_frame']}, starts {r['start_ms_after_frame_end']} ms and ends "
+            f"{r['end_ms_after_frame_end']} ms after that frame's end")
     for k, v in out["frame_ms"].items():
         if v:
             say(f"[p6] live frame ms {k:<22} n={v['n']:5d} p50={v['p50']:6.1f} p95={v['p95']:6.1f} max={v['max']:6.1f}")
