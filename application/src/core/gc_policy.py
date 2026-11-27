@@ -21,7 +21,8 @@ cycle would never be freed, and models are replaced later):
 
 Every full collection is one ``[GC]`` line with its duration and reason (the app log's INFO: ``print``);
 ``WD_GC_TRACE=1`` -- and any DEV-slot session (``WD_SLOT=dev``) -- adds each generation-1 collection and a
-summary every minute (the cadence of the real app, its GUI and camera thread included).
+summary every minute (the cadence of the real app, its GUI and camera thread included), and after each full
+collection a census of the live objects by type: what grew, and who holds it (``TracedGcPolicy``).
 
 Lines are queued by the gc callback and printed by ``tick`` between frames, never during a collection: the app
 log's tee holds a lock while it writes, and a collection can start inside that write.
@@ -85,6 +86,8 @@ class GcPolicy:
         if trace is None:    # a DEV-slot session (wdslot sets WD_SLOT=dev) is a test session: it traces
             trace = os.environ.get(TRACE_ENV, "") not in ("", "0") or os.environ.get("WD_SLOT") == "dev"
         self.trace = bool(trace)
+        if trace:    # the census after each full collection: a traced session only (TracedGcPolicy, below)
+            self.__class__ = TracedGcPolicy
         self.installed = False
         self.saved_threshold: Optional[tuple] = None
         self.pending = 0              # objects moved into gen 2 since the last full collection (long_lived_pending)
@@ -239,6 +242,254 @@ class GcPolicy:
         self.log(f"[GC] {TRACE_EVERY_S:.0f} s: gen0 {s[0][0]} (max {s[0][2]:.2f} ms), gen1 {s[1][0]} "
                  f"(max {s[1][2]:.2f} ms), gen2 {s[2][0]} (max {s[2][2]:.1f} ms); ~{self.pending} waiting in "
                  f"gen 2 (bound {self.valve_bound()}), counts {self.gc.get_count()}")
+
+
+# ---------------------------------------------------------------------------------- the census (trace only)
+CENSUS_TOP = 15                 # types listed by growth: since the previous census, and since the first
+CENSUS_HOLDERS = 3              # the top growers since the previous census whose holders are looked for
+CENSUS_HOLDER_MIN = 100         # ... when they grew by at least this many (a census where nothing grows stays cheap)
+CENSUS_SAMPLES = 5              # instances sampled per grower: the newest (the end of gen 2's list)
+CENSUS_SCAN = 100_000           # the newest objects scanned for those samples (bounds the scan's time)
+CENSUS_LINE_MAX = 299           # characters per census line
+CENSUS_NAME_MAX = 100           # characters of a type name
+_HOLDER_TYPES = (dict, list, set)   # + collections.deque: a holder whose own holder is looked for
+
+
+class TracedGcPolicy(GcPolicy):
+    """The policy of a traced session (``WD_GC_TRACE=1``, a DEV slot): the same decisions, plus a CENSUS of the
+    live objects by type right after each full collection the policy makes -- start-up, its first live frame,
+    STANDBY, a load, Calibrate's end, the valve: moments where the collection's pause is already accepted; a RUN
+    frame never runs one by itself.  ``GcPolicy.__init__`` makes an instance this class only when it traces, so
+    an untraced policy reads, calls and builds nothing of the census.
+
+    One census, as ``[GC] census #N ...`` lines through the policy's log (each under ``CENSUS_LINE_MAX``):
+    a summary (live objects, types, growth, its own ms); the top ``CENSUS_TOP`` types by growth since the
+    previous census, then since the first (from the third census on); for the top ``CENSUS_HOLDERS`` growers
+    since the previous one (by ``CENSUS_HOLDER_MIN`` objects at least), who holds ``CENSUS_SAMPLES`` of their newest instances -- the holder, and when it is a
+    dict, list, set or deque, the holder's holder and the attribute or key it sits under (an instance's
+    ``__dict__`` is seen through to its owner, as Python 3.12 does without the dict).  Types are counted by
+    name (module + qualified name), so a class rebuilt at run time counts as one.
+
+    Bounded work: one pass over the heap to count, a reversed pass over the newest ``CENSUS_SCAN`` objects at
+    most to sample, at most three
+    ``gc.get_referrers`` walks (all samples of a hop in one walk).  Kept between censuses: the first and the
+    previous {name: count} dicts (str -> int: untracked by the collector, no object held alive)."""
+
+    _census_n = 0
+    _census_first: Optional[dict] = None
+    _census_prev: Optional[dict] = None
+    _census_t_first = 0.0
+    _census_t_prev = 0.0
+
+    def collect(self, reason: str) -> float:
+        ms = GcPolicy.collect(self, reason)
+        self._census(reason)
+        return ms
+
+    def _census(self, reason: str) -> None:
+        t0 = self.clock()
+        try:
+            lines = self._census_lines(reason, t0)
+        except Exception as e:  # noqa: BLE001 - a diagnostic must never stop the app
+            lines = [f"[GC] census #{self._census_n + 1} failed: {type(e).__name__}: {e}"]
+        for line in lines:
+            self.log(line if len(line) <= CENSUS_LINE_MAX else line[:CENSUS_LINE_MAX - 3] + "...")
+
+    def _census_lines(self, reason: str, t0: float) -> List[str]:
+        import heapq
+        from collections import Counter
+        objs = self.gc.get_objects()
+        live = len(objs)
+        by_type = Counter(map(type, objs))
+        counts: dict = {}
+        names: dict = {}
+        for t, k in by_type.items():
+            name = _census_type_name(t)
+            names[t] = name
+            counts[name] = counts.get(name, 0) + k
+        del by_type
+        n = self._census_n + 1
+        prev, first = self._census_prev, self._census_first
+        body: List[str] = []
+        picked: dict = {}
+        if prev is not None:
+            grew = heapq.nlargest(CENSUS_TOP, ((c - prev.get(k, 0), k) for k, c in counts.items()
+                                               if c > prev.get(k, 0)))
+            body += [f"[GC] census #{n} grew since #{n - 1}: {i}. {k} {counts[k]} {d:+d}"
+                     + (f" (since #1 {counts[k] - first.get(k, 0):+d})" if n > 2 else "")
+                     for i, (d, k) in enumerate(grew, 1)] or [f"[GC] census #{n}: no type grew since #{n - 1}"]
+            if n > 2:
+                grew1 = heapq.nlargest(CENSUS_TOP, ((c - first.get(k, 0), k) for k, c in counts.items()
+                                                    if c > first.get(k, 0)))
+                body += [f"[GC] census #{n} grew since #1: {i}. {k} {counts[k]} {d:+d}"
+                         for i, (d, k) in enumerate(grew1, 1)]
+            top = [k for d, k in grew[:CENSUS_HOLDERS] if d >= CENSUS_HOLDER_MIN]
+            want = {t: k for t, k in names.items() if k in top}
+            picked = {k: [] for k in top}
+            need = len(top) * CENSUS_SAMPLES
+            for o in reversed(objs[-CENSUS_SCAN:]):   # the newest first: a full collection appends the survivors
+                k = want.get(type(o))
+                if k is not None and len(picked[k]) < CENSUS_SAMPLES:
+                    picked[k].append(o)
+                    need -= 1
+                    if need <= 0:
+                        break
+            o = None
+            del want
+        del objs, names
+        if picked:
+            body += self._census_holders(n, picked)
+        now = self.clock()
+        if prev is None:
+            head = "the baseline of the next censuses"
+        else:
+            head = (f"{live - sum(prev.values()):+d} since #{n - 1} ({_census_ago(now - self._census_t_prev)})"
+                    + (f", {live - sum(first.values()):+d} since #1 ({_census_ago(now - self._census_t_first)})"
+                       if n > 2 else ""))
+        self._census_n, self._census_prev, self._census_t_prev = n, counts, now
+        if first is None:
+            self._census_first, self._census_t_first = counts, now
+        return [f"[GC] census #{n} ({reason}): {live} live objects, {len(counts)} types; {head}; "
+                f"{(self.clock() - t0) * 1000.0:.1f} ms"] + body
+
+    def _census_holders(self, n: int, picked: dict) -> List[str]:
+        """Who holds the sampled instances: 2 hops, at most 3 heap walks (one per hop for all samples, and one to
+        see an instance's ``__dict__`` through to its owner)."""
+        from collections import deque
+        holder_types = _HOLDER_TYPES + (deque,)
+        samples = [o for lst in picked.values() for o in lst]
+        ours = {id(picked), id(samples)} | {id(lst) for lst in picked.values()}
+        h1 = _census_referrers(self.gc, samples, ours)                          # walk 1: the holders
+        hop2 = [h for h in _census_unique(h1.values())
+                if isinstance(h, holder_types) and _census_module(h) is None]
+        ours.add(id(hop2))
+        h2 = _census_referrers(self.gc, hop2, ours) if hop2 else {}               # walk 2: their holders
+        owned = {id(h) for h in hop2 if type(h) is dict and _census_owns(h2.get(id(h)), h)}
+        hop3 = [h for h in _census_unique(h2.values())
+                if type(h) is dict and _census_module(h) is None and id(h) not in owned]
+        ours.add(id(hop3))
+        h3 = _census_referrers(self.gc, hop3, ours) if hop3 else {}               # walk 3: an instance dict's owner
+        out = []
+        for name, lst in picked.items():
+            paths: dict = {}
+            for o in lst:
+                p = _census_path(o, h1, h2, h3, holder_types)
+                paths[p] = paths.get(p, 0) + 1
+            said = "; ".join(f"{c}x {p}" for p, c in sorted(paths.items(), key=lambda kv: -kv[1]))
+            out.append(f"[GC] census #{n} holders of {name} ({len(lst)} newest): {said or 'none sampled'}")
+        return out
+
+
+def _census_type_name(t) -> str:
+    mod = getattr(t, "__module__", None)
+    qual = getattr(t, "__qualname__", None) or getattr(t, "__name__", "?")
+    name = f"{mod}.{qual}" if isinstance(mod, str) else str(qual)
+    return name[:CENSUS_NAME_MAX]
+
+
+def _census_ago(s: float) -> str:
+    return f"{int(s // 60)} min {int(s % 60)} s" if s >= 60 else f"{s:.0f} s"
+
+
+def _census_unique(objs) -> list:
+    seen, out = set(), []
+    for o in objs:
+        if id(o) not in seen:
+            seen.add(id(o))
+            out.append(o)
+    return out
+
+
+def _census_referrers(gc_module, targets, ours: set) -> dict:
+    """One heap walk: {id(target): its first holder} -- not a frame, not the census's own containers."""
+    import types
+    tgt = tuple(targets)
+    ids = {id(t) for t in tgt}
+    found: dict = {}
+    refs = gc_module.get_referrers(*tgt)
+    skip = ours | {id(tgt), id(refs), id(found), id(ids)}
+    for r in refs:
+        if id(r) in skip or isinstance(r, types.FrameType):
+            continue
+        for x in gc_module.get_referents(r):
+            if id(x) in ids and id(x) not in found:
+                found[id(x)] = r
+        if len(found) == len(ids):
+            break
+    del refs
+    ours.add(id(found))
+    return found
+
+
+def _census_module(d) -> Optional[str]:
+    """The module whose globals ``d`` is, or None."""
+    if type(d) is dict and "__builtins__" in d and isinstance(d.get("__name__"), str):
+        return d["__name__"]
+    return None
+
+
+def _census_owns(owner, d) -> bool:
+    """``d`` is ``owner``'s instance dict (Python < 3.12, or 3.12 once the dict exists)."""
+    return owner is not None and type(owner) is not dict and getattr(owner, "__dict__", None) is d
+
+
+def _census_key(d: dict, target) -> str:
+    """The key ``target`` sits under: a str key is a name; another key is data, so only its type is said."""
+    for k, v in d.items():
+        if v is target:
+            return k[:40] if isinstance(k, str) else f"<{type(k).__name__}>"
+        if k is target:
+            return "(a key)"
+    return "?"
+
+
+def _census_attr(holder, target) -> str:
+    """The attribute of ``holder`` that is ``target`` ('' when none is found: a list item, a cell...)."""
+    d = getattr(holder, "__dict__", None)
+    if d is target:
+        return ".__dict__"
+    if type(d) is dict:
+        k = _census_key(d, target)
+        if k != "?":
+            return "." + k
+    for cls in type(holder).__mro__:
+        slots = cls.__dict__.get("__slots__", ())
+        for s in ((slots,) if isinstance(slots, str) else slots):
+            try:
+                if getattr(holder, s) is target:
+                    return "." + s
+            except Exception:  # noqa: BLE001
+                continue
+    return ""
+
+
+def _census_where(holder, target, owners: dict) -> str:
+    """'Owner.attr', 'module m.name', "dict[key]" or the holder's type: where ``target`` sits in ``holder``."""
+    if holder is None:
+        return "? (no holder found)"
+    if type(holder) is dict:
+        mod = _census_module(holder)
+        if mod is not None:
+            return f"module {mod}.{_census_key(holder, target)}"
+        owner = owners.get(id(holder))
+        if _census_owns(owner, holder):
+            return f"{_census_type_name(type(owner))}.{_census_key(holder, target)}"
+        return f"dict[{_census_key(holder, target)}]"
+    return _census_type_name(type(holder)) + _census_attr(holder, target)
+
+
+def _census_path(o, h1: dict, h2: dict, h3: dict, holder_types) -> str:
+    """One sample's holders, 2 hops: '<holder>' or '<holder type> <- <where it sits>'."""
+    a = h1.get(id(o))
+    if a is None:
+        return "? (no holder found)"
+    if not isinstance(a, holder_types) or _census_module(a) is not None:
+        return _census_where(a, o, h2)
+    b = h2.get(id(a))
+    if type(a) is dict and _census_owns(b, a):         # an instance's __dict__: the owner's attribute
+        return _census_where(a, o, h2)
+    inner = f"dict[{_census_key(a, o)}]" if type(a) is dict else _census_type_name(type(a))
+    return f"{inner} <- {_census_where(b, a, h3)}"
 
 
 POLICY = GcPolicy()
