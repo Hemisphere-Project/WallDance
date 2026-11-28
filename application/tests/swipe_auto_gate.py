@@ -157,9 +157,11 @@ def simulate(st: Stream, live0: Candidate, mode: str = MODE_AUTO, ap: Optional[A
              sp: Optional[SwipeParams] = None, start: int = 0, hours: float = 1.0, live_conf: float = 0.15,
              check_s: float = 2.0, pace_s: float = 0.2, ms: Optional[Dict[str, float]] = None,
              gap_every_s: float = 0.0, gap_s: float = 0.0, prefilter: bool = True,
-             splice_at_s: Optional[float] = None) -> StreamRun:
+             splice_at_s: Optional[float] = None, frame_ms: Optional[float] = None) -> StreamRun:
     """One stream of ``hours`` from frame index ``start`` of the take (looped), ``live0`` live at the start;
-    ``splice_at_s``: SYNTHETIC -- from then on each model plays the other model's record at the same input."""
+    ``splice_at_s``: SYNTHETIC -- from then on each model plays the other model's record at the same input;
+    ``frame_ms``: the live frames' 95th percentile before each look, for the advice's estimate of a slower
+    winner's frame (None: not measured, a slower winner refused as by the strict rule)."""
     ap = ap or AutoParams()
     sp = referee_params(live_conf, sp)
     scores = st.take.scores(sp)
@@ -201,7 +203,7 @@ def simulate(st: Stream, live0: Candidate, mode: str = MODE_AUTO, ap: Optional[A
             res, probe = pending["result"], pending["probe"]
             auto.ran(t, probe=probe)
             if not probe:
-                adv = auto.advise(t, res, newest_frame_t=pending["newest"], ms=ms_c)
+                adv = auto.advise(t, res, newest_frame_t=pending["newest"], ms=ms_c, frame_ms=frame_ms)
                 if res.winner is not None and not res.switch:
                     out.events.append(Event(t, "keep", live.label))
                 if adv.kind != "none":
@@ -307,6 +309,9 @@ def main(argv=None) -> int:
     a_.add_argument("--no-ms", action="store_true",
                     help="every setting given the same inference time: the « slower » rule passes them all "
                          "(with no time it would refuse every verdict)")
+    a_.add_argument("--frame-ms", type=float, default=None,
+                    help="the live frames' 95th percentile before each look (the app measures it over 3 s), for "
+                         "the advice's budget rule on a slower winner; default none: the strict rule alone")
     a_.add_argument("--splice-at-s", type=float, default=None,
                     help="SYNTHETIC: from this second each model plays the other model's record at its input")
     a_.add_argument("--set", dest="sets", action="append", default=[], metavar="KEY=VALUE",
@@ -332,7 +337,7 @@ def main(argv=None) -> int:
             runs = [simulate(st, live, a.mode, ap, None, rng.randrange(len(st.order)), a.hours, a.live_conf,
                              ms={c.label: 1.0 for c in st.take.cands} if a.no_ms else LAPTOP_MS,
                              gap_every_s=a.gap_every_s, gap_s=a.gap_s,
-                             prefilter=not a.no_prefilter, splice_at_s=a.splice_at_s)
+                             prefilter=not a.no_prefilter, splice_at_s=a.splice_at_s, frame_ms=a.frame_ms)
                     for _ in range(a.starts)]
             row = _row(st, live, runs, a.expect if a.gate == "switch" else "")
             if a.gate == "stay":

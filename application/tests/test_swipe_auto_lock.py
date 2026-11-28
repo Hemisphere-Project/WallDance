@@ -31,7 +31,9 @@ MODES = [("suggest", "Auto: suggest", "suggest"), ("auto", "Auto: switch", "swit
 TIP_SUGGEST = ("  suggest  while dancers are on the wall, it tries the other model\n"
                "           at the same network input and says so here when it does\n"
                "           better on two looks in a row and is no more than 15 %\n"
-               "           slower (Apply now, or Dismiss: not now, 15 min)\n")
+               "           slower, or is clearly better (5 points) on both looks\n"
+               "           and a frame with it would still fit the 15 fps\n"
+               "           floor (Apply now, or Dismiss: not now, 15 min)\n")
 TIP_END = ("An empty wall costs no inference; the other model stays loaded\n"
            "while it is not off.  Saved with the project.")
 TIP_ALL = ("The automatic swipe, while the show runs:\n"

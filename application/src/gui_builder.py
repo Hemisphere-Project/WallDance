@@ -723,14 +723,16 @@ SWIPE_BTN_TIP_ON = SWIPE_BTN_TIP_OFF.replace("until you Apply, in STANDBY.", "un
 # build's default (core.swipe_auto.default_mode) in its own words (SWIPE_AUTO_TIP_DEFAULT), only that one.  The end
 # of suggest's paragraph: its Apply (SWIPE_AUTO_TIP_APPLY), or, while this build holds that Apply back
 # (core.swipe_auto.apply_released), what a suggestion is then (SWIPE_AUTO_TIP_ADVICE) -- never an Apply it lacks.
-SWIPE_AUTO_TIP_APPLY = "           slower (Apply now, or Dismiss: not now, 15 min)\n"
-SWIPE_AUTO_TIP_ADVICE = ("           slower: advice only - note the time and the line\n"
+SWIPE_AUTO_TIP_APPLY = "           floor (Apply now, or Dismiss: not now, 15 min)\n"
+SWIPE_AUTO_TIP_ADVICE = ("           floor: advice only - note the time and the line\n"
                          "           (Dismiss: not now, 15 min)\n")
 SWIPE_AUTO_TIP_LINES = {
     "off": "  off      nothing in the background\n",
     "suggest": ("  suggest  while dancers are on the wall, it tries the other model\n"
                 "           at the same network input and says so here when it does\n"
                 "           better on two looks in a row and is no more than 15 %\n"
+                "           slower, or is clearly better (5 points) on both looks\n"
+                "           and a frame with it would still fit the 15 fps\n"
                 + SWIPE_AUTO_TIP_APPLY),
     "auto": ("  switch   the same, and when the other model is clearly better it\n"
              "           switches between two frames (an alert only if it fails)\n"),

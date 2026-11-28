@@ -147,9 +147,9 @@ def test_regression_guard_seen_once_then_a_wait_for_an_empty_wall_the_second_ver
 def test_a_frame_budget_of_0_is_none_and_the_default_is_the_apps(short):
     """``frame_budget_ms`` is the looker's: None is the app's constant, 0 is no budget (the live frames at 70 ms
     and the look runs).  Fails before: no such argument."""
-    from core.config import SWIPE_AUTO_FRAME_BUDGET_MS
+    from core.config import SWIPE_AUTO_FRAME_FLOOR_MS
     bg, proc, events, loader, live = _looking_bg()
-    assert bg.frame_budget_ms == SWIPE_AUTO_FRAME_BUDGET_MS
+    assert bg.frame_budget_ms == SWIPE_AUTO_FRAME_FLOOR_MS == pytest.approx(66.67, abs=0.01)   # 15 fps (28/11)
     bg, proc, events, loader, live = _looking_bg(frame_budget_ms=0)
     proc.frames = _look_frames()
     loop = _Loop(proc, lambda: 70.0)

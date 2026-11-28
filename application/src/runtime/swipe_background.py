@@ -76,8 +76,8 @@ from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 from core.swipe import Candidate, SwipeParams
 from core.swipe import score_frame
 from core.swipe_auto import (MODE_AUTO, MODE_OFF, NOTE_THE_LINE, AutoParams, SwipeAuto, alike_ms,  # noqa: F401 - PolicyPort
-                             apply_released, bar_for, headroom, parse_mode, referee_params, released_modes,
-                             suggestion_text, unconfirmed_text)
+                             apply_released, bar_for, floor_words, headroom, parse_mode, referee_params,
+                             released_modes, suggestion_text, unconfirmed_text)
 from core.swipe_runner import (SWIPE_MODELS, CandidateRunner, ExclusionCells, install_capture_guards,
                                live_run_from_boxes, no_graph_capture, result_dict, score_runs)
 from runtime.seamless_switch import ENGINE_UNREADABLE, Prepared, SeamlessSwitch, _runner_factory, load_failure
@@ -115,8 +115,9 @@ BAN_UNTIL = "will not try it again until you press Dismiss"
 # what the look says while a setting the operator dismissed is put aside (the policy's snooze)
 SNOOZE_WAIT = "the automatic swipe waits: {} was dismissed - it looks again at {}"
 # the live frames run late (``LiveFrames``): no look starts, one in flight stops -- what the look's row says, with the
-# time one in twenty of them takes or more; it stays until the wait after it is over (``_stand_down_late``)
-LATE_WAIT = "the automatic swipe waits: the live frames run late (one in twenty takes {} ms or more)"
+# time one in twenty of them takes or more and the floor it is over; it stays until the wait after it is over
+# (``_stand_down_late``)
+LATE_WAIT = "the automatic swipe waits: the live frames run late (one in twenty takes {} ms or more; the floor is {})"
 LATE_WINDOW_S = 3.0       # the recent live frames: those of the last this long ...
 LATE_MIN_FRAMES = 20      # ... at least this many, compared at their 95th percentile (one in twenty)
 LATE_WARMUP_S = 3.0       # a look's first inferences warm up: the live frames beside them are not counted
@@ -214,18 +215,22 @@ class LiveFrames:
                 ev.wait(min(until - now, 0.2))
             self.see(proc)
 
-    def late(self, since: float, budget_ms: float) -> Optional[float]:
+    def p95(self, since: float) -> Optional[float]:
         """The 95th percentile (nearest rank: one in twenty takes this or more) of the live frames seen in the last
-        ``LATE_WINDOW_S`` and not before ``since``, when it is over ``budget_ms``; else None -- under it, or fewer
-        than ``LATE_MIN_FRAMES`` of them, or no budget (``budget_ms`` 0)."""
-        if budget_ms <= 0:
-            return None
+        ``LATE_WINDOW_S`` and not before ``since``; None with fewer than ``LATE_MIN_FRAMES`` of them."""
         t0 = max(float(since), time.perf_counter() - LATE_WINDOW_S)
         v = sorted(ms for t, ms in self.rows if t >= t0)
         if len(v) < LATE_MIN_FRAMES:
             return None
-        p95 = v[int(math.ceil(0.95 * len(v))) - 1]
-        return p95 if p95 > budget_ms else None
+        return v[int(math.ceil(0.95 * len(v))) - 1]
+
+    def late(self, since: float, budget_ms: float) -> Optional[float]:
+        """``p95`` when it is over ``budget_ms``; else None -- under it, too few frames, or no budget (``budget_ms``
+        0)."""
+        if budget_ms <= 0:
+            return None
+        p95 = self.p95(since)
+        return p95 if p95 is not None and p95 > budget_ms else None
 
 
 class PolicyPort:
@@ -292,8 +297,9 @@ class PolicyPort:
         """(the candidate's ms, the live model's ms) for ``advise``'s « slower » rule, measured alike."""
         return alike_ms(cand_times, live_times, self.policy.params.speed_q)
 
-    def advise(self, now: float, result, newest_frame_t: Optional[float], ms: Dict[Candidate, float]):
-        return self.policy.advise(now, result, newest_frame_t=newest_frame_t, ms=ms)
+    def advise(self, now: float, result, newest_frame_t: Optional[float], ms: Dict[Candidate, float],
+               frame_ms: Optional[float] = None):
+        return self.policy.advise(now, result, newest_frame_t=newest_frame_t, ms=ms, frame_ms=frame_ms)
 
     def switched(self, now: float, old: Candidate, new: Candidate) -> None:
         self.policy.switched(now, old, new)
@@ -349,7 +355,7 @@ class BackgroundSwipe:
                  settle_s: Optional[float] = None,
                  snooze_s: Optional[float] = None, max_age_s: Optional[float] = None,
                  standby: Callable[[], bool] = lambda: False, frame_budget_ms: Optional[float] = None):
-        from core.config import (SWIPE_AUTO_FRAME_BUDGET_MS, SWIPE_AUTO_LOAD_EMPTY_S, SWIPE_AUTO_LOAD_SETTLE_S,
+        from core.config import (SWIPE_AUTO_FRAME_FLOOR_MS, SWIPE_AUTO_LOAD_EMPTY_S, SWIPE_AUTO_LOAD_SETTLE_S,
                                  SWIPE_AUTO_LOOK_S,
                                  SWIPE_AUTO_PACE_S, SWIPE_AUTO_SNOOZE_S, SWIPE_VERDICT_MAX_AGE_S)
         self.processor = processor
@@ -371,8 +377,9 @@ class BackgroundSwipe:
         self.settle_s = float(SWIPE_AUTO_LOAD_SETTLE_S if settle_s is None else settle_s)
         self.snooze_s = float(SWIPE_AUTO_SNOOZE_S if snooze_s is None else snooze_s)    # Dismiss: not now, this long
         self.max_age_s = float(SWIPE_VERDICT_MAX_AGE_S if max_age_s is None else max_age_s)  # a suggestion's age
-        # the live frames run late over it: no look (0: no budget -- the bench's gate runs on a shared GPU)
-        self.frame_budget_ms = float(SWIPE_AUTO_FRAME_BUDGET_MS if frame_budget_ms is None else frame_budget_ms)
+        # the live frames run late over it: no look -- the owner's 15 fps floor (0: no budget -- the bench's gate
+        # runs on a shared GPU)
+        self.frame_budget_ms = float(SWIPE_AUTO_FRAME_FLOOR_MS if frame_budget_ms is None else frame_budget_ms)
         self.in_run = in_run              # the app is in RUN (the show's output is live)
         self.standby = standby            # the app is in STANDBY: no look (out of RUN alone is when loads may go)
         self.wall_empty = wall_empty      # no track on screen, no identity slot held (core.gc_policy.wall_empty)
@@ -427,6 +434,7 @@ class BackgroundSwipe:
         self._late_until: Optional[float] = None        # loop clock until which no look starts: the frames ran late
         self._late_says: Optional[str] = None           # ... what the look's row says meanwhile
         self._late_n = 0                                # looks stood down in a row for late frames
+        self._frame_ms_before: Optional[float] = None   # the live frames' 95th percentile before the last look
         self._look_failures = 0                         # looks that raised, in a row (``LOOK_FAILURES``)
         self.history: Deque[Dict[str, Any]] = deque(maxlen=200)   # looks, advices, switches (bounded)
         self.inferences = 0                        # candidate inferences so far
@@ -835,16 +843,18 @@ class BackgroundSwipe:
             self.last_look = self._record("look", look="none", t=now, frames=len(fresh), seconds=0.0,
                                           outcome=self._stand_down_late(late, float(proc.loop_clock())))
             return "waiting"
-        self._run(kind, live, cands[0], fresh, now)
+        self._run(kind, live, cands[0], fresh, now, frame_ms=self._frame_ms_before)
         return kind
 
     # ------------------------------------------------------------------ the live frames' time
     def _late_before(self, proc) -> Optional[float]:
         """Right before a look starts: the live frames of the next ``LATE_WINDOW_S`` (the looker waits for them,
         counting each as it ends); one in twenty of them takes this or more, over the budget -- or None: under it,
-        too few of them, or the loop runs no network."""
+        too few of them, or the loop runs no network.  Their 95th percentile, over the budget or not, is kept for
+        the look's advice (``_frame_ms_before``: the frame the show runs at now, its own inferences not yet in it)."""
         t0 = time.perf_counter()
         self.frames_ms.wait(proc, t0 + LATE_WINDOW_S, self._stop)
+        self._frame_ms_before = self.frames_ms.p95(t0)
         return self.frames_ms.late(t0, self.frame_budget_ms)
 
     def _stand_down_late(self, ms: float, now: float) -> str:
@@ -857,9 +867,9 @@ class BackgroundSwipe:
         wait = min(float(p.keep_wait_s) * 2.0 ** (self._late_n - 1), max(float(p.keep_wait_max_s),
                                                                          float(p.keep_wait_s)))
         self._late_until = float(now) + wait
-        self._late_says = LATE_WAIT.format(int(round(ms)))
-        say(f"[SwipeAuto] the live frames run late (one in twenty takes {ms:.0f} ms or more, the budget is "
-            f"{self.frame_budget_ms:.0f} ms): no look for {wait:.0f} s")
+        self._late_says = LATE_WAIT.format(int(round(ms)), floor_words(self.frame_budget_ms))
+        say(f"[SwipeAuto] the live frames run late (one in twenty takes {ms:.0f} ms or more, the floor is "
+            f"{floor_words(self.frame_budget_ms)}): no look for {wait:.0f} s")
         return self._late_says
 
     def _end_late_wait(self) -> None:
@@ -1042,7 +1052,11 @@ class BackgroundSwipe:
     LOOK_FAILURES = 3
     LOOK_RAISED = "the last look failed (an error, written in the log)"
 
-    def _run(self, kind: str, live: LiveSetting, other: Candidate, fresh: list, now0: float) -> None:
+    def _run(self, kind: str, live: LiveSetting, other: Candidate, fresh: list, now0: float,
+             frame_ms: Optional[float] = None) -> None:
+        """One look at ``other`` on the newest fresh frames; ``frame_ms``: the live frames' 95th percentile over the
+        3 s before it (``_late_before``), for the advice's estimate of a slower winner's frame (None: not measured,
+        a slower winner is refused)."""
         proc = self.processor()
         sp = self._run_params(proc)
         # the newest run_frames fresh frames, whatever the policy calls the look (a probe runs on them too)
@@ -1144,8 +1158,9 @@ class BackgroundSwipe:
             ms = {c: v for c, v in ((other, speed[0]), (live.candidate, speed[1])) if v is not None}
             self.auto.ran(now, probe=(kind == "probe"))          # the policy's order: ran, then advise
             ran = True
-            adv = self.auto.advise(now, result, newest_frame_t=max(float(f.t) for f in frames), ms=ms)
-            outcome = REFEREE_WAIT if refused else result.reason
+            adv = self.auto.advise(now, result, newest_frame_t=max(float(f.t) for f in frames), ms=ms,
+                                   frame_ms=frame_ms)
+            outcome = REFEREE_WAIT if refused else (adv.outcome or result.reason)   # the floor's row, if it refused
             self._act(adv, result, live)
             self._look_failures = 0
         except Exception as exc:  # noqa: BLE001 - errors end the look, never the app
@@ -1177,7 +1192,8 @@ class BackgroundSwipe:
                 inferences=len(run.ms) if run is not None else 0, outcome=outcome,
                 ms_p50=round(run.ms_p50, 1) if run is not None and run.ms_p50 else None,
                 ms_cand=round(speed[0], 1) if speed[0] is not None else None,     # what the « slower » rule
-                ms_live=round(speed[1], 1) if speed[1] is not None else None)     # compared
+                ms_live=round(speed[1], 1) if speed[1] is not None else None,     # compared ...
+                ms_frame=round(frame_ms, 1) if frame_ms is not None else None)    # ... and the frame before it
             if fault:                         # the same visible path as a failed automatic switch: THE fault
                 self._fault_why = (fault, f"the automatic swipe could not {verb} {other.label}")
                 self.switch.fail(fault)
@@ -1224,8 +1240,8 @@ class BackgroundSwipe:
             if adv.kind == "seen":
                 # « seen once » in the policy's streak: the line says the reason that holds NOW (the dwell may be
                 # over, the fault dismissed since), the switch's fault as for « apply » above
-                if not hold and adv.seamless and adv.level == "definite" and self.auto.mode == MODE_AUTO \
-                        and MODE_AUTO in released_modes():
+                if not hold and adv.seamless and adv.level == "definite" and not getattr(adv, "too_slow", "") \
+                        and self.auto.mode == MODE_AUTO and MODE_AUTO in released_modes():
                     hold = self._fault_held()
                 why = sug.get("why_not_auto")
                 if why == sug.get("held"):         # the reason the line said: the one that holds now, or none

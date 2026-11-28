@@ -425,12 +425,24 @@ SWIPE_AUTO_LOAD_EMPTY_S = 2.0
 # the project: RUN pressed before this ends, nothing was started, and the load waits for the next moment above (an
 # empty wall, or STANDBY again once settled).  Releases are not held back.
 SWIPE_AUTO_LOAD_SETTLE_S = 10.0
-# A look's inferences share the GPU with the live frames: no look starts while the live frames run late, and a look
-# in flight stops at its next inference once they run late beside it (after its first seconds: they warm up), its
-# frames kept for a later look.  Late: one in twenty of the last 3 s of live frames (each frame's own time, the
-# frame in hand to its OSC out) over this.  After such a stand-down no look for the wait after a « keep »
-# (core/swipe_auto.py keep_wait_s, doubled at each stand-down in a row as there).
-SWIPE_AUTO_FRAME_BUDGET_MS = 55.0
+# The owner's floor of 28/11 (« 15fps budget then »): the show holds 15 fps, a live frame (its own time, the frame in
+# hand to its OSC out) at most 1000 / 15 = 66.7 ms at its 95th percentile -- one in twenty takes this or more.  Two
+# rules hold to it, the same figure:
+# - a look's inferences share the GPU with the live frames: no look starts while the live frames run late, and a
+#   look in flight stops at its next inference once they run late beside it (after its first seconds: they warm
+#   up), its frames kept for a later look.  Late: one in twenty of the last 3 s of live frames over this.  After
+#   such a stand-down no look for the wait after a « keep » (core/swipe_auto.py keep_wait_s, doubled at each
+#   stand-down in a row as there).  (Was a 55 ms budget until 28/11: « the stand-down follows your 15 fps floor »);
+# - a suggestion may name a model more than 15 % slower than the live one only when its gain is clear on both looks
+#   and the frame the show would have with it stays under this (core/swipe_auto.py, the advice's budget rule).  An
+#   automatic switch never goes to such a model, whatever this says.
+SWIPE_AUTO_FRAME_FLOOR_MS = 1000.0 / 15
+# The advice's estimate of the frame with a slower model: the live frames' 95th percentile over the 3 s before the
+# look + this x (the candidate's inference time - the live model's, the two measured alike).  Not 1: on the show
+# laptop beside TouchDesigner (26/11) the frame grew by 16.4 ms at its 95th percentile (35.1 -> 51.5 ms, l then x
+# @ 1920 x 1056 live) where the inference grew by 9.7 ms (11.6 -> 21.3): the rest of the frame pays too when the
+# bigger model shares the GPU.  One measure, one machine: to be measured again at the next laptop hold.
+SWIPE_ADVICE_COST_FACTOR = 1.7
 # Light changed since the empty-wall snapshot (Thomas 2026-10-07: "luminosity change is a killer"): the
 # raw ROI brightness over the snapshot's (core/foreground.ForegroundDetector.light_ratio), sampled at 1 Hz
 # in standby and RUN alike; when its median over LIGHT_CHANGE_S leaves [1/RATIO, RATIO] the operator is

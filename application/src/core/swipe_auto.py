@@ -5,20 +5,23 @@ dancers are on the wall, and says or does something only when the referee (``cor
 setting better:
 
 * **a suggestion** -- the same setting named by two verdicts in a row (the streak, as a switch needs it), and the
-  « slower » rule lets it through: one line with an « Apply now » button; the operator decides (while that Apply
-  is held back in this build, ``apply_released``: advice only, « note the time and this line », no button).  One
-  verdict says nothing: the next look comes at once, to confirm it or not.  The referee already did the statistics (an
-  unbiased sample, a paired test corrected for the number of settings compared, a higher bar for a costlier
-  setting): no second threshold is stacked on it.  Two verdicts are « in a row » when the second comes at most
-  ``streak_gap_s`` after the first, with no look skipped for lack of room and no empty pool between them.  Dismiss on
-  it means « not now » (``dismissed``): the streak ends, and that setting is neither suggested nor switched to by
-  itself for a while (``snoozed``) or until the scene changes;
+  « slower » rule lets it through -- or, for a model more than 15 % slower, the budget rule (``advise``): its gain
+  clear on both looks and the frame the show would have with it under the 15 fps floor, the line saying that cost:
+  one line with an « Apply now » button; the operator decides (while that Apply is held back in this build,
+  ``apply_released``: advice only, « note the time and this line », no button).  One verdict says nothing: the
+  next look comes at once, to confirm it or not.  The referee already did the statistics (an unbiased sample, a
+  paired test corrected for the number of settings compared, a higher bar for a costlier setting): no second
+  threshold is stacked on it.  Two verdicts are « in a row » when the second comes at most ``streak_gap_s`` after
+  the first, with no look skipped for lack of room and no empty pool between them.  Dismiss on it means « not
+  now » (``dismissed``): the streak ends, and that setting is neither suggested nor switched to by itself for a
+  while (``snoozed``) or until the scene changes;
 * **an automatic switch** -- mode ``auto`` only, and only for the SEAMLESS pair: the other model at the same
   network input, its engine resident, swapped between two frames (a size change needs another engine and a few
   seconds without tracking, as a manual change does: a better input size is always a suggestion).  It needs two
   verdicts in a row, on disjoint frames, naming the same setting with a gain of ``definite_gain`` or more; a
   winner no slower than ``slower`` x the live setting's measured time, the two times measured alike
-  (``alike_ms``); the dwell since the last switch; and never back to the setting just left before ``back_s``.
+  (``alike_ms``) -- the strict rule, whatever the floor lets a suggestion name; the dwell since the last switch;
+  and never back to the setting just left before ``back_s``.
 
 When it looks (``due``), in frames, not seconds:
 
@@ -35,8 +38,9 @@ When it looks (``due``), in frames, not seconds:
 * the live setting has a box on almost none of the fresh frames (blind, or nobody there: a technician's shadow,
   a light change): a rarer, shorter **probe** instead;
 * **a settled show backs off.**  After a « keep » verdict (the referee judged and named nothing), a suggestion
-  shown or confirmed, or a winner the « slower » rule refuses, no run for ``keep_wait_s``, doubled at each in a
-  row up to ``keep_wait_max_s``; a verdict naming another setting once, a switch or a ``reset`` ends it.  While it waits, the one free signal wakes it: when the live setting leaves a
+  shown or confirmed, or a winner the « slower » rule or the floor refuses, no run for ``keep_wait_s``, doubled
+  at each in a row up to ``keep_wait_max_s``; a verdict naming another setting once, a switch or a ``reset`` ends
+  it.  While it waits, the one free signal wakes it: when the live setting leaves a
   dancer bare on clearly more of the fresh frames than on the frames of any keep of the series (``wake_lost``
   more, as a share), the next run comes at once -- the scene may have turned against the live model.  (The
   highest, not the last: on one 150-frame window to the next the dancing alone moves that share by up to 30
@@ -162,7 +166,12 @@ class AutoParams:
     slower: float = 1.15          # never to a setting more than this many times the live one's inference time
                                   # (15 % slower passes: the measure's own noise, see ``alike_ms``) ...
     speed_q: float = 10.0         # ... both times this low percentile of their inferences over the run (``alike_ms``);
-                                  # either one unknown: refused.  The rule holds for a suggestion too
+                                  # either one unknown: refused.  The strict rule: an automatic switch's, and a
+                                  # suggestion's but for the budget rule below (``advise``)
+    floor_ms: float = core_config.SWIPE_AUTO_FRAME_FLOOR_MS     # a slower model may be suggested when the frame
+                                  # the show would have with it stays under this, at its 95th percentile ...
+    cost_factor: float = core_config.SWIPE_ADVICE_COST_FACTOR   # ... estimated: the live frames' + this x the
+                                  # difference of the two inference times (``frame_cost``)
     streak_gap_s: float = core_config.SWIPE_AUTO_STREAK_GAP_S   # two verdicts this far apart are not « in a row »
     keep_wait_s: float = 300.0    # after a « keep » verdict, no run for this long ...
     keep_wait_max_s: float = 1800.0   # ... doubled at each keep in a row, up to this
@@ -198,6 +207,55 @@ def alike_ms(cand_times: Sequence[float], live_times: Sequence[float],
     return pct(cand_times), pct(live_times)
 
 
+def slower_rule(cand_ms: Optional[float], live_ms: Optional[float], slower: float) -> str:
+    """The strict « slower » rule, an automatic switch's, whatever the floor: "" when the candidate's time is at
+    most ``slower`` times the live model's (the two measured alike, ``alike_ms``), else why not -- either one not
+    known included (fail closed)."""
+    if not cand_ms or not live_ms:
+        return "its time or the live model's is not known"
+    if cand_ms > slower * live_ms:
+        return f"it is more than {100 * (slower - 1):.0f} % slower ({cand_ms:.1f} ms a frame against {live_ms:.1f})"
+    return ""
+
+
+def frame_cost(frame_ms: Optional[float], cand_ms: Optional[float], live_ms: Optional[float],
+               factor: float) -> Optional[float]:
+    """The advice's estimate of the frame the show would have with the candidate live, at its 95th percentile:
+    ``frame_ms`` (the live frames' now, over the 3 s before the look) + ``factor`` x (the candidate's inference
+    time - the live model's, measured alike).  Not a plain substitution of the two times: on the show laptop beside
+    TouchDesigner the frame grew 1.7 times what the inference grew (``core.config.SWIPE_ADVICE_COST_FACTOR``).
+    None when any of the three is not known."""
+    if not frame_ms or not cand_ms or not live_ms:
+        return None
+    return float(frame_ms) + float(factor) * (float(cand_ms) - float(live_ms))
+
+
+# an estimate this close to the floor is printed with it to one decimal: in whole milliseconds both sides of « over »
+# could read the same (« about 67 ms: over the 15 fps floor (67 ms) », 67.0 against 66.7)
+FLOOR_EDGE_MS = 1.0
+
+
+def edge_places(est: Optional[float], floor_ms: float) -> int:
+    """The decimals of an estimate printed beside the floor, and of the floor and the frame printed with it: 1 when
+    ``est`` is within ``FLOOR_EDGE_MS`` of ``floor_ms``, else 0 (whole milliseconds)."""
+    return 1 if est is not None and abs(float(est) - float(floor_ms)) <= FLOOR_EDGE_MS else 0
+
+
+def floor_words(floor_ms: float, est: Optional[float] = None) -> str:
+    """The floor in the technician's terms: « 15 fps (67 ms) » -- « 15 fps (66.7 ms) » beside an estimate ``est``
+    within ``FLOOR_EDGE_MS`` of it."""
+    return f"{1000.0 / floor_ms:.0f} fps ({floor_ms:.{edge_places(est, floor_ms)}f} ms)"
+
+
+# a slower model the budget rule lets through: the figures its line gives instead of the two inference times (``d``:
+# edge_places)
+COST = "a frame would take about {:.{d}f} ms against {:.{d}f}; the floor is {}"
+# ... and one clearly better that the floor refuses: the look's row and the advice's reason, nothing shown
+OVER_FLOOR = ("{} would see more ({:.0f} % against {:.0f} %) but a frame would take about {:.{d}f} ms: over the "
+              "{:.0f} fps floor ({:.{d}f} ms)")
+# what holds an automatic switch to a slower model back, whatever the floor: the strict rule
+NEVER_BY_ITSELF = "the app never switches to it by itself"
+
 SEEN_ONCE = "seen once, it looks again"
 DWELL = "the setting changed a moment ago"
 JUST_LEFT = "it is the setting just left"
@@ -226,7 +284,7 @@ def unconfirmed_text(said: str, at: str, why: str = "") -> str:
     """The line of a suggestion the last look did not confirm: no « Apply now? », the figures of the looks that
     named it and when the last look was (``at``: HH:MM) -- « l @ 1280 covered 99 % of the dancers, x @ 1280 76 %
     (6.0 ms a frame against 6.0) - not confirmed at the last look (21:40) »; ``why``: the reason the policy refused it
-    at that look (the « slower » rule), after a colon."""
+    at that look (the « slower » rule, the floor), after a colon."""
     said = said.replace(" covers ", " covered ", 1)     # ``said`` is advise's: those looks are over
     return f"{said} - {NOT_CONFIRMED_AT.format(at)}" + (f": {why}" if why else "")
 
@@ -242,6 +300,9 @@ class AutoAdvice:
     why_not_auto: str = ""                # not switched by itself: the reason, in plain words (/status)
     said: str = ""                        # the figures: both coverages, both times
     held: str = ""                        # what holds an automatic switch back, said on the line
+    too_slow: str = ""                    # a slower winner the budget rule let through as advice: the strict
+                                          # « slower » rule's reason, never switched to by itself
+    outcome: str = ""                     # what the look's row says instead of the referee's reason (the floor)
 
 
 class SwipeAuto:
@@ -360,16 +421,26 @@ class SwipeAuto:
 
     # -- what to do with a verdict ------------------------------------------------------------------------
     def advise(self, now: float, result: Optional[SwipeResult], newest_frame_t: Optional[float] = None,
-               ms: Optional[Dict[Candidate, float]] = None) -> AutoAdvice:
+               ms: Optional[Dict[Candidate, float]] = None, frame_ms: Optional[float] = None) -> AutoAdvice:
         """The advice for one finished run.  ``newest_frame_t``: the newest frame it looked at (the next run
         counts toward the streak only on frames newer than that); ``ms``: inference time per candidate, measured
-        alike (``alike_ms``).
+        alike (``alike_ms``); ``frame_ms``: the live frames' time at their 95th percentile over the 3 s before the
+        look began (not during it: its own inferences slow them), None when not measured.
 
         A setting named once is « seen » (nothing shown, the next look comes at once); named on ``wins`` looks in a
         row it is suggested, or switched to in mode auto when the switch's own conditions hold, and the looks back
-        off as after a « keep ».  Never a setting more than ``slower`` times the live model's time (15 % slower:
-        the measure's own noise lets up to that through), nor one whose time or the live model's is not known (fail
-        closed)."""
+        off as after a « keep ».  Two rules on its time (the owner, 28/11: a suggestion may name a costlier model
+        when it brings much more, as long as the show keeps 15 fps):
+
+        * an automatic switch, the strict « slower » rule (``slower_rule``): never to a setting more than
+          ``slower`` times the live model's time (15 % slower: the measure's own noise lets up to that through), nor
+          to one whose time or the live model's is not known (fail closed) -- whatever the floor says;
+        * a suggestion (the advice shown, its Apply released or not), the same, but for the budget rule: a setting
+          more than ``slower`` times as slow may still be suggested when its gain is ``definite_gain`` or more on
+          each of the ``wins`` looks in a row and the frame the show would have with it (``frame_cost``) stays
+          under ``floor_ms`` -- its line then says that frame and the floor.  Clearly better but over the floor:
+          nothing shown, the reason in the look's row (``outcome``), the looks back off as after a « keep ».  No
+          ``frame_ms``, or either time unknown: refused, as by the strict rule."""
         p = self.params
         fresh = self._seen_until is None or newest_frame_t is None or newest_frame_t > self._seen_until
         if newest_frame_t is not None:
@@ -394,14 +465,26 @@ class SwipeAuto:
         definite = gain >= p.definite_gain
         level = "definite" if definite else "marginal"
         mw, ml = (ms or {}).get(winner), (ms or {}).get(live)
-        slow = ("its time or the live model's is not known" if not mw or not ml else
-                f"it is more than {100 * (p.slower - 1):.0f} % slower ({mw:.1f} ms a frame against {ml:.1f})"
-                if mw > p.slower * ml else "")
-        if slow:
-            # the « slower » rule refuses it: neither suggested nor switched to, no streak; judged, nothing to say
-            self._end_streak()
-            self._back_off(now)
-            return AutoAdvice(level=level, winner=winner, why_not_auto=slow)
+        cov_w, cov_l = 100 * (row.coverage if row else 0), 100 * (cur.coverage if cur else 0)
+        too_slow = slower_rule(mw, ml, p.slower)       # the strict rule: "" lets it through
+        cost = ""                                      # a slower winner's line: the frame with it, the floor
+        if too_slow:
+            # the budget rule, a suggestion's only: a gain over the definite bar (on both looks: see the streak
+            # below) and the frame the show would have with it under the floor
+            est = frame_cost(frame_ms, mw, ml, p.cost_factor) if definite else None
+            if est is not None and est > p.floor_ms:
+                # clearly better, too costly for the floor: nothing shown, no streak; judged -- the row says why
+                over = OVER_FLOOR.format(winner.label, cov_w, cov_l, est, 1000.0 / p.floor_ms, p.floor_ms,
+                                         d=edge_places(est, p.floor_ms))
+                self._end_streak()
+                self._back_off(now)
+                return AutoAdvice(level=level, winner=winner, why_not_auto=over, outcome=over)
+            if est is None:
+                # the strict rule refuses it: neither suggested nor switched to, no streak; judged, nothing to say
+                self._end_streak()
+                self._back_off(now)
+                return AutoAdvice(level=level, winner=winner, why_not_auto=too_slow)
+            cost = COST.format(est, frame_ms, floor_words(p.floor_ms, est), d=edge_places(est, p.floor_ms))
         # the streak: verdicts in a row naming one winner, each on frames the last one did not see, at most
         # streak_gap_s apart (a skipped look or an empty pool between them ended it already)
         if (winner != self._streak_winner or self._streak == 0
@@ -412,14 +495,16 @@ class SwipeAuto:
             self._definite = self._definite + 1 if definite else 0
         self._streak_at = float(now)
         same_input = seamless(winner, live)
-        said = (f"{winner.label} covers {100 * (row.coverage if row else 0):.0f} % of the dancers, "
-                f"{live.label} {100 * (cur.coverage if cur else 0):.0f} % ({mw:.1f} ms a frame against {ml:.1f})")
+        said = (f"{winner.label} covers {cov_w:.0f} % of the dancers, {live.label} {cov_l:.0f} % "
+                f"({cost or f'{mw:.1f} ms a frame against {ml:.1f}'})")
         adv = AutoAdvice(kind="seen", level=level, winner=winner, seamless=same_input, streak=self._streak,
-                         text=said, said=said)
-        if self._streak < p.wins:
-            self._look_now()              # seen once: the next look comes at once, to confirm it or not
+                         text=said, said=said, too_slow=too_slow)
+        if self._streak < p.wins or (too_slow and self._definite < p.wins):
+            # seen once -- a slower winner: not yet over the definite bar on wins looks in a row: the next look
+            # comes at once, to confirm it or not
+            self._look_now()
             adv.why_not_auto = SEEN_ONCE
-            if self.mode == MODE_AUTO and same_input and definite:
+            if self.mode == MODE_AUTO and same_input and definite and not too_slow:
                 adv.held = self._holds(now, winner)    # a suggestion on screen it confirms says what holds NOW
             return adv
         self._back_off(now)               # shown (or switched to): the looks back off while the operator reads it
@@ -428,6 +513,8 @@ class SwipeAuto:
             why = "Auto: suggest does not switch by itself"
         elif not same_input:
             why = "another input size needs a few seconds without tracking: apply it by hand"
+        elif too_slow:
+            why = f"{too_slow}: {NEVER_BY_ITSELF}"       # the strict rule: advice only, whatever the floor
         elif not definite:
             why = f"the gain is under {100 * p.definite_gain:.0f} points"
         elif self._definite < p.wins:
@@ -455,10 +542,10 @@ class SwipeAuto:
     # -- a suggestion on screen -----------------------------------------------------------------------------
     def unconfirmed(self) -> None:
         """A look did not confirm the suggestion on screen (a « keep », another winner, no verdict -- the referee's
-        refusal among them --, a refusal of the « slower » rule, no room for a gain): the next look comes as soon
-        as a full pool of fresh frames is kept (``run_frames``: about 150 s of dancing), not after the back-off nor
-        after the wait that follows a look the referee could not judge -- a second look that does not confirm it
-        withdraws it.  The back-off's series is kept: a look that confirms it backs off as before."""
+        refusal among them --, a refusal of the « slower » rule or of the floor, no room for a gain): the next look
+        comes as soon as a full pool of fresh frames is kept (``run_frames``: about 150 s of dancing), not after the
+        back-off nor after the wait that follows a look the referee could not judge -- a second look that does not
+        confirm it withdraws it.  The back-off's series is kept: a look that confirms it backs off as before."""
         self._keep_at = None
         self._none_at = None
 

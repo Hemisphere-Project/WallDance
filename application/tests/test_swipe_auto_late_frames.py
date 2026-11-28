@@ -4,9 +4,10 @@ A look's cost on the live loop was bounded only in how often and how long it run
 about 30 s), whatever the live frames did: from x @ 1920x1056 on the show laptop they went over the 55 ms budget
 during the looks.  Now the looker counts the live frames' own time (``FrameProcessor.timing["total"]``: the frame
 in hand to its OSC out, never the looker's inference time) once per live network pass: no look starts while one in
-twenty of the last 3 s of them takes more than ``SWIPE_AUTO_FRAME_BUDGET_MS``; a look in flight stops at its next
-inference once the frames beside it do (after its first seconds), its frames kept fresh; then no look for the
-wait after a « keep » (doubled at each stand-down in a row), said in the look's row until it is over.
+twenty of the last 3 s of them takes more than ``SWIPE_AUTO_FRAME_FLOOR_MS`` (the owner's 15 fps floor since 28/11,
+66.7 ms; 55 ms before); a look in flight stops at its next inference once the frames beside it do (after its first
+seconds), its frames kept fresh; then no look for the wait after a « keep » (doubled at each stand-down in a row),
+said in the look's row until it is over.
 
 CPU, with the fakes of ``test_swipe_auto_live`` and a fake loop thread; the windows are shortened here.
 """
@@ -17,7 +18,8 @@ import pytest
 
 from test_swipe_auto_live import _look_frames, _looking_bg
 
-LATE = "the automatic swipe waits: the live frames run late (one in twenty takes {} ms or more)"
+LATE = ("the automatic swipe waits: the live frames run late (one in twenty takes {} ms or more; the floor is 15 fps "
+        "(67 ms))")
 
 
 @pytest.fixture
@@ -53,9 +55,9 @@ class _Loop:
 
 
 def test_no_look_starts_while_the_live_frames_run_late_and_the_row_goes_with_the_wait(short):
-    """A look falls due while the live frames take 70 ms (over 55): no inference, the row says why; still none
-    inside the wait after a « keep » (300 s of the loop clock); after it, with the frames on time, the look runs
-    and the row is gone."""
+    """A look falls due while the live frames take 70 ms (over the floor's 66.7): no inference, the row says why;
+    still none inside the wait after a « keep » (300 s of the loop clock); after it, with the frames on time, the
+    look runs and the row is gone."""
     bg, proc, events, loader, live = _looking_bg()
     proc.frames = _look_frames()
     frame_ms = [70.0]

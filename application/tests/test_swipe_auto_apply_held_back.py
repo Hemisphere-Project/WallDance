@@ -269,7 +269,9 @@ def test_regression_guard_the_operators_own_verdict_keeps_its_apply_while_sugges
 TIP_ADVICE = ("  suggest  while dancers are on the wall, it tries the other model\n"
               "           at the same network input and says so here when it does\n"
               "           better on two looks in a row and is no more than 15 %\n"
-              "           slower: advice only - note the time and the line\n"
+              "           slower, or is clearly better (5 points) on both looks\n"
+              "           and a frame with it would still fit the 15 fps\n"
+              "           floor: advice only - note the time and the line\n"
               "           (Dismiss: not now, 15 min)\n"
               "           (the default)\n")
 
