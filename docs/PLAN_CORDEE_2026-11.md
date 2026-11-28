@@ -278,22 +278,30 @@ an existing row.
   best; never a setting worse than x @ 1280 on the corpus takes with a plate; ≤ 30 s on the laptop. What is
   measured, and where the gate as written is not met, in §5. — @est(2d) bench GPU + laptop — hub #t-058
 - **P6 · Autonomous swipe.** After: P5. (Thomas, 26/11: the swipe runs by itself; 27/11: « suggest once
-  justified ».) Project key `swipe_auto` = off | suggest | auto, off by default, absent from existing projects,
-  off again in every new project; which modes a build lets anyone set is one list in the code
-  (`core.config.SWIPE_AUTO_RELEASED`). In RUN, once 150 fresh frames with dancers are kept and the live
+  justified »; 28/11: « suggest » by default, advice only.) Project key `swipe_auto` = off | suggest | auto,
+  `suggest` by default since 28/11 (`core.config.SWIPE_AUTO`): a project without the key loads on it and says so,
+  every new project starts on it, Save writes the key, a value that names no mode loads off and says so; which
+  modes a build lets anyone set is one list in the code (`core.config.SWIPE_AUTO_RELEASED`: off and suggest,
+  `auto` not released). In RUN, once 150 fresh frames with dancers are kept and the live
   setting's own boxes leave room for a gain, the pair {live, the other model at the live input} is compared in
   the background: the other model runs the kept frames at a gentle pace (one inference every 0.2 s, 30 s a look)
   and P5's referee gives the verdict. That second engine is loaded only where a pause does not show — when the
-  mode is set, at a project or model load, in STANDBY, or in RUN on a wall empty for 2 s — and stays loaded
-  while the mode is on (its GPU cost is a readiness row). A look does not start, and stops, while the live
-  frames run over 55 ms. `suggest`: when the same model wins two looks in a row (within 15 minutes) and is no
-  more than 15 % slower, one line and one toast with « Apply now »; the line is then updated silently and the
-  looks back off; a look that does not confirm it stops the line inviting and brings the next look at once, and
-  the second such look withdraws it; Dismiss means « not now » for 15 minutes. `auto`: the switch itself,
+  operator sets the mode, out of RUN once the app has sat there 10 s with nothing applied since (a project, a
+  model, the mode, RUN or STANDBY pressed; RUN pressed before that, nothing is started), or in RUN on a wall
+  empty for 2 s — and stays loaded while the mode is on (its GPU cost is a readiness row). One floor, 15 fps
+  (66.7 ms at p95, `core.config.SWIPE_AUTO_FRAME_FLOOR_MS`; 55 ms until 28/11): a look does not start, and
+  stops, while the live frames run over it. `suggest`: when the same model wins two looks in a row (within 15
+  minutes) and is no more than 15 % slower — or covers 5 points more on both looks and the frame estimated with
+  it stays under the floor, the line then naming the cost (« a frame would take about 52 ms against 35; the
+  floor is 15 fps (67 ms) ») — one line and one toast. Advice only (`core.config.SWIPE_AUTO_APPLY_RELEASED`
+  False, 28/11): the line ends « note the time and this line », there is no Apply button, and an Apply that still
+  reaches it (a button drawn before, the remote API) switches nothing and says so; the line is then updated
+  silently and the looks back off; a look that does not confirm it stops the line inviting and brings the next look at once, and
+  the second such look withdraws it; Dismiss means « not now » for 15 minutes. `auto` (not released): the switch itself,
   between two frames at the same network input (no camera close, the tracker and the ids untouched, three frames
   of probation, the old model back if they raise), only after two definite verdicts in a row on different frames
-  (a gain of 5 points or more), a dwell of 5 minutes, never back within 15, never to a slower model, with a
-  toast. After a « keep » the next look waits 5 minutes, doubling up to 30, unless the live setting loses 10
+  (a gain of 5 points or more), a dwell of 5 minutes, never back within 15, never to a model more than 15 %
+  slower (the floor's exception is advice only), with a toast. After a « keep » the next look waits 5 minutes, doubling up to 30, unless the live setting loses 10
   points more of its dancers. An empty wall costs no inference, and nothing is judged in STANDBY. The swipe
   stands down (no frame read, no inference) while the empty-wall plate is not valid or the reference watch holds
   an alert, and starts its comparison over when the picture's enhancement changes; a setting whose switch, load
@@ -304,7 +312,7 @@ an existing row.
   `swap_live`, `core/pipeline.py` (the swap point, the frame's end); driver `tests/switch_replay.py` (a take
   through the app's loop). Gate: frame time ≤ 55 ms at p95 with TouchDesigner; no switch on mur2 6–8 at l @ 1920
   × 1056; from x at the same input one switch with the ids unchanged; zero candidate inference on an empty take.
-  What is measured, and where the gate is not met, in §5. — @est(3d) laptop — hub #t-059
+  What is measured, and where the gate is not met, in §5. — @est(3d) laptop — hub #t-059, #t-068 (28/11)
 
 Engine-only estimates on the laptop (pixel count against its measured 21.3 ms for x@1280 and 13.5 ms for
 l@1280): x at 1760 × 960 about 22 ms, l at 1760 × 960 about 14 ms, l at 1920 × 1056 about 17 ms, x at
@@ -968,22 +976,42 @@ Filled by the step named. Until then the cell says so.
     and the event SettingsSwipeHold (sent on every full project load and on Dismiss), the `swipe` part of
     /status gains `switch` and `auto`, SettingsSwipeResult gains its `apply_*` keys, and one line of
     DismissSwipeNotice's description changed.
+  - *Since 28/11* (Thomas's decisions; three commits from the `cordee-swipe` hand-over, hub #t-068). `suggest`
+    is the default (`core.config.SWIPE_AUTO`): a project without the key loads on it and says so (« Automatic
+    swipe: suggest (the default) »), New project and Start blank start on it, Save writes the key, and a value
+    that names no mode loads off and says so. Out of RUN the second model loads only after 10 s with nothing
+    applied since, so RUN pressed right after a project's apply finds no load started. A suggestion is advice
+    only (`SWIPE_AUTO_APPLY_RELEASED` False): « …, seen twice: note the time and this line », no Apply button,
+    every door refuses a switch on it; the operator's own swipe and its Apply are untouched. One floor,
+    `SWIPE_AUTO_FRAME_FLOOR_MS` = 1000 / 15 = 66.7 ms at p95, for the looker's stand-down (55 ms before) and for
+    the advice: a model more than 15 % slower may be advised when it covers 5 points more on two looks in a row
+    and the frame estimated with it — the live frames' p95 over the 3 s before the look, plus 1.7 × the two
+    inference times' difference (`SWIPE_ADVICE_COST_FACTOR`) — stays under the floor; on the laptop's figures of
+    26/11, from l @ 1920 × 1056, x is advised with « a frame would take about 52 ms against 35; the floor is 15
+    fps (67 ms) ». `auto` is not released and keeps the strict rule. The policy's simulator on mur2 6–8: from l
+    @ 1920 × 1056 no suggestion, from x the suggestions towards l unchanged. Tested on the CPU and the CUDA files,
+    not on the laptop: the hold below is owed before the technician sees this build.
   - *Open.* Conditions of use for the rehearsal, set by the last reader and written for the technician in the
     French text: « Auto: suggest » is set in STANDBY before the dancing, then the readiness line about the
-    second model is read and TouchDesigner checked; at this rehearsal no Apply on a suggestion — it is noted,
-    dismissed or left, and told to Thomas (with the show's l @ 1920 × 1056 the only candidate is the bigger x);
+    second model is read and TouchDesigner checked; no Apply on a suggestion — the build holds it back since
+    28/11: it is noted, dismissed or left, and told to Thomas (with the show's l @ 1920 × 1056 the only candidate
+    is the bigger x);
     on any red alert of the automatic swipe, Auto to off, nothing closed, nothing rebuilt; the supervising
     session watches the log for « [SwipeAuto] the live frames run late » and « [SwipeAuto] the look at ». Before
-    a show: the laptop has measured none of the commits after `48fdec1` — one hold on the final merged build
-    beside TouchDesigner, with a load on an empty wall, a look and a release in it, is owed; a switch at 1920 ×
+    the technician sees this build: the laptop has measured none of the commits after `48fdec1`, and since 28/11
+    the second model and the looks are on in every project — one hold on the final merged build beside
+    TouchDesigner (the show's setting with a load, a look and a release in it; x @ 1920 × 1056; two short runs
+    with no looker, for the cost factor), read against the 66.7 ms floor and TouchDesigner's own frame rate, is
+    owed; if the looks hurt either, the default goes back to off (`SWIPE_AUTO`, one line). A switch at 1920 ×
     1056 is not timed there either. Before `auto`: the bar and a held-out check for it (the dusk take of the
-    rehearsal is the first). Covered at the rehearsal by « no Apply »: after a shown suggestion the looks back
-    off 300, 600, 1,200 s, so the invitation can stand up to about 20 minutes with no look at all before the
-    first that could un-confirm it; with a gain hovering around the bar the Apply button can appear and
-    disappear silently a few times an evening. Left by the last reader, not blocking the rehearsal: the
+    rehearsal is the first). Covered by the advice only: after a shown suggestion the looks back off 300,
+    600, 1,200 s, so a line can stand up to about 20 minutes with no look at all before the first that could
+    un-confirm it; with a gain hovering around the bar it can appear and disappear silently a few times an
+    evening. Left by the last reader, not blocking the rehearsal: the
     late-frames stand-down sees nothing under 20 frames in 3 s (frames of 150 ms or more) nor right after a
-    stall; quit waits at most 8 s for a cold load. From x @ 1920 × 1056 the looks put the laptop at 57 ms: the
-    looker now stands down there by itself, and starting each background inference right after a live frame,
+    stall; quit waits at most 8 s for a cold load. From x @ 1920 × 1056 the looks put the laptop at 57 ms (`48fdec1`):
+    under the 66.7 ms floor, so since 28/11 the looker no longer stands down there; starting each background
+    inference right after a live frame,
     instead of every 0.2 s, is the next thing to try. A look that falls due with no second engine while a dancer
     is tracked waits for an empty wall. A suggestion behind the operator's own verdict stays hidden until he
     dismisses it. The probation's callbacks still run inside the third probation frame of an operator's Apply.
