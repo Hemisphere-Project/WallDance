@@ -50,7 +50,7 @@ import math
 from dataclasses import dataclass, replace
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-import core.config as core_config      # SWIPE_AUTO_RELEASED, read when needed (a test or a gate driver sets it)
+import core.config as core_config      # SWIPE_AUTO and _RELEASED, read when needed (a test or a gate driver sets them)
 from core.input_shape import target_hw
 from core.swipe import Candidate, FrameScore, SwipeFrame, SwipeParams, SwipeResult
 
@@ -60,10 +60,21 @@ MODES = (MODE_OFF, MODE_SUGGEST, MODE_AUTO)
 LABELS = {MODE_OFF: "Auto: off", MODE_SUGGEST: "Auto: suggest", MODE_AUTO: "Auto: switch"}
 
 
+# a project's swipe_auto that names no mode (a hand edit, a value cut short): the schema keeps this word in its place
+# (``core.config_schema.validate_flat``), and a project's load reads it as off and says so -- an unreadable setting
+# never turns a background job on, as an absent key would with the default
+UNREADABLE = "unreadable"
+
+
 def parse_mode(value) -> str:
     """A project's ``swipe_auto`` value -> one of ``MODES`` (anything else: off)."""
     v = str(value or "").strip().lower()
     return v if v in MODES else MODE_OFF
+
+
+def is_mode(value) -> bool:
+    """Whether a project's ``swipe_auto`` value names a mode (``parse_mode`` reads anything else as off)."""
+    return str(value or "").strip().lower() in MODES
 
 
 def released_modes() -> Tuple[str, ...]:
@@ -71,6 +82,14 @@ def released_modes() -> Tuple[str, ...]:
     of ``MODES``; off always.  The one source of the combo's items and of what the app accepts."""
     released = core_config.SWIPE_AUTO_RELEASED
     return tuple(m for m in MODES if m == MODE_OFF or m in released)
+
+
+def default_mode() -> str:
+    """The mode when nothing says otherwise -- a project with no ``swipe_auto`` key, a new project: the wished
+    default (``core.config.SWIPE_AUTO``) when this build releases it (``released_modes``, read at each call), else
+    off.  The one source: nothing else reads ``SWIPE_AUTO``."""
+    wished = parse_mode(core_config.SWIPE_AUTO)
+    return wished if wished in released_modes() else MODE_OFF
 
 
 def mode_word(mode) -> str:

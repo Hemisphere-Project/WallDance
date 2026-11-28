@@ -9,6 +9,11 @@ fixture): the combo shows those two, suggest is set from it, remotely and from a
 mode stays what it was; a project that asks for auto loads off.  All three (the ``swipe_auto_unlocked`` fixture):
 as before the lock.
 
+Since 28/11 (the owner: « auto: suggest by default ») the default is suggest while the build releases it, else off
+(``core.swipe_auto.default_mode``): a project with no key runs it, said once -- "(the default)" -- and its second
+model is asked for as a project's key asks for it; Save writes the key whatever the mode, so off stays off.  The app
+starts off: nothing of P6 runs before a project applies.
+
 The doors are tested on a real ``WallDanceApp`` (no GUI, no main loop, CPU), the combo on the headless panel."""
 from types import SimpleNamespace
 
@@ -19,17 +24,31 @@ from test_swipe_auto_live import swipe_auto_off_only, swipe_auto_suggest_only, s
 REFUSED = "Automatic swipe: {} is not released in this build - it stays {}"
 READ_OFF = "Automatic swipe: off - this project asks for {}, which is not released in this build"
 FROM_PROJECT = "Automatic swipe: {} (from the project)"
+BY_DEFAULT = "Automatic swipe: {} (the default)"
+UNREADABLE_OFF = "Automatic swipe: off - this project's setting could not be read"
 MODES = [("suggest", "Auto: suggest", "suggest"), ("auto", "Auto: switch", "switch")]
+TIP_SUGGEST = ("  suggest  while dancers are on the wall, it tries the other model\n"
+               "           at the same network input and says so here when it does\n"
+               "           better on two looks in a row and is no more than 15 %\n"
+               "           slower (Apply now, or Dismiss: not now, 15 min)\n")
+TIP_END = ("An empty wall costs no inference; the other model stays loaded\n"
+           "while it is not off.  Saved with the project.")
 TIP_ALL = ("The automatic swipe, while the show runs:\n"
-           "  off      nothing in the background (the project's default)\n"
-           "  suggest  while dancers are on the wall, it tries the other model\n"
-           "           at the same network input and says so here when it does\n"
-           "           better on two looks in a row and is no more than 15 %\n"
-           "           slower (Apply now, or Dismiss: not now, 15 min)\n"
+           "  off      nothing in the background\n"
+           + TIP_SUGGEST
+           + "           (the default)\n"
            "  switch   the same, and when the other model is clearly better it\n"
            "           switches between two frames (an alert only if it fails)\n"
-           "An empty wall costs no inference; the other model stays loaded\n"
-           "while it is not off.  Saved with the project when not off.")
+           + TIP_END)
+TIP_SHIPPED = ("The automatic swipe, while the show runs:\n"
+               "  off      nothing in the background\n"
+               + TIP_SUGGEST
+               + "           (the default)\n"
+               + TIP_END)
+TIP_OFF_ONLY = ("The automatic swipe, while the show runs:\n"
+                "  off      nothing in the background (the project's default)\n"
+                + TIP_END)
+X_MODEL = "yolo11x-pose"        # a project file names its model: its load is a full one
 
 
 @pytest.fixture
@@ -76,6 +95,16 @@ def _pick(app, label):
 
 def _p6_runs(app):
     return app.swipe_bg._thread is not None or app.swipe_switch._thread is not None
+
+
+def _load(app, config):
+    """A project's load; what it asks of the looker: (the mode, its thread asked to start, a click moment set --
+    ``BackgroundSwipe.set_mode``: never by a project's load since 28/11, whose second model waits for a settled
+    STANDBY or an empty wall, ``test_swipe_auto_load_settle``).  The thread is not started."""
+    starts = []
+    app.swipe_bg.start = lambda: starts.append("start")
+    app._apply_config_without_model(config)
+    return app.swipe_bg.mode, starts, app.swipe_bg._mode_set
 
 
 def _wall_panel(dpg):
@@ -132,9 +161,32 @@ def suggest_released(request):
 def test_the_build_ships_with_off_and_suggest_released():
     import core.config
     from core.swipe_auto import released_modes
+    from core.swipe_auto import default_mode
     assert core.config.SWIPE_AUTO_RELEASED == ("off", "suggest")
     assert released_modes() == ("off", "suggest")
-    assert core.config.SWIPE_AUTO == "off"                       # a project without the key: off, as before
+    assert core.config.SWIPE_AUTO == "suggest"                   # the wished default (28/11)
+    assert default_mode() == "suggest", "a project without the key does not run suggest"
+
+
+@pytest.mark.parametrize("released,default", [(("off",), "off"), (("off", "suggest"), "suggest"),
+                                              (("off", "suggest", "auto"), "suggest"), (("off", "auto"), "off")])
+def test_the_default_is_suggest_when_it_is_released_else_off(monkeypatch, released, default):
+    """``core.swipe_auto.default_mode``, the one source, read at each call.  Fails before: there was no such
+    function, the default was core.config.SWIPE_AUTO, off."""
+    import core.config
+    from core.swipe_auto import default_mode
+    monkeypatch.setattr(core.config, "SWIPE_AUTO_RELEASED", released)
+    assert default_mode() == default
+
+
+def test_regression_guard_the_app_starts_off_until_a_project_applies(real_app):
+    """The constructor loads nothing: the looker is built off, no thread, nothing resident, no load moment set --
+    the project's load (or a new project) sets the mode."""
+    app, events = real_app
+    bg = app.swipe_bg
+    assert bg.mode == "off" and bg.state == "off" and not _p6_runs(app)
+    assert bg.resident is None and bg._mode_set is False
+    assert not [t for t in _toasts(events) if t.startswith("Automatic swipe")]
 
 
 def test_the_shipped_build_end_to_end_suggest_opens_auto_stays_closed_and_nothing_switches(panel, real_app, capsys):
@@ -259,7 +311,24 @@ def test_regression_guard_off_only_a_project_that_asks_for_it_loads_off_says_so_
     out = capsys.readouterr().out
     assert out.count(f"[SwipeAuto] mode off - this project asks for {mode}, which is not released in this build") == 1
     assert "(from the project)" not in out
-    assert "swipe_auto" not in app._get_saveable_config()           # Save: the session's mode is off, no key
+
+
+def test_off_only_save_writes_the_key_off(real_app, swipe_auto_off_only):  # noqa: F811
+    """A project that asks for suggest loads off; Save writes ``swipe_auto: off`` -- the key is written whatever the
+    mode (28/11), the one thing a locked build does differently.  Fails before: Save wrote no key."""
+    app, events = real_app
+    app._apply_config_without_model({"swipe_auto": "suggest"})
+    assert app._get_saveable_config().get("swipe_auto", "no key") == "off"
+
+
+def test_regression_guard_off_only_a_full_load_without_the_key_runs_off_loads_nothing_says_nothing(
+        real_app, capsys, swipe_auto_off_only):  # noqa: F811
+    """Off the only mode released: the default is off, so a project file with no key loads as it always did."""
+    app, events = real_app
+    mode, starts, moment = _load(app, {"model": X_MODEL})
+    assert (mode, starts, moment) == ("off", [], False) and not _p6_runs(app)
+    assert not [t for t in _toasts(events) if t.startswith("Automatic swipe")]
+    assert "SwipeAuto" not in capsys.readouterr().out
 
 
 # ----------------------------------------------------------------------------------------------------------
@@ -323,14 +392,136 @@ def test_suggest_released_a_project_brings_it_and_one_that_asks_for_auto_loads_o
     assert "(from the project)" not in out
 
 
+def test_suggest_released_a_project_without_the_key_runs_the_default_said_once_and_loads_as_a_keyed_one(
+        real_app, suggest_released, capsys):
+    """A project file with no swipe_auto (a full load): suggest, the default -- one log line, one toast, the combo
+    on « Auto: suggest » -- and the second model asked for exactly as a project whose key is suggest asks for it.
+    Fails before: such a project ran off, silently."""
+    app, events = real_app
+    keyless = _load(app, {"model": X_MODEL})
+    assert keyless[0] == "suggest", f"a project without the key runs {keyless[0]}"
+    assert _toasts(events) == [BY_DEFAULT.format("suggest")] and _combo_syncs(events) == ["Auto: suggest"]
+    out = capsys.readouterr().out
+    assert out.count("[SwipeAuto] mode suggest (the default)") == 1 and "(from the project)" not in out
+    app._cb_swipe_auto("off")
+    events.clear()
+    keyed = _load(app, {"model": X_MODEL, "swipe_auto": "suggest"})
+    assert keyless == keyed == ("suggest", ["start"], False)       # no click moment: the settle, as a keyed one
+    assert _toasts(events) == [FROM_PROJECT.format("suggest")]
+    assert capsys.readouterr().out.count("[SwipeAuto] mode suggest (from the project)") == 1
+
+
+@pytest.mark.parametrize("value", ["always", "", None, 1])
+def test_suggest_released_a_value_that_names_no_mode_loads_off_said_once_and_save_writes_off(
+        real_app, suggest_released, value, capsys):
+    """A project file whose swipe_auto was edited by hand into no mode, read as a project switch reads it (the
+    schema, then the load), the session running suggest: off -- the combo on « Auto: off », one log line, one toast,
+    nothing asked of the looker -- and Save writes off.  Fails before: the schema dropped the value and the load
+    took the default, suggest: a setting nobody could read turned a background job on."""
+    from core import config_schema
+    app, events = real_app
+    _load(app, {"model": X_MODEL, "swipe_auto": "suggest"})
+    events.clear()
+    capsys.readouterr()
+    flat, warnings = config_schema.validate_flat(config_schema.flatten(config_schema.migrate(
+        {"model": X_MODEL, "swipe_auto": value})))
+    mode, starts, moment = _load(app, flat)
+    assert mode == "off", f"an unreadable setting loads {mode}"
+    assert [w for w in warnings if w.startswith("swipe_auto")] == [f"swipe_auto: invalid value {value!r} read as off"]
+    assert starts == [] and not moment and _combo_syncs(events) == ["Auto: off"]
+    assert _toasts(events) == [UNREADABLE_OFF]
+    out = capsys.readouterr().out
+    assert out.count("[SwipeAuto] mode off - this project's setting could not be read") == 1
+    assert "(the default)" not in out and "(from the project)" not in out
+    assert app._get_saveable_config().get("swipe_auto", "no key") == "off"
+
+
+def test_regression_guard_suggest_released_an_absent_key_still_runs_the_default_through_the_schema(
+        real_app, suggest_released):
+    """The same road (the schema, then the load) without the key: the default, suggest, as before."""
+    from core import config_schema
+    app, events = real_app
+    flat, _ = config_schema.validate_flat(config_schema.flatten(config_schema.migrate({"model": X_MODEL})))
+    assert "swipe_auto" not in flat
+    assert _load(app, flat)[0] == "suggest"
+    assert _toasts(events) == [BY_DEFAULT.format("suggest")]
+
+
+def test_regression_guard_suggest_released_a_project_whose_key_is_off_runs_off_and_says_nothing(
+        real_app, suggest_released, capsys):
+    """Its key off (a full load, the session in suggest): off, nothing said, nothing of a default."""
+    app, events = real_app
+    _load(app, {"model": X_MODEL, "swipe_auto": "suggest"})
+    events.clear()
+    capsys.readouterr()
+    assert _load(app, {"model": X_MODEL, "swipe_auto": "off"})[0] == "off"
+    assert not [t for t in _toasts(events) if t.startswith("Automatic swipe")]
+    assert "(the default)" not in capsys.readouterr().out
+
+
+def _saved_and_read_back(app, tmp_path):
+    """Save (the app's saveable config, as the file holds it) and read back as a project switch reads it."""
+    from core import config_schema
+    from core.config_store import ConfigStore
+    store = ConfigStore(config_dir=str(tmp_path / "projects"),
+                        last_project_file=str(tmp_path / "projects" / "last_project.txt"))
+    path = store.save("c2_swipe_saved", config_schema.structure(app._get_saveable_config(), {}, "show"))
+    flat, warnings = config_schema.validate_flat(config_schema.flatten(config_schema.migrate(store.load(path))))
+    assert not [w for w in warnings if w.startswith("swipe_auto")]
+    return flat
+
+
+def test_suggest_released_off_chosen_is_saved_and_reloads_off(real_app, suggest_released, tmp_path, capsys):
+    """The technician sets off (one click) on a project that ran the default: Save writes ``swipe_auto: off``, and
+    the project reloads off, silently, though the default is suggest.  Fails before: Save wrote no key."""
+    app, events = real_app
+    _load(app, {"model": X_MODEL})                                  # no key: the default, suggest
+    _pick(app, "Auto: off")
+    assert app.swipe_bg.mode == "off"
+    flat = _saved_and_read_back(app, tmp_path)
+    assert flat.get("swipe_auto") == "off", f"Save wrote {flat.get('swipe_auto', 'no key')} for off"
+    _set_remote(app, "suggest")                                     # the session moves on
+    events.clear()
+    capsys.readouterr()
+    assert _load(app, {"model": flat["model"], "swipe_auto": flat["swipe_auto"]})[0] == "off"
+    assert not [t for t in _toasts(events) if t.startswith("Automatic swipe")]
+    assert "(the default)" not in capsys.readouterr().out
+
+
+def test_regression_guard_suggest_released_suggest_chosen_is_saved_and_reloads_suggest(real_app, suggest_released,
+                                                                                         tmp_path):
+    app, events = real_app
+    _pick(app, "Auto: suggest")
+    flat = _saved_and_read_back(app, tmp_path)
+    assert flat.get("swipe_auto") == "suggest"
+    _pick(app, "Auto: off")
+    events.clear()
+    assert _load(app, {"model": flat["model"], "swipe_auto": flat["swipe_auto"]})[0] == "suggest"
+    assert _toasts(events) == [FROM_PROJECT.format("suggest")]
+
+
+@pytest.mark.parametrize("released,tip", [(None, TIP_SHIPPED), (("off",), TIP_OFF_ONLY),
+                                          (("off", "suggest", "auto"), TIP_ALL)],
+                         ids=["shipped", "off-only", "all"])
+def test_the_tooltip_marks_the_default_only_and_says_saved_with_the_project(panel, monkeypatch, released, tip):
+    """The default in the tooltip: « (the default) » under suggest's paragraph while suggest is the default, off's
+    own words of before only while off is.  Fails before: off was marked the default and Save « when not off »."""
+    import core.config
+    if released is not None:
+        monkeypatch.setattr(core.config, "SWIPE_AUTO_RELEASED", released)
+    _wall_panel(panel)
+    assert _combo(panel)[1] == tip
+
+
 # ----------------------------------------------------------------------------------------------------------
 # All three: as before the lock (regression guards)
 # ----------------------------------------------------------------------------------------------------------
 def test_regression_guard_all_released_the_combo_is_on_screen_as_before(panel, swipe_auto_unlocked):  # noqa: F811
+    """Its tooltip: test_the_tooltip_marks_the_default_only_and_says_saved_with_the_project."""
     dpg = panel
     _wall_panel(dpg)
     assert _on_screen(dpg, "swipe_auto_combo")
-    assert _combo(dpg) == (["Auto: off", "Auto: suggest", "Auto: switch"], TIP_ALL)
+    assert _combo(dpg)[0] == ["Auto: off", "Auto: suggest", "Auto: switch"]
 
 
 @pytest.mark.parametrize("mode,label,word", MODES)

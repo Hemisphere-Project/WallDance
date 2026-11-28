@@ -361,14 +361,16 @@ def validate_flat(flat: Dict) -> Tuple[Dict, List[str]]:
         warnings.extend(rig_warnings)
 
     if "swipe_auto" in out:
-        # P6: off | suggest | auto; anything else is dropped (= off, the default)
-        from core.swipe_auto import MODES
+        # P6: off | suggest | auto, off kept as a choice; anything else names no mode: UNREADABLE in its place,
+        # which a project's load reads as off and says so -- never dropped, or the load would take the default
+        # (core.swipe_auto.default_mode) and an unreadable setting would turn a background job on
+        from core.swipe_auto import MODES, UNREADABLE
         v = str(out["swipe_auto"] if out["swipe_auto"] is not None else "").strip().lower()
         if v in MODES:
             out["swipe_auto"] = v
         else:
-            warnings.append(f"swipe_auto: invalid value {out['swipe_auto']!r} dropped (off)")
-            out.pop("swipe_auto")
+            warnings.append(f"swipe_auto: invalid value {out['swipe_auto']!r} read as off")
+            out["swipe_auto"] = UNREADABLE
 
     _validate_input_transform(out, warnings)
     for key in _BOOL_KEYS:

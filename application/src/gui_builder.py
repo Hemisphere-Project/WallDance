@@ -18,7 +18,7 @@ from core.config import (RECORDING_SLOTS, IDENTITY_SLOTS_ENABLED, IDENTITY_SLOTS
                          IDENTITY_SLOTS_STABILITY, IDENTITY_SLOTS_COAST_S,
                          IDENTITY_SLOTS_STATIC_GUARD, IDENTITY_SLOTS_SMART_HOLD, FOREGROUND_ENABLED,
                          IDENTITY_SLOTS_USE_IR_BELT, OSC_SEND_STATE, DETECTION_DEFAULTS)
-from core.swipe_auto import LABELS as SWIPE_AUTO_LABELS, released_modes   # read when the panel is built
+from core.swipe_auto import LABELS as SWIPE_AUTO_LABELS, default_mode, released_modes   # read when the panel is built
 from gui_icons import Icons
 from gui_constants import (
     TEXT_NORMAL, TEXT_MUTED, TEXT_DIM, TEXT_HINT, TEXT_FAINT,
@@ -718,9 +718,10 @@ SWIPE_BTN_TIP_OFF = ("During the warmup, in RUN, with the empty-wall snapshot re
                      "that covers the dancers best.  The show runs on; nothing switches\n"
                      "until you Apply, in STANDBY.  Press again to cancel.")
 SWIPE_BTN_TIP_ON = SWIPE_BTN_TIP_OFF.replace("until you Apply, in STANDBY.", "until you Apply.")
-# The automatic swipe's combo tooltip: one paragraph per mode, only those of the modes the build releases.
+# The automatic swipe's combo tooltip: one paragraph per mode, only those of the modes the build releases; the
+# build's default (core.swipe_auto.default_mode) in its own words (SWIPE_AUTO_TIP_DEFAULT), only that one.
 SWIPE_AUTO_TIP_LINES = {
-    "off": "  off      nothing in the background (the project's default)\n",
+    "off": "  off      nothing in the background\n",
     "suggest": ("  suggest  while dancers are on the wall, it tries the other model\n"
                 "           at the same network input and says so here when it does\n"
                 "           better on two looks in a row and is no more than 15 %\n"
@@ -728,6 +729,21 @@ SWIPE_AUTO_TIP_LINES = {
     "auto": ("  switch   the same, and when the other model is clearly better it\n"
              "           switches between two frames (an alert only if it fails)\n"),
 }
+SWIPE_AUTO_TIP_DEFAULT = {
+    "off": "  off      nothing in the background (the project's default)\n",
+    "suggest": SWIPE_AUTO_TIP_LINES["suggest"] + "           (the default)\n",
+    "auto": SWIPE_AUTO_TIP_LINES["auto"] + "           (the default)\n",
+}
+
+
+def swipe_auto_tip() -> str:
+    """The combo's tooltip, for the modes this build releases and its default (both read now)."""
+    default = default_mode()
+    return ("The automatic swipe, while the show runs:\n"
+            + "".join((SWIPE_AUTO_TIP_DEFAULT if m == default else SWIPE_AUTO_TIP_LINES)[m]
+                      for m in released_modes())
+            + "An empty wall costs no inference; the other model stays loaded\n"
+            "while it is not off.  Saved with the project.")
 
 
 def build_phase_rig(gui: Any):
@@ -928,22 +944,19 @@ def build_phase_wall(gui: Any):
             dpg.add_spacer(width=scaled(160))
             swipe_auto = dpg.add_combo(
                 items=[SWIPE_AUTO_LABELS[m] for m in released],
-                default_value=SWIPE_AUTO_LABELS["off"],
+                default_value=SWIPE_AUTO_LABELS["off"],   # the mode until a project applies (the app syncs it)
                 tag="swipe_auto_combo",
                 width=scaled(130),
                 callback=gui._on_swipe_auto,
             )
             with dpg.tooltip(swipe_auto):
-                dpg.add_text("The automatic swipe, while the show runs:\n"
-                             + "".join(SWIPE_AUTO_TIP_LINES[m] for m in released)
-                             + "An empty wall costs no inference; the other model stays loaded\n"
-                             "while it is not off.  Saved with the project when not off.")
+                dpg.add_text(swipe_auto_tip())
         dpg.add_text("", tag="swipe_status_text", color=TEXT_MUTED, wrap=scaled(_PHASE_WRAP))
         with dpg.group(horizontal=True):
             swipe_apply = dpg.add_button(label="Apply", tag="swipe_apply_btn", show=False,
                                          width=scaled(240), height=scaled(26), callback=gui._on_swipe_apply)
             with dpg.tooltip(swipe_apply):
-                # P5's tooltip (the automatic swipe is off by default); each verdict shown sets its own
+                # P5's tooltip (the automatic swipe off, as until a project applies); each verdict shown sets its own
                 dpg.add_text("STANDBY only: switches the model / network input to the swipe's\n"
                              "pick -- the engine reloads, a few seconds without tracking, as\n"
                              "when you change the model by hand.  Not saved: Save the project\n"

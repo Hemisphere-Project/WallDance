@@ -61,7 +61,8 @@ MOVED = {
     "show_ball": False, "show_bbox": False, "show_ids": False, "show_keypoints": True,
     "show_skeleton": False, "show_trails": True, "slot_filter_input": "raw", "smart_hold": False,
     "stability": 1.0, "static_ghost_guard": False, "static_release_s": 5.0, "support_line": True,
-    "swipe_collect": False, "tracker_ghost_skeleton_age": 6, "tracker_intermittent_confirm": False,
+    "swipe_auto": "off", "swipe_collect": False, "tracker_ghost_skeleton_age": 6,
+    "tracker_intermittent_confirm": False,
     "tracker_max_age": 90, "tracker_smoothing": 3, "tracking_mode": "motion_first",
     "use_ir_belt": False, "use_tensorrt": False, "yolo_imgsz": 960, "yolo_shape": "1280x736",
 }
@@ -126,6 +127,9 @@ def _app(tmp_path, monkeypatch):
 
     app.models._load_model_with_progress = load
     app.cameras._attempt_camera_connect = connect
+    # P6: a new project starts the automatic swipe at the default (suggest): its mode is the app's, its looker
+    # thread is not started here -- nothing in these tests looks at the wall
+    app.swipe_bg.start = lambda: None
     # The startup door: the picker shows before any project applies (main_loop's startup).
     app.configs._show_startup_project_picker()
     return SimpleNamespace(app=app, mgr=app.configs, store=app.configs.config_store,
@@ -137,7 +141,7 @@ def _drive(tmp_path, monkeypatch, door, extra=None, switch=True, via_api=False):
     blank (+ its first Save) -> (startup, previous, after-in-the-app, after-in-the-file).
     switch=False: the previous project is only on disk, the last used one (the launch door).
     via_api=True: New / Start blank as the picker's buttons send them (ui.adapter submits the
-    command; the app's handler runs the manager's door inside its own steps, P6's swipe reset)."""
+    command; the app's handler runs the manager's door, which sets P6's mode itself)."""
     s = _app(tmp_path, monkeypatch)
     startup = _norm(s.app._get_saveable_config())
     previous = {k: _moved(k, v) for k, v in startup.items() if k not in CARRIED}
@@ -167,8 +171,19 @@ def _drive(tmp_path, monkeypatch, door, extra=None, switch=True, via_api=False):
     assert saved_path and os.path.dirname(os.path.dirname(saved_path)).startswith(str(tmp_path))
     with open(saved_path) as f:
         saved = _norm(config_schema.flatten(json.load(f)))
-    return SimpleNamespace(s=s, startup=startup, previous=_norm(previous), held=held, live=live,
-                           saved=saved, opens_before=opens_before)
+    return SimpleNamespace(s=s, startup=startup, default=_new_default(startup), previous=_norm(previous),
+                           held=held, live=live, saved=saved, opens_before=opens_before)
+
+
+def _new_default(startup):
+    """What a new project starts from: the startup state, but the automatic swipe at the build's default
+    (P6, 28/11: core.swipe_auto.default_mode) -- the startup state holds off, the mode before any project
+    applies, and a new project does not start from that one."""
+    out = dict(startup)
+    if "swipe_auto" in out:
+        from core.swipe_auto import default_mode
+        out["swipe_auto"] = default_mode()
+    return out
 
 
 def _table(d, door):
@@ -176,11 +191,11 @@ def _table(d, door):
     for key in sorted(d.startup):
         if key in NOT_A_PROJECT_SETTING:
             continue
-        out[key] = {"rig": key in CARRIED, "default": d.startup[key], "previous": d.held.get(key),
+        out[key] = {"rig": key in CARRIED, "default": d.default[key], "previous": d.held.get(key),
                     "after": d.live.get(key), "saved": d.saved.get(key),
-                    "verdict": ("not moved by the previous project" if d.held.get(key) == d.startup[key]
-                                else "reset to its default" if d.live.get(key) == d.startup[key]
-                                and d.saved.get(key) == d.startup[key]
+                    "verdict": ("not moved by the previous project" if d.held.get(key) == d.default[key]
+                                else "reset to its default" if d.live.get(key) == d.default[key]
+                                and d.saved.get(key) == d.default[key]
                                 else "inherited from the session")}
     target = os.environ.get("WD_A2_TABLE")
     if target:
@@ -195,14 +210,15 @@ def _table(d, door):
     return out
 
 
-def _check(d, door):
+def _check(d, door, own=()):
+    """``own``: keys the caller checks itself (left out of the two checks on the previous project)."""
     table = _table(d, door)
     # the previous project really moved the session (else the check below proves nothing)
-    unmoved = [k for k, row in table.items() if not row["rig"]
+    unmoved = [k for k, row in table.items() if not row["rig"] and k not in own
                and row["verdict"] == "not moved by the previous project"]
     assert unmoved == [], f"the previous project did not move {unmoved}"
     inherited = {k: (row["previous"], row["after"], row["saved"]) for k, row in table.items()
-                 if not row["rig"] and row["verdict"] != "reset to its default"}
+                 if not row["rig"] and k not in own and row["verdict"] != "reset to its default"}
     assert inherited == {}, f"{door}: keys kept from the previous project's session: {inherited}"
     # the rig and the venue on the named list are carried, in the app and in the file
     for key, value in {**RIG_CARRIED, **VENUE}.items():
@@ -249,14 +265,14 @@ def _venue_carried(d):
 def test_at_launch_a_new_project_carries_the_last_projects_rig_and_venue(tmp_path, monkeypatch, door):
     """The door the GUI reaches today: the launch picker, before any project applies (the session is
     the startup state).  The carried keys come from the last used project on disk, every other key
-    is the startup state's."""
+    is the startup state's -- the automatic swipe the build's default (P6)."""
     d = _drive(tmp_path, monkeypatch, door, switch=False)
     assert d.s.loads and d.s.connects[-1] == "ids"
     for key, value in {**RIG_CARRIED, **VENUE}.items():
         assert d.live[key] == _norm(value) and d.saved[key] == _norm(value), (door, key)
     others = {k: (d.live.get(k), d.saved.get(k)) for k in d.startup
               if k not in CARRIED and k not in NOT_A_PROJECT_SETTING
-              and not d.live.get(k) == d.saved.get(k) == d.startup[k]}
+              and not d.live.get(k) == d.saved.get(k) == d.default[k]}
     assert others == {}, f"{door} at launch: keys off their startup state: {others}"
     _venue_carried(d)
 
@@ -269,31 +285,35 @@ def test_the_rig_list_is_short_and_named():
 
 
 # --------------------------------------------------------------------------- #
-# P6 (« suggest » released 27/11, off the default, « switch » locked): the automatic swipe's key is
-# saved only when it is not off, so the startup state has no swipe_auto.  Whatever the last project
-# had and whatever this build releases, a new project starts with the swipe off and writes no key.
+# P6 (« suggest » released 27/11, the default since 28/11, « switch » locked): a new project starts
+# with the automatic swipe at the build's default -- core.swipe_auto.default_mode: suggest while the
+# build releases it, else off -- whatever the last project had and whatever this build releases, and
+# its first Save writes the key.  The startup state holds swipe_auto: off (the looker is built off:
+# nothing of it runs before a project applies); a new project does not start from that one.
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("released", [None, ("off",), ("off", "suggest")],
                          ids=["shipped", "off-only", "off+suggest"])
-@pytest.mark.parametrize("last", ["off", "suggest", "auto"])     # absent (off), suggest, switch
+@pytest.mark.parametrize("last", ["off", "suggest", "auto"])     # the last project's key: off, suggest, switch
 @pytest.mark.parametrize("door", ["blank", "new"])
-def test_a_new_project_has_the_automatic_swipe_off_and_no_key(tmp_path, monkeypatch, door, last,
-                                                              released):
+def test_a_new_project_has_the_automatic_swipe_at_the_default_and_writes_it(tmp_path, monkeypatch, door,
+                                                                            last, released):
     pytest.importorskip("core.swipe_auto")                  # only a tree without P6 at all skips
     from core import config as core_config
     if released is not None:                                # else the list the build ships
         monkeypatch.setattr(core_config, "SWIPE_AUTO_RELEASED", released)
     held_mode = last if last in core_config.SWIPE_AUTO_RELEASED else "off"   # what a load accepts
-    # the picker's door: the swipe's reset is the app's command handler's (_swipe_project_start)
-    d = _drive(tmp_path, monkeypatch, door, extra=None if last == "off" else {"swipe_auto": last},
-               via_api=True)
+    default = "suggest" if "suggest" in core_config.SWIPE_AUTO_RELEASED else "off"
+    # the picker's door (ui.adapter's command; the manager's own door sets the mode)
+    d = _drive(tmp_path, monkeypatch, door, extra={"swipe_auto": last}, via_api=True)
     try:
-        assert "swipe_auto" not in d.startup
+        assert d.startup.get("swipe_auto", "off") == "off"   # before any project: off, nothing runs
         # the previous project really set the session's mode (else the check below proves nothing)
         assert d.held.get("swipe_auto", "off") == held_mode, (door, last, released, d.held.get("swipe_auto"))
-        assert d.s.app.swipe_bg.mode == "off"
-        assert "swipe_auto" not in d.live and "swipe_auto" not in d.saved
-        _check(d, door + "+swipe")
+        assert d.s.app.swipe_bg.mode == default, \
+            f"the new project starts {d.s.app.swipe_bg.mode}, not at the default {default}"
+        assert d.live.get("swipe_auto") == default and d.saved.get("swipe_auto") == default, \
+            f"the new project's first Save wrote {d.saved.get('swipe_auto', 'no key')}, not {default}"
+        _check(d, door + "+swipe", own=("swipe_auto",))
     finally:
         d.s.app.swipe_bg.stop(1.0)
         d.s.app.swipe_switch.stop(1.0)
@@ -305,7 +325,7 @@ def test_a_new_project_has_the_automatic_swipe_off_and_no_key(tmp_path, monkeypa
 @pytest.mark.parametrize("door", ["blank", "new"])
 def test_a_key_added_to_the_schema_later_is_reset_too(tmp_path, monkeypatch, door):
     """A throw-away project key, wired as a new key is (saved by the app, applied when present),
-    off by default -- as « swipe_auto » will be: a new project starts with it off."""
+    off by default: a new project starts with it off."""
     from app import WallDanceApp
     save, apply = WallDanceApp._get_saveable_config, WallDanceApp._apply_config_without_model
 

@@ -15,9 +15,13 @@ and acts on its advice, on its own thread, without the operator:
   kept RESIDENT (under ``ENGINE_LOAD_LOCK`` and without a CUDA graph).  A load or a release stops the loop for
   some 50 ms, so they happen only at moments where that does not show: out of RUN, or in RUN on a wall empty for
   ``SWIPE_AUTO_LOAD_EMPTY_S`` (no track, no identity slot held: the collector's own test) -- and at the operator's
-  own click: the first look after the mode is set to suggest or auto loads it, whatever is on the wall (once).
-  Never on entering RUN, never at a look that falls due later while a dancer is tracked.  So it loads when the
-  mode is set, after a project or model load, in STANDBY or on an empty wall; a look that falls due without it
+  own click in RUN: the first look after he sets the mode to suggest or auto loads it, whatever is on the wall
+  (once).  Out of RUN a load starts only once the app has sat there ``SWIPE_AUTO_LOAD_SETTLE_S`` with nothing
+  applied since (a project, a model, the mode set -- his click out of RUN too --, RUN or STANDBY pressed): a load
+  cannot be cut short, and a man alone presses RUN when the dancers arrive, often right after he applied the
+  project; RUN pressed before: nothing was started, and the load waits for the next such moment.  Never on
+  entering RUN, never at a look that falls due later while a dancer is tracked.  So it loads after the mode is
+  set, a project or model load, in STANDBY once settled or on an empty wall; a look that falls due without it
   while a dancer is tracked waits for such a moment (``WALL_WAIT``, in ``status``).  It is kept while the mode is
   on (no idle timer) and goes when the mode goes off (at once out of RUN, right after a live frame in RUN), when
   the project, input or TensorRT state changes, and at quit, never inside a run; the readiness report says what
@@ -339,9 +343,11 @@ class BackgroundSwipe:
                  engine_lock=None, wall: Callable[[], float] = time.time, referee=None,
                  in_run: Callable[[], bool] = lambda: False, wall_empty: Callable[[], bool] = lambda: True,
                  empty_s: Optional[float] = None, gpu_used: Callable[[], Optional[int]] = _gpu_used_bytes,
+                 settle_s: Optional[float] = None,
                  snooze_s: Optional[float] = None, max_age_s: Optional[float] = None,
                  standby: Callable[[], bool] = lambda: False, frame_budget_ms: Optional[float] = None):
-        from core.config import (SWIPE_AUTO_FRAME_BUDGET_MS, SWIPE_AUTO_LOAD_EMPTY_S, SWIPE_AUTO_LOOK_S,
+        from core.config import (SWIPE_AUTO_FRAME_BUDGET_MS, SWIPE_AUTO_LOAD_EMPTY_S, SWIPE_AUTO_LOAD_SETTLE_S,
+                                 SWIPE_AUTO_LOOK_S,
                                  SWIPE_AUTO_PACE_S, SWIPE_AUTO_SNOOZE_S, SWIPE_VERDICT_MAX_AGE_S)
         self.processor = processor
         self.live = live
@@ -358,6 +364,8 @@ class BackgroundSwipe:
         self.look_s = float(SWIPE_AUTO_LOOK_S if look_s is None else look_s)
         self.pace_s = float(SWIPE_AUTO_PACE_S if pace_s is None else pace_s)
         self.empty_s = float(SWIPE_AUTO_LOAD_EMPTY_S if empty_s is None else empty_s)
+        # out of RUN, a load starts only once the app has sat there this long with nothing applied since
+        self.settle_s = float(SWIPE_AUTO_LOAD_SETTLE_S if settle_s is None else settle_s)
         self.snooze_s = float(SWIPE_AUTO_SNOOZE_S if snooze_s is None else snooze_s)    # Dismiss: not now, this long
         self.max_age_s = float(SWIPE_VERDICT_MAX_AGE_S if max_age_s is None else max_age_s)  # a suggestion's age
         # the live frames run late over it: no look (0: no budget -- the bench's gate runs on a shared GPU)
@@ -404,6 +412,11 @@ class BackgroundSwipe:
         self._click_look = False                        # this look is that one: a load moment whatever else is true
         self._quiet_since: Optional[float] = None       # loop clock since when the wall is seen empty in RUN
         self._was_run = False                           # RUN at the last look (entering RUN starts the count again)
+        self._set_out = False                           # the mode was last set out of RUN
+        self._click_out = False                         # the click kept was made out of RUN: it lapses in RUN
+        self._settle_again = False                      # a mode set, RUN or STANDBY pressed: the settle counts again
+        self._out_since: Optional[float] = None         # loop clock since when the app sits out of RUN, nothing applied
+        self._settle_key: Optional[Tuple] = None        # ... on this live setting (another project, model: again)
         self._next_s: Optional[float] = None            # the next look sooner than look_s (an empty wall counted)
         self._wall_wait: Optional[str] = None           # a look due waits for an empty wall: what its row says
         self._ref_wait: Optional[str] = None            # the look waits on the reference watch: what its row says
@@ -426,16 +439,20 @@ class BackgroundSwipe:
     def mode(self) -> str:
         return self.auto.mode
 
-    def set_mode(self, mode: str) -> str:
+    def set_mode(self, mode: str, click: bool = True) -> str:
         """Off ends the automatic swipe for the session: the looker frees its engine (at once out of RUN, right
         after a live frame in RUN) and its thread ends.  Another mode wakes the looker -- ``start`` starts it
-        again -- and the engine loads at that next look, whatever is on the wall: the operator's click (or a
-        project load) is the moment, once, a snooze or not.  Later, only where a pause does not show.  Off ends
-        what the operator said to this mode and what it saw: the suggestion, a Dismiss's snooze, the streak -- a
-        mode set again starts fresh."""
+        again.  The operator's click (``click``) in RUN: the engine loads at that next look, whatever is on the
+        wall -- his own act is the moment, once, a snooze or not.  His click out of RUN: the moment comes once the
+        app has sat there ``settle_s`` from it, and goes if RUN begins first.  A project's mode (``click`` False:
+        its load, a new project) is no moment of its own: out of RUN the settle counts from it, in RUN the wall must
+        be empty.  Later, only where a pause does not show.  Off ends what the operator said to this mode and what
+        it saw: the suggestion, a Dismiss's snooze, the streak -- a mode set again starts fresh."""
         m = parse_mode(mode)
         self.auto.mode = m
-        self._mode_set = m != MODE_OFF    # the next look may load: the operator chose this pause
+        self._set_out = not self.in_run()                 # (before the click: the looker reads them in that order)
+        self._mode_set = m != MODE_OFF and bool(click)    # the next look may load: the operator chose this pause
+        self._settle_again = True                         # out of RUN, the settle counts from now
         if m == MODE_OFF:
             self._clear_suggestion("the automatic swipe is off")
             self.auto.turned_off()
@@ -444,8 +461,12 @@ class BackgroundSwipe:
             self._end_wall_wait()
         elif self.state == "off":
             self.state = "watching"
-        self._wake.set()                  # the next look now: the operator's click is the moment
+        self._wake.set()                  # the next look now: his click in RUN is the moment, out of RUN the count
         return m
+
+    def state_changed(self) -> None:
+        """RUN or STANDBY pressed: out of RUN, the settle before a load counts again from the next look."""
+        self._settle_again = True
 
     def start(self) -> None:
         with self._thread_lock:
@@ -541,21 +562,41 @@ class BackgroundSwipe:
             self.engine_lock.release()
         return True
 
-    def _observe(self, proc) -> None:
-        """This look's moment (``_quiet``): a load here does not show -- out of RUN, or in RUN on a wall seen empty
-        (no track, no identity slot held) for ``empty_s``, counted from the first look that saw it empty and never
-        from before RUN began -- or it is the first look after the mode was set (``set_mode``), whatever is on the
-        wall: the operator's own click, kept until a look tries the load (``_load_when_quiet``) -- a look that
-        cannot (the plate pending, a model loading, busy) leaves it to the next."""
+    def _observe(self, proc, live: Optional[LiveSetting] = None) -> None:
+        """This look's moment (``_quiet``): a load here does not show -- out of RUN once the app has sat there
+        ``settle_s`` on this live setting with nothing applied since (a mode set, RUN or STANDBY pressed, a model
+        loading, another project or setting), or in RUN on a wall seen empty (no track, no identity slot held) for
+        ``empty_s``, counted from the first look that saw it empty and never from before RUN began -- or it is the
+        first look after the operator set the mode in RUN (``set_mode``), whatever is on the wall: his own click,
+        kept until a look tries the load (``_load_when_quiet``) -- a look that cannot (the plate pending, a model
+        loading, busy) leaves it to the next.  His click out of RUN is a moment once settled, and lapses in RUN."""
         self._next_s = None
         mode_set, self._mode_set = self._mode_set, False
-        self._click = self._click or mode_set
-        self._click_look = self._click
+        if mode_set:
+            self._click, self._click_out = True, self._set_out
         run = bool(self.in_run())
         entered, self._was_run = run and not self._was_run, run
+        key = self._resident_key(live) if live is not None else None
+        again, self._settle_again = self._settle_again, False
+        if run or again or key is None or key != self._settle_key:
+            self._out_since = None            # the settle counts again (out of RUN, from the next look with a model)
+        self._settle_key = key
         if not run:
-            self._quiet_since, self._quiet = None, True
+            self._quiet_since = None
+            left = self.settle_s
+            if key is not None:
+                now = float(proc.loop_clock())
+                if self._out_since is None:
+                    self._out_since = now
+                left = self._out_since + self.settle_s - now
+            self._quiet = left <= 1e-6
+            self._click_look = self._click and self._quiet
+            if not self._quiet and key is not None:
+                self._next_s = min(self.look_s, max(0.25, left))   # look again once the app has sat there so long
             return
+        if self._click and self._click_out:
+            self._click = False               # his click out of RUN: RUN began before it settled -- the next moment
+        self._click_look = self._click
         try:
             empty = bool(self.wall_empty())
         except Exception:  # noqa: BLE001 - in doubt, a dancer is there
@@ -650,7 +691,7 @@ class BackgroundSwipe:
         proc = self.processor()
         plate_pending = bool(getattr(proc, "plate_pending", False))   # read before the live setting: a load between
         live = self.live()
-        self._observe(proc)
+        self._observe(proc, live)
         self._free_pending(live)
         if self.auto.mode == MODE_OFF:
             self.state = "off"
@@ -863,8 +904,8 @@ class BackgroundSwipe:
                          runner: CandidateRunner) -> Optional[Tuple[str, str]]:
         """None once the resident is there, else (what the look says, the fault for the operator -- None while it
         only waits).  The caller holds the engine lock.  Loaded only at a moment where that does not show
-        (``_quiet``: out of RUN, an empty wall, or the first look after the mode was set), a stale one freed first,
-        there too: never a load or a release at a look that falls due while a dancer is tracked."""
+        (``_quiet``: out of RUN once settled, an empty wall, or the first look after his click in RUN), a stale one
+        freed first, there too: never a load or a release at a look that falls due while a dancer is tracked."""
         r = self.resident
         if r is not None and r.candidate == other and r.key == self._resident_key(live):
             return None
@@ -872,7 +913,7 @@ class BackgroundSwipe:
             return WALL_WAIT.format(other.label), None
         if not self._was_run and self.in_run():
             # this look's moment was out of RUN and RUN has begun since: never a load (nor a release) on entering
-            # RUN -- the next moment (an empty wall, STANDBY); the click's moment is over with it
+            # RUN -- the next moment (an empty wall, STANDBY once settled); the click's moment is over with it
             self._quiet = False
             return WALL_WAIT.format(other.label), None
         if r is not None:

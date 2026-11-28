@@ -1,8 +1,8 @@
-"""P6 (Plan Cordee), the automatic swipe's key off (swipe_auto: off, a project's default): the build behaves as it
+"""P6 (Plan Cordee), the automatic swipe's key off (swipe_auto: off, the technician's choice): the build behaves as it
 did before P6 -- P5's Apply (STANDBY only, the reload; in RUN P5's refusal), P5's words on the Apply button, its
 tooltip, the swipe button's tooltip and the readiness row, and a remote Apply STANDBY only.  Turning the key off
 in RUN leaves nothing of P6 under way: a seamless switch asked before and not yet swapped in does not happen.  A
-project that brings the key on says so, once; a full project load without the key runs off.
+project that brings the key on says so, once; a full project load with the key off runs off.
 
 The app's own doors on a real ``WallDanceApp`` (no GUI, no main loop, CPU): only what needs a camera or a model is
 faked -- the live model (loaded, TensorRT), the operator's verdict (``swipe.applicable`` / ``swipe.outcome``: it
@@ -376,11 +376,12 @@ def test_a_project_load_with_the_key_off_says_nothing(real_app, swipe_auto_unloc
     assert "SwipeAuto" not in capsys.readouterr().out
 
 
-def test_regression_guard_a_full_project_load_without_the_key_runs_off_and_lifts_the_bans(  # noqa: F811
+def test_regression_guard_a_full_project_load_with_the_key_off_runs_off_and_lifts_the_bans(  # noqa: F811
         real_app, swipe_auto_unlocked, capsys):
-    """A project file has a model (a full load) and no swipe_auto: the key is absent, so off -- silently.  The load
-    lifts the bans (``clear_bans``: failed automatic switches may retry) and tells the panel whether anything still
-    waits for Dismiss (``SettingsSwipeHold``).  None of the three was reached by the fakes (a partial config)."""
+    """A project file has a model (a full load) and swipe_auto off: off -- silently (since 28/11 a project with no
+    key runs the default: test_swipe_auto_lock).  The load lifts the bans (``clear_bans``: failed automatic
+    switches may retry) and tells the panel whether anything still waits for Dismiss (``SettingsSwipeHold``).
+    None of the three was reached by the fakes (a partial config)."""
     app, events = real_app
     _on(app, "suggest")
     app.swipe_bg._banned[L1920.key] = L1920.engine_file
@@ -389,12 +390,12 @@ def test_regression_guard_a_full_project_load_without_the_key_runs_off_and_lifts
     app.swipe_bg.clear_bans = lambda: cleared.append("clear_bans") or clear()
     capsys.readouterr()
     events.clear()
-    app._apply_config_without_model({"model": X1280.model})
-    assert app.swipe_bg.mode == "off", "an absent key on a full project load left the automatic swipe on"
+    app._apply_config_without_model({"model": X1280.model, "swipe_auto": "off"})
+    assert app.swipe_bg.mode == "off", "the key off on a full project load left the automatic swipe on"
     assert cleared == ["clear_bans"] and app.swipe_bg._banned == {}
     assert [e.held for e in events if type(e).__name__ == "SettingsSwipeHold"] == [False]
     assert _swipe_toasts(events) == [] and "SwipeAuto" not in capsys.readouterr().out
     app.swipe_switch.fail("the switch to l @ 1280 failed (RuntimeError: x): x @ 1280 still runs - rebuild it")
     events.clear()
-    app._apply_config_without_model({"model": X1280.model})
+    app._apply_config_without_model({"model": X1280.model, "swipe_auto": "off"})
     assert [e.held for e in events if type(e).__name__ == "SettingsSwipeHold"] == [True]   # a fault still waits

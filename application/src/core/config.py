@@ -381,10 +381,13 @@ SWIPE_RUN_MAX_S = 60.0
 # verdict must not be offered at night.
 SWIPE_VERDICT_MAX_AGE_S = 1800.0
 # The autonomous swipe (Plan Cordee P6, core/swipe_auto.py + runtime/swipe_background.py): project key swipe_auto =
-# off | suggest | auto.  Off unless the project says otherwise (the key is written only when it is not off).  It
+# off | suggest | auto.  SWIPE_AUTO is the wished default: the mode of a project with no key and of a new project,
+# when this build releases it (below), else off -- core.swipe_auto.default_mode is the one source, read when needed.
+# Suggest by default since 28/11 (the owner: the rehearsal of 7-8/12 runs with it, without the technician setting
+# it).  Save writes the key whatever the mode, so off chosen stays off and no project depends on a later default.  It
 # looks every SWIPE_AUTO_LOOK_S at the kept frames (an empty wall costs no inference); a background run's candidate
 # inferences are SWIPE_AUTO_PACE_S apart (at most one every four live frames at 20 fps), right after a live pass.
-SWIPE_AUTO = "off"
+SWIPE_AUTO = "suggest"
 # The modes of the automatic swipe this build lets anyone set (mode keys): the combo shows only these (its row is
 # hidden while off is the only one), any other mode is refused whoever asks (the GUI, the remote SetSwipeAuto)
 # and the mode stays what it was, a project's key that is not among them is read as off.  "off" always;
@@ -404,10 +407,16 @@ SWIPE_AUTO_SNOOZE_S = 900.0
 # between for lack of room and no empty wall longer than the frame pool's age (SwipeParams.max_age_s).
 SWIPE_AUTO_STREAK_GAP_S = 900.0
 # The other model at the live input (the second engine) stops the loop some 50 ms to load or release: it is loaded
-# when the mode is set (the operator's click, whatever is on the wall), else loaded and released only out of RUN,
-# or in RUN once the wall has been empty this long (no track, no identity slot held) -- never on entering RUN,
+# when the operator sets the mode in RUN (his click, whatever is on the wall), else loaded and released only out of
+# RUN, or in RUN once the wall has been empty this long (no track, no identity slot held) -- never on entering RUN,
 # never at a look due later while a dancer is tracked -- and kept while the mode is on.
 SWIPE_AUTO_LOAD_EMPTY_S = 2.0
+# ... and out of RUN a load starts only once the app has sat there this long with nothing applied since (a project,
+# a model, the mode set -- his click out of RUN too --, RUN or STANDBY pressed).  A load cannot be cut short (about
+# 0.3 s warm, up to about 3 s cold) and a man alone presses RUN when the dancers arrive, often right after he applied
+# the project: RUN pressed before this ends, nothing was started, and the load waits for the next moment above (an
+# empty wall, or STANDBY again once settled).  Releases are not held back.
+SWIPE_AUTO_LOAD_SETTLE_S = 10.0
 # A look's inferences share the GPU with the live frames: no look starts while the live frames run late, and a look
 # in flight stops at its next inference once they run late beside it (after its first seconds: they warm up), its
 # frames kept for a later look.  Late: one in twenty of the last 3 s of live frames (each frame's own time, the

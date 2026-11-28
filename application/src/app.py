@@ -24,7 +24,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional
+from typing import Dict, List, Optional
 
 import cv2
 import numpy as np
@@ -87,7 +87,6 @@ from core.config import (
     OPS_DISK_WARN_FREE_GB,
     OPS_DISK_FAIL_FREE_GB,
     RIG_DEFAULTS,
-    SWIPE_AUTO,
     SWIPE_COLLECT,
 )
 from core.osc_output import OSCSender
@@ -111,8 +110,9 @@ from core.enhancer import ImageEnhancer
 from core.input_shape import shape_str
 from core.swipe import Candidate
 from core.swipe_auto import LABELS as SWIPE_AUTO_LABELS, mode_word as swipe_auto_word
-from core.swipe_auto import parse_mode as parse_swipe_mode
+from core.swipe_auto import parse_mode as parse_swipe_mode, is_mode as swipe_auto_is_mode
 from core.swipe_auto import released_modes as swipe_auto_released   # core.config.SWIPE_AUTO_RELEASED, at each call
+from core.swipe_auto import default_mode as swipe_auto_default       # core.config.SWIPE_AUTO if released, else off
 from core.tracker import DancerTracker
 from core.tracking_logger import _json_default
 from core.video_recorder import VideoRecorder
@@ -820,6 +820,7 @@ class WallDanceApp:
             request_reprocess=self._request_reprocess,
             start_clean=self._cb_project_start_clean,
             camera_not_live=lambda: self.processor.camera_not_live(),   # A2: a failed switch
+            set_swipe_auto=self._swipe_new_project,   # P6: a new project starts at the default mode
         )
         # CALIBRATE / DANCERS orchestration (DECOMPOSITION_PLAN Phase 2
         # (5)): owns the calibration state machines stepped by the main
@@ -866,10 +867,12 @@ class WallDanceApp:
                                            engine_path=_engine_path, port=self.models, notify=self._swipe_notify)
         # P6 the autonomous swipe (runtime/swipe_background.py): a looker thread, started with a mode that is not
         # off and ended by off; it switches through the seamless switch.  Its second engine loads and goes only
-        # where a pause does not show: out of RUN, or on an empty wall in RUN.
+        # where a pause does not show: out of RUN, or on an empty wall in RUN.  Built off, never at the default:
+        # nothing of it runs or loads before a project applies -- the project's load, or a new project, sets the
+        # mode (``_apply_config_without_model``, ``_swipe_new_project``).
         self.swipe_bg = BackgroundSwipe(
             processor=lambda: self.processor, live=self._swipe_live_setting, engine_path=_engine_path,
-            busy=self._swipe_bg_busy, switch=self.swipe_switch, notify=self._swipe_notify, mode=SWIPE_AUTO,
+            busy=self._swipe_bg_busy, switch=self.swipe_switch, notify=self._swipe_notify, mode="off",
             referee=self.swipe.referee,     # fix6: one plate-watch report for the operator's swipe and ours
             in_run=lambda: self.system_state == SystemState.RUN, wall_empty=self._swipe_wall_empty,
             standby=lambda: self.system_state == SystemState.STANDBY)    # no look there: the pool is frozen
@@ -879,7 +882,6 @@ class WallDanceApp:
         self._swipe_shown = ""
         self._swipe_line_said = ""      # ... and the text of the last state that took it (a fault's red line)
         self.bus.subscribe(self._swipe_line_drawn)
-        self._swipe_blank_start = False  # Start blank / New project under way: its clean start sets the default mode
         # the automatic swipe turned off: a switch asked before (the operator's seamless Apply, an automatic one)
         # and not yet swapped in does not happen -- the key-off build runs none
         self.swipe_switch.why_not = self._swipe_switch_held
@@ -1119,8 +1121,8 @@ class WallDanceApp:
         reg(api.LaunchProject, lambda c: self.configs._cb_project_launch(c.name))
         reg(api.RenameProject, lambda c: self.configs._cb_project_rename(c.old, c.new))
         reg(api.DeleteProject, lambda c: self.configs._cb_project_delete(c.name))
-        reg(api.StartBlankProject, lambda c: self._swipe_project_start(self.configs._cb_project_blank))
-        reg(api.NewProject, lambda c: self._swipe_project_start(lambda: self.configs._cb_project_new(c.name)))
+        reg(api.StartBlankProject, lambda c: self.configs._cb_project_blank())
+        reg(api.NewProject, lambda c: self.configs._cb_project_new(c.name))
         # recording / playback
         reg(api.PlaybackControl, self._cmd_playback_control)
         reg(api.SelectSlot,
@@ -1449,8 +1451,8 @@ class WallDanceApp:
             "osc_send_state": self.settings.osc_send_state,
             "camera_stall_hold": self.settings.camera_stall_hold,
             "swipe_collect": self.settings.swipe_collect,
-            # P6: written only when not off -- an existing project file never gains the key by a Save
-            **({"swipe_auto": self.swipe_bg.mode} if self.swipe_bg.mode != "off" else {}),
+            # P6: written whatever the mode (28/11): off chosen stays off at the next load, whatever the default
+            "swipe_auto": self.swipe_bg.mode,
             "motion_sensitivity": self.processor.get_motion_sensitivity(),
             "osc_enabled": self.osc_enabled,
             "osc_ip": self.osc_ip,
@@ -1686,10 +1688,18 @@ class WallDanceApp:
             self.settings.fg_clip_aware = bool(config.get("fg_clip_aware", FOREGROUND_CLIP_AWARE))
         if "swipe_collect" in config or full_config:         # P5 (no GUI: a project key)
             self.settings.swipe_collect = bool(config.get("swipe_collect", SWIPE_COLLECT))
-        if "swipe_auto" in config or full_config:            # P6: absent = off
-            asked = config.get("swipe_auto", SWIPE_AUTO)
+        if "swipe_auto" in config or full_config:            # P6: absent = the default (core.swipe_auto), no mode = off
+            keyed = "swipe_auto" in config
+            asked = config["swipe_auto"] if keyed else swipe_auto_default()
             asked_mode = parse_swipe_mode(asked)
-            if asked_mode not in swipe_auto_released():
+            if keyed and not swipe_auto_is_mode(asked):
+                # the key names no mode (a hand edit; the schema's warning quotes it): off, said once -- never the
+                # default, which would turn a background job on from a setting nobody could read
+                self._cb_swipe_auto("off", quiet=True)
+                say("[SwipeAuto] mode off - this project's setting could not be read")
+                self.bus.publish(api.Toast("Automatic swipe: off - this project's setting could not be read",
+                                           6.0, (255, 200, 100)))
+            elif asked_mode not in swipe_auto_released():
                 # not released in this build: the project's key is read as off, said once at this load
                 self._cb_swipe_auto("off", quiet=True)
                 say(f"[SwipeAuto] mode off - this project asks for {asked_mode}, "
@@ -1699,10 +1709,8 @@ class WallDanceApp:
                                            6.0, (255, 200, 100)))
             else:
                 self._cb_swipe_auto(asked, quiet=True)
-            if self.swipe_bg.mode != "off":                  # the project turns it on: said once, never silent
-                say(f"[SwipeAuto] mode {self.swipe_bg.mode} (from the project)")
-                self.bus.publish(api.Toast(f"Automatic swipe: {swipe_auto_word(self.swipe_bg.mode)} (from the "
-                                           "project)", 6.0, (150, 200, 255)))
+            if self.swipe_bg.mode != "off":                  # the project or the default turns it on: said once
+                self._swipe_auto_said("from the project" if keyed else "the default")
         if full_config:
             self.swipe_bg.clear_bans()                       # a project load: failed automatic switches may retry
             self.bus.publish(api.SettingsSwipeHold(bool(self.swipe_switch.fault)))
@@ -2287,24 +2295,6 @@ class WallDanceApp:
             stop("stopped by a change of camera or project")
         self._cb_tracker_reset()
         self.processor.camera_not_live()
-        if getattr(self, "_swipe_blank_start", False):
-            self._swipe_start_off()
-
-    def _swipe_project_start(self, start: Callable[[], Any]) -> Any:
-        """Start blank / New project (the picker's commands): the new project starts with the automatic swipe at
-        the build's default (``core.config.SWIPE_AUTO``), set at its clean start (``_cb_project_start_clean``), so
-        before New's first Save -- their partial apply never names the key.  A start that fails keeps the mode;
-        a project switch or a camera switch (the same clean start) keeps it too."""
-        self._swipe_blank_start = True
-        try:
-            return start()
-        finally:
-            self._swipe_blank_start = False
-
-    def _swipe_start_off(self) -> None:
-        if self.swipe_bg.mode != parse_swipe_mode(SWIPE_AUTO):
-            self._cb_swipe_auto(SWIPE_AUTO, quiet=True)
-            say(f"[SwipeAuto] mode {self.swipe_bg.mode} (a new project starts with it at the default)")
 
     def _camera_preview_geometry(self, width: int, height: int):
         """Preview geometry + GUI layout follow-up after a camera (re)open."""
@@ -2545,6 +2535,8 @@ class WallDanceApp:
     # ------------------------------------------------------------------
     def _cb_system_state_change(self, state, old_state):
         """GUI system-state transitions; readiness check on entering RUN."""
+        if state != old_state:
+            self.swipe_bg.state_changed()   # P6: out of RUN its second model loads once the app has sat there
         if (OPS_READINESS_ENABLED and state == SystemState.RUN
                 and old_state != SystemState.RUN):
             threading.Thread(target=self._run_readiness_check,
@@ -3299,7 +3291,7 @@ class WallDanceApp:
         marked applied.  Neither is saved: the operator's Save keeps it (model, yolo_imgsz, yolo_shape,
         confidence, the dial's seed).
 
-        The automatic swipe off (the project key swipe_auto, off by default): P5's Apply, word for word
+        The automatic swipe off (the project key swipe_auto): P5's Apply, word for word
         (``_apply_settings_swipe_p5``) -- never the seamless path, whatever engine is built."""
         if self.swipe_bg.mode == "off":
             self._apply_settings_swipe_p5()
@@ -3503,7 +3495,9 @@ class WallDanceApp:
                                        f"- it stays {swipe_auto_word(now)}", 5.0, (255, 200, 100)))
             return
         before = self.swipe_bg.mode
-        m = self.swipe_bg.set_mode(mode)
+        # quiet: a project's load or a new project -- not his click, so no load moment of its own (the looker waits
+        # for a settled STANDBY or an empty wall); his click in RUN loads at once, out of RUN once settled
+        m = self.swipe_bg.set_mode(mode, click=not quiet)
         if m != "off":
             self.swipe_bg.start()
         self._sync("combo", "swipe_auto", self._SWIPE_AUTO_LABELS[m])
@@ -3519,6 +3513,24 @@ class WallDanceApp:
             if m != "off" and not self.settings.swipe_collect:
                 self.bus.publish(api.Toast("The automatic swipe needs the frame tap (project key swipe_collect)",
                                            5.0, (255, 200, 100)))
+
+    def _swipe_auto_said(self, why: str) -> None:
+        """The automatic swipe on after a project's load or a new project: said once, never silent -- one log line
+        and one toast, ``why`` its cause ("from the project", "the default")."""
+        m = self.swipe_bg.mode
+        say(f"[SwipeAuto] mode {m} ({why})")
+        self.bus.publish(api.Toast(f"Automatic swipe: {swipe_auto_word(m)} ({why})", 6.0, (150, 200, 255)))
+
+    def _swipe_new_project(self, mode: str) -> None:
+        """Start blank / New project (``ConfigManager._cb_project_blank``, once its load succeeded, before New's
+        first Save): the new project starts at ``mode``, the build's default, whatever the session ran -- said once
+        when that is not off.  A project switch or a camera switch keeps the mode."""
+        if self.swipe_bg.mode != parse_swipe_mode(mode):
+            self._cb_swipe_auto(mode, quiet=True)
+            if self.swipe_bg.mode == "off":
+                say("[SwipeAuto] mode off (the default)")
+        if self.swipe_bg.mode != "off":
+            self._swipe_auto_said("the default")
 
     def _swipe_off_acknowledges(self) -> None:
         """Auto set to off: the one thing a failure of the automatic swipe's own load or run tells him to do, so it

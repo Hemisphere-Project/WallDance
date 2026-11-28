@@ -24,6 +24,7 @@ from typing import Callable, Dict, Optional, Protocol
 import core.config_schema as config_schema
 from core.config_store import ConfigStore, format_config_display, sanitize_project_name
 from core import gc_policy
+from core.swipe_auto import default_mode as swipe_auto_default
 
 try:
     from camera.ids_camera import CameraSource
@@ -86,6 +87,7 @@ class ConfigManager:
         request_reprocess: Callable[[], None],
         start_clean: Optional[Callable[[], None]] = None,
         camera_not_live: Optional[Callable[[], None]] = None,
+        set_swipe_auto: Optional[Callable[[str], None]] = None,
     ) -> None:
         self.models = models
         self.cameras = cameras
@@ -104,6 +106,8 @@ class ConfigManager:
         self.start_clean = start_clean
         # ... and its camera-not-live step alone (D34), for a failed switch that keeps the old project
         self.camera_not_live = camera_not_live
+        # P6: the app's door to the automatic swipe's mode, for a new project (_cb_project_blank)
+        self.set_swipe_auto = set_swipe_auto
 
         self.config_store = ConfigStore()
         self._current_project = "default"
@@ -536,7 +540,9 @@ class ConfigManager:
         27/11): a blank start used to reopen the IDS at the code's crop 1.0
         while every project ran 1.37.  The scene (ROI, mask, calibration,
         empty-wall plate) starts from the code defaults -- and so does EVERY project key off
-        that rig (A2: _start_from_code_defaults), never the previous project's session value."""
+        that rig (A2: _start_from_code_defaults), never the previous project's session value;
+        the automatic swipe starts at the build's default mode (P6, core.swipe_auto.default_mode:
+        suggest while the build releases it, else off), set here for every caller."""
         print("[Picker] Starting blank (default model)")
         defaults = self._start_from_code_defaults()
         source = self._inherit_camera_rig()
@@ -549,6 +555,9 @@ class ConfigManager:
             self.start_clean()
         elif not ok:
             self._failed_switch_not_live()
+        # P6: before New's first Save, so that Save writes it; a failed load keeps the mode
+        if ok and self.set_swipe_auto is not None:
+            self.set_swipe_auto(swipe_auto_default())
         # After the model load (it pauses/reopens the current camera): one open
         # of the inherited camera, already at the inherited crop.
         if ok and source is not None:
@@ -651,8 +660,10 @@ class ConfigManager:
         if self._code_defaults is None:
             print("[New project] No startup state kept: the session stands for the code defaults")
             self.capture_code_defaults()
+        # swipe_auto is not among them: the startup state holds off (nothing of the automatic swipe
+        # runs before a project applies), a new project the default -- _cb_project_blank sets it
         defaults = {k: v for k, v in self._code_defaults.items()
-                    if k not in config_schema.NEW_PROJECT_CARRIED_KEYS}
+                    if k not in config_schema.NEW_PROJECT_CARRIED_KEYS and k != "swipe_auto"}
         model = {k: defaults.pop(k) for k in ("model", "use_tensorrt", "yolo_shape", "fp16")
                  if k in defaults}
         if "yolo_imgsz" in defaults:

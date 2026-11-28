@@ -4,7 +4,7 @@
   resident at the same input; the operator's Apply takes the resident when it is the winner (no second load) and
   lets it go first when it is not (two engines at most);
 * the looks: nothing while the wall is empty or the app is busy; mode off releases the resident;
-* the project key ``swipe_auto``: absent from a project file while off, absent = off.
+* the project key ``swipe_auto``: written whatever the mode (28/11), absent = the default (core.swipe_auto).
 """
 import dataclasses
 import threading
@@ -54,8 +54,9 @@ class _BgProc(_SwitchProc):
 
 
 def _bg(live, *, loader=None, port=None, busy=lambda: None, mode="off", engine_exists=lambda p: True, **kw):
-    """``kw``: more of BackgroundSwipe's arguments (``in_run``, ``wall_empty``, ``gpu_used``); without them the app
-    reads as out of RUN (STANDBY): the second engine loads at the first look."""
+    """``kw``: more of BackgroundSwipe's arguments (``in_run``, ``wall_empty``, ``gpu_used``, ``settle_s``); without
+    them the app reads as out of RUN (STANDBY): the second engine loads at the first look -- no settle (``settle_s``
+    0: the rules these tests were written for; the app's 10 s and its tests: ``test_swipe_auto_load_settle``)."""
     pytest.importorskip("torch")
     from runtime.seamless_switch import SeamlessSwitch
     from runtime.swipe_background import BackgroundSwipe
@@ -71,6 +72,8 @@ def _bg(live, *, loader=None, port=None, busy=lambda: None, mode="off", engine_e
                          busy=busy, switch=sw, notify=lambda k, p: events.append((k, p)),
                          mode=mode, look_s=999.0, runner_factory=loader or _Loader(),
                          engine_exists=engine_exists, engine_lock=lock, **kw)
+    if "settle_s" not in kw:
+        bg.settle_s = 0.0                                # (set on the object: the tree before it builds too)
     bg.start = lambda: None                              # the test drives the looker by hand (``tick``)
     return bg, proc, events
 
@@ -290,10 +293,11 @@ def test_without_the_tap_a_model_is_freed_after_a_network_pass():
 
 
 # ----------------------------------------------------------------------------------------------------------
-# The project key: absent while off
+# The project key: written whatever the mode
 # ----------------------------------------------------------------------------------------------------------
 @pytest.mark.parametrize("mode", ["off", "suggest", "auto"])
-def test_swipe_auto_is_written_only_when_not_off(mode):
+def test_swipe_auto_is_written_whatever_the_mode(mode):
+    """Off too (28/11): off chosen stays off at the next load, whatever the default then.  Fails before for off."""
     pytest.importorskip("dearpygui")
     from app import WallDanceApp
     app = MagicMock()
@@ -301,13 +305,10 @@ def test_swipe_auto_is_written_only_when_not_off(mode):
     app.roi.state.stored_roi.return_value = (0, 0, 100, 100, 200, 200)
     app.swipe_bg.mode = mode
     cfg = WallDanceApp._get_saveable_config(app)
-    if mode == "off":
-        assert "swipe_auto" not in cfg
-    else:
-        assert cfg["swipe_auto"] == mode
+    assert cfg.get("swipe_auto", "no key") == mode
 
 
-def test_a_project_without_the_key_runs_off_and_a_partial_config_leaves_it(swipe_auto_unlocked):
+def test_a_partial_config_sets_the_mode_only_when_it_names_the_key(swipe_auto_unlocked):
     pytest.importorskip("dearpygui")
     from app import WallDanceApp
     app = MagicMock()
@@ -318,12 +319,20 @@ def test_a_project_without_the_key_runs_off_and_a_partial_config_leaves_it(swipe
     app._cb_swipe_auto.assert_not_called()
 
 
-def test_the_schema_keeps_a_mode_and_drops_anything_else():
+def test_the_schema_keeps_a_mode_and_marks_anything_else_unreadable():
+    """A value that names no mode is kept as UNREADABLE, which a project's load reads as off (28/11: dropped, the
+    load took the default), and its warning says so.  No key stays no key: the default."""
+    import core.swipe_auto
     from core.config_schema import validate_flat
+    unreadable = getattr(core.swipe_auto, "UNREADABLE", "unreadable")
     out, warnings = validate_flat({"swipe_auto": "Suggest"})
     assert out["swipe_auto"] == "suggest"
+    out, warnings = validate_flat({"swipe_auto": "off"})              # off is a choice, kept
+    assert out["swipe_auto"] == "off" and warnings == []
     out, warnings = validate_flat({"swipe_auto": "always"})
-    assert "swipe_auto" not in out and any("swipe_auto" in w for w in warnings)
+    assert out.get("swipe_auto") == unreadable and warnings == ["swipe_auto: invalid value 'always' read as off"]
+    out, warnings = validate_flat({"confidence": 0.3})
+    assert "swipe_auto" not in out and warnings == []
 
 
 def test_a_change_by_hand_starts_the_dwell_and_a_switch_does_not_count_as_one():
