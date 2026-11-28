@@ -81,7 +81,7 @@ La fiche de deux pages (*FICHE_TECHNICIEN_FR*) résume ce guide. Ce guide, on le
 | ④ | Vérifier | `2 Calibrate` | lire le bilan (`Check readiness`) | le bilan dit `READY` <!-- src: gui_builder.py:643 «2 Calibrate» ; gui_builder.py:901 «Check readiness» ; core/ops_monitor.py:59 «READY» @«"READY"» --> |
 | ⑤ | Le spectacle | `3 Live` | `RUN`, puis ne plus toucher | la ligne de santé est verte (`OK`) <!-- src: gui_builder.py:644 «3 Live» ; gui_builder.py:1135 «RUN» @«label="RUN"» ; core/ops_monitor.py:55 «OK» @«"OK"» --> |
 
-<figure style="break-inside: avoid; page-break-inside: avoid; margin: 0.8em 0;"><img src="img/run_vert.jpg" width="100%" alt="La fenêtre WallDance en RUN, la ligne de santé verte"><figcaption style="font-size: 0.9em; color: #444;">La fenêtre en RUN : la ligne de santé verte, OK - all 7 checks fine. En rouge en haut à gauche, le message Go-Live check du bilan fait au passage en RUN (sur le banc, rien n'écoutait l'OSC et la lumière de cette prise est rouge). Image de banc (27/11) : une prise du 8/10 (le mur) lue comme caméra, d'où [CV] dans la barre du haut ; au spectacle, [IDS].</figcaption></figure>
+<figure style="break-inside: avoid; page-break-inside: avoid; margin: 0.8em 0;"><img src="img/run_vert.jpg" width="100%" alt="La fenêtre WallDance en RUN, la ligne de santé verte"><figcaption style="font-size: 0.9em; color: #444;">La fenêtre en RUN : la ligne de santé verte, OK - all 7 checks fine. En rouge en haut à gauche, le message Go-Live check du bilan fait au passage en RUN (sur le banc, rien n'écoutait l'OSC et la lumière de cette prise est rouge). Image de banc (28/11) : une prise du 8/10 (le mur) lue comme caméra, d'où [CV] dans la barre du haut ; au spectacle, [IDS]. REMOTE en orange après OSC: ON : l'image a été prise par l'accès à distance, comme le support la voit (§9).</figcaption></figure>
 
 ### Les quatre règles d'or
 
@@ -211,7 +211,7 @@ Cette version est plus ancienne que ce guide : pas de ligne de santé, pas de ba
 | 7. Les enregistrements | sous les alertes | `Recordings`, `LIVE`, `REC`, les emplacements 1 à 9 <!-- src: gui_builder.py:1386 «Recordings» @«"Recordings"» ; gui_builder.py:1423 «LIVE» @«label="LIVE"» ; gui_builder.py:1430 «REC» @«label="REC"» --> |
 | 8. Barre du bas | tout en bas | des chiffres de vitesse, rien à faire |
 
-<figure style="break-inside: avoid; page-break-inside: avoid; margin: 0.8em 0;"><img src="img/zones.jpg" width="100%" alt="La fenêtre entière, les huit zones numérotées"><figcaption style="font-size: 0.9em; color: #444;">Les huit zones du §4. Les cadres orange et leurs numéros sont ajoutés sur l'image : l'app ne les montre pas. Image de banc (27/11) : une prise du 8/10 (le mur) lue comme caméra, d'où [CV] dans la barre du haut ; au spectacle, [IDS].</figcaption></figure>
+<figure style="break-inside: avoid; page-break-inside: avoid; margin: 0.8em 0;"><img src="img/zones.jpg" width="100%" alt="La fenêtre entière, les huit zones numérotées"><figcaption style="font-size: 0.9em; color: #444;">Les huit zones du §4. Les cadres orange et leurs numéros sont ajoutés sur l'image : l'app ne les montre pas. Image de banc (28/11) : une prise du 8/10 (le mur) lue comme caméra, d'où [CV] dans la barre du haut ; au spectacle, [IDS].</figcaption></figure>
 
 ### 4.1 La barre du haut
 
@@ -271,7 +271,7 @@ Cette version est plus ancienne que ce guide : pas de ligne de santé, pas de ba
   - `(nothing sent)` à la fin (rien n'est envoyé) : en `STANDBY` ou l'OSC coupé, les visuels ne reçoivent rien ; la ligne montre l'état sans le temps. <!-- src: core/points_report.py:62 «(nothing sent)» ; gui_builder.py:1124 «STANDBY» @«label="STANDBY"» -->
 - **Ce qu'est un point tenu.** Quand la détection perd un danseur, l'app garde son point sur la forme qui bouge encore à sa place, jusqu'à 30 secondes après la dernière fois que la détection ou sa ceinture l'a vu. Sur un mur vide où quelque chose bouge (un rideau, une corde, une fenêtre), cela peut faire un point sur personne : **si un point reste là où il n'y a personne, regarder ce qui bouge à cet endroit.**
 
-<figure style="break-inside: avoid; page-break-inside: avoid; margin: 0.8em 0;"><img src="img/panneau_live.jpg" width="42%" alt="Le panneau 3 Live en entier"><figcaption style="font-size: 0.9em; color: #444;">Le panneau 3 Live en entier (6 - Go Live), ici en STANDBY : les réglages de détection, les identités des danseurs, la commande à distance, les vues. Image de banc (27/11), prise avant les changements du 27/11 au portable : sa ligne ids: D1 live | D2 lost se lit maintenant ids: D1 live | D2 lost   belt: ready   (nothing sent) en STANDBY, car rien ne part aux visuels (§4.4).</figcaption></figure>
+<figure style="break-inside: avoid; page-break-inside: avoid; margin: 0.8em 0;"><img src="img/panneau_live.jpg" width="42%" alt="Le panneau 3 Live en entier"><figcaption style="font-size: 0.9em; color: #444;">Le panneau 3 Live en entier (6 - Go Live), ici en STANDBY : les réglages de détection, les identités des danseurs, la commande à distance, les vues. Image de banc (28/11) : la ligne ids: finit par (nothing sent), car en STANDBY rien ne part aux visuels (§4.4).</figcaption></figure>
 
 ### 4.5 La ligne de santé et les alertes
 
