@@ -1,0 +1,89 @@
+# The technician's documents as a small website (hub walldance#t-069), built from docs/ as it stands:
+# the PDFs and the site share one source, nothing is copied or rewritten by hand.
+# Build and offline copy: docs/site-README.md. Deployed by .github/workflows/pages.yml.
+site_name: WallDance — documents du technicien
+site_url: https://walldance.hmsphr.com/
+site_description: La fiche, le guide et le journal de bord de WallDance.
+docs_dir: docs
+# Plain .html links: the built site/ works opened from disk, on the laptop without network.
+use_directory_urls: false
+
+# The published files are an ALLOW-list: everything under docs/ stays out of the site unless it is
+# named here, so that a new internal document is never published by accident (the repository is
+# public; the site is far easier to stumble on). A new page = one line here and one in `nav`.
+# The pattern also covers the theme's files, hence `assets/` (style and scripts, no document: the
+# hook refuses a docs/assets/ folder).
+exclude_docs: |
+  *
+  !/index.md
+  !/FICHE_TECHNICIEN_FR.md
+  !/GUIDE_OPERATEUR_FR.md
+  !/SITUATIONS_FR.md
+  !/EXERCICES_FR.md
+  !/exercices/
+  !/exercices/**
+  !/JOURNAL_DE_BORD_FR.md
+  !/img/
+  !/img/**
+  !/CNAME
+  !/assets/
+  !/assets/**
+
+# Pages not written yet (Situations, Exercices) are dropped from the menu by docs-site/hooks.py
+# until their file exists; a folder entry (exercices/) lists the pages inside it.
+nav:
+  - Accueil: index.md
+  - La fiche: FICHE_TECHNICIEN_FR.md
+  - Le guide: GUIDE_OPERATEUR_FR.md
+  - Situations: SITUATIONS_FR.md
+  - Exercices: EXERCICES_FR.md
+  - Exercices: exercices/
+  - Journal de bord: JOURNAL_DE_BORD_FR.md
+
+hooks:
+  - docs-site/hooks.py
+
+theme:
+  name: material
+  language: fr
+  custom_dir: docs-site/overrides
+  font: false            # the system's fonts: nothing fetched from Google, works offline
+  palette:
+    primary: blue grey
+    accent: deep orange
+  features:
+    - navigation.top
+    - search.highlight
+    - toc.follow
+
+extra_css:
+  - assets/stylesheets/walldance.css
+
+plugins:
+  - search:
+      lang: fr
+  - offline              # search works in the copy opened from disk too
+  - privacy              # the one script the theme takes from the web is served from the site itself
+
+markdown_extensions:
+  - toc:
+      permalink: true
+  - tables
+  - attr_list
+  - md_in_html           # <details markdown> lets a folded answer hold lists and pictures
+  - mdx_truly_sane_lists:
+      nested_indent: 2   # the documents nest their lists by two spaces, as the PDFs read them
+
+validation:
+  nav:
+    omitted_files: warn
+    not_found: warn
+    absolute_links: warn
+  links:
+    not_found: warn
+    anchors: warn
+    absolute_links: warn
+    unrecognized_links: warn
+
+extra:
+  generator: false

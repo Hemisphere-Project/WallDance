@@ -54,3 +54,7 @@ application/tests/tuned_*.json
 application/tests/overlays/
 # TUNING Phase E: sensitivity sweep output (regenerable; numbers live in docs/KNOBS.md)
 application/tests/sensitivity_result.json
+
+# The documents' website build (mkdocs.yml)
+site/
+.cache/

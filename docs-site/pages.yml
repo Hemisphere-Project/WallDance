@@ -1,0 +1,54 @@
+# The documents' website (mkdocs.yml, hub walldance#t-069): built strict from docs/, deployed to
+# GitHub Pages (walldance.hmsphr.com). Needs, once, in the repository's settings: Pages source
+# « GitHub Actions », and these branches allowed in the github-pages environment.
+# PARKED HERE: its home is .github/workflows/pages.yml, where only a person may put it — the loop's
+# token cannot push a workflow. `git mv docs-site/pages.yml .github/workflows/pages.yml`, then push.
+name: Documents website
+
+on:
+  push:
+    branches: [cordee-r2, remote-ops]
+    paths:
+      - "docs/**"
+      - "mkdocs.yml"
+      - "requirements-docs.txt"
+      - "docs-site/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-docs.txt
+      - run: pip install -r requirements-docs.txt
+      - run: mkdocs build --strict
+        env:
+          NO_MKDOCS_2_WARNING: "1"
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,2 @@
+Build the documents' website (`mkdocs.yml`, kept out of the site itself): from the repo root, `pip install -r requirements-docs.txt` then `mkdocs build --strict` (or `uvx --with-requirements requirements-docs.txt mkdocs build --strict`) writes `site/`; a push to `cordee-r2` or `remote-ops` touching `docs/**` publishes it by itself (`.github/workflows/pages.yml`).
+Offline copy for the show laptop: copy the whole `site/` folder onto it and open `site/index.html` in a browser — every link and the search work from disk, no network needed.
