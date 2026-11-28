@@ -5,8 +5,9 @@ dancers are on the wall, and says or does something only when the referee (``cor
 setting better:
 
 * **a suggestion** -- the same setting named by two verdicts in a row (the streak, as a switch needs it), and the
-  « slower » rule lets it through: one line with an « Apply now » button; the operator decides.  One verdict
-  says nothing: the next look comes at once, to confirm it or not.  The referee already did the statistics (an
+  « slower » rule lets it through: one line with an « Apply now » button; the operator decides (while that Apply
+  is held back in this build, ``apply_released``: advice only, « note the time and this line », no button).  One
+  verdict says nothing: the next look comes at once, to confirm it or not.  The referee already did the statistics (an
   unbiased sample, a paired test corrected for the number of settings compared, a higher bar for a costlier
   setting): no second threshold is stacked on it.  Two verdicts are « in a row » when the second comes at most
   ``streak_gap_s`` after the first, with no look skipped for lack of room and no empty pool between them.  Dismiss on
@@ -75,6 +76,13 @@ def parse_mode(value) -> str:
 def is_mode(value) -> bool:
     """Whether a project's ``swipe_auto`` value names a mode (``parse_mode`` reads anything else as off)."""
     return str(value or "").strip().lower() in MODES
+
+
+def apply_released() -> bool:
+    """Whether this build lets anyone apply a background suggestion (``core.config.SWIPE_AUTO_APPLY_RELEASED``, read
+    at each call).  False: a suggestion is advice only -- its line says « note the time and this line », no Apply
+    on it.  Neither the operator's own swipe nor the modes depend on it.  Anything but True holds it back."""
+    return core_config.SWIPE_AUTO_APPLY_RELEASED is True
 
 
 def released_modes() -> Tuple[str, ...]:
@@ -195,11 +203,20 @@ DWELL = "the setting changed a moment ago"
 JUST_LEFT = "it is the setting just left"
 
 
+# the end of a suggestion's line while its Apply is held back (``apply_released``): what a man alone at the desk can
+# do with it during the show -- the time and the line, read afterwards ...
+NOTE_IT = "note the time and this line"
+# ... and the same, said by its toast and by the refusal of an Apply that still reaches it (not beside the line)
+NOTE_THE_LINE = "note the time and the line"
+
+
 def suggestion_text(said: str, seen: int, held: str = "") -> str:
-    """The suggestion's line, one wording whatever the gain: « <said>, seen twice: Apply now? »; ``held``: what
-    holds an automatic switch back, in parentheses after it."""
+    """The suggestion's line, one wording whatever the gain: « <said>, seen twice: Apply now? », or « <said>, seen
+    twice: note the time and this line » while its Apply is held back (``apply_released``); ``held``: what holds an
+    automatic switch back, in parentheses after it."""
     times = "twice" if seen == 2 else f"{seen} times"
-    return f"{said}, seen {times}: Apply now?" + (f" ({held})" if held else "")
+    ask = "Apply now?" if apply_released() else NOTE_IT
+    return f"{said}, seen {times}: {ask}" + (f" ({held})" if held else "")
 
 
 NOT_CONFIRMED_AT = "not confirmed at the last look ({})"

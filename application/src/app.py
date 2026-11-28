@@ -109,6 +109,7 @@ from core.ops_monitor import (
 from core.enhancer import ImageEnhancer
 from core.input_shape import shape_str
 from core.swipe import Candidate
+from core.swipe_auto import NOTE_THE_LINE, apply_released as swipe_auto_apply_released   # read at each call
 from core.swipe_auto import LABELS as SWIPE_AUTO_LABELS, mode_word as swipe_auto_word
 from core.swipe_auto import parse_mode as parse_swipe_mode, is_mode as swipe_auto_is_mode
 from core.swipe_auto import released_modes as swipe_auto_released   # core.config.SWIPE_AUTO_RELEASED, at each call
@@ -130,7 +131,7 @@ from runtime.calibration_flows import CalibrationFlows
 from runtime.roi_state import RoiState
 from runtime.swipe_controller import LiveSetting, SwipeController, say
 from runtime.seamless_switch import SeamlessSwitch
-from runtime.swipe_background import BackgroundSwipe
+from runtime.swipe_background import APPLY_HELD_BACK, BackgroundSwipe
 from ui.adapter import DpgUiAdapter
 from ui.roi_mask_editor import RoiMaskEditor
 from services.web_monitor import WebMonitor
@@ -3292,7 +3293,11 @@ class WallDanceApp:
         confidence, the dial's seed).
 
         The automatic swipe off (the project key swipe_auto): P5's Apply, word for word
-        (``_apply_settings_swipe_p5``) -- never the seamless path, whatever engine is built."""
+        (``_apply_settings_swipe_p5``) -- never the seamless path, whatever engine is built.
+
+        The background suggestion while this build holds its Apply back (``core.config.SWIPE_AUTO_APPLY_RELEASED``
+        False): nothing switches, one toast -- a press that still reaches it (a button drawn before, the remote
+        ApplySettingsSwipe).  The operator's own verdict: as above, whatever that flag."""
         if self.swipe_bg.mode == "off":
             self._apply_settings_swipe_p5()
             return
@@ -3307,6 +3312,11 @@ class WallDanceApp:
                 self.bus.publish(api.Toast(f"Swipe Apply: nothing switched - suggestion withdrawn: {stale}",
                                            5.0, (255, 200, 100)))
                 return
+            if not swipe_auto_apply_released():
+                # advice only: the technician notes the time and the line -- the build, not a rule on paper, holds it
+                self.bus.publish(api.Toast(f"Swipe Apply: nothing switched - {APPLY_HELD_BACK}",
+                                           5.0, (255, 200, 100)))
+                return
             winner, conf = sug["winner_c"], None
         else:
             why, winner, conf = self.swipe.applicable(live)
@@ -3317,7 +3327,8 @@ class WallDanceApp:
         if seamless_why is None:
             why = self.swipe_bg.request_switch(
                 winner, f"switching to {winner.label} (Apply)",
-                on_done=lambda ok, text: self._swipe_switch_done(ok, text, winner, conf, from_bg))
+                on_done=lambda ok, text: self._swipe_switch_done(ok, text, winner, conf, from_bg),
+                **({"suggestion": True} if from_bg else {}))     # the suggestion's Apply says so: held back there too
             if why:
                 self.bus.publish(api.Toast(f"Swipe Apply: {why}", 5.0, (255, 200, 100)))
                 return
@@ -3605,12 +3616,16 @@ class WallDanceApp:
             res["auto"] = {k: payload.get(k) for k in ("kind", "level", "text", "seamless", "why_not_auto",
                                                        "winner")}
             sug = self.swipe_bg.suggestion
-            if sug is not None:
+            held_back = not swipe_auto_apply_released()   # advice only: no Apply on it, Dismiss for « not now »
+            if res["winner"] is not None and held_back:
+                res["advice_only"] = True
+            elif sug is not None:
                 res.update(self._swipe_apply_hint(sug["winner_c"]))
             self.bus.publish(api.SettingsSwipeResult(res, ""))
             if not payload.get("again"):                  # said once: a look naming it again redraws the line only
                 self.bus.publish(api.Toast("A better model may be available - see 'Try other settings' "
-                                           "(Apply now)", 6.0, (255, 200, 100)))
+                                           + (f"({NOTE_THE_LINE})" if held_back else "(Apply now)"), 6.0,
+                                           (255, 200, 100)))
         elif kind == "switching":
             # an automatic switch: information, in the green of the operator's own Apply -- only a failure is an
             # alert (red)

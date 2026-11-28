@@ -25,6 +25,7 @@ from test_seamless_switch import L1280, X1280
 from test_swipe_auto_live import ON_HER
 from test_swipe_auto_rollback import _look, _Tap
 from test_swipe_auto_suggestion import LINE, WITHDRAWN, _events, _evening_bg, _toasts
+from test_swipe_auto_live import swipe_auto_apply_released  # noqa: F401 - the fixture
 
 LOOSE = (20.0, 20.0, 80.0, 80.0, 0.9)     # a box where the empty-wall picture shows nobody (the reviewer's)
 SAYS = LINE.removesuffix(", seen twice: Apply now?").replace(" covers ", " covered ", 1)
@@ -105,6 +106,7 @@ def _no_room(bg, proc, loader, monkeypatch):
 
 @pytest.mark.parametrize("kind", [_keep, _other_winner, _refuse_speed, _no_room],
                          ids=["keep", "another winner", "slower", "no room"])
+@pytest.mark.usefixtures("swipe_auto_apply_released")
 def test_each_look_that_does_not_confirm_it_counts_and_brings_the_next_one_soon(kind, monkeypatch):
     """Shown at 300 s (the looks back off 300 s); from then each look does not confirm it.  The first (600 s)
     changes the line, the next comes 150 fresh frames later (750 s) and withdraws it.  Fails before: the line kept
@@ -129,6 +131,7 @@ def test_each_look_that_does_not_confirm_it_counts_and_brings_the_next_one_soon(
 
 
 # ----------------------------------------------------------------------- 2. a look that confirms it in between
+@pytest.mark.usefixtures("swipe_auto_apply_released")
 def test_a_confirming_look_restores_the_line_and_the_count_starts_over():
     """Shown at 300 s, a « keep » at 600 s (the line stops inviting), named again at 750 s: the same line as when
     shown, its Apply button back (the event names the winner), the count at 0 -- so the « keep » after it (the
@@ -153,6 +156,7 @@ def test_a_confirming_look_restores_the_line_and_the_count_starts_over():
 
 
 # --------------------------------------------------------------------------- 1. the app's line, its Apply button
+@pytest.mark.usefixtures("swipe_auto_apply_released")
 def test_the_apps_line_drops_the_apply_button_and_a_confirming_look_brings_it_back():
     """The events of the test above through the app's own handler (``WallDanceApp._swipe_notify``) to the panel
     (``WallDanceGUI.show_swipe_result``, headless): the line that does not invite shows no Apply button; the
@@ -221,6 +225,7 @@ def test_the_tooltip_says_the_rules_15_percent():
 
 
 # ------------------------------------------------------------- 4. the line that no longer invites: information
+@pytest.mark.usefixtures("swipe_auto_apply_released")
 def test_the_line_that_no_longer_invites_is_in_the_normal_colour_without_apply_and_dismiss_says_not_now():
     """The line of a look that did not confirm the suggestion (« ... - not confirmed at the last look (HH:MM) »,
     the event's ``winner`` None) through the app's handler (``WallDanceApp._swipe_notify``) to the panel

@@ -14,6 +14,7 @@ from test_seamless_switch import L1280
 from test_swipe_auto_live import _bg, _look_frames, _LookRunner, _live
 from test_swipe_auto_rollback import _first_frame_raises, _look, _next_runs, _setup, _two_looks_ask_the_switch
 from test_swipe_auto_live import swipe_auto_unlocked  # noqa: E402,F401 - the fixture
+from test_swipe_auto_live import swipe_auto_apply_released  # noqa: F401 - the fixture
 
 # mode auto set on the BackgroundSwipe itself, past the app's doors: the release list must name it too (the
 # last guard before a switch, since 27/11); the build ships locked
@@ -114,6 +115,7 @@ def test_a_load_that_fails_for_another_reason_says_it_and_what_to_do(monkeypatch
     assert set(_ticks(bg, proc, 5)) == {"banned"} and len(loader.loads) == 1
 
 
+@pytest.mark.usefixtures("swipe_auto_apply_released")
 def test_after_the_operators_failed_apply_the_held_back_switch_says_it_was_the_apply():
     """The operator's seamless Apply failed (its first frame raised): no ban, but the switch holds the fault, so
     the next definite verdict is a suggestion -- that names the Apply, never « the last automatic switch »."""
@@ -129,6 +131,7 @@ def test_after_the_operators_failed_apply_the_held_back_switch_says_it_was_the_a
     assert adv["text"] == f"{SAYS} (6.0 ms a frame against 6.0), seen twice: Apply now? ({APPLY_FAILED})"
 
 
+@pytest.mark.usefixtures("swipe_auto_apply_released")
 def test_after_a_failed_automatic_switch_and_a_project_load_it_says_what_lifts_the_fault():
     """A project load lifts the ban, not the fault: the next definite verdict is held back by the fault -- that of
     an automatic switch -- and the operator reads whose it was (the fault says what lifts it)."""

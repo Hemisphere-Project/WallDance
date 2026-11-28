@@ -17,11 +17,14 @@ streak over) -- shown again minutes later, it would invite a second Apply that f
 from core.swipe_auto import AutoAdvice
 from runtime import api
 from runtime.seamless_switch import no_room
+import pytest
+
 from test_seamless_switch import L1280, X1280, _live
 from test_swipe_auto_dismiss import _holds
 from test_swipe_auto_live import swipe_auto_unlocked  # noqa: F401 - the fixture
 from test_swipe_auto_lock import _toasts, real_app  # noqa: F401 - the fixture
 from test_swipe_auto_not_now import _result
+from test_swipe_auto_live import swipe_auto_apply_released  # noqa: F401 - the fixture
 
 SAID = "l @ 1280 covers 100 % of the dancers, x @ 1280 33 % (7 ms a frame against 6)"
 PROGRESS = "collecting 12 / 150 frames with a dancer on the wall"
@@ -79,12 +82,12 @@ def _failed_apply(app, events):
     asked = {}
     app.swipe_switch.can_switch = lambda winner: None             # seamless: loads beside, switches between frames
 
-    def request_switch(winner, text, on_done=None):
-        asked.update(winner=winner, on_done=on_done)
+    def request_switch(winner, text, on_done=None, suggestion=False):
+        asked.update(winner=winner, on_done=on_done, suggestion=suggestion)
         return None
     app.swipe_bg.request_switch = request_switch
     app._cb_apply_settings_swipe()
-    assert asked["winner"] == L1280
+    assert asked["winner"] == L1280 and asked["suggestion"] is True
     req = {"winner": L1280, "text": "Apply", "auto": False, "on_done": asked["on_done"], "ticket": object()}
     app.swipe_switch._fail(req, no_room(312.0), X1280, L1280, before=True)
     failed = [e for e in events if type(e).__name__ == "SettingsSwipeProgress" and e.state == "apply_failed"]
@@ -92,6 +95,7 @@ def _failed_apply(app, events):
     return failed[-1].text
 
 
+@pytest.mark.usefixtures("swipe_auto_apply_released")
 def test_a_confirmation_after_a_failed_apply_does_not_replace_the_failure_line(real_app,  # noqa: F811
                                                                                swipe_auto_unlocked):  # noqa: F811
     app, events = real_app
@@ -122,6 +126,7 @@ def test_a_confirmation_during_the_operators_own_swipe_does_not_replace_its_prog
     assert _line(events) == [], f"a withdrawal covered the operator's swipe in progress: {_line(events)}"
 
 
+@pytest.mark.usefixtures("swipe_auto_apply_released")
 def test_dismiss_on_a_failed_applys_line_is_not_now_for_the_suggestion_it_came_from(real_app,  # noqa: F811
                                                                                    swipe_auto_unlocked):  # noqa: F811
     """Dismiss on the red line of a failed Apply of the suggestion acknowledges the failure AND says « not now » to

@@ -3314,7 +3314,8 @@ class WallDanceGUI:
     def show_swipe_result(self, result, error=""):
         """P5 swipe verdict: the reason, one line per setting (best first), what was not tried, how long it
         took; the Apply button when another setting is worth switching to.  P6: the background suggestion a look
-        no longer confirms (no winner) has no Apply, and Dismiss stays beside it for « not now »."""
+        no longer confirms (no winner) has no Apply, and Dismiss stays beside it for « not now »; nor has a
+        suggestion whose Apply this build holds back (``advice_only``: « note the time and this line »)."""
         tag = "swipe_status_text"
         self._swipe_busy = False
         if dpg.does_item_exist("swipe_btn"):
@@ -3349,7 +3350,8 @@ class WallDanceGUI:
             lines.append(f"{r.get('frames', '?')} frames, {took:.0f} s")
         dpg.set_value(tag, "\n".join(lines))
         dpg.configure_item(tag, color=WARN_AMBER if r.get("switch") else TEXT_NORMAL)
-        if r.get("switch") and r.get("winner") and dpg.does_item_exist("swipe_apply_btn"):
+        advice_only = bool(r.get("advice_only"))
+        if r.get("switch") and r.get("winner") and not advice_only and dpg.does_item_exist("swipe_apply_btn"):
             label = r.get("apply_label") or f"Apply {r['winner']} (STANDBY: a few seconds without tracking)"
             standby = " (STANDBY:" in label                   # the panel is narrow: the STANDBY note under it
             # (P5's « Apply ... (STANDBY) », the automatic swipe off, fits on one line, as it did)
@@ -3360,7 +3362,7 @@ class WallDanceGUI:
             if r.get("apply_tip") and dpg.does_item_exist("swipe_apply_tip"):
                 dpg.set_value("swipe_apply_tip", r["apply_tip"])
             _show_swipe_dismiss(self, True)
-        if auto and not r.get("winner"):
+        if auto and (not r.get("winner") or advice_only):
             _show_swipe_dismiss(self, True)          # the line no longer invites: Dismiss says « not now »
 
     def show_swipe_hold(self, held):

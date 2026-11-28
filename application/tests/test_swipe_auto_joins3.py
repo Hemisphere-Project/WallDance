@@ -33,6 +33,7 @@ from test_swipe_auto_live import ON_HER, _look_frames, _looking_bg, swipe_auto_u
 from test_swipe_auto_lock import _combo, _wall_panel, panel  # noqa: F401 - the fixture
 from test_swipe_auto_rollback import _look, _Tap
 from test_swipe_auto_suggestion import LINE, _events, _evening_bg, _toasts, _verdict
+from test_swipe_auto_live import swipe_auto_apply_released  # noqa: F401 - the fixture
 
 TESTS = Path(__file__).resolve().parent
 SEEN_3 = LINE.replace("seen twice", "seen 3 times")
@@ -54,6 +55,7 @@ def _next_run(bg, proc, tap, start, stop):
 
 
 # ------------------------------------------------------------------- 1. a stand-down is not a verdict
+@pytest.mark.usefixtures("swipe_auto_apply_released")
 def test_regression_guard_a_stand_down_neither_withdraws_nor_counts_in_the_streak():
     """Shown at 300 s (the looks back off 300 s), a « keep » at 600 s (one look that does not confirm it; since
     27/11 the next look is due 150 fresh frames later), the look due at 750 s stands down for late frames: the
@@ -78,6 +80,7 @@ def test_regression_guard_a_stand_down_neither_withdraws_nor_counts_in_the_strea
     assert len(_toasts(events)) == 1
 
 
+@pytest.mark.usefixtures("swipe_auto_apply_released")
 def test_regression_guard_a_stand_down_inside_a_back_off_ends_at_the_later_of_the_two():
     """Shown at 300 s: the looks back off until 600 s.  At 450 s the lost share wakes a look (it loses clearly more
     dancers than when shown), which stands down for late frames: no look until 750 s (its own 300 s) -- the
@@ -97,6 +100,7 @@ def test_regression_guard_a_stand_down_inside_a_back_off_ends_at_the_later_of_th
 
 # --------------------------------------------- 2. seen once, then a stand-down or a wait for an empty wall
 @pytest.mark.parametrize("late_at, then", [({300.0}, "shown"), ({300.0, 600.0}, "seen again")])
+@pytest.mark.usefixtures("swipe_auto_apply_released")
 def test_regression_guard_seen_once_then_a_stand_down_the_second_verdict_comes_after_it(late_at, then):
     """Seen at 150 s (nothing shown, the next look at once); the look due at 300 s stands down (300 s), and in the
     second case the one at 600 s too (600 s more).  The look after the wait gives the second verdict: at 600 s,
@@ -116,6 +120,7 @@ def test_regression_guard_seen_once_then_a_stand_down_the_second_verdict_comes_a
 
 
 @pytest.mark.parametrize("empty_at, then", [(400, "shown"), (1100, "seen again")])
+@pytest.mark.usefixtures("swipe_auto_apply_released")
 def test_regression_guard_seen_once_then_a_wait_for_an_empty_wall_the_second_verdict_comes_after_it(empty_at,
                                                                                                     then):
     """Seen at 150 s out of RUN; then in RUN with a dancer tracked, its second engine gone: the look due waits
@@ -170,6 +175,7 @@ def test_the_replay_driver_passes_its_frame_budget_and_says_it():
 
 
 # ---------------------------------------------------------------------------------------- the leftovers
+@pytest.mark.usefixtures("swipe_auto_apply_released")
 def test_a_setting_put_aside_then_dismissed_needs_two_looks_in_a_row_again():
     """(a) Shown at 300 s; the look at 600 s fails to run the other model: the setting is banned, the suggestion
     goes without a word; Dismiss lifts the ban.  Fails before: the very next verdict showed it again, with a toast,
@@ -197,6 +203,7 @@ def test_a_setting_put_aside_then_dismissed_needs_two_looks_in_a_row_again():
 
 
 @pytest.mark.parametrize("dwell_s, held", [(300.0, ""), (2000.0, DWELL)])
+@pytest.mark.usefixtures("swipe_auto_apply_released")
 def test_a_look_naming_it_again_says_the_reason_that_holds_now(dwell_s, held, swipe_auto_unlocked):  # noqa: F811
     """(b) Mode auto, the setting changed at 100 s: shown at 300 s inside the dwell, « (the setting changed a
     moment ago) ».  Nobody on the wall for the pool's age (the streak ends), then a look at 651 s names it once:

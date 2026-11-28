@@ -20,6 +20,7 @@ from types import SimpleNamespace
 import pytest
 
 from test_swipe_auto_live import swipe_auto_off_only, swipe_auto_suggest_only, swipe_auto_unlocked  # noqa: F401
+from test_swipe_auto_live import swipe_auto_apply_released  # noqa: F401 - the fixture
 
 REFUSED = "Automatic swipe: {} is not released in this build - it stays {}"
 READ_OFF = "Automatic swipe: off - this project asks for {}, which is not released in this build"
@@ -503,9 +504,11 @@ def test_regression_guard_suggest_released_suggest_chosen_is_saved_and_reloads_s
 @pytest.mark.parametrize("released,tip", [(None, TIP_SHIPPED), (("off",), TIP_OFF_ONLY),
                                           (("off", "suggest", "auto"), TIP_ALL)],
                          ids=["shipped", "off-only", "all"])
-def test_the_tooltip_marks_the_default_only_and_says_saved_with_the_project(panel, monkeypatch, released, tip):
+def test_the_tooltip_marks_the_default_only_and_says_saved_with_the_project(panel, monkeypatch, released, tip,
+                                                                             swipe_auto_apply_released):  # noqa: F811
     """The default in the tooltip: « (the default) » under suggest's paragraph while suggest is the default, off's
-    own words of before only while off is.  Fails before: off was marked the default and Save « when not off »."""
+    own words of before only while off is.  Fails before: off was marked the default and Save « when not off ».
+    (A suggestion's Apply released: its tooltip while held back, ``test_swipe_auto_apply_held_back``.)"""
     import core.config
     if released is not None:
         monkeypatch.setattr(core.config, "SWIPE_AUTO_RELEASED", released)

@@ -24,6 +24,7 @@ from test_seamless_switch import L1280, _Port, _live
 from test_swipe_auto_live import (_bg, _look_frames, _looking_bg, swipe_auto_off_only,  # noqa: F401
                                   swipe_auto_suggest_only, swipe_auto_unlocked)
 from test_swipe_auto_rollback import _JudgingRunner, _look, _Tap
+from test_swipe_auto_live import swipe_auto_apply_released  # noqa: F401 - the fixture
 
 TOAST = "A better model may be available - see 'Try other settings' (Apply now)"
 LINE = "l @ 1280 covers 100 % of the dancers, x @ 1280 33 % (6.0 ms a frame against 6.0), seen twice: Apply now?"
@@ -138,6 +139,7 @@ def test_a_slower_model_is_not_suggested_and_an_unknown_time_refuses():
 
 
 # ------------------------------------------------------------------------------------------ 4. one wording
+@pytest.mark.usefixtures("swipe_auto_apply_released")
 def test_one_wording_with_both_times_and_the_reason_that_holds_a_switch_back(swipe_auto_unlocked):  # noqa: F811
     """Fails before: « ...: clearly better - Apply now (Auto: suggest does not switch by itself) », no live time."""
     bg, proc, loader, live = _evening_bg("suggest")
@@ -154,6 +156,7 @@ def test_one_wording_with_both_times_and_the_reason_that_holds_a_switch_back(swi
 
 
 # --------------------------------------------------------------------------------------------- 5. said once
+@pytest.mark.usefixtures("swipe_auto_apply_released")
 def test_a_look_naming_it_again_updates_the_line_silently_and_the_looks_back_off():
     """Fails before: every look re-announced it (a toast each), and the next look came 150 s later."""
     pytest.importorskip("dearpygui")
@@ -238,6 +241,7 @@ def test_the_readiness_row_names_what_the_swipe_line_shows():
 
 # ------------------------------------------------------------------------------------------ 8. the last guard
 @pytest.mark.parametrize("released", ["off only", "suggest only", "shipped"])
+@pytest.mark.usefixtures("swipe_auto_apply_released")
 def test_no_automatic_switch_unless_the_build_releases_auto(released, request):
     """Mode auto set past the app's doors, the build not releasing it: shown as a suggestion, nothing switches.
     Fails before: the switch was asked.  « shipped »: the list as the build ships it, nothing patched."""

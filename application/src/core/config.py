@@ -396,6 +396,14 @@ SWIPE_AUTO = "suggest"
 # commit that closes the review's third group.  Read when needed (core.swipe_auto.released_modes), never copied
 # at import: a test or a gate driver sets it.
 SWIPE_AUTO_RELEASED = ("off", "suggest")
+# The Apply of a background suggestion (« Apply now » under "Try other settings", the remote ApplySettingsSwipe on
+# it).  False: a suggestion is advice only -- its line says « note the time and this line », no Apply button on it,
+# and any Apply that still reaches it switches nothing (the reviewers' condition of use for the first rehearsal with
+# dancers: the technician never applies a suggestion, he notes the time and the line -- the build holds it for him).
+# False until the owner opens Apply on a suggestion, after a rehearsal has shown suggestions worth applying.  The
+# operator's own swipe and its Apply never depend on it, and it releases no mode (SWIPE_AUTO_RELEASED does).  Read
+# when needed (core.swipe_auto.apply_released), never copied at import: a test sets it.
+SWIPE_AUTO_APPLY_RELEASED = False
 SWIPE_AUTO_LOOK_S = 5.0
 SWIPE_AUTO_PACE_S = 0.2
 # The operator's Dismiss on a background suggestion means « not now »: that setting is neither suggested nor

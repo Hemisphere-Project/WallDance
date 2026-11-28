@@ -75,9 +75,9 @@ from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 from core.swipe import Candidate, SwipeParams
 from core.swipe import score_frame
-from core.swipe_auto import (MODE_AUTO, MODE_OFF, AutoParams, SwipeAuto, alike_ms, bar_for,  # noqa: F401 - PolicyPort
-                             headroom, parse_mode, referee_params, released_modes, suggestion_text,
-                             unconfirmed_text)
+from core.swipe_auto import (MODE_AUTO, MODE_OFF, NOTE_THE_LINE, AutoParams, SwipeAuto, alike_ms,  # noqa: F401 - PolicyPort
+                             apply_released, bar_for, headroom, parse_mode, referee_params, released_modes,
+                             suggestion_text, unconfirmed_text)
 from core.swipe_runner import (SWIPE_MODELS, CandidateRunner, ExclusionCells, install_capture_guards,
                                live_run_from_boxes, no_graph_capture, result_dict, score_runs)
 from runtime.seamless_switch import ENGINE_UNREADABLE, Prepared, SeamlessSwitch, _runner_factory, load_failure
@@ -99,6 +99,9 @@ AUTO_FAILED = "the last automatic switch failed"
 APPLY_FAILED = "the last Apply failed"
 # the last guard: mode auto in a build that does not release it (the app's doors refuse it already)
 AUTO_NOT_RELEASED = "Auto: switch is not released in this build"
+# the Apply of a suggestion held back in this build (core.config.SWIPE_AUTO_APPLY_RELEASED): what a door that would
+# apply one says -- nothing switches, the suggestion stays on the line
+APPLY_HELD_BACK = f"a suggestion is advice only in this build: {NOTE_THE_LINE}"
 # a suggestion on screen that the looks no longer name goes after this many of them in a row
 UNCONFIRMED = 2
 NOT_CONFIRMED = "the last looks did not confirm it"
@@ -1337,11 +1340,17 @@ class BackgroundSwipe:
 
     # ------------------------------------------------------------------ the operator's seamless Apply
     def request_switch(self, winner: Candidate, text: str,
-                       on_done: Optional[Callable[[bool, str], None]] = None) -> Optional[str]:
+                       on_done: Optional[Callable[[bool, str], None]] = None,
+                       suggestion: bool = False) -> Optional[str]:
         """The operator's seamless Apply with the automatic swipe beside it: its resident when that is the winner
         (no second load), else the resident leaves first and the switch loads the winner (the winner never loads
         beside it: two engines, the live one and the winner).  A resident loaded for another project, input or
-        TensorRT state than the live one (``_fits``) is never handed over: it leaves, as for another winner."""
+        TensorRT state than the live one (``_fits``) is never handed over: it leaves, as for another winner.
+        ``suggestion``: the Apply of this swipe's suggestion -- refused while this build holds it back
+        (``apply_released``): nothing switches, the resident stays."""
+        if suggestion and not apply_released():
+            self._record("not-switched", setting=winner.label, why=APPLY_HELD_BACK)
+            return APPLY_HELD_BACK
         r = self.resident
         live = self.live()
         if live is not None and self._fits(live, winner):

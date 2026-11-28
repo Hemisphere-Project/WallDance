@@ -6,8 +6,11 @@ go to the log line, the status row says a plain sentence, the looks back off as 
 600 s), and the third failure in a row puts the setting aside as a run that failed does (the same ban, the same
 sentences: ``BackgroundSwipe._not_run``), with its own cause: « its looks keep failing », not « the
 engine stopped during a run ».  CPU, with the fakes of ``test_swipe_auto_live``."""
+import pytest
+
 from test_swipe_auto_rollback import _look, _Tap
 from test_swipe_auto_suggestion import _evening_bg
+from test_swipe_auto_live import swipe_auto_apply_released  # noqa: F401 - the fixture
 
 LOOK_FAILED = "the automatic swipe waits: its last look failed, see the log"
 
@@ -99,6 +102,7 @@ def test_the_third_failed_look_in_a_row_says_its_own_cause_not_the_engines(monke
     assert error in bg.switch.fault.detail and error in capsys.readouterr().out
 
 
+@pytest.mark.usefixtures("swipe_auto_apply_released")
 def test_looks_that_raise_under_a_suggestion_stop_its_invitation_and_withdraw_it(monkeypatch):
     """b3r/probe_raise_under_sug.py: shown at 300 s, confirmed at 600 s (the looks back off 600 s), then every look
     raises.  The first that raises (1200 s) does not confirm it, as any other look: « Apply now? » and the Apply

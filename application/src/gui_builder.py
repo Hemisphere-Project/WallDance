@@ -19,6 +19,7 @@ from core.config import (RECORDING_SLOTS, IDENTITY_SLOTS_ENABLED, IDENTITY_SLOTS
                          IDENTITY_SLOTS_STATIC_GUARD, IDENTITY_SLOTS_SMART_HOLD, FOREGROUND_ENABLED,
                          IDENTITY_SLOTS_USE_IR_BELT, OSC_SEND_STATE, DETECTION_DEFAULTS)
 from core.swipe_auto import LABELS as SWIPE_AUTO_LABELS, default_mode, released_modes   # read when the panel is built
+from core.swipe_auto import apply_released as swipe_auto_apply_released                 # ... and this one too
 from gui_icons import Icons
 from gui_constants import (
     TEXT_NORMAL, TEXT_MUTED, TEXT_DIM, TEXT_HINT, TEXT_FAINT,
@@ -719,13 +720,18 @@ SWIPE_BTN_TIP_OFF = ("During the warmup, in RUN, with the empty-wall snapshot re
                      "until you Apply, in STANDBY.  Press again to cancel.")
 SWIPE_BTN_TIP_ON = SWIPE_BTN_TIP_OFF.replace("until you Apply, in STANDBY.", "until you Apply.")
 # The automatic swipe's combo tooltip: one paragraph per mode, only those of the modes the build releases; the
-# build's default (core.swipe_auto.default_mode) in its own words (SWIPE_AUTO_TIP_DEFAULT), only that one.
+# build's default (core.swipe_auto.default_mode) in its own words (SWIPE_AUTO_TIP_DEFAULT), only that one.  The end
+# of suggest's paragraph: its Apply (SWIPE_AUTO_TIP_APPLY), or, while this build holds that Apply back
+# (core.swipe_auto.apply_released), what a suggestion is then (SWIPE_AUTO_TIP_ADVICE) -- never an Apply it lacks.
+SWIPE_AUTO_TIP_APPLY = "           slower (Apply now, or Dismiss: not now, 15 min)\n"
+SWIPE_AUTO_TIP_ADVICE = ("           slower: advice only - note the time and the line\n"
+                         "           (Dismiss: not now, 15 min)\n")
 SWIPE_AUTO_TIP_LINES = {
     "off": "  off      nothing in the background\n",
     "suggest": ("  suggest  while dancers are on the wall, it tries the other model\n"
                 "           at the same network input and says so here when it does\n"
                 "           better on two looks in a row and is no more than 15 %\n"
-                "           slower (Apply now, or Dismiss: not now, 15 min)\n"),
+                + SWIPE_AUTO_TIP_APPLY),
     "auto": ("  switch   the same, and when the other model is clearly better it\n"
              "           switches between two frames (an alert only if it fails)\n"),
 }
@@ -737,13 +743,15 @@ SWIPE_AUTO_TIP_DEFAULT = {
 
 
 def swipe_auto_tip() -> str:
-    """The combo's tooltip, for the modes this build releases and its default (both read now)."""
+    """The combo's tooltip, for the modes this build releases, its default and whether it holds a suggestion's
+    Apply back (all read now)."""
     default = default_mode()
-    return ("The automatic swipe, while the show runs:\n"
-            + "".join((SWIPE_AUTO_TIP_DEFAULT if m == default else SWIPE_AUTO_TIP_LINES)[m]
-                      for m in released_modes())
-            + "An empty wall costs no inference; the other model stays loaded\n"
-            "while it is not off.  Saved with the project.")
+    tip = ("The automatic swipe, while the show runs:\n"
+           + "".join((SWIPE_AUTO_TIP_DEFAULT if m == default else SWIPE_AUTO_TIP_LINES)[m]
+                     for m in released_modes())
+           + "An empty wall costs no inference; the other model stays loaded\n"
+           "while it is not off.  Saved with the project.")
+    return tip if swipe_auto_apply_released() else tip.replace(SWIPE_AUTO_TIP_APPLY, SWIPE_AUTO_TIP_ADVICE)
 
 
 def build_phase_rig(gui: Any):

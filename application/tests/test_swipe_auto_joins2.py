@@ -8,6 +8,7 @@ the lock's own panel."""
 import pytest
 
 from test_swipe_auto_live import swipe_auto_suggest_only, swipe_auto_unlocked  # noqa: F401 - the fixtures
+from test_swipe_auto_live import swipe_auto_apply_released  # noqa: F401 - the fixture
 from test_swipe_auto_lock import _combo, _wall_panel, panel  # noqa: F401 - the fixture
 
 SUGGEST_TIP = ("  suggest  while dancers are on the wall, it tries the other model\n"
@@ -17,8 +18,10 @@ SUGGEST_TIP = ("  suggest  while dancers are on the wall, it tries the other mod
 
 
 @pytest.mark.parametrize("released", ["shipped", "suggest only", "all"])
-def test_the_combos_tooltip_says_when_a_suggestion_shows_and_what_dismiss_does(panel, released, request):  # noqa: F811
-    """Fails before: « says so here when it does better (Apply now, or Dismiss) », every two and a half minutes."""
+def test_the_combos_tooltip_says_when_a_suggestion_shows_and_what_dismiss_does(panel, released, request,  # noqa: F811
+                                                                              swipe_auto_apply_released):
+    """Fails before: « says so here when it does better (Apply now, or Dismiss) », every two and a half minutes.
+    (A suggestion's Apply released: its tooltip while held back, ``test_swipe_auto_apply_held_back``.)"""
     from core.config import SWIPE_AUTO_SNOOZE_S
     if released != "shipped":                    # shipped: off and suggest, nothing patched
         request.getfixturevalue("swipe_auto_suggest_only" if released == "suggest only" else "swipe_auto_unlocked")

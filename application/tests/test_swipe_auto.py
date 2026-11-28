@@ -6,6 +6,7 @@ import pytest
 from core.swipe import Candidate, FrameScore, SwipeParams, SwipeResult, SwipeRow
 from core.swipe_auto import (MODE_AUTO, MODE_SUGGEST, AutoParams, SwipeAuto, bar_for, headroom, parse_mode,
                              referee_params, seamless)
+from test_swipe_auto_live import swipe_auto_apply_released  # noqa: F401 - the fixture
 
 X = Candidate("yolo11x-pose", 1280, (1920, 1056))
 L = Candidate("yolo11l-pose", 1280, (1920, 1056))
@@ -77,6 +78,7 @@ def test_a_background_run_tries_only_the_live_input():
     assert SwipeAuto(MODE_AUTO).candidates([X1280, X, L], X) == [X, L]
 
 
+@pytest.mark.usefixtures("swipe_auto_apply_released")
 def test_any_verdict_naming_another_setting_is_a_suggestion():
     a = SwipeAuto(MODE_SUGGEST)
     assert a.advise(0.0, _result(L, X, 0.04), newest_frame_t=100.0, ms=MS).kind == "seen"     # once: nothing shown

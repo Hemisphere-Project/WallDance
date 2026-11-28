@@ -41,6 +41,15 @@ def swipe_auto_off_only(monkeypatch):
     monkeypatch.setattr(core.config, "SWIPE_AUTO_RELEASED", ("off",))
 
 
+@pytest.fixture
+def swipe_auto_apply_released(monkeypatch):
+    """The Apply of a background suggestion released (``core.config.SWIPE_AUTO_APPLY_RELEASED``): its line asks
+    « Apply now? », its Apply button, its Apply -- for a test of them.  The build ships it held back (the suggestion
+    is advice only): never autouse."""
+    import core.config
+    monkeypatch.setattr(core.config, "SWIPE_AUTO_APPLY_RELEASED", True)
+
+
 class _BgProc(_SwitchProc):
     """... with the tap's kept frames, as the background swipe looks at them."""
 
@@ -452,6 +461,7 @@ def test_a_project_load_lifts_the_ban():
     assert bg.status()["auto_banned"] == []
 
 
+@pytest.mark.usefixtures("swipe_auto_apply_released")
 def test_a_background_suggestion_never_makes_a_readiness_row():
     """The a848532 rule: a background suggestion is its line and its toast (« Apply now »), never a readiness row --
     the row is only the operator's own verdict or a failed switch."""

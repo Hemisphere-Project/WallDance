@@ -19,6 +19,7 @@ from test_seamless_switch import L1280, X1280, _Loader, _Port, _Runner, _live
 from test_swipe_auto_live import ON_HER, _apply_adv, _bg, _look_frames, _looking_bg
 from test_swipe_auto_rollback import _first_frame_raises, _look, _next_runs, _setup, _Tap
 from test_swipe_auto_live import swipe_auto_unlocked  # noqa: E402,F401 - the fixture
+from test_swipe_auto_live import swipe_auto_apply_released  # noqa: F401 - the fixture
 
 # mode auto set on the BackgroundSwipe itself, past the app's doors: the release list must name it too (the
 # last guard before a switch, since 27/11); the build ships locked
@@ -181,6 +182,7 @@ def test_an_automatic_verdict_meeting_the_operators_apply_is_no_fault(under_way)
 
 
 # ------------------------------------------------------------------------- 7. one instruction per situation
+@pytest.mark.usefixtures("swipe_auto_apply_released")
 def test_an_automatic_switch_that_fails_before_it_begins_says_one_thing_to_do():
     """(a) The fault (the alert, the swipe line, the readiness row: this one text) says Dismiss lets it try again;
     the next definite verdict, held back by it, says whose switch failed and gives no other instruction.  Other
@@ -200,6 +202,7 @@ def test_an_automatic_switch_that_fails_before_it_begins_says_one_thing_to_do():
     assert "automatic swipe to off" not in text + bg.suggestion["text"]
 
 
+@pytest.mark.usefixtures("swipe_auto_apply_released")
 def test_in_mode_suggest_the_line_says_what_the_mode_does():
     """(b) The combo reads « Auto: suggest »: the line says that mode does not switch by itself (it read
     « automatic switching is off »)."""
