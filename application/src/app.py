@@ -3165,11 +3165,16 @@ class WallDanceApp:
 
     def _swipe_resident_row(self):
         """P6: one information row while the automatic swipe keeps its second model loaded (what it holds on the
-        GPU); None with the key off or nothing loaded."""
+        GPU) -- P7: or while it is still to load (when it loads, what to do to have it before the show); None with
+        the key off or nothing loaded nor to load."""
         from core.ops_monitor import check_swipe_resident
-        r = self.swipe_bg.resident
-        return check_swipe_resident(swipe_auto=self.swipe_bg.mode, resident=r.candidate.label if r else None,
-                                    mb=r.mb if r else None)
+        bg = self.swipe_bg
+        r = bg.resident
+        pending = bg.to_load() if r is None else None
+        return check_swipe_resident(swipe_auto=bg.mode, resident=r.candidate.label if r else None,
+                                    mb=r.mb if r else None, to_load=pending[0] if pending else None,
+                                    to_load_mb=pending[1] if pending else None, settle_s=bg.settle_s,
+                                    empty_s=bg.empty_s)
 
     def _swipe_wall_empty(self) -> bool:
         """No track on screen and no identity slot held -- the collector's own test (``core.gc_policy``), on the

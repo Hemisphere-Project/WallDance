@@ -17,7 +17,8 @@ and acts on its advice, on its own thread, without the operator:
   ``SWIPE_AUTO_LOAD_EMPTY_S`` (no track, no identity slot held: the collector's own test) -- and at the operator's
   own click in RUN: the first look after he sets the mode to suggest or auto loads it, whatever is on the wall
   (once).  Out of RUN a load starts only once the app has sat there ``SWIPE_AUTO_LOAD_SETTLE_S`` with nothing
-  applied since (a project, a model, the mode set -- his click out of RUN too --, RUN or STANDBY pressed): a load
+  applied since (a project, a model -- another one at the same input too --, the mode set -- his click out of RUN
+  too --, RUN or STANDBY pressed, a new empty-wall plate; a calibration or a capture counts nothing): a load
   cannot be cut short, and a man alone presses RUN when the dancers arrive, often right after he applied the
   project; RUN pressed before: nothing was started, and the load waits for the next such moment.  Never on
   entering RUN, never at a look that falls due later while a dancer is tracked.  So it loads after the mode is
@@ -404,6 +405,7 @@ class BackgroundSwipe:
         self._snooze_says: Optional[str] = None    # what the look says while a dismissed setting is put aside
         self._fault_why: Optional[Tuple[str, str]] = None   # (the switch's fault, why it holds an apply back)
         self.resident: Optional[Resident] = None
+        self._mb_seen: Dict[str, int] = {}         # a second model's GPU memory, measured at its last load (label)
         self._resident_lock = switch.guard         # held while the looker infers on the resident: the swap waits
         self._scene: Optional[Tuple] = None
         self._exclusion: Optional[Tuple] = None    # the excluded cells at the last look: a change ends the streak
@@ -426,7 +428,8 @@ class BackgroundSwipe:
         self._click_out = False                         # the click kept was made out of RUN: it lapses in RUN
         self._settle_again = False                      # a mode set, RUN or STANDBY pressed: the settle counts again
         self._out_since: Optional[float] = None         # loop clock since when the app sits out of RUN, nothing applied
-        self._settle_key: Optional[Tuple] = None        # ... on this live setting (another project, model: again)
+        self._settle_key: Optional[Tuple] = None        # ... on this live setting (another project, model, plate:
+                                                        # again -- ``_settle_key_of``)
         self._next_s: Optional[float] = None            # the next look sooner than look_s (an empty wall counted)
         self._wall_wait: Optional[str] = None           # a look due waits for an empty wall: what its row says
         self._ref_wait: Optional[str] = None            # the look waits on the reference watch: what its row says
@@ -576,26 +579,31 @@ class BackgroundSwipe:
     def _observe(self, proc, live: Optional[LiveSetting] = None) -> None:
         """This look's moment (``_quiet``): a load here does not show -- out of RUN once the app has sat there
         ``settle_s`` on this live setting with nothing applied since (a mode set, RUN or STANDBY pressed, a model
-        loading, another project or setting), or in RUN on a wall seen empty (no track, no identity slot held) for
-        ``empty_s``, counted from the first look that saw it empty and never from before RUN began -- or it is the
-        first look after the operator set the mode in RUN (``set_mode``), whatever is on the wall: his own click,
-        kept until a look tries the load (``_load_when_quiet``) -- a look that cannot (the plate pending, a model
-        loading, busy) leaves it to the next.  His click out of RUN is a moment once settled, and lapses in RUN."""
+        loading, another project, model or setting, a new empty-wall plate; a look that finds the app busy -- a
+        calibration, a capture -- counts nothing: the settle starts at the first look after it), or in RUN on a
+        wall seen empty (no track, no identity slot held) for ``empty_s``, counted from the first look that saw it
+        empty and never from before RUN began -- or it is the first look after the operator set the mode in RUN
+        (``set_mode``), whatever is on the wall: his own click, kept until a look tries the load
+        (``_load_when_quiet``) -- a look that cannot (the plate pending, a model loading, busy) leaves it to the
+        next.  His click out of RUN is a moment once settled, and lapses in RUN."""
         self._next_s = None
         mode_set, self._mode_set = self._mode_set, False
         if mode_set:
             self._click, self._click_out = True, self._set_out
         run = bool(self.in_run())
         entered, self._was_run = run and not self._was_run, run
-        key = self._resident_key(live) if live is not None else None
+        key = self._settle_key_of(live) if live is not None else None
         again, self._settle_again = self._settle_again, False
-        if run or again or key is None or key != self._settle_key:
+        # busy (a calibration, an empty-wall capture, a model load, an Apply, his swipe, a project switch, the
+        # switch's swap): never counted -- the settle starts at the first look that finds the app free again
+        busy = not run and bool(self.busy() or self.switch.busy())
+        if run or again or busy or key is None or key != self._settle_key:
             self._out_since = None            # the settle counts again (out of RUN, from the next look with a model)
         self._settle_key = key
         if not run:
             self._quiet_since = None
             left = self.settle_s
-            if key is not None:
+            if key is not None and not busy:
                 now = float(proc.loop_clock())
                 if self._out_since is None:
                     self._out_since = now
@@ -683,6 +691,14 @@ class BackgroundSwipe:
     def _resident_key(live: LiveSetting) -> Tuple:
         c = live.candidate
         return (live.project, int(c.imgsz), tuple(c.shape) if c.shape else None, bool(live.trt))
+
+    @classmethod
+    def _settle_key_of(cls, live: LiveSetting) -> Tuple:
+        """What the settle before a load sits on: the resident's key, and the live model itself -- another model
+        at the same input, or the same one loaded again (``model_id``: any reload, a swap), counts the settle
+        again, even when no look saw its load -- and the empty-wall plate (a calibration or a capture made
+        between two looks: a new plate)."""
+        return cls._resident_key(live), live.candidate, live.model_id, live.plate
 
     def tick(self) -> str:
         """One look.  Returns what it did: off | loading | waiting (the plate is not usable, the reference watch
@@ -947,6 +963,8 @@ class BackgroundSwipe:
         mb = (int(round((used1 - used0) / 2 ** 20 / 10.0)) * 10
               if used0 is not None and used1 is not None and used1 >= used0 else None)
         self.resident = Resident(other, model, pose_runner, self._resident_key(live), load_s, mb)
+        if mb is not None:
+            self._mb_seen[other.label] = mb
         self._record("load", resident=other.label, seconds=round(load_s, 2), mb=mb)
         say(f"[SwipeAuto] {other.label} loaded beside the live model ({load_s:.2f} s"
             + (f", about {mb} MB)" if mb is not None else ")"))
@@ -1507,6 +1525,21 @@ class BackgroundSwipe:
     def held(self) -> bool:
         """A setting is banned: Dismiss has something to lift (its button stays on screen)."""
         return bool(self._banned)
+
+    def to_load(self) -> Optional[Tuple[str, Optional[int]]]:
+        """The second model still to load for the live setting -- (its label, its GPU memory in MB measured at its
+        last load this session, None: never measured) -- or None: the mode off, nothing live (a model loads), the
+        live model on PyTorch, no other model or its engine not built here, banned (``health`` says why), or loaded
+        already.  For the readiness row: what the load at the next moment will take beside the live model."""
+        if self.auto.mode == MODE_OFF:
+            return None
+        live = self.live()
+        if live is None:
+            return None
+        want = self._wanted(live, other_model(live.candidate, self.models))
+        if want is None or want.key in self._banned or self._fits(live, want):
+            return None
+        return want.label, self._mb_seen.get(want.label)
 
     def health(self) -> Optional[str]:
         """While a ban holds, why the automatic swipe leaves a setting alone (the readiness row, once the switch has

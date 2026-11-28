@@ -420,7 +420,8 @@ SWIPE_AUTO_STREAK_GAP_S = 900.0
 # never at a look due later while a dancer is tracked -- and kept while the mode is on.
 SWIPE_AUTO_LOAD_EMPTY_S = 2.0
 # ... and out of RUN a load starts only once the app has sat there this long with nothing applied since (a project,
-# a model, the mode set -- his click out of RUN too --, RUN or STANDBY pressed).  A load cannot be cut short (about
+# a model -- another one at the same input too --, the mode set -- his click out of RUN too --, RUN or STANDBY
+# pressed, a new empty-wall plate; a calibration or a capture counts nothing).  A load cannot be cut short (about
 # 0.3 s warm, up to about 3 s cold) and a man alone presses RUN when the dancers arrive, often right after he applied
 # the project: RUN pressed before this ends, nothing was started, and the load waits for the next moment above (an
 # empty wall, or STANDBY again once settled).  Releases are not held back.

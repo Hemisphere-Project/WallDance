@@ -12,11 +12,15 @@ once: his act, as before.
 On the looker with the fake clock of ``test_swipe_auto_resident`` (the settle set on the object, as the app's
 config gives it), and on a real ``WallDanceApp`` for its doors.  Each test fails on the tree before for the reason
 it names (a project's apply goes through ``set_mode(mode)`` there); the regression guards say so."""
+import dataclasses
 import inspect
+from types import SimpleNamespace
 
 import pytest
 
 import core.config
+from core.swipe import Candidate
+from test_seamless_switch import L1280, _live
 from test_swipe_auto_lock import X_MODEL, _pick, real_app  # noqa: F401 - the fixture
 from test_swipe_auto_resident import _kinds, _setup
 
@@ -179,3 +183,213 @@ def test_the_app_a_projects_mode_is_no_click_his_pick_is_and_run_or_standby_coun
     app.swipe_bg._settle_again = False
     app._cmd_set_state(api.SetState("standby"))
     assert getattr(app.swipe_bg, "_settle_again", False), "STANDBY pressed: the looker was not told"
+
+
+# ------------------------------------------------------------------ P7 (blind review p7review, F2 and F5, 28/11)
+# F2: the settle sat on (project, input, shape, TensorRT) -- no model --, and a look that found the app busy counted
+# towards it.  So a model changed by hand at the same input, its reload between two looks (up to 5 s apart), and a
+# calibration in STANDBY both ended in a load at the very next look: RUN pressed right after ran its first frames
+# beside it -- the case the settle was made for.  The review's probes (gates/p7review/probes/test_probe_settle.py),
+# as tests: each fails on the tree before for the reason it names; the imgsz change is the control (it passed).
+_LOADS = ("load", "release")
+
+
+def _applied_and_loaded(e):
+    """STANDBY kept 10 s after a project's apply: l @ 1280 loaded beside x @ 1280 (the start of each case)."""
+    t0 = e.proc.clock
+    _project_applies(e.bg)
+    e.bg.tick()
+    e.proc.clock = t0 + 10.0
+    e.bg.tick()
+    assert _kinds(e, "load") == ["load"] and e.bg.resident.candidate == L1280
+    return t0
+
+
+def _said(e):
+    return [(h["kind"], h.get("resident")) for h in e.bg.history if h["kind"] in _LOADS]
+
+
+def test_a_model_change_by_hand_at_the_same_input_counts_the_settle_again():
+    """STANDBY, settled, l @ 1280 resident beside x @ 1280.  He changes the model by hand to l (same input); its
+    reload falls between two looks.  The look 1 s after it frees the old resident (releases are not held back) and
+    loads nothing; the other model, x @ 1280, loads 10 s after that look.  Fails before: loaded at that very look,
+    one second after his change (the key had no model in it)."""
+    e = _settled(_setup(mode="off", run=False, empty=True))
+    t0 = _applied_and_loaded(e)
+    e.proc.clock = t0 + 60.0
+    e.live["v"] = _live(cand=L1280, model_id=2)        # his change x -> l, same input: a reload no look saw
+    e.proc.clock += 1.0
+    e.bg.tick()
+    assert _kinds(e, "load") == ["load"], f"the look 1 s after a model change loaded the other one: {_said(e)}"
+    assert _said(e) == [("load", "l @ 1280"), ("release", "l @ 1280")] and e.bg.resident is None
+    assert e.bg._next_s == pytest.approx(10.0)          # the looker comes back when the settle ends
+    e.proc.clock += 9.5
+    e.bg.tick()
+    assert _kinds(e, "load") == ["load"]
+    e.proc.clock += 0.5
+    e.bg.tick()
+    assert _said(e)[-1] == ("load", "x @ 1280") and e.bg.resident.candidate.label == "x @ 1280"
+
+
+def test_control_an_imgsz_change_counts_the_settle_again():
+    """The same with another input (x @ 1536): the key changed before too -- the settle counts again, and the other
+    model at that input, l @ 1536, loads 10 s later (the control: passes on the tree before)."""
+    e = _settled(_setup(mode="off", run=False, empty=True))
+    t0 = _applied_and_loaded(e)
+    e.proc.clock = t0 + 60.0
+    e.live["v"] = _live(cand=Candidate("yolo11x-pose", 1536), model_id=2)
+    e.proc.clock += 1.0
+    e.bg.tick()
+    assert _kinds(e, "load") == ["load"]
+    e.proc.clock += 10.0
+    e.bg.tick()
+    assert _said(e)[-1] == ("load", "l @ 1536")
+
+
+def test_a_calibration_in_standby_counts_nothing_the_settle_starts_after_it():
+    """STANDBY, a new project's mode set (no plate yet: the looker waits), then CALIBRATE on the empty wall for
+    40 s (busy), the plate good after it: no load at the first look after the calibration; 10 s after that look,
+    the load.  Fails before: loaded at that first look -- the 10 s were counted through the calibration, and the
+    guide's order is CALIBRATE, then RUN."""
+    e = _settled(_setup(mode="off", run=False, empty=True))
+    good = e.live["v"]
+    e.live["v"] = dataclasses.replace(good, plate=None, plate_ok=False)
+    t0 = e.proc.clock
+    _project_applies(e.bg)                             # New project: the default
+    e.bg.tick()
+    e.proc.clock = t0 + 5.0
+    e.bg.busy = lambda: "a calibration"
+    assert e.bg.tick() == "waiting"                    # (the plate is not usable yet: the look stops there)
+    e.proc.clock = t0 + 45.0                           # the calibration ends, the plate is good
+    e.bg.busy = lambda: None
+    e.live["v"] = good
+    e.bg.tick()
+    assert _kinds(e, "load") == [], "loaded at the first look after the calibration (the settle ran through it)"
+    e.proc.clock = t0 + 54.5
+    e.bg.tick()
+    assert _kinds(e, "load") == []
+    e.proc.clock = t0 + 55.0
+    e.bg.tick()
+    assert _kinds(e, "load") == ["load"]
+
+
+def test_a_look_that_finds_the_app_busy_counts_nothing_the_same_plate_kept():
+    """The busy look alone (the plate the same before and after: a calibration that keeps it, a model load, an
+    Apply under way): applied at 0, busy seen at 5 s, free again at 45 s -- no load then, the load 10 s later.
+    Fails before: loaded at 45 s."""
+    e = _settled(_setup(mode="off", run=False, empty=True))
+    t0 = e.proc.clock
+    _project_applies(e.bg)
+    e.bg.tick()
+    e.proc.clock = t0 + 5.0
+    e.bg.busy = lambda: "a calibration"
+    assert e.bg.tick() == "busy"
+    e.proc.clock = t0 + 45.0
+    e.bg.busy = lambda: None
+    e.bg.tick()
+    assert _kinds(e, "load") == [], "loaded at the first look after a busy one: the settle counted through it"
+    e.proc.clock = t0 + 55.0
+    e.bg.tick()
+    assert _kinds(e, "load") == ["load"]
+
+
+def test_a_new_empty_wall_plate_between_two_looks_counts_the_settle_again():
+    """An empty-wall capture short enough that no look saw it (busy) between two looks: its new plate counts the
+    settle again -- applied at 0, captured at 6 s, no load at the 10 s look, the load 10 s after it.  Fails before:
+    loaded at 10 s (the plate was not in the key)."""
+    e = _settled(_setup(mode="off", run=False, empty=True))
+    t0 = e.proc.clock
+    _project_applies(e.bg)
+    e.bg.tick()
+    e.proc.clock = t0 + 6.0
+    e.live["v"] = dataclasses.replace(e.live["v"], plate=(2, "captured at 6 s"))
+    e.proc.clock = t0 + 10.0
+    e.bg.tick()
+    assert _kinds(e, "load") == [], "loaded 4 s after a new plate"
+    e.proc.clock = t0 + 20.0
+    e.bg.tick()
+    assert _kinds(e, "load") == ["load"]
+
+
+def test_regression_guard_in_run_an_empty_wall_still_loads_it_whatever_the_settle():
+    """RUN, the wall empty for 2 s after a project's apply: the settle is out of RUN only -- the load comes, as
+    before (the busy look and the model in the key change nothing in RUN)."""
+    e = _settled(_setup(mode="off", run=True, empty=True))
+    _project_applies(e.bg)
+    e.bg.tick()
+    e.proc.clock += 2.0
+    e.bg.tick()
+    assert _kinds(e, "load") == ["load"]
+
+
+# F5: while the second model is still to load (the mode on, nothing loaded), Check readiness said nothing -- so the
+# guide's step (load in STANDBY, the row shows what it takes, then look at TouchDesigner) could not be done once RUN
+# was pressed inside the settle, and 0.7-1.6 GB were taken beside TouchDesigner at the first empty wall of the show.
+STILL_TO_LOAD = ("the automatic swipe's second model ({}) is still to load (after 10 s in STANDBY, or in RUN at "
+                 "the first wall empty for 2 s) - to have it before the show, stay 10 s in STANDBY, then press "
+                 "'Check readiness' again")
+
+
+def _row(e):
+    import app as appmod
+    return appmod.WallDanceApp._swipe_resident_row(SimpleNamespace(swipe_bg=e.bg))
+
+
+def test_readiness_says_the_second_model_is_still_to_load_then_what_it_holds():
+    """Applied, nothing loaded yet: one information row (``ok``: advice, READY stays reachable) saying when it loads
+    and what to do; RUN pressed inside the settle with a dancer on the wall: the same row; loaded: the row of
+    before, what it holds; another project at the same model and input: still to load, with what it took at its
+    last load.  Fails before: no row until it was loaded."""
+    pytest.importorskip("dearpygui")
+    e = _settled(_setup(mode="off", run=False, empty=False))
+    assert _row(e) is None                             # the mode off: no row
+    _project_applies(e.bg)
+    e.bg.tick()
+    row = _row(e)
+    assert row is not None, "nothing said while the second model is still to load"
+    assert (row.name, row.status, row.detail) == ("auto swipe", "ok", STILL_TO_LOAD.format("l @ 1280"))
+    _pressed(e, run=True)                              # RUN inside the settle, a dancer on the wall: no load
+    e.proc.clock += 5.0
+    e.bg.tick()
+    assert e.bg.resident is None and _row(e).detail == STILL_TO_LOAD.format("l @ 1280")
+    used = iter([1000 * 2 ** 20, 1234 * 2 ** 20])
+    e.bg.gpu_used = lambda: next(used)
+    _pressed(e, run=False)                             # STANDBY kept 10 s: loaded
+    e.bg.tick()
+    e.proc.clock += 10.0
+    e.bg.tick()
+    assert e.bg.resident is not None
+    assert _row(e).detail == "the automatic swipe keeps a second model loaded: about 230 MB"
+    e.live["v"] = _live(project="another_project", model_id=3)      # another project, same model and input
+    e.proc.clock += 1.0
+    e.bg.tick()                                        # out of RUN: the old resident goes at once
+    assert e.bg.resident is None
+    assert _row(e).detail == STILL_TO_LOAD.format("l @ 1280, about 230 MB")
+
+
+def test_readiness_says_nothing_of_a_load_that_will_not_come():
+    """No row where nothing will load: the mode off, a model loading, the live model on PyTorch, the other model's
+    engine not built here, or a setting banned (the fault row says why).  (Fails before at its first step: no row
+    at all while it was to load.)"""
+    pytest.importorskip("dearpygui")
+    e = _settled(_setup(mode="off", run=False, empty=True))
+    _project_applies(e.bg)
+    e.bg.tick()
+    assert _row(e) is not None
+    live = e.live["v"]
+    e.live["v"] = None
+    assert _row(e) is None, "a model loads"
+    e.live["v"] = dataclasses.replace(live, trt=False)
+    assert _row(e) is None, "PyTorch: no second engine"
+    e.live["v"] = live
+    e.bg.engine_exists = lambda p: False
+    assert _row(e) is None, "its engine is not built here"
+    e.bg.engine_exists = lambda p: True
+    e.bg._banned[L1280.key] = L1280.engine_file
+    assert _row(e) is None, "banned: the fault row says it"
+    e.bg._banned.clear()
+    e.bg.set_mode("off")
+    assert _row(e) is None
+    from core.ops_monitor import check_swipe_resident
+    assert check_swipe_resident(swipe_auto="suggest", to_load="l @ 1280").detail == STILL_TO_LOAD.format("l @ 1280")
+    assert check_swipe_resident(swipe_auto="off", to_load="l @ 1280") is None

@@ -432,12 +432,27 @@ def check_swipe(*, fault: Optional[str] = None, result=None, fault_recovered: bo
 
 
 def check_swipe_resident(*, swipe_auto: str = "off", resident: Optional[str] = None,
-                         mb: Optional[int] = None) -> Optional[CheckResult]:
+                         mb: Optional[int] = None, to_load: Optional[str] = None,
+                         to_load_mb: Optional[int] = None, settle_s: float = 10.0,
+                         empty_s: float = 2.0) -> Optional[CheckResult]:
     """P6: what the automatic swipe holds -- its second model (the other model at the live input), kept loaded
     while the mode is on -- said once, as information (``ok``), with its GPU memory measured around its load
-    (``mb``, None: not measured).  None with the key off or nothing loaded."""
-    if swipe_auto == "off" or resident is None:
+    (``mb``, None: not measured).  P7: while that model is still to load (``to_load``, its label; ``to_load_mb``
+    measured at its last load this session, None: never), the same row says when it loads -- out of RUN once the
+    app has sat there ``settle_s``, in RUN at a wall empty for ``empty_s`` -- and what to do to have it before the
+    show: information too, the swipe is advice, not a readiness condition.  None with the key off or nothing
+    loaded nor to load."""
+    if swipe_auto == "off":
         return None
+    if resident is None:
+        if not to_load:
+            return None
+        size = f", about {int(to_load_mb)} MB" if to_load_mb is not None else ""
+        return CheckResult("auto swipe", "ok",
+                           f"the automatic swipe's second model ({to_load}{size}) is still to load (after "
+                           f"{settle_s:g} s in STANDBY, or in RUN at the first wall empty for {empty_s:g} s) - to "
+                           f"have it before the show, stay {settle_s:g} s in STANDBY, then press 'Check readiness' "
+                           f"again")
     size = f": about {int(mb)} MB" if mb is not None else ""
     return CheckResult("auto swipe", "ok", f"the automatic swipe keeps a second model loaded{size}")
 
