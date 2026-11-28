@@ -98,6 +98,46 @@ def test_a_load_that_run_overtakes_is_said_once(capsys):
     assert capsys.readouterr().out.count("finished loading as RUN began") == 0
 
 
+def test_run_pressed_while_the_second_model_loads_never_waits_for_the_load(capsys):
+    """28/11: out of RUN the looker's own thread loads the second model and holds the engine lock (a load cannot be
+    cut short); RUN is pressed then, the dancers on.  What the loop thread does at that moment -- the looker told
+    (``state_changed``, from ``_cb_system_state_change``), the switch's drain between two frames -- returns at once
+    while the load still runs: no lock the load holds is on the live loop's path (its frames take none; the drain
+    takes the switch's guard without waiting, and never the engine lock).  The load then ends and is said once, and
+    the live loop goes on.  What a real TensorRT load does to the GIL (slices of 54-80 ms: frames slowed, not
+    stopped) is not seen on the CPU; the 10 s settle keeps a load away from the first RUN frames
+    (``test_swipe_auto_load_settle``)."""
+    from runtime.swipe_background import BackgroundSwipe
+    e = _setup(mode="suggest", run=False, empty=True)   # STANDBY (the helper's settle 0): the first look loads
+    began, go = threading.Event(), threading.Event()
+    real = e.loader.load
+
+    def slow_load(path, cand, model=None):
+        got = real(path, cand, model)
+        began.set()
+        go.wait(5.0)                                    # the load runs on until the test lets it end
+        return got
+    e.loader.load = slow_load
+    BackgroundSwipe.start(e.bg)
+    try:
+        assert began.wait(3.0), "the first look did not load"
+        assert not e.bg.engine_lock.acquire(blocking=False), "the load does not hold the engine lock"
+        t0 = time.perf_counter()
+        e.wall.run, e.wall.empty = True, False          # RUN pressed, the dancers on the wall
+        e.bg.state_changed()
+        drained = [e.bg.switch.drain() for _ in range(5)]   # five frames of the loop thread
+        waited = time.perf_counter() - t0
+        assert waited < 0.05, f"the loop thread waited {waited * 1000:.0f} ms for the load"
+        assert drained == [False] * 5 and e.bg._thread.is_alive() and _kinds(e, "load") == []   # still loading
+        go.set()
+        assert _until(lambda: _kinds(e, "load") == ["load"]), "the load did not end"
+        assert _until(lambda: (e.bg.status()["last_look"] or {}).get("outcome") == INTO_RUN)
+    finally:
+        go.set()
+        e.bg.stop(2.0)
+    assert capsys.readouterr().out.count("finished loading as RUN began") == 1
+
+
 def _quit_timeout() -> float:
     """The looker's join at quit, as ``App._cb_quit`` calls it (``self.swipe_bg.stop(<seconds>)``)."""
     src = Path(__file__).resolve().parent.parent / "src" / "app.py"
